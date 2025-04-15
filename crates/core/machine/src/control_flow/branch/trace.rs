@@ -79,7 +79,7 @@ impl BranchChip {
         &self,
         event: &BranchEvent,
         cols: &mut BranchColumns<F>,
-        _blu: &mut HashMap<ByteLookupEvent, usize>,
+        blu: &mut HashMap<ByteLookupEvent, usize>,
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.is_beq = F::from_bool(matches!(event.opcode, Opcode::BEQ));
@@ -117,9 +117,9 @@ impl BranchChip {
         cols.next_pc = Word::from(event.next_pc);
         cols.target_pc = Word::from(target_pc);
         cols.next_next_pc = Word::from(event.next_next_pc);
-        cols.next_pc_range_checker.populate(event.next_pc);
-        cols.target_pc_range_checker.populate(target_pc);
-        cols.next_next_pc_range_checker.populate(event.next_next_pc);
+        cols.next_pc_range_checker.populate(cols.next_pc, blu);
+        cols.target_pc_range_checker.populate(cols.target_pc, blu);
+        cols.next_next_pc_range_checker.populate(cols.next_next_pc, blu);
 
         if branching {
             cols.is_branching = F::ONE;

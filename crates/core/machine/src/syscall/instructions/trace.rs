@@ -135,13 +135,13 @@ impl SyscallInstrsChip {
         // it's operands.
         if cols.is_halt == F::ONE {
             cols.operand_to_check = event.arg1.into();
-            cols.operand_range_check_cols.populate(event.arg1);
+            cols.operand_range_check_cols.populate(cols.operand_to_check, blu);
             cols.syscall_range_check_operand = F::ONE;
         }
 
         if syscall_id == F::from_canonical_u32(SyscallCode::COMMIT_DEFERRED_PROOFS.syscall_id()) {
             cols.operand_to_check = event.arg2.into();
-            cols.operand_range_check_cols.populate(event.arg2);
+            cols.operand_range_check_cols.populate(cols.operand_to_check, blu);
             cols.syscall_range_check_operand = F::ONE;
         }
     }

@@ -104,7 +104,7 @@ impl MemoryInstructionsChip {
         let memory_addr = event.b.wrapping_add(event.c);
         let aligned_addr = memory_addr - memory_addr % WORD_SIZE as u32;
         cols.addr_word = memory_addr.into();
-        cols.addr_word_range_checker.populate(memory_addr);
+        cols.addr_word_range_checker.populate(cols.addr_word, blu);
         cols.addr_aligned = F::from_canonical_u32(aligned_addr);
 
         // Populate the aa_least_sig_byte_decomp columns.

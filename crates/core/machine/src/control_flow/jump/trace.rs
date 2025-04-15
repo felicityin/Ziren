@@ -79,7 +79,7 @@ impl JumpChip {
         &self,
         event: &JumpEvent,
         cols: &mut JumpColumns<F>,
-        _blu: &mut HashMap<ByteLookupEvent, usize>,
+        blu: &mut HashMap<ByteLookupEvent, usize>,
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.is_jump = F::from_bool(matches!(event.opcode, Opcode::Jump));
@@ -95,19 +95,19 @@ impl JumpChip {
         match event.opcode {
             Opcode::Jump | Opcode::Jumpi => {
                 let target_pc = event.b;
-                cols.op_a_range_checker.populate(event.a);
+                cols.op_a_range_checker.populate(cols.op_a_value, blu);
                 cols.target_pc = Word::from(target_pc);
                 cols.next_pc = Word::from(event.next_pc);
-                cols.next_pc_range_checker.populate(event.next_pc);
-                cols.target_pc_range_checker.populate(target_pc);
+                cols.next_pc_range_checker.populate(cols.next_pc, blu);
+                cols.target_pc_range_checker.populate(cols.target_pc, blu);
             }
             Opcode::JumpDirect => {
                 let target_pc = event.next_pc.wrapping_add(event.b);
-                cols.op_a_range_checker.populate(event.a);
+                cols.op_a_range_checker.populate(cols.op_a_value, blu);
                 cols.next_pc = Word::from(event.next_pc);
-                cols.next_pc_range_checker.populate(event.next_pc);
+                cols.next_pc_range_checker.populate(cols.next_pc, blu);
                 cols.target_pc = Word::from(target_pc);
-                cols.target_pc_range_checker.populate(target_pc);
+                cols.target_pc_range_checker.populate(cols.target_pc, blu);
             }
             _ => unreachable!(),
         }
