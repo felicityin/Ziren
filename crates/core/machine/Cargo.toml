@@ -72,6 +72,7 @@ test-artifacts = { workspace = true }
 [features]
 debug = []
 bigint-rug = ["zkm-curves/bigint-rug"]
+self-hosted = []
 
 [lib]
 bench = false

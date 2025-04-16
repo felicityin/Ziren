@@ -537,6 +537,7 @@ mod tests {
     use crate::utils::run_test_io;
     //
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_weierstrass_bls_decompress() {
         utils::setup_logger();
         let mut rng = thread_rng();
@@ -569,6 +570,7 @@ mod tests {
     }
     //
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_weierstrass_k256_decompress() {
         utils::setup_logger();
         //
@@ -597,6 +599,7 @@ mod tests {
     }
     //
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_weierstrass_p256_decompress() {
         utils::setup_logger();
         //

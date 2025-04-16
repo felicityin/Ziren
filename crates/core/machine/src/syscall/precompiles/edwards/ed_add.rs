@@ -344,6 +344,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_ed25519_program() {
         utils::setup_logger();
         let program = Program::from(ED25519_ELF).unwrap();

@@ -294,6 +294,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_memory_lookup_lookups() {
         setup_logger();
         let program = sha_extend_program();
@@ -326,6 +327,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_byte_lookup_lookups() {
         setup_logger();
         let program = sha_extend_program();

@@ -488,6 +488,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_bls12381_double_simple() {
         setup_logger();
         let program = Program::from(BLS12381_DOUBLE_ELF).unwrap();

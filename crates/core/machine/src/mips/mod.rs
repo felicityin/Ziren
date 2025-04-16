@@ -707,6 +707,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_simple_prove() {
         utils::setup_logger();
         let program = simple_program();
@@ -714,6 +715,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_beq_branching_prove() {
         utils::setup_logger();
         let instructions = vec![
@@ -726,6 +728,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_beq_not_branching_prove() {
         utils::setup_logger();
         let instructions = vec![
@@ -738,6 +741,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_bne_branching_prove() {
         utils::setup_logger();
         let instructions = vec![
@@ -750,6 +754,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_bne_not_branching_prove() {
         utils::setup_logger();
         let instructions = vec![
@@ -762,6 +767,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_rest_branch_prove() {
         utils::setup_logger();
         let branch_ops = [Opcode::BLTZ, Opcode::BGEZ, Opcode::BLEZ, Opcode::BGTZ];
@@ -779,6 +785,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_shift_prove() {
         utils::setup_logger();
         let shift_ops = [Opcode::SRL, Opcode::ROR, Opcode::SRA, Opcode::SLL];
@@ -810,6 +817,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_add_prove() {
         setup_logger();
         let instructions = vec![
@@ -822,6 +830,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_add_overflow_prove() {
         setup_logger();
         let instructions = vec![
@@ -834,6 +843,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_mul_prove() {
         utils::setup_logger();
         let mul_ops = [Opcode::MUL, Opcode::MULT, Opcode::MULTU];
@@ -868,6 +878,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_bitwise_prove() {
         setup_logger();
         let bitwise_opcodes = [Opcode::XOR, Opcode::OR, Opcode::AND];
@@ -884,6 +895,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_divrem_prove() {
         setup_logger();
         let div_rem_ops = [Opcode::DIV, Opcode::DIVU];
@@ -908,6 +920,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_cloclz_prove() {
         setup_logger();
         let clz_clo_ops = [Opcode::CLZ, Opcode::CLO];
@@ -926,6 +939,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_j_prove() {
         //   j 100
         //
@@ -940,6 +954,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_jr_prove() {
         //   addi x11, x11, 100
         //   jr x11
@@ -970,6 +985,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_jalr_prove() {
         //   addi x11, x11, 100
         //   jalr x11
@@ -986,6 +1002,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_sc_prove() {
         let instructions = vec![
             Instruction::new(Opcode::ADD, 29, 0, 0x12348765, false, true),
@@ -1001,6 +1018,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_hello_world_prove_simple() {
         setup_logger();
         let program = hello_world_program();
@@ -1008,6 +1026,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_fibonacci_prove_simple() {
         setup_logger();
         let program = fibonacci_program();
@@ -1015,6 +1034,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_sha3_chain_prove_simple() {
         setup_logger();
         let program = sha3_chain_program();
@@ -1022,6 +1042,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_fibonacci_prove_checkpoints() {
         setup_logger();
 
@@ -1035,6 +1056,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_fibonacci_prove_batch() {
         setup_logger();
         let program = fibonacci_program();
@@ -1050,6 +1072,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_simple_memory_program_prove() {
         setup_logger();
         let program = simple_memory_program();
@@ -1057,6 +1080,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_simple_memory_program_2_prove() {
         setup_logger();
         let program = other_memory_program();
@@ -1064,6 +1088,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_ssz_withdrawal() {
         setup_logger();
         let program = ssz_withdrawals_program();
@@ -1071,6 +1096,7 @@ pub mod tests {
     }
 
     #[test]
+    #[cfg(feature = "self-hosted")]
     fn test_key_serde() {
         let program = ssz_withdrawals_program();
         let config = KoalaBearPoseidon2::new();
