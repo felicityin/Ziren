@@ -6,7 +6,7 @@ Patching a crate refers to replacing the implementation of a specific interface 
 
 | **Crate Name**        | **Repository**                                               | **Versions** |
 | ----------------- | ------------------------------------------------------------ | ------------ |
-| revm | `revm = { git = "https://github.com/zkMIPS/revm", branch = "zkm" }` | 6.0.0        |
+| revm | `revm = { git = "https://github.com/zkMIPS/revm", branch = "zkMIPS" }` | 6.0.0        |
 | sha2              | `sha2-v0-10-8 = { git = "https://github.com/zkMIPS-patches/RustCrypto-hashes", package = "sha2", branch = "patch-sha2-0.10.8" }` | 0.10.8       |
 | curve25519-dalek  | `curve25519-dalek = { git = "https://github.com/zkMIPS-patches/curve25519-dalek", branch = "patch-4.1.3" }` | 4.1.3        |
 | curve25519-dalek-ng | `curve25519-dalek-ng = { git = "https://github.com/zkMIPS-patches/curve25519-dalek-ng", branch = "patch-4.1.1" } ` | 4.1.1 |

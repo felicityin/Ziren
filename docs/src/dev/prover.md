@@ -1,6 +1,6 @@
 # Prover
 
-The zkm_sdk crate provides all the necessary tools for proof generation. Key features include the `ProverClient`, enabling you to:
+The `zkm_sdk` crate provides all the necessary tools for proof generation. Key features include the `ProverClient`, enabling you to:
 - Initialize proving/verifying keys via `setup()`.
 - Execute your program via `execute()`.
 - Generate proofs with `prove()`.
@@ -10,7 +10,7 @@ When generating Groth16 or PLONK proofs, the `ProverClient` automatically downlo
 
 ## Example: [Fibonacci](https://github.com/zkMIPS/zkm/blob/dev/init/examples/fibonacci/host/src/main.rs)
 
-The following code is an example of using zkm_sdk in host.
+The following code is an example of using `zkm_sdk` in host.
 
 ```rust
 use zkm_sdk::{include_elf, utils, ProverClient, ZKMProofWithPublicValues, ZKMStdin};
