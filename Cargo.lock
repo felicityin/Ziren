@@ -8292,6 +8292,7 @@ dependencies = [
  "elliptic-curve",
  "serde",
  "sha2",
+ "zkm-primitives",
 ]
 
 [[package]]
