@@ -20,7 +20,7 @@ pub mod utils;
 
 pub use proof::*;
 pub use provers::ZKMVerificationError;
-use zkm_prover::components::CpuProverComponents;
+use zkm_prover::components::DefaultProverComponents;
 
 #[cfg(feature = "network")]
 pub use provers::{CpuProver, MockProver, Prover};
@@ -41,7 +41,7 @@ pub use utils::setup_logger;
 /// A client for interacting with zkMIPS.
 pub struct ProverClient {
     /// The underlying prover implementation.
-    pub prover: Box<dyn Prover<CpuProverComponents>>,
+    pub prover: Box<dyn Prover<DefaultProverComponents>>,
 }
 
 impl ProverClient {
