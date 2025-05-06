@@ -1,9 +1,8 @@
 use core::fmt;
 use itertools::Itertools;
 use zkm_core_executor::{
-    events::PrecompileLocalMemory, syscalls::SyscallCode, ExecutionRecord, MipsAirId, Program,
+    events::{PrecompileLocalMemory, SyscallEvent}, syscalls::SyscallCode, ExecutionRecord, MipsAirId, Program,
 };
-
 use crate::{
     global::GlobalChip,
     memory::{MemoryChipType, MemoryLocalChip, NUM_LOCAL_MEMORY_ENTRIES_PER_ROW},
@@ -63,6 +62,8 @@ pub const MAX_LOG_NUMBER_OF_SHARDS: usize = 16;
 
 /// The maximum number of shards in core.
 pub const MAX_NUMBER_OF_SHARDS: usize = 1 << MAX_LOG_NUMBER_OF_SHARDS;
+
+const KECCAK_ROWS_PER_BLOCK: usize = 24;
 
 /// An AIR for encoding MIPS execution.
 ///
@@ -465,20 +466,7 @@ impl<F: PrimeField32> MipsAir<F> {
             .get_events(self.syscall_code())
             .filter(|events| !events.is_empty())
             .map(|events| {
-                let mut num_rows = events.len() * self.rows_per_event();
-                if self.syscall_code() == SyscallCode::KECCAK_SPONGE {
-                    num_rows = events
-                        .iter()
-                        .map(|(_, pre_e)| {
-                            if let PrecompileEvent::KeccakSponge(event) = pre_e {
-                                event.num_blocks() * 24
-                            } else {
-                                unreachable!()
-                            }
-                        })
-                        .sum::<usize>();
-                }
-
+                let num_rows = events.len() * self.rows_per_event(Some(record));
                 (
                     num_rows,
                     events.get_local_mem_events().into_iter().count(),
@@ -563,12 +551,40 @@ impl<F: PrimeField32> MipsAir<F> {
             .collect()
     }
 
-    pub(crate) fn rows_per_event(&self) -> usize {
+    pub(crate) fn rows_per_event(&self, record: Option<&ExecutionRecord>) -> usize {
         match self {
             Self::Sha256Compress(_) => 80,
             Self::Sha256Extend(_) => 48,
+            Self::KeccakSponge(_) => self.keccak_rows_per_event(record),
             _ => 1,
         }
+    }
+
+    fn keccak_rows_per_event(&self, record: Option<&ExecutionRecord>) -> usize {
+        if let Some(record) = record {
+            record
+                .precompile_events
+                .get_events(SyscallCode::KECCAK_SPONGE)
+                .filter(|events| !events.is_empty())
+                .map(|events| {
+                    self.calculate_keccak_rows(&events)
+                }).unwrap_or(KECCAK_ROWS_PER_BLOCK)
+        } else {
+            KECCAK_ROWS_PER_BLOCK
+        }
+    }
+
+    fn calculate_keccak_rows(&self, events: &Vec<(SyscallEvent, PrecompileEvent)>) -> usize {
+        events
+            .iter()
+            .map(|(_, pre_e)| {
+                if let PrecompileEvent::KeccakSponge(event) = pre_e {
+                    event.num_blocks() *  KECCAK_ROWS_PER_BLOCK
+                } else {
+                    unreachable!()
+                }
+            })
+            .sum::<usize>()
     }
 
     pub(crate) fn syscall_code(&self) -> SyscallCode {
