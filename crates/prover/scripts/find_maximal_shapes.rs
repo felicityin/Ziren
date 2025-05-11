@@ -96,6 +96,9 @@ fn main() {
         let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
 
         for block in (22445600..=22448980).step_by(5) {
+            if let Err(_) = std::fs::read(path.clone() + &format!("/{}-stdin.bin", block)) {
+                continue;
+            }
             let stdin = std::fs::read(path.clone() + &format!("/{}-stdin.bin", block)).expect("failed to read stdin");
             // let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
             let stdin: ZKMStdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
