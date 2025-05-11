@@ -94,31 +94,35 @@ fn main() {
 
         // Read the program and stdin.
         let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
-        let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
-        let stdin: ZKMStdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
 
-        // Collect the maximal shapes for each shard size.
-        for &log_shard_size in args.shard_sizes.iter() {
-            let tx = tx.clone();
-            let elf = elf.clone();
-            let stdin = stdin.clone();
-            let new_context = ZKMContext::default();
-            let s3_path = path.clone();
-            rayon::spawn(move || {
-                opts.shard_size = 1 << log_shard_size;
-                let maximal_shapes = collect_maximal_shapes(&elf, &stdin, opts, new_context);
-                tracing::info!(
-                    "there are {} maximal shapes for {} for log shard size {}",
-                    maximal_shapes.len(),
-                    s3_path,
-                    log_shard_size
-                );
-                tx.send((log_shard_size, s3_path, maximal_shapes)).unwrap();
-            });
+        for block in (22445600..=22448980).step_by(5) {
+            let stdin = std::fs::read(path.clone() + &format!("/{}-stdin.bin", block)).expect("failed to read stdin");
+            // let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
+            let stdin: ZKMStdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
+
+            // Collect the maximal shapes for each shard size.
+            for &log_shard_size in args.shard_sizes.iter() {
+                let tx = tx.clone();
+                let elf = elf.clone();
+                let stdin = stdin.clone();
+                let new_context = ZKMContext::default();
+                let s3_path = path.clone();
+                rayon::spawn(move || {
+                    opts.shard_size = 1 << log_shard_size;
+                    let maximal_shapes = collect_maximal_shapes(&elf, &stdin, opts, new_context);
+                    tracing::info!(
+                        "there are {} maximal shapes for {} for log shard size {}",
+                        maximal_shapes.len(),
+                        s3_path,
+                        log_shard_size
+                    );
+                    tx.send((log_shard_size, s3_path, maximal_shapes)).unwrap();
+                });
+            }
+
+            // std::fs::remove_file("program.bin").expect("failed to remove program.bin");
+            // std::fs::remove_file("stdin.bin").expect("failed to remove stdin.bin");
         }
-
-        // std::fs::remove_file("program.bin").expect("failed to remove program.bin");
-        // std::fs::remove_file("stdin.bin").expect("failed to remove stdin.bin");
     }
     drop(tx);
 
