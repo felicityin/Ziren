@@ -9,7 +9,6 @@ use itertools::Itertools;
 pub use mips_chips::*;
 use p3_field::PrimeField32;
 use strum_macros::{EnumDiscriminants, EnumIter};
-use zkm_core_executor::events::PrecompileEvent;
 use zkm_core_executor::{
     events::PrecompileLocalMemory, syscalls::SyscallCode, ExecutionRecord, MipsAirId, Program,
 };
@@ -62,8 +61,6 @@ pub const MAX_LOG_NUMBER_OF_SHARDS: usize = 16;
 
 /// The maximum number of shards in core.
 pub const MAX_NUMBER_OF_SHARDS: usize = 1 << MAX_LOG_NUMBER_OF_SHARDS;
-
-const KECCAK_ROWS_PER_BLOCK: usize = 24;
 
 /// An AIR for encoding MIPS execution.
 ///
@@ -557,49 +554,13 @@ impl<F: PrimeField32> MipsAir<F> {
             Self::Sha256Extend(_) => 48,
             Self::KeccakSponge(_) => {
                 if let Some(record) = record {
-                    self.keccak_rows_per_event(record)
+                    record.keccak_rows_per_event()
                 } else {
                     0
                 }
             }
             _ => 1,
         }
-    }
-
-    fn keccak_rows_per_event(&self, record: &ExecutionRecord) -> usize {
-        let all = self.keccak_rows_per_record(record);
-        if all == 0 {
-            return 0;
-        }
-
-        let count = record
-            .precompile_events
-            .get_events(SyscallCode::KECCAK_SPONGE)
-            .map(|events| events.len())
-            .unwrap_or(0);
-        if count > 0 {
-            return all.div_ceil(count);
-        }
-        0
-    }
-
-    fn keccak_rows_per_record(&self, record: &ExecutionRecord) -> usize {
-        record
-            .precompile_events
-            .get_events(SyscallCode::KECCAK_SPONGE)
-            .map(|events| {
-                events
-                    .iter()
-                    .map(|(_, pre_e)| {
-                        if let PrecompileEvent::KeccakSponge(event) = pre_e {
-                            event.num_blocks() * KECCAK_ROWS_PER_BLOCK
-                        } else {
-                            unreachable!()
-                        }
-                    })
-                    .sum::<usize>()
-            })
-            .unwrap_or(0)
     }
 
     pub(crate) fn syscall_code(&self) -> SyscallCode {

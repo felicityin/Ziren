@@ -21,6 +21,8 @@ use crate::{
     MipsAirId, Opcode, Program,
 };
 
+const KECCAK_ROWS_PER_BLOCK: usize = 24;
+
 /// A record of the execution of a program.
 ///
 /// The trace of the execution is represented as a list of "events" that occur every cycle.
@@ -143,16 +145,48 @@ impl ExecutionRecord {
         execution_record
     }
 
+    pub fn keccak_rows_per_event(&self) -> usize {
+        if let Some(keccak_events) = self
+            .precompile_events
+            .get_events(SyscallCode::KECCAK_SPONGE)
+        {
+            if keccak_events.is_empty() {
+                return 0;
+            }
+
+            let keccak_rows = keccak_events
+                .iter()
+                .map(|(_, pre_e)| {
+                    if let PrecompileEvent::KeccakSponge(event) = pre_e {
+                        event.num_blocks() * KECCAK_ROWS_PER_BLOCK
+                    } else {
+                        unreachable!()
+                    }
+                })
+                .sum::<usize>();
+
+            return keccak_rows.div_ceil(keccak_events.len());
+        }
+        0
+    }
+
     /// Splits the deferred [`ExecutionRecord`] into multiple [`ExecutionRecord`]s, each which
     /// contain a "reasonable" number of deferred events.
     pub fn split(&mut self, last: bool, opts: SplitOpts) -> Vec<ExecutionRecord> {
         let mut shards = Vec::new();
 
+        let keccak_rows_per_event = self.keccak_rows_per_event();
         let precompile_events = take(&mut self.precompile_events);
 
         for (syscall_code, events) in precompile_events.into_iter() {
             let threshold = match syscall_code {
-                SyscallCode::KECCAK_SPONGE => opts.keccak,
+                SyscallCode::KECCAK_SPONGE => {
+                    if keccak_rows_per_event == 0 {
+                        opts.keccak
+                    } else {
+                        opts.keccak * 24 / keccak_rows_per_event
+                    }
+                }
                 SyscallCode::SHA_EXTEND => opts.sha_extend,
                 SyscallCode::SHA_COMPRESS => opts.sha_compress,
                 _ => opts.deferred,
