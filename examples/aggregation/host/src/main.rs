@@ -1,5 +1,8 @@
 //! A simple example showing how to aggregate proofs of multiple programs with ZKM.
 
+use std::time::Instant;
+
+use tokio::task;
 use zkm_sdk::{
     include_elf, HashableKey, ProverClient, ZKMProof, ZKMProofWithPublicValues, ZKMStdin,
     ZKMVerifyingKey,
@@ -19,42 +22,49 @@ struct AggregationInput {
     pub vk: ZKMVerifyingKey,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    let start = Instant::now();
+
     // Setup the logger.
     zkm_sdk::utils::setup_logger();
 
     // Initialize the proving client.
     let client = ProverClient::new();
+    let prove_mode = zkm_sdk::ZKMProofKind::Compressed;
 
     // Setup the proving and verifying keys.
     let (aggregation_pk, _) = client.setup(AGGREGATION_ELF);
     let (fibonacci_pk, fibonacci_vk) = client.setup(FIBONACCI_ELF);
 
     // Generate the fibonacci proofs.
-    let proof_1 = tracing::info_span!("generate fibonacci proof n=10").in_scope(|| {
+    let proof_1 = task::spawn_blocking(move || {
+        let client = ProverClient::new();
+        let (fibonacci_pk, fibonacci_vk) = client.setup(FIBONACCI_ELF);
         let mut stdin = ZKMStdin::new();
         stdin.write(&10);
         client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
-    let proof_2 = tracing::info_span!("generate fibonacci proof n=20").in_scope(|| {
+    })
+    .await
+    .expect("proving failed 1");
+
+    let proof_2 = task::spawn_blocking(move || {
+        let client = ProverClient::new();
+        let (fibonacci_pk, fibonacci_vk) = client.setup(FIBONACCI_ELF);
         let mut stdin = ZKMStdin::new();
         stdin.write(&20);
         client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
-    let proof_3 = tracing::info_span!("generate fibonacci proof n=30").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&30);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
+    })
+    .await
+    .expect("proving failed 2");
 
     // Setup the inputs to the aggregation program.
     let input_1 = AggregationInput { proof: proof_1, vk: fibonacci_vk.clone() };
     let input_2 = AggregationInput { proof: proof_2, vk: fibonacci_vk.clone() };
-    let input_3 = AggregationInput { proof: proof_3, vk: fibonacci_vk.clone() };
-    let inputs = vec![input_1, input_2, input_3];
+    let inputs = vec![input_1, input_2];
 
     // Aggregate the proofs.
-    tracing::info_span!("aggregate the proofs").in_scope(|| {
+    // tracing::info_span!("aggregate the proofs").in_scope(|| {
         let mut stdin = ZKMStdin::new();
 
         // Write the verification keys.
@@ -75,7 +85,19 @@ fn main() {
             stdin.write_proof(*proof, input.vk.vk);
         }
 
+        let proving_start = Instant::now();
+
         // Generate the plonk bn254 proof.
-        client.prove(&aggregation_pk, stdin).plonk().run().expect("proving failed");
-    });
+        task::spawn_blocking(move || {
+            client.prove(&aggregation_pk, stdin).compressed().run().expect("proving failed");
+        })
+        .await
+        .expect("proving failed");
+
+        let proving_duration = proving_start.elapsed();
+        println!("Proof successfully generated! proving duration: {:?}", proving_duration);
+    // });
+
+    let duration = start.elapsed();
+    println!("total duration: {:?}", duration);
 }

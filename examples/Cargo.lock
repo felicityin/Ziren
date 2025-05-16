@@ -61,6 +61,7 @@ dependencies = [
 name = "aggregation-host"
 version = "1.1.0"
 dependencies = [
+ "tokio",
  "tracing",
  "zkm-build",
  "zkm-sdk",
