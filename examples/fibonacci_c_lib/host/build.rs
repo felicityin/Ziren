@@ -13,6 +13,7 @@ fn main() {
         .arg("-msoft-float")
         .arg("-mips32r2")
         .arg("-c")
+        .arg("-static")
         .arg("../lib/add.cpp")
         .status()
         .expect("failed to compile add.cpp");
