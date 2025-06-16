@@ -49,90 +49,95 @@ fn main() {
     let ZKMProof::Compressed(proof1) = proof_1.proof else { panic!() };
     let ZKMProof::Compressed(proof2) = proof_2.proof else { panic!() };
 
-    let vks_and_proofs = vec![
-        (proof1.vk, proof1.proof),
-        (proof2.vk, proof2.proof),
-    ];
-    let input = ZKMCompressWitnessValues { vks_and_proofs, is_complete: true };
+    prover.compress2(
+        vec![*proof1, *proof2],
+        opts,
+    ).unwrap();
 
-    let (compress_program, witness_stream) = {
-        let mut witness_stream = Vec::new();
+    // let vks_and_proofs = vec![
+    //     (proof1.vk, proof1.proof),
+    //     (proof2.vk, proof2.proof),
+    // ];
+    // let input = ZKMCompressWitnessValues { vks_and_proofs, is_complete: true };
 
-        let input_with_merkle = prover.make_merkle_proofs(input);
+    // let (compress_program, witness_stream) = {
+    //     let mut witness_stream = Vec::new();
 
-        Witnessable::<InnerConfig>::write(
-            &input_with_merkle,
-            &mut witness_stream,
-        );
+    //     let input_with_merkle = prover.make_merkle_proofs(input);
 
-        (prover.compress_program(&input_with_merkle), witness_stream)
-    };
+    //     Witnessable::<InnerConfig>::write(
+    //         &input_with_merkle,
+    //         &mut witness_stream,
+    //     );
 
-    // Execute the runtime.
-    let record = tracing::debug_span!("execute runtime").in_scope(|| {
-        let mut runtime =
-            RecursionRuntime::<Val<InnerSC>, Challenge<InnerSC>, _>::new(
-                compress_program.clone(),
-                prover.compress_prover.config().perm.clone(),
-            );
-        runtime.witness_stream = witness_stream.into();
-        runtime
-            .run()
-            .unwrap_or_else(|err| panic!("Runtime execution failed: {err}"));
-        runtime.record
-    });
+    //     (prover.compress_program(&input_with_merkle), witness_stream)
+    // };
 
-    // Generate the dependencies.
-    let mut records = vec![record];
-    tracing::debug_span!("generate dependencies").in_scope(|| {
-        prover.compress_prover.machine().generate_dependencies(
-            &mut records,
-            &opts.recursion_opts,
-            None,
-        )
-    });
+    // // Execute the runtime.
+    // let record = tracing::debug_span!("execute runtime").in_scope(|| {
+    //     let mut runtime =
+    //         RecursionRuntime::<Val<InnerSC>, Challenge<InnerSC>, _>::new(
+    //             compress_program.clone(),
+    //             prover.compress_prover.config().perm.clone(),
+    //         );
+    //     runtime.witness_stream = witness_stream.into();
+    //     runtime
+    //         .run()
+    //         .unwrap_or_else(|err| panic!("Runtime execution failed: {err}"));
+    //     runtime.record
+    // });
 
-    // Generate the traces.
-    let record = records.into_iter().next().unwrap();
-    let traces = tracing::debug_span!("generate traces")
-        .in_scope(|| prover.compress_prover.generate_traces(&record));
+    // // Generate the dependencies.
+    // let mut records = vec![record];
+    // tracing::debug_span!("generate dependencies").in_scope(|| {
+    //     prover.compress_prover.machine().generate_dependencies(
+    //         &mut records,
+    //         &opts.recursion_opts,
+    //         None,
+    //     )
+    // });
 
-    // Get the keys.
-    let (pk, vk) = tracing::debug_span!("Setup compress program")
-        .in_scope(|| prover.compress_prover.setup(&compress_program));
+    // // Generate the traces.
+    // let record = records.into_iter().next().unwrap();
+    // let traces = tracing::debug_span!("generate traces")
+    //     .in_scope(|| prover.compress_prover.generate_traces(&record));
 
-    // Observe the proving key.
-    let mut challenger = prover.compress_prover.config().challenger();
-    tracing::debug_span!("observe proving key").in_scope(|| {
-        pk.observe_into(&mut challenger);
-    });
+    // // Get the keys.
+    // let (pk, vk) = tracing::debug_span!("Setup compress program")
+    //     .in_scope(|| prover.compress_prover.setup(&compress_program));
 
-    #[cfg(feature = "debug")]
-    prover.compress_prover.debug_constraints(
-        &prover.compress_prover.pk_to_host(&pk),
-        vec![record.clone()],
-        &mut challenger.clone(),
-    );
+    // // Observe the proving key.
+    // let mut challenger = prover.compress_prover.config().challenger();
+    // tracing::debug_span!("observe proving key").in_scope(|| {
+    //     pk.observe_into(&mut challenger);
+    // });
 
-    // Commit to the record and traces.
-    let data = tracing::debug_span!("commit")
-        .in_scope(|| prover.compress_prover.commit(&record, traces));
+    // #[cfg(feature = "debug")]
+    // prover.compress_prover.debug_constraints(
+    //     &prover.compress_prover.pk_to_host(&pk),
+    //     vec![record.clone()],
+    //     &mut challenger.clone(),
+    // );
 
-    // Generate the proof.
-    let proof = tracing::debug_span!("open").in_scope(|| {
-        prover.compress_prover.open(&pk, data, &mut challenger).unwrap()
-    });
+    // // Commit to the record and traces.
+    // let data = tracing::debug_span!("commit")
+    //     .in_scope(|| prover.compress_prover.commit(&record, traces));
 
-    // Verify the proof.
-    #[cfg(feature = "debug")]
-    prover.compress_prover
-        .machine()
-        .verify(
-            &vk,
-            &zkm_stark::MachineProof {
-                shard_proofs: vec![proof.clone()],
-            },
-            &mut prover.compress_prover.config().challenger(),
-        )
-        .unwrap();
+    // // Generate the proof.
+    // let proof = tracing::debug_span!("open").in_scope(|| {
+    //     prover.compress_prover.open(&pk, data, &mut challenger).unwrap()
+    // });
+
+    // // Verify the proof.
+    // #[cfg(feature = "debug")]
+    // prover.compress_prover
+    //     .machine()
+    //     .verify(
+    //         &vk,
+    //         &zkm_stark::MachineProof {
+    //             shard_proofs: vec![proof.clone()],
+    //         },
+    //         &mut prover.compress_prover.config().challenger(),
+    //     )
+    //     .unwrap();
 }

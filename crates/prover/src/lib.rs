@@ -916,6 +916,100 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         Ok(ZKMReduceProof { vk, proof })
     }
 
+    pub fn compress2(
+        &self,
+        compressed_proofs: Vec<ZKMReduceProof<InnerSC>>,
+        opts: ZKMProverOpts,
+    ) -> Result<ZKMReduceProof<InnerSC>, ZKMRecursionProverError> {
+        let vks_and_proofs = compressed_proofs
+            .into_iter()
+            .map(|proof| (proof.vk, proof.proof))
+            .collect::<Vec<_>>();
+        let input = ZKMCompressWitnessValues { vks_and_proofs, is_complete: true };
+
+        let (compress_program, witness_stream) = {
+            let mut witness_stream = Vec::new();
+
+            let input_with_merkle = self.make_merkle_proofs(input);
+
+            Witnessable::<InnerConfig>::write(
+                &input_with_merkle,
+                &mut witness_stream,
+            );
+
+            (self.compress_program(&input_with_merkle), witness_stream)
+        };
+
+        // Execute the runtime.
+        let record = tracing::debug_span!("execute runtime").in_scope(|| {
+            let mut runtime =
+                RecursionRuntime::<Val<InnerSC>, Challenge<InnerSC>, _>::new(
+                    compress_program.clone(),
+                    self.compress_prover.config().perm.clone(),
+                );
+            runtime.witness_stream = witness_stream.into();
+            runtime
+                .run()
+                .unwrap_or_else(|err| panic!("Runtime execution failed: {err}"));
+            runtime.record
+        });
+
+        // Generate the dependencies.
+        let mut records = vec![record];
+        tracing::debug_span!("generate dependencies").in_scope(|| {
+            self.compress_prover.machine().generate_dependencies(
+                &mut records,
+                &opts.recursion_opts,
+                None,
+            )
+        });
+
+        // Generate the traces.
+        let record = records.into_iter().next().unwrap();
+        let traces = tracing::debug_span!("generate traces")
+            .in_scope(|| self.compress_prover.generate_traces(&record));
+
+        // Get the keys.
+        let (pk, vk) = tracing::debug_span!("Setup compress program")
+            .in_scope(|| self.compress_prover.setup(&compress_program));
+
+        // Observe the proving key.
+        let mut challenger = self.compress_prover.config().challenger();
+        tracing::debug_span!("observe proving key").in_scope(|| {
+            pk.observe_into(&mut challenger);
+        });
+
+        #[cfg(feature = "debug")]
+        self.compress_prover.debug_constraints(
+            &self.compress_prover.pk_to_host(&pk),
+            vec![record.clone()],
+            &mut challenger.clone(),
+        );
+
+        // Commit to the record and traces.
+        let data = tracing::debug_span!("commit")
+            .in_scope(|| self.compress_prover.commit(&record, traces));
+
+        // Generate the proof.
+        let proof = tracing::debug_span!("open").in_scope(|| {
+            self.compress_prover.open(&pk, data, &mut challenger).unwrap()
+        });
+
+        // Verify the proof.
+        #[cfg(feature = "debug")]
+        self.compress_prover
+            .machine()
+            .verify(
+                &vk,
+                &zkm_stark::MachineProof {
+                    shard_proofs: vec![proof.clone()],
+                },
+                &mut self.compress_prover.config().challenger(),
+            )
+            .unwrap();
+        Ok(ZKMReduceProof { vk, proof })
+    }
+
     /// Reduce shards proofs to a single shard proof using the recursion prover.
     #[instrument(name = "compress", level = "info", skip_all)]
     pub fn compress1(
