@@ -1,0 +1,13 @@
+[package]
+name = "aggregation-host"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+zkm-prover = { workspace = true }
+zkm-sdk = { workspace = true }
+tracing = { workspace = true }
+
+[build-dependencies]
+zkm-build = { workspace = true }
