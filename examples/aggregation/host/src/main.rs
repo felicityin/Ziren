@@ -17,7 +17,6 @@ fn main() {
     let client = ProverClient::new();
 
     // Setup the proving and verifying keys.
-    // let (aggregation_pk, _) = client.setup(AGGREGATION_ELF);
     let (fibonacci_pk, fibonacci_vk) = client.setup(FIBONACCI_ELF);
 
     // Generate the fibonacci proofs.
@@ -26,6 +25,9 @@ fn main() {
         stdin.write(&10);
         client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
     });
+    println!("generate compressed proof done");
+
+    //---------------------------------------------------
 
     let opts = ProofOpts::default();
 
@@ -33,10 +35,15 @@ fn main() {
 
     let ZKMProof::Compressed(proof) = proof_1.proof else { panic!() };
 
+    // Generate the shrink proof.
+    let compress_proof = prover.shrink(*proof, opts.zkm_prover_opts).unwrap();
+
     // Genenerate the wrap proof.
-    let outer_proof = prover.wrap_bn254(*proof, opts.zkm_prover_opts).unwrap();
+    let outer_proof = prover.wrap_bn254(compress_proof, opts.zkm_prover_opts).unwrap();
+    println!("wrap_bn254 done");
 
     let groth16_bn254_artifacts = try_install_circuit_artifacts("groth16");
 
     let groth16_proof = prover.wrap_groth16_bn254(outer_proof, &groth16_bn254_artifacts);
+    println!("wrap_groth16_bn254 done");
 }
