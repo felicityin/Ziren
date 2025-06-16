@@ -1,13 +1,21 @@
 [package]
-name = "aggregation-host"
+name = "compress-host"
 version = { workspace = true }
 edition = { workspace = true }
 publish = false
 
 [dependencies]
 zkm-prover = { workspace = true }
+zkm-stark = { workspace = true }
 zkm-sdk = { workspace = true }
+zkm-recursion-core = { workspace = true }
+zkm-recursion-circuit = { workspace = true }
+zkm-recursion-compiler = { workspace = true }
 tracing = { workspace = true }
 
 [build-dependencies]
 zkm-build = { workspace = true }
+
+[features]
+default = ["debug"]
+debug = []

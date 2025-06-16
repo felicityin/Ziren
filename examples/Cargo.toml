@@ -6,6 +6,7 @@ members = [
   "bn254/host",
   "chess/guest",
   "chess/host",
+  "compress/host",
   "cycle-tracking/guest",
   "cycle-tracking/host",
   "fibonacci/guest",
@@ -56,6 +57,7 @@ zkm-recursion-derive = { path = "../crates/recursion/derive", default-features =
 zkm-recursion-gnark-ffi = { path = "../crates/recursion/gnark-ffi", default-features = false }
 zkm-recursion-circuit = { path = "../crates/recursion/circuit", default-features = false }
 zkm-sdk = { path = "../crates/sdk" }
+zkm-stark = { path = "../crates/stark" }
 zkm-lib = { path = "../crates/zkvm/lib", default-features = false }
 zkm-zkvm = { path = "../crates/zkvm/entrypoint", default-features = false }
 
