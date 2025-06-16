@@ -7,6 +7,7 @@ members = [
   "chess/guest",
   "chess/host",
   "compress/host",
+  "compress1/host",
   "cycle-tracking/guest",
   "cycle-tracking/host",
   "fibonacci/guest",

@@ -1445,6 +1445,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "compress1-host"
+version = "1.1.0"
+dependencies = [
+ "tracing",
+ "zkm-build",
+ "zkm-prover",
+ "zkm-recursion-circuit",
+ "zkm-recursion-compiler",
+ "zkm-recursion-core",
+ "zkm-sdk",
+ "zkm-stark",
+]
+
+[[package]]
 name = "console"
 version = "0.15.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
