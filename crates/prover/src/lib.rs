@@ -591,22 +591,6 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         inputs
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn get_first_layer_inputs1<'a>(
-        &'a self,
-        vk: &'a ZKMVerifyingKey,
-        deferred_proofs: &[ZKMReduceProof<InnerSC>],
-        batch_size: usize,
-    ) -> Vec<ZKMCircuitWitness> {
-        let is_complete = deferred_proofs.is_empty();
-        let deferred_inputs =
-            self.get_recursion_deferred_inputs(&vk.vk, last_proof_pv, deferred_proofs, batch_size);
-
-        let mut inputs = Vec::new();
-        inputs.extend(deferred_inputs.into_iter().map(ZKMCircuitWitness::Deferred));
-        inputs
-    }
-
     /// Reduce shards proofs to a single shard proof using the recursion prover.
     #[instrument(name = "compress", level = "info", skip_all)]
     pub fn compress(
@@ -946,7 +930,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         let first_layer_batch_size = 1;
 
         let first_layer_inputs =
-            self.get_first_layer_inputs1(vk, &deferred_proofs, first_layer_batch_size);
+            self.get_first_layer_inputs(vk, &vec![], &deferred_proofs, first_layer_batch_size);
 
         // Calculate the expected height of the tree.
         let mut expected_height = if first_layer_inputs.len() == 1 { 0 } else { 1 };
