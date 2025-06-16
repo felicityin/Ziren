@@ -1,23 +1,13 @@
 //! A simple example showing how to aggregate proofs of multiple programs with ZKM.
 
+use zkm_prover::components::DefaultProverComponents;
 use zkm_sdk::{
     include_elf, HashableKey, ProverClient, ZKMProof, ZKMProofWithPublicValues, ZKMStdin,
-    ZKMVerifyingKey,
+    ZKMVerifyingKey, provers::ProofOpts, install::try_install_circuit_artifacts, ZKMProver,
 };
-
-/// A program that aggregates the proofs of the simple program.
-const AGGREGATION_ELF: &[u8] = include_elf!("aggregation");
 
 /// A program that just runs a simple computation.
 const FIBONACCI_ELF: &[u8] = include_elf!("fibonacci");
-
-/// An input to the aggregation program.
-///
-/// Consists of a proof and a verification key.
-struct AggregationInput {
-    pub proof: ZKMProofWithPublicValues,
-    pub vk: ZKMVerifyingKey,
-}
 
 fn main() {
     // Setup the logger.
@@ -27,7 +17,7 @@ fn main() {
     let client = ProverClient::new();
 
     // Setup the proving and verifying keys.
-    let (aggregation_pk, _) = client.setup(AGGREGATION_ELF);
+    // let (aggregation_pk, _) = client.setup(AGGREGATION_ELF);
     let (fibonacci_pk, fibonacci_vk) = client.setup(FIBONACCI_ELF);
 
     // Generate the fibonacci proofs.
@@ -36,46 +26,17 @@ fn main() {
         stdin.write(&10);
         client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
     });
-    let proof_2 = tracing::info_span!("generate fibonacci proof n=20").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&20);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
-    let proof_3 = tracing::info_span!("generate fibonacci proof n=30").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&30);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
 
-    // Setup the inputs to the aggregation program.
-    let input_1 = AggregationInput { proof: proof_1, vk: fibonacci_vk.clone() };
-    let input_2 = AggregationInput { proof: proof_2, vk: fibonacci_vk.clone() };
-    let input_3 = AggregationInput { proof: proof_3, vk: fibonacci_vk.clone() };
-    let inputs = vec![input_1, input_2, input_3];
+    let opts = ProofOpts::default();
 
-    // Aggregate the proofs.
-    tracing::info_span!("aggregate the proofs").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
+    let prover: ZKMProver<DefaultProverComponents> = ZKMProver::new();
 
-        // Write the verification keys.
-        let vkeys = inputs.iter().map(|input| input.vk.hash_u32()).collect::<Vec<_>>();
-        stdin.write::<Vec<[u32; 8]>>(&vkeys);
+    let ZKMProof::Compressed(proof) = proof_1.proof else { panic!() };
 
-        // Write the public values.
-        let public_values =
-            inputs.iter().map(|input| input.proof.public_values.to_vec()).collect::<Vec<_>>();
-        stdin.write::<Vec<Vec<u8>>>(&public_values);
+    // Genenerate the wrap proof.
+    let outer_proof = prover.wrap_bn254(*proof, opts.zkm_prover_opts).unwrap();
 
-        // Write the proofs.
-        //
-        // Note: this data will not actually be read by the aggregation program, instead it will be
-        // witnessed by the prover during the recursive aggregation process inside zkMIPS itself.
-        for input in inputs {
-            let ZKMProof::Compressed(proof) = input.proof.proof else { panic!() };
-            stdin.write_proof(*proof, input.vk.vk);
-        }
+    let groth16_bn254_artifacts = try_install_circuit_artifacts("groth16");
 
-        // Generate the plonk bn254 proof.
-        client.prove(&aggregation_pk, stdin).plonk().run().expect("proving failed");
-    });
+    let groth16_proof = prover.wrap_groth16_bn254(outer_proof, &groth16_bn254_artifacts);
 }
