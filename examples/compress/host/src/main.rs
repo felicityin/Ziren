@@ -10,7 +10,7 @@ use zkm_recursion_compiler::{
     config::InnerConfig,
 };
 use zkm_sdk::{
-    include_elf, ProverClient, ZKMProof, ZKMStdin, ZKMProver,
+    include_elf, ProverClient, ZKMProof, ZKMStdin, ZKMProver, install::try_install_circuit_artifacts, provers::ProofOpts,
 };
 use zkm_stark::{Challenge, MachineProver, StarkGenericConfig, Val, ZKMProverOpts};
 
@@ -49,95 +49,24 @@ fn main() {
     let ZKMProof::Compressed(proof1) = proof_1.proof else { panic!() };
     let ZKMProof::Compressed(proof2) = proof_2.proof else { panic!() };
 
-    prover.compress2(
+    let proof = prover.compress2(
         vec![*proof1, *proof2],
         opts,
     ).unwrap();
 
-    // let vks_and_proofs = vec![
-    //     (proof1.vk, proof1.proof),
-    //     (proof2.vk, proof2.proof),
-    // ];
-    // let input = ZKMCompressWitnessValues { vks_and_proofs, is_complete: true };
+    //---------------------------------------------------
 
-    // let (compress_program, witness_stream) = {
-    //     let mut witness_stream = Vec::new();
+    let opts = ProofOpts::default();
 
-    //     let input_with_merkle = prover.make_merkle_proofs(input);
+    // Generate the shrink proof.
+    let compress_proof = prover.shrink(proof, opts.zkm_prover_opts).unwrap();
 
-    //     Witnessable::<InnerConfig>::write(
-    //         &input_with_merkle,
-    //         &mut witness_stream,
-    //     );
+    // Genenerate the wrap proof.
+    let outer_proof = prover.wrap_bn254(compress_proof, opts.zkm_prover_opts).unwrap();
+    println!("wrap_bn254 done");
 
-    //     (prover.compress_program(&input_with_merkle), witness_stream)
-    // };
+    let groth16_bn254_artifacts = try_install_circuit_artifacts("groth16");
 
-    // // Execute the runtime.
-    // let record = tracing::debug_span!("execute runtime").in_scope(|| {
-    //     let mut runtime =
-    //         RecursionRuntime::<Val<InnerSC>, Challenge<InnerSC>, _>::new(
-    //             compress_program.clone(),
-    //             prover.compress_prover.config().perm.clone(),
-    //         );
-    //     runtime.witness_stream = witness_stream.into();
-    //     runtime
-    //         .run()
-    //         .unwrap_or_else(|err| panic!("Runtime execution failed: {err}"));
-    //     runtime.record
-    // });
-
-    // // Generate the dependencies.
-    // let mut records = vec![record];
-    // tracing::debug_span!("generate dependencies").in_scope(|| {
-    //     prover.compress_prover.machine().generate_dependencies(
-    //         &mut records,
-    //         &opts.recursion_opts,
-    //         None,
-    //     )
-    // });
-
-    // // Generate the traces.
-    // let record = records.into_iter().next().unwrap();
-    // let traces = tracing::debug_span!("generate traces")
-    //     .in_scope(|| prover.compress_prover.generate_traces(&record));
-
-    // // Get the keys.
-    // let (pk, vk) = tracing::debug_span!("Setup compress program")
-    //     .in_scope(|| prover.compress_prover.setup(&compress_program));
-
-    // // Observe the proving key.
-    // let mut challenger = prover.compress_prover.config().challenger();
-    // tracing::debug_span!("observe proving key").in_scope(|| {
-    //     pk.observe_into(&mut challenger);
-    // });
-
-    // #[cfg(feature = "debug")]
-    // prover.compress_prover.debug_constraints(
-    //     &prover.compress_prover.pk_to_host(&pk),
-    //     vec![record.clone()],
-    //     &mut challenger.clone(),
-    // );
-
-    // // Commit to the record and traces.
-    // let data = tracing::debug_span!("commit")
-    //     .in_scope(|| prover.compress_prover.commit(&record, traces));
-
-    // // Generate the proof.
-    // let proof = tracing::debug_span!("open").in_scope(|| {
-    //     prover.compress_prover.open(&pk, data, &mut challenger).unwrap()
-    // });
-
-    // // Verify the proof.
-    // #[cfg(feature = "debug")]
-    // prover.compress_prover
-    //     .machine()
-    //     .verify(
-    //         &vk,
-    //         &zkm_stark::MachineProof {
-    //             shard_proofs: vec![proof.clone()],
-    //         },
-    //         &mut prover.compress_prover.config().challenger(),
-    //     )
-    //     .unwrap();
+    let groth16_proof = prover.wrap_groth16_bn254(outer_proof, &groth16_bn254_artifacts);
+    println!("wrap_groth16_bn254 done");
 }
