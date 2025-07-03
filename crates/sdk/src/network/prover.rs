@@ -37,6 +37,8 @@ pub mod stage_service {
 use crate::network::prover::stage_service::{Status, Step};
 use crate::provers::{ProofOpts, ProverType};
 
+const DEFAULT_POLL_INTERVAL: u64 = 5;
+
 pub struct NetworkProver {
     pub endpoint: Endpoint,
     pub wallet: LocalWallet,
@@ -98,7 +100,7 @@ impl NetworkProver {
         let poll_interval = env::var("ZKM_PROOF_POLL_INTERVAL")
             .ok()
             .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(5);
+            .unwrap_or(DEFAULT_POLL_INTERVAL);
         Ok(NetworkProver { endpoint, wallet, local_prover, poll_interval })
     }
 
@@ -158,9 +160,17 @@ impl NetworkProver {
         for receipt_input in input.receipts.iter() {
             request.receipt_inputs.push(receipt_input.clone());
         }
+
+        let start = tokio::time::Instant::now();
+
         self.sign_ecdsa(&mut request).await?;
+        tracing::info!("[request proof] sign request: {:?}", start.elapsed());
+
         let mut client = self.connect().await;
+        tracing::info!("[request proof] connect network: {:?}", start.elapsed());
+
         let response = client.generate_proof(request).await?.into_inner();
+        tracing::info!("[request proof] get response: {:?}", start.elapsed());
 
         Ok(response.proof_id)
     }
@@ -186,12 +196,13 @@ impl NetworkProver {
             match Status::from_i32(get_status_response.status) {
                 Some(Status::Computing) => {
                     match Step::from_i32(get_status_response.step) {
-                        Some(step) => log::info!("Generate_proof: {step}"),
+                        Some(step) => tracing::info!("Generate proof: {step}"),
                         None => todo!(),
                     }
                     sleep(Duration::from_secs(self.poll_interval)).await;
                 }
                 Some(Status::Success) => {
+                    tracing::info!("Generate proof: success");
                     let public_values = if kind == ZKMProofKind::CompressToGroth16 {
                         ZKMPublicValues::default()
                     } else {
@@ -200,6 +211,7 @@ impl NetworkProver {
                                 .await?;
                         ZKMPublicValues::from(&public_values_bytes)
                     };
+                    tracing::info!("Download public values done");
 
                     // proof
                     let proof: ZKMProof =
@@ -212,7 +224,7 @@ impl NetworkProver {
                     return Ok((proof, public_values, cycles));
                 }
                 _ => {
-                    log::error!("generate_proof failed status: {}", get_status_response.status);
+                    tracing::error!("generate_proof failed status: {}", get_status_response.status);
                     bail!("generate_proof failed status: {}", get_status_response.status);
                 }
             }
@@ -240,10 +252,10 @@ impl NetworkProver {
         let prover_input =
             ProverInput { elf: elf.to_vec(), private_inputstream: pri_buf, receipts };
 
-        log::info!("calling request_proof.");
+        tracing::info!("calling request_proof.");
         let proof_id = self.request_proof(&prover_input, kind).await?;
 
-        log::info!("calling wait_proof, proof_id={proof_id}");
+        tracing::info!("calling wait_proof, proof_id={proof_id}");
         let (proof, mut public_values, cycles) = self.wait_proof(&proof_id, kind, timeout).await?;
 
         if kind == ZKMProofKind::CompressToGroth16 {
