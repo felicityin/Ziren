@@ -11,6 +11,7 @@ use tokio::time::Duration;
 use tonic::transport::Endpoint;
 use tonic::transport::{Certificate, Identity};
 use tonic::transport::{Channel, ClientTlsConfig};
+use tonic::codec::CompressionEncoding;
 
 use crate::network::ProverInput;
 use crate::{block_on, CpuProver, Prover, ZKMProof, ZKMProofKind, ZKMProofWithPublicValues};
@@ -122,9 +123,11 @@ impl NetworkProver {
     }
 
     pub async fn connect(&self) -> StageServiceClient<Channel> {
-        StageServiceClient::connect(self.endpoint.clone())
-            .await
-            .expect("connect: {self.endpoint:?}")
+        let channel = Channel::builder(self.endpoint.uri().clone()).connect().await.unwrap();
+
+        StageServiceClient::new(channel)
+            .send_compressed(CompressionEncoding::Gzip)
+            .accept_compressed(CompressionEncoding::Gzip)
     }
 
     async fn request_proof(&self, input: &ProverInput, kind: ZKMProofKind) -> Result<String> {
