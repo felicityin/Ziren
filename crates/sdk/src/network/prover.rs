@@ -125,9 +125,9 @@ impl NetworkProver {
     }
 
     pub async fn connect(&self) -> StageServiceClient<Channel> {
-        let channel = Channel::builder(self.endpoint.uri().clone()).connect().await.unwrap();
-
-        StageServiceClient::new(channel)
+        StageServiceClient::connect(self.endpoint.clone())
+            .await
+            .expect("connect: {self.endpoint:?}")
             .send_compressed(CompressionEncoding::Gzip)
             .accept_compressed(CompressionEncoding::Gzip)
     }
@@ -164,7 +164,6 @@ impl NetworkProver {
         let start = tokio::time::Instant::now();
 
         self.sign_ecdsa(&mut request).await?;
-        tracing::info!("[request proof] sign request: {:?}", start.elapsed());
 
         let mut client = self.connect().await;
         tracing::info!("[request proof] connect network: {:?}", start.elapsed());
