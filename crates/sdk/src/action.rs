@@ -113,7 +113,7 @@ impl<'a> Prove<'a> {
     }
 
     /// Prove the execution of the program on the input, consuming the built action `self`.
-    pub fn run(self) -> Result<ZKMProofWithPublicValues> {
+    pub fn run(self) -> Result<(ZKMProofWithPublicValues, u64)> {
         let Self {
             prover,
             kind,
