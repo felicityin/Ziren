@@ -307,8 +307,12 @@ impl Prover<DefaultProverComponents> for NetworkProver {
         kind: ZKMProofKind,
         elf_id: Option<String>, // The SHA-256 hash of the ELF, without the 0x prefix
     ) -> Result<(ZKMProofWithPublicValues, Option<u64>)> {
+        tracing::info!("Proving with cycles for ELF ID: {:?}", elf_id);
         block_on(self.prove_with_cycles(&pk.elf, stdin.clone(), kind, elf_id, None))
-            .map(|(proof, cycles)| (proof, Some(cycles)))
+            .map(|(proof, cycles)| {
+                tracing::info!("cycles: {cycles}");
+                (proof, Some(cycles))
+            })
     }
 }
 
