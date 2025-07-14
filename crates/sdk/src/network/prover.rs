@@ -196,6 +196,10 @@ impl NetworkProver {
                     sleep(Duration::from_secs(self.poll_interval)).await;
                 }
                 Some(Status::Success) => {
+                    tracing::info!(
+                        "Generate_proof: Success, proof_with_public_inputs size: {:?}",
+                        get_status_response.proof_with_public_inputs.len(),
+                    );
                     let public_values = if kind == ZKMProofKind::CompressToGroth16 {
                         ZKMPublicValues::default()
                     } else {
@@ -204,6 +208,7 @@ impl NetworkProver {
                                 .await?;
                         ZKMPublicValues::from(&public_values_bytes)
                     };
+                    tracing::info!("downloaded public values");
 
                     // proof
                     let proof: ZKMProof =
