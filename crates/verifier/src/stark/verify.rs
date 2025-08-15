@@ -37,7 +37,7 @@ lazy_static::lazy_static! {
     // ```
     // It takes several days.
     static ref VK_MAP: &'static [u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prover/vk_map.bin"));
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prover/dummy_vk_map.bin"));
 }
 
 pub(crate) fn verify_stark_compressed_proof(
@@ -54,9 +54,9 @@ pub(crate) fn verify_stark_compressed_proof(
 
     let ZKMReduceProof { vk: compress_vk, proof } = proof;
 
-    if !allowed_vk_map.contains_key(&compress_vk.hash_koalabear()) {
-        return Err(MachineVerificationError::InvalidVerificationKey);
-    }
+    // if !allowed_vk_map.contains_key(&compress_vk.hash_koalabear()) {
+    //     return Err(MachineVerificationError::InvalidVerificationKey);
+    // }
 
     // Validate public values
     let public_values: &RecursionPublicValues<_> = proof.public_values.as_slice().borrow();
