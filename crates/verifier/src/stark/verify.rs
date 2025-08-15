@@ -37,7 +37,7 @@ lazy_static::lazy_static! {
     // ```
     // It takes several days.
     static ref VK_MAP: &'static [u8] =
-        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prover/vk_map.bin"));
+        include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prover/dummy_vk_map.bin"));
 }
 
 pub(crate) fn verify_stark_compressed_proof(
