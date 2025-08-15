@@ -12,8 +12,8 @@ use p3_koala_bear::KoalaBear;
 use serde::{Deserialize, Serialize};
 use strum_macros::{EnumDiscriminants, EnumTryAs};
 use zkm_core_executor::ZKMReduceProof;
-use zkm_stark::ShardProof;
 use zkm_primitives::{io::ZKMPublicValues, poseidon2_hash};
+use zkm_stark::ShardProof;
 use zkm_stark::{
     air::PublicValues, koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig,
     StarkVerifyingKey, Word, DIGEST_SIZE,
@@ -88,6 +88,17 @@ pub trait HashableKey {
 pub struct StarkVerifier;
 
 impl StarkVerifier {
+    /// zkm_public_inputs: public values committed by the guest as a bincode-serialized byte array.
+    ///     For example:
+    ///     ```ignore
+    ///     // Write the output of the program.
+    ///     //
+    ///     // Behind the scenes, this also compiles down to a system call which handles writing
+    ///     // outputs to the prover.
+    ///     zkm_zkvm::io::commit(&block_hash);
+    ///     ```
+    /// Relative to `verify_proof()`, it performs a consistency check between
+    /// user-supplied public values and those committed in the proof.
     pub fn verify(proof: &[u8], zkm_public_inputs: &[u8], zkm_vk: &[u8]) -> Result<(), StarkError> {
         let proof: ZKMProof = bincode::deserialize(proof).unwrap();
         let ZKMProof::Compressed(proof) = proof else { panic!() };
