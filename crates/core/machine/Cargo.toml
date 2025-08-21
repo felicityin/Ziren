@@ -60,6 +60,8 @@ thiserror = "1.0.63"
 rand = "0.8.5"
 hashbrown = { workspace = true, features = ["serde", "inline-more"] }
 static_assertions = "1.1.0"
+zkm-cuda = { workspace = true, optional = true }
+cust = { version = "0.3", optional = true }
 
 [dev-dependencies]
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
@@ -69,6 +71,7 @@ rand = "0.8.5"
 test-artifacts = { workspace = true }
 
 [build-dependencies]
+zkm-cuda = { workspace = true }
 zkm-stark = { workspace = true }
 zkm-primitives = { workspace = true }
 p3-koala-bear = { workspace = true }
@@ -82,7 +85,7 @@ default = ["sys", "cuda"]
 debug = []
 bigint-rug = ["zkm-curves/bigint-rug"]
 sys = []
-cuda = []
+cuda = ["cust", "zkm-cuda"]
 
 [lib]
 bench = false

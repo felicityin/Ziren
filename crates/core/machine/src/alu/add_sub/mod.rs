@@ -253,6 +253,7 @@ mod tests {
 
     use super::{AddSubChip, AddSubCols, NUM_ADD_SUB_COLS};
     use crate::utils::{uni_stark_prove as prove, uni_stark_verify as verify};
+    
 
     #[test]
     fn generate_trace() {
@@ -366,6 +367,50 @@ mod tests {
         for row_batch in row_batches {
             rows.extend(row_batch);
         }
+
+        pad_rows_fixed(&mut rows, || [F::ZERO; NUM_ADD_SUB_COLS], None);
+
+        // Convert the trace to a row major matrix.
+        RowMajorMatrix::new(rows.into_iter().flatten().collect::<Vec<_>>(), NUM_ADD_SUB_COLS)
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_generate_trace_cuda_eq_cpu() {
+        let shard = LazyLock::force(&SHARD);
+
+        let chip = AddSubChip::default();
+        let trace: RowMajorMatrix<KoalaBear> =
+            chip.generate_trace(shard, &mut ExecutionRecord::default());
+        let trace_cuda = generate_trace_cuda(shard);
+
+        assert_eq!(trace_cuda, trace);
+    }
+
+    #[cfg(feature = "cuda")]
+    fn generate_trace_cuda(input: &ExecutionRecord) -> RowMajorMatrix<KoalaBear> {
+        use zkm_cuda::{ffi_wrap, CudaBuffer};
+
+        use crate::cuda::add_sub_events_to_rows;
+        use crate::utils::pad_rows_fixed;
+
+        type F = KoalaBear;
+
+        let events = input.add_events.iter().chain(input.sub_events.iter()).collect::<Vec<_>>();
+
+        let d_events = CudaBuffer::<AluEvent>::copy_from("add_sub_events", events);
+        let d_rows = CudaBuffer::<AddSubCols<F>>::new("AddSubCols", events.len());
+
+        ffi_wrap(|| unsafe {
+            add_sub_events_to_rows(
+                d_events.as_device_ptr(),
+                d_rows.as_device_ptr(),
+                events.len(),
+            )
+        })
+        .unwrap();
+
+        let mut rows = d_rows.to_vec();
 
         pad_rows_fixed(&mut rows, || [F::ZERO; NUM_ADD_SUB_COLS], None);
 

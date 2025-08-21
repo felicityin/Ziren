@@ -5,6 +5,9 @@ fn main() {
 
     #[cfg(feature = "sys")]
     sys::build_ffi();
+
+    #[cfg(feature = "cuda")]
+    cuda::build_kernels();
 }
 
 #[cfg(feature = "sys")]
@@ -176,5 +179,20 @@ mod sys {
         let _ = fs::remove_file(&link);
         let relpath = diff_paths(original, target_dir).unwrap();
         symlink(relpath, link).unwrap();
+    }
+}
+
+#[cfg(feature = "cuda")]
+mod cuda {
+    use zkm_cuda::KernelBuild;
+
+    pub fn build_kernels() {
+        KernelBuild::new()
+            .files([
+                "kernels/add_sub.cu",
+            ])
+            .deps(["kernels"])
+            .include("kernels")
+            .compile("kernels");
     }
 }

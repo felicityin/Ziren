@@ -33,8 +33,10 @@ pub mod shape;
 pub mod sys;
 pub mod syscall;
 pub mod utils;
+pub mod cuda;
 pub use cpu::*;
 pub use mips::*;
+pub use cuda::*;
 
 /// The global version for all components of Ziren.
 ///
