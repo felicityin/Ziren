@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::BTreeMap, path::PathBuf, sync::mpsc};
+use std::{cmp::Ordering, collections::BTreeMap, fs::File, path::PathBuf, sync::mpsc};
 
 use clap::Parser;
 use p3_koala_bear::KoalaBear;
@@ -58,7 +58,13 @@ fn main() {
     // For each program, collect the maximal shapes.
     let (tx, rx) = mpsc::sync_channel(10);
     let program_list = args.list;
-    for path in program_list {
+    let path = program_list[0].clone();
+    let start_block = 23694436;
+    let end_block = 23701500;
+    let elf = std::fs::read(path.clone() + format!("/reth").as_ref()).expect("failed to read program");
+
+    // for path in program_list {
+    for block in start_block..=end_block {
         /*
         // Download program and stdin files from S3.
         tracing::info!("download elf and input for {}", s3_path);
@@ -93,8 +99,14 @@ fn main() {
         */
 
         // Read the program and stdin.
-        let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
-        let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
+        // let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
+        // let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
+
+        if !File::open(path.clone() + format!("/{block}-stdin.bin").as_ref()).is_ok() {
+            continue;
+        }
+
+        let stdin = std::fs::read(path.clone() + format!("/{block}-stdin.bin").as_ref()).expect("failed to read stdin");
         let stdin: ZKMStdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
 
         // Collect the maximal shapes for each shard size.
@@ -108,7 +120,7 @@ fn main() {
                 opts.shard_size = 1 << log_shard_size;
                 let maximal_shapes = collect_maximal_shapes(&elf, &stdin, opts, new_context);
                 tracing::info!(
-                    "there are {} maximal shapes for {} for log shard size {}",
+                    "[{block}] there are {} maximal shapes for {} for log shard size {}",
                     maximal_shapes.len(),
                     s3_path,
                     log_shard_size
