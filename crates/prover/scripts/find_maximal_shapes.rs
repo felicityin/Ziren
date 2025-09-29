@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::BTreeMap, path::PathBuf, sync::mpsc};
+use std::{cmp::Ordering, collections::BTreeMap, fs::File, path::PathBuf, sync::mpsc};
 
 use clap::Parser;
 use p3_koala_bear::KoalaBear;
@@ -58,7 +58,13 @@ fn main() {
     // For each program, collect the maximal shapes.
     let (tx, rx) = mpsc::sync_channel(10);
     let program_list = args.list;
-    for path in program_list {
+    let path = program_list[0].clone();
+    let start_block = 7561350;
+    let end_block = 7561550;
+    let elf = std::fs::read(path.clone() + format!("/{start_block}-program.bin").as_ref()).expect("failed to read program");
+
+    // for path in program_list {
+    for block in start_block..=end_block {
         /*
         // Download program and stdin files from S3.
         tracing::info!("download elf and input for {}", s3_path);
@@ -93,8 +99,14 @@ fn main() {
         */
 
         // Read the program and stdin.
-        let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
-        let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
+        // let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
+        // let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
+
+        if !File::open(path.clone() + format!("/{block}-stdin.bin").as_ref()).is_ok() {
+            continue;
+        }
+
+        let stdin = std::fs::read(path.clone() + format!("/{block}-stdin.bin").as_ref()).expect("failed to read stdin");
         let stdin: ZKMStdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
 
         // Collect the maximal shapes for each shard size.
