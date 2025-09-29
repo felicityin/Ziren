@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::BTreeMap, path::PathBuf, sync::mpsc};
+use std::{cmp::Ordering, collections::BTreeMap, fs::File, io::Read, path::PathBuf, sync::mpsc};
 
 use clap::Parser;
 use p3_koala_bear::KoalaBear;
@@ -9,9 +9,9 @@ use zkm_stark::{shape::Shape, ZKMCoreOpts};
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
-    #[clap(short, long, value_delimiter = ',')]
+    #[clap(short, long, value_delimiter = ' ')]
     list: Vec<String>,
-    #[clap(short, long, value_delimiter = ',')]
+    #[clap(short, long, value_delimiter = ' ')]
     shard_sizes: Vec<usize>,
     #[clap(short, long)]
     initial: Option<PathBuf>,
@@ -58,7 +58,13 @@ fn main() {
     // For each program, collect the maximal shapes.
     let (tx, rx) = mpsc::sync_channel(10);
     let program_list = args.list;
-    for path in program_list {
+    let path = program_list[0].clone();
+    let start_block = 1153024;
+    let end_block = 1153279;
+    let elf = std::fs::read("/home/ubuntu/data/felicity/payloads/keeper").expect("failed to read program");
+
+    // for path in program_list {
+    for block in (start_block..=end_block).step_by(2) {
         /*
         // Download program and stdin files from S3.
         tracing::info!("download elf and input for {}", s3_path);
@@ -93,9 +99,20 @@ fn main() {
         */
 
         // Read the program and stdin.
-        let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
-        let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
-        let stdin: ZKMStdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
+        // let elf = std::fs::read(path.clone() + "/program.bin").expect("failed to read program");
+        // let stdin = std::fs::read(path.clone() + "/stdin.bin").expect("failed to read stdin");
+        // let stdin = std::fs::read(path.clone() + format!("/{block}-stdin.bin").as_ref()).expect("failed to read stdin");
+        // let stdin: ZKMStdin = bincode::deserialize(&stdin).expect("failed to deserialize stdin");
+
+        if !File::open(path.clone() + format!("/{:06x}_payload.rlp", block).as_ref()).is_ok() {
+            continue;
+        }
+        let mut file = File::open(path.clone() + format!("/{:06x}_payload.rlp", block).as_ref()).expect("unable to open file {path}");
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).expect("unable to read file");
+        
+        let mut stdin = ZKMStdin::new();
+        stdin.write(&data);
 
         // Collect the maximal shapes for each shard size.
         for &log_shard_size in args.shard_sizes.iter() {
@@ -108,7 +125,8 @@ fn main() {
                 opts.shard_size = 1 << log_shard_size;
                 let maximal_shapes = collect_maximal_shapes(&elf, &stdin, opts, new_context);
                 tracing::info!(
-                    "there are {} maximal shapes for {} for log shard size {}",
+                    "[{}] there are {} maximal shapes for {} for log shard size {}",
+                    block,
                     maximal_shapes.len(),
                     s3_path,
                     log_shard_size
