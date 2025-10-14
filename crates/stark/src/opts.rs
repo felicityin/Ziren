@@ -3,7 +3,7 @@ use std::env;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
-const MAX_SHARD_SIZE: usize = 1 << 21;
+const MAX_SHARD_SIZE: usize = 1 << 22;
 const RECURSION_MAX_SHARD_SIZE: usize = 1 << 22;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
 const DEFAULT_TRACE_GEN_WORKERS: usize = 1;
@@ -45,7 +45,8 @@ impl ZKMProverOpts {
             33..49 => (20, 1, 2),
             49..65 => (21, 1, 3),
             65..81 => (21, 3, 1),
-            81.. => (21, 4, 1),
+            81..97 => (21, 4, 1),
+            97.. => (22, 4, 1),
         }
     }
 
@@ -84,8 +85,8 @@ impl ZKMProverOpts {
 
         // Set the core options.
         if 24 <= gpu_ram_gb {
-            let log2_shard_size = 21;
-            opts.core_opts.shard_size = 1 << log2_shard_size;
+            // let log2_shard_size = 21;
+            // opts.core_opts.shard_size = 1 << log2_shard_size;
             opts.core_opts.shard_batch_size = 1;
 
             let log2_deferred_threshold = 14;
