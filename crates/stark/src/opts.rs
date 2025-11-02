@@ -86,7 +86,7 @@ impl ZKMProverOpts {
         if 24 <= gpu_ram_gb {
             let log2_shard_size = 21;
             opts.core_opts.shard_size = 1 << log2_shard_size;
-            opts.core_opts.shard_batch_size = 1;
+            opts.core_opts.shard_batch_size = 4;
 
             let log2_deferred_threshold = 14;
             opts.core_opts.split_opts = SplitOpts::new(1 << log2_deferred_threshold);
