@@ -16,7 +16,7 @@ use web_time::Instant;
 use zkm_stark::{
     koala_bear_poseidon2::KoalaBearPoseidon2, MachineProvingKey, MachineVerificationError,
 };
-
+use crossbeam_channel::bounded;
 use p3_field::PrimeField32;
 use p3_koala_bear::KoalaBear;
 
@@ -238,6 +238,7 @@ where
                 let _span = span.enter();
                 tracing::info_span!("phase 2 trace generation").in_scope(|| {
                     loop {
+                        let a = tracing::info_span!("generate trace").entered();
                         // Receive the latest checkpoint.
                         let received = { checkpoints_rx.lock().unwrap().recv() };
                         if let Ok((index, mut checkpoint, done, num_cycles)) = received {
@@ -410,6 +411,7 @@ where
                             });
 
                             trace_gen_sync.wait_for_turn(index);
+                            a.exit();
 
                             // Send the records to the phase 2 prover.
                             let chunked_records = chunk_vec(records, opts.shard_batch_size);
@@ -418,6 +420,9 @@ where
                                 .into_iter()
                                 .zip(chunked_main_traces.into_iter())
                                 .for_each(|(records, main_traces)| {
+                                    // let backlog = records_and_traces_rx.len();
+                                    // println!("records_and_traces_rx.len(): {}", backlog);
+
                                     records_and_traces_tx
                                         .lock()
                                         .unwrap()
@@ -429,6 +434,7 @@ where
                         } else {
                             break;
                         }
+                        
                     }
                 })
             });

@@ -60,6 +60,7 @@ thiserror = "1.0.63"
 rand = "0.8.5"
 hashbrown = { workspace = true, features = ["serde", "inline-more"] }
 static_assertions = "1.1.0"
+crossbeam-channel = "0.5.15"
 
 zkm-stark = { workspace = true }
 
