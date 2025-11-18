@@ -3,6 +3,7 @@ use p3_maybe_rayon::prelude::*;
 use p3_uni_stark::SymbolicAirBuilder;
 use serde::{de::DeserializeOwned, Serialize};
 use size::Size;
+use zkm_stark::ShardProof;
 use std::thread::ScopedJoinHandle;
 use std::{
     fs::File,
@@ -453,43 +454,44 @@ where
                 for (records, traces) in p2_records_and_traces_rx.into_iter() {
                     tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
-                        shard_proofs.par_extend(
-                            records.into_par_iter().zip(traces.into_par_iter()).map(
-                                |(record, main_traces)| {
-                                    let _span = span.enter();
+                        // shard_proofs.par_extend(
+                        //     records.into_par_iter().zip(traces.into_par_iter()).map(
+                        //         |(record, main_traces)| {
+                        //             let _span = span.enter();
 
-                                    let a = tracing::info_span!("commit main traces").entered();
-                                    let main_data = prover.commit(&record, main_traces);
-                                    a.exit();
+                        //             let a = tracing::info_span!("commit main traces").entered();
+                        //             let main_data = prover.commit(&record, main_traces);
+                        //             a.exit();
 
-                                    let opening_span = tracing::info_span!("opening").entered();
-                                    let proof = prover
-                                        .open(pk, main_data, &mut challenger.clone())
-                                        .unwrap();
-                                    opening_span.exit();
+                        //             let opening_span = tracing::info_span!("opening").entered();
+                        //             let proof = prover
+                        //                 .open(pk, main_data, &mut challenger.clone())
+                        //                 .unwrap();
+                        //             opening_span.exit();
 
-                                    #[cfg(debug_assertions)]
-                                    {
-                                        if let Some(ref shape) = record.shape {
-                                            assert_eq!(
-                                                proof.shape(),
-                                                shape
-                                                    .clone()
-                                                    .into_iter()
-                                                    .map(|(k, v)| (k.to_string(), v as usize))
-                                                    .collect(),
-                                            );
-                                        }
-                                    }
+                        //             #[cfg(debug_assertions)]
+                        //             {
+                        //                 if let Some(ref shape) = record.shape {
+                        //                     assert_eq!(
+                        //                         proof.shape(),
+                        //                         shape
+                        //                             .clone()
+                        //                             .into_iter()
+                        //                             .map(|(k, v)| (k.to_string(), v as usize))
+                        //                             .collect(),
+                        //                     );
+                        //                 }
+                        //             }
 
-                                    rayon::spawn(move || {
-                                        drop(record);
-                                    });
+                        //             rayon::spawn(move || {
+                        //                 drop(record);
+                        //             });
 
-                                    proof
-                                },
-                            ),
-                        );
+                        //             proof
+                        //         },
+                        //     ),
+
+                        // );
                     });
                 }
             });
