@@ -487,7 +487,7 @@ where
                                     drop(record);
                                 });
 
-                                proof
+                                // proof
                             },
                         );
 
