@@ -238,7 +238,7 @@ where
                 let _span = span.enter();
                 tracing::info_span!("phase 2 trace generation").in_scope(|| {
                     loop {
-                        let a = tracing::info_span!("generate trace").entered();
+                        let a = tracing::info_span!("batch").entered();
                         // Receive the latest checkpoint.
                         let received = { checkpoints_rx.lock().unwrap().recv() };
                         if let Ok((index, mut checkpoint, done, num_cycles)) = received {
