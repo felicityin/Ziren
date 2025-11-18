@@ -443,16 +443,18 @@ where
         let p2_prover_handle = s.spawn(move || {
             let _span = p2_prover_span.enter();
             let mut shard_proofs = Vec::new();
-            tracing::debug_span!("phase 2 prover").in_scope(|| {
+            tracing::info_span!("phase 2 prover").in_scope(|| {
                 for (records, traces) in p2_records_and_traces_rx.into_iter() {
-                    tracing::debug_span!("batch").in_scope(|| {
+                    tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
                         shard_proofs.par_extend(
                             records.into_par_iter().zip(traces.into_par_iter()).map(
                                 |(record, main_traces)| {
                                     let _span = span.enter();
 
+                                    let a = tracing::info_span!("commit main traces").entered();
                                     let main_data = prover.commit(&record, main_traces);
+                                    a.exit();
 
                                     let opening_span = tracing::info_span!("opening").entered();
                                     let proof = prover
