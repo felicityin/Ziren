@@ -165,11 +165,11 @@ where
         let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> =
             s.spawn(move || {
                 let _span = checkpoint_generator_span.enter();
-                tracing::debug_span!("checkpoint generator").in_scope(|| {
+                tracing::info_span!("checkpoint generator").in_scope(|| {
                     let mut index = 0;
                     loop {
                         // Enter the span.
-                        let span = tracing::debug_span!("batch");
+                        let span = tracing::info_span!("batch");
                         let _span = span.enter();
 
                         // Execute the runtime until we reach a checkpoint.
@@ -236,7 +236,7 @@ where
 
             let handle = s.spawn(move || {
                 let _span = span.enter();
-                tracing::debug_span!("phase 2 trace generation").in_scope(|| {
+                tracing::info_span!("phase 2 trace generation").in_scope(|| {
                     loop {
                         // Receive the latest checkpoint.
                         let received = { checkpoints_rx.lock().unwrap().recv() };
@@ -246,7 +246,7 @@ where
                             let execution_state: ExecutionState =
                                 bincode::deserialize_from(&mut reader)
                                     .expect("failed to deserialize state");
-                            let (mut records, report) = tracing::debug_span!("trace checkpoint")
+                            let (mut records, report) = tracing::info_span!("trace checkpoint")
                                 .in_scope(|| {
                                     trace_checkpoint::<SC>(
                                         program.clone(),
@@ -321,7 +321,7 @@ where
                                 records_clone.append(&mut deferred);
 
                                 // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
+                                tracing::info_span!("generate dependencies", index).in_scope(
                                     || {
                                         prover.machine().generate_dependencies(
                                             &mut records_clone,
@@ -374,7 +374,7 @@ where
                                 records.append(&mut deferred);
 
                                 // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
+                                tracing::info_span!("generate dependencies", index).in_scope(
                                     || {
                                         prover.machine().generate_dependencies(
                                             &mut records,
@@ -402,7 +402,7 @@ where
                             all_records_tx.send(records.clone()).unwrap();
 
                             let mut main_traces = Vec::new();
-                            tracing::debug_span!("generate main traces", index).in_scope(|| {
+                            tracing::info_span!("generate main traces", index).in_scope(|| {
                                 main_traces = records
                                     .par_iter()
                                     .map(|record| prover.generate_traces(record))
@@ -454,7 +454,7 @@ where
 
                                     let main_data = prover.commit(&record, main_traces);
 
-                                    let opening_span = tracing::debug_span!("opening").entered();
+                                    let opening_span = tracing::info_span!("opening").entered();
                                     let proof = prover
                                         .open(pk, main_data, &mut challenger.clone())
                                         .unwrap();
