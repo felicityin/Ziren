@@ -449,8 +449,7 @@ where
             sync_channel::<ShardMainData<SC, P::DeviceMatrix, P::DeviceProverData>>(
                 opts.records_and_traces_channel_capacity * 2,
             );
-        let p2_prover_tx = Arc::new(Mutex::new(p2_prover_tx));
-        let p2_prover_tx_cloned = Arc::clone(&p2_prover_tx);
+        let p2_prover_tx_cloned = p2_prover_tx.clone();
         let p2_commit_span = tracing::Span::current().clone();
         let p2_commit_handle = s.spawn(move || {
             let _span = p2_commit_span.enter();
@@ -459,19 +458,29 @@ where
                     tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
 
-                        let _ = records.into_par_iter().zip(traces.into_par_iter()).map(
+                        let main_datas: Vec<ShardMainData<SC, P::DeviceMatrix, P::DeviceProverData>> = records.into_par_iter().zip(traces.into_par_iter()).map(
                             |(record, main_traces)| {
+                                tracing::info!("-----------1");
                                 // let _span = span.enter();
 
                                 let main_data = prover.commit(&record, main_traces);
 
-                                p2_prover_tx_cloned.lock().unwrap().send(main_data).unwrap();
+                                // p2_prover_tx_cloned.lock().unwrap().send(main_data).unwrap();
+                                tracing::info!("send");
+                                // p2_prover_tx_cloned.send(main_data).unwrap();
+                                tracing::info!("-----------2");
 
                                 rayon::spawn(move || {
                                     drop(record);
                                 });
+                                main_data
                             },
-                        );
+                        ).collect();
+
+                        tracing::info!("main data: {}", main_datas.len());
+                        for main_data in main_datas {
+                            p2_prover_tx_cloned.send(main_data).unwrap();
+                        }
                     });
                 }
             });
@@ -488,32 +497,21 @@ where
                     tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
 
-                        // shard_proofs.par_extend(|| {
-                                let _span = span.enter();
+                        tracing::info!("in loop 1");
+                        tracing::info_span!("batch").in_scope(|| {
+                            tracing::info!("shard_proofs2: {}", shard_proofs.len());
+                            let span = tracing::Span::current().clone();
 
-                                // let opening_span = tracing::info_span!("opening").entered();
-                                let proof = prover
-                                    .open(pk, main_data, &mut challenger.clone())
-                                    .unwrap();
-                                // opening_span.exit();
+                            let _span = span.enter();
 
-                                // #[cfg(debug_assertions)]
-                                // {
-                                //     if let Some(ref shape) = record.shape {
-                                //         assert_eq!(
-                                //             proof.shape(),
-                                //             shape
-                                //                 .clone()
-                                //                 .into_iter()
-                                //                 .map(|(k, v)| (k.to_string(), v as usize))
-                                //                 .collect(),
-                                //         );
-                                //     }
-                                // }
+                            let proof = prover
+                                .open(pk, main_data, &mut challenger.clone())
+                                .unwrap();
 
-                                shard_proofs.push(proof);
-                            // }
-                        // );
+                            tracing::info!("shard_proofs2: {}", shard_proofs.len());
+                            shard_proofs.push(proof);
+                            tracing::info!("shard_proofs1: {}", shard_proofs.len());
+                        });
                     });
                 }
             });
