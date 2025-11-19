@@ -21,6 +21,10 @@ pub struct ShardMainData<SC: StarkGenericConfig, M, P> {
     pub public_values: Vec<SC::Val>,
 }
 
+unsafe impl<SC: StarkGenericConfig, M, P> Send for ShardMainData<SC, M, P> {}
+
+unsafe impl<SC: StarkGenericConfig, M, P> Sync for ShardMainData<SC, M, P> {}
+
 impl<SC: StarkGenericConfig, M, P> ShardMainData<SC, M, P> {
     pub const fn new(
         traces: Vec<M>,

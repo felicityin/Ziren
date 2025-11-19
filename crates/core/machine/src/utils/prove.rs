@@ -3,7 +3,7 @@ use p3_maybe_rayon::prelude::*;
 use p3_uni_stark::SymbolicAirBuilder;
 use serde::{de::DeserializeOwned, Serialize};
 use size::Size;
-use zkm_stark::ShardProof;
+use zkm_stark::{ShardMainData, ShardProof};
 use std::thread::ScopedJoinHandle;
 use std::{
     fs::File,
@@ -446,27 +446,56 @@ where
         drop(all_records_tx);
 
         // Spawn the phase 2 prover thread.
-        let p2_prover_span = tracing::Span::current().clone();
-        let p2_prover_handle = s.spawn(move || {
-            let _span = p2_prover_span.enter();
-            let mut shard_proofs = Vec::new();
-            tracing::info_span!("phase 2 prover").in_scope(|| {
+        let (p2_prover_tx, p2_prover_rx) =
+            sync_channel::<ShardMainData<SC, P::DeviceMatrix, P::DeviceProverData>>(
+                opts.records_and_traces_channel_capacity * 2,
+            );
+        let p2_prover_tx = Arc::new(Mutex::new(p2_prover_tx));
+        let p2_prover_tx_cloned = Arc::clone(&p2_prover_tx);
+        let p2_commit_span = tracing::Span::current().clone();
+        let p2_commit_handle = s.spawn(move || {
+            let _span = p2_commit_span.enter();
+            tracing::info_span!("phase 2 commit").in_scope(|| {
                 for (records, traces) in p2_records_and_traces_rx.into_iter() {
                     tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
 
                         let _ = records.into_par_iter().zip(traces.into_par_iter()).map(
                             |(record, main_traces)| {
+                                // let _span = span.enter();
+
+                                let main_data = prover.commit(&record, main_traces);
+
+                                p2_prover_tx_cloned.lock().unwrap().send(main_data).unwrap();
+
+                                rayon::spawn(move || {
+                                    drop(record);
+                                });
+                            },
+                        );
+                    });
+                }
+            });
+        });
+        drop(p2_prover_tx);
+
+        // Spawn the phase 2 prover thread.
+        let p2_open_span = tracing::Span::current().clone();
+        let p2_open_handle = s.spawn(move || {
+            let _span = p2_open_span.enter();
+            let shard_proofs = Arc::new(Mutex::new(Vec::new()));
+            tracing::info_span!("phase 2 open").in_scope(|| {
+                for main_data in p2_prover_rx.into_iter() {
+                    tracing::info_span!("batch").in_scope(|| {
+                        let span = tracing::Span::current().clone();
+
+                        // shard_proofs.par_extend(|| {
                                 let _span = span.enter();
 
-                                let a = tracing::info_span!("commit main traces").entered();
-                                let main_data = prover.commit(&record, main_traces);
-                                a.exit();
-
                                 // let opening_span = tracing::info_span!("opening").entered();
-                                // let proof = prover
-                                //     .open(pk, main_data, &mut challenger.clone())
-                                //     .unwrap();
+                                let proof = prover
+                                    .open(pk, main_data, &mut challenger.clone())
+                                    .unwrap();
                                 // opening_span.exit();
 
                                 // #[cfg(debug_assertions)]
@@ -483,51 +512,8 @@ where
                                 //     }
                                 // }
 
-                                rayon::spawn(move || {
-                                    drop(record);
-                                });
-
-                                // proof
-                            },
-                        );
-
-                        // shard_proofs.par_extend(
-                        //     records.into_par_iter().zip(traces.into_par_iter()).map(
-                        //         |(record, main_traces)| {
-                        //             let _span = span.enter();
-
-                        //             let a = tracing::info_span!("commit main traces").entered();
-                        //             let main_data = prover.commit(&record, main_traces);
-                        //             a.exit();
-
-                        //             let opening_span = tracing::info_span!("opening").entered();
-                        //             let proof = prover
-                        //                 .open(pk, main_data, &mut challenger.clone())
-                        //                 .unwrap();
-                        //             opening_span.exit();
-
-                        //             #[cfg(debug_assertions)]
-                        //             {
-                        //                 if let Some(ref shape) = record.shape {
-                        //                     assert_eq!(
-                        //                         proof.shape(),
-                        //                         shape
-                        //                             .clone()
-                        //                             .into_iter()
-                        //                             .map(|(k, v)| (k.to_string(), v as usize))
-                        //                             .collect(),
-                        //                     );
-                        //                 }
-                        //             }
-
-                        //             rayon::spawn(move || {
-                        //                 drop(record);
-                        //             });
-
-                        //             proof
-                        //         },
-                        //     ),
-
+                                shard_proofs.lock().unwrap().push(proof);
+                            // }
                         // );
                     });
                 }
@@ -541,8 +527,10 @@ where
         // Wait until the records and traces have been fully generated for phase 2.
         p2_record_and_trace_gen_handles.into_iter().for_each(|handle| handle.join().unwrap());
 
+        p2_commit_handle.join().unwrap();
+
         // Wait until the phase 2 prover has finished.
-        let shard_proofs = p2_prover_handle.join().unwrap();
+        let shard_proofs = p2_open_handle.join().unwrap();
 
         // Log some of the `ExecutionReport` information.
         let report_aggregate = report_aggregate.lock().unwrap();
@@ -575,7 +563,7 @@ where
             }
         }
 
-        let proof = MachineProof::<SC> { shard_proofs };
+        let proof = MachineProof::<SC> { shard_proofs: shard_proofs.lock().unwrap().to_vec() };
         let cycles = report_aggregate.total_instruction_count();
 
         // Print the summary.
