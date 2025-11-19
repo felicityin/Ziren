@@ -3,6 +3,7 @@ use p3_maybe_rayon::prelude::*;
 use p3_uni_stark::SymbolicAirBuilder;
 use serde::{de::DeserializeOwned, Serialize};
 use size::Size;
+use zkm_stark::{ShardMainData, ShardProof};
 use std::thread::ScopedJoinHandle;
 use std::{
     fs::File,
@@ -16,7 +17,6 @@ use web_time::Instant;
 use zkm_stark::{
     koala_bear_poseidon2::KoalaBearPoseidon2, MachineProvingKey, MachineVerificationError,
 };
-
 use p3_field::PrimeField32;
 use p3_koala_bear::KoalaBear;
 
@@ -165,11 +165,11 @@ where
         let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> =
             s.spawn(move || {
                 let _span = checkpoint_generator_span.enter();
-                tracing::debug_span!("checkpoint generator").in_scope(|| {
+                tracing::info_span!("checkpoint generator").in_scope(|| {
                     let mut index = 0;
                     loop {
                         // Enter the span.
-                        let span = tracing::debug_span!("batch");
+                        let span = tracing::info_span!("batch");
                         let _span = span.enter();
 
                         // Execute the runtime until we reach a checkpoint.
@@ -236,8 +236,9 @@ where
 
             let handle = s.spawn(move || {
                 let _span = span.enter();
-                tracing::debug_span!("phase 2 trace generation").in_scope(|| {
+                tracing::info_span!("phase 2 trace generation").in_scope(|| {
                     loop {
+                        let a = tracing::info_span!("batch").entered();
                         // Receive the latest checkpoint.
                         let received = { checkpoints_rx.lock().unwrap().recv() };
                         if let Ok((index, mut checkpoint, done, num_cycles)) = received {
@@ -246,7 +247,7 @@ where
                             let execution_state: ExecutionState =
                                 bincode::deserialize_from(&mut reader)
                                     .expect("failed to deserialize state");
-                            let (mut records, report) = tracing::debug_span!("trace checkpoint")
+                            let (mut records, report) = tracing::info_span!("trace checkpoint")
                                 .in_scope(|| {
                                     trace_checkpoint::<SC>(
                                         program.clone(),
@@ -321,7 +322,7 @@ where
                                 records_clone.append(&mut deferred);
 
                                 // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
+                                tracing::info_span!("generate dependencies", index).in_scope(
                                     || {
                                         prover.machine().generate_dependencies(
                                             &mut records_clone,
@@ -374,7 +375,7 @@ where
                                 records.append(&mut deferred);
 
                                 // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
+                                tracing::info_span!("generate dependencies", index).in_scope(
                                     || {
                                         prover.machine().generate_dependencies(
                                             &mut records,
@@ -402,7 +403,7 @@ where
                             all_records_tx.send(records.clone()).unwrap();
 
                             let mut main_traces = Vec::new();
-                            tracing::debug_span!("generate main traces", index).in_scope(|| {
+                            tracing::info_span!("generate main traces", index).in_scope(|| {
                                 main_traces = records
                                     .par_iter()
                                     .map(|record| prover.generate_traces(record))
@@ -410,6 +411,7 @@ where
                             });
 
                             trace_gen_sync.wait_for_turn(index);
+                            a.exit();
 
                             // Send the records to the phase 2 prover.
                             let chunked_records = chunk_vec(records, opts.shard_batch_size);
@@ -418,6 +420,9 @@ where
                                 .into_iter()
                                 .zip(chunked_main_traces.into_iter())
                                 .for_each(|(records, main_traces)| {
+                                    // let backlog = records_and_traces_rx.len();
+                                    // println!("records_and_traces_rx.len(): {}", backlog);
+
                                     records_and_traces_tx
                                         .lock()
                                         .unwrap()
@@ -429,6 +434,7 @@ where
                         } else {
                             break;
                         }
+                        
                     }
                 })
             });
@@ -439,49 +445,75 @@ where
         drop(all_records_tx);
 
         // Spawn the phase 2 prover thread.
-        let p2_prover_span = tracing::Span::current().clone();
-        let p2_prover_handle = s.spawn(move || {
-            let _span = p2_prover_span.enter();
-            let mut shard_proofs = Vec::new();
-            tracing::debug_span!("phase 2 prover").in_scope(|| {
+        let (p2_prover_tx, p2_prover_rx) =
+            sync_channel::<ShardMainData<SC, P::DeviceMatrix, P::DeviceProverData>>(
+                opts.records_and_traces_channel_capacity * 2,
+            );
+        let p2_prover_tx = Arc::new(Mutex::new(p2_prover_tx));
+        let p2_prover_tx_cloned = Arc::clone(&p2_prover_tx);
+        let p2_commit_span = tracing::Span::current().clone();
+        let p2_commit_handle = s.spawn(move || {
+            let _span = p2_commit_span.enter();
+            tracing::info_span!("phase 2 commit").in_scope(|| {
                 for (records, traces) in p2_records_and_traces_rx.into_iter() {
-                    tracing::debug_span!("batch").in_scope(|| {
+                    tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
-                        shard_proofs.par_extend(
-                            records.into_par_iter().zip(traces.into_par_iter()).map(
-                                |(record, main_traces)| {
-                                    let _span = span.enter();
 
-                                    let main_data = prover.commit(&record, main_traces);
+                        let _ = records.into_par_iter().zip(traces.into_par_iter()).map(
+                            |(record, main_traces)| {
+                                // let _span = span.enter();
 
-                                    let opening_span = tracing::debug_span!("opening").entered();
-                                    let proof = prover
-                                        .open(pk, main_data, &mut challenger.clone())
-                                        .unwrap();
-                                    opening_span.exit();
+                                let main_data = prover.commit(&record, main_traces);
 
-                                    #[cfg(debug_assertions)]
-                                    {
-                                        if let Some(ref shape) = record.shape {
-                                            assert_eq!(
-                                                proof.shape(),
-                                                shape
-                                                    .clone()
-                                                    .into_iter()
-                                                    .map(|(k, v)| (k.to_string(), v as usize))
-                                                    .collect(),
-                                            );
-                                        }
-                                    }
+                                p2_prover_tx_cloned.lock().unwrap().send(main_data).unwrap();
 
-                                    rayon::spawn(move || {
-                                        drop(record);
-                                    });
-
-                                    proof
-                                },
-                            ),
+                                rayon::spawn(move || {
+                                    drop(record);
+                                });
+                            },
                         );
+                    });
+                }
+            });
+        });
+        drop(p2_prover_tx);
+
+        // Spawn the phase 2 prover thread.
+        let p2_open_span = tracing::Span::current().clone();
+        let p2_open_handle = s.spawn(move || {
+            let _span = p2_open_span.enter();
+            let shard_proofs = Arc::new(Mutex::new(Vec::new()));
+            tracing::info_span!("phase 2 open").in_scope(|| {
+                for main_data in p2_prover_rx.into_iter() {
+                    tracing::info_span!("batch").in_scope(|| {
+                        let span = tracing::Span::current().clone();
+
+                        // shard_proofs.par_extend(|| {
+                                let _span = span.enter();
+
+                                // let opening_span = tracing::info_span!("opening").entered();
+                                let proof = prover
+                                    .open(pk, main_data, &mut challenger.clone())
+                                    .unwrap();
+                                // opening_span.exit();
+
+                                // #[cfg(debug_assertions)]
+                                // {
+                                //     if let Some(ref shape) = record.shape {
+                                //         assert_eq!(
+                                //             proof.shape(),
+                                //             shape
+                                //                 .clone()
+                                //                 .into_iter()
+                                //                 .map(|(k, v)| (k.to_string(), v as usize))
+                                //                 .collect(),
+                                //         );
+                                //     }
+                                // }
+
+                                shard_proofs.lock().unwrap().push(proof);
+                            // }
+                        // );
                     });
                 }
             });
@@ -494,8 +526,10 @@ where
         // Wait until the records and traces have been fully generated for phase 2.
         p2_record_and_trace_gen_handles.into_iter().for_each(|handle| handle.join().unwrap());
 
+        p2_commit_handle.join().unwrap();
+
         // Wait until the phase 2 prover has finished.
-        let shard_proofs = p2_prover_handle.join().unwrap();
+        let shard_proofs = p2_open_handle.join().unwrap();
 
         // Log some of the `ExecutionReport` information.
         let report_aggregate = report_aggregate.lock().unwrap();
@@ -528,7 +562,7 @@ where
             }
         }
 
-        let proof = MachineProof::<SC> { shard_proofs };
+        let proof = MachineProof::<SC> { shard_proofs: shard_proofs.lock().unwrap().to_vec() };
         let cycles = report_aggregate.total_instruction_count();
 
         // Print the summary.
