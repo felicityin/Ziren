@@ -476,13 +476,13 @@ where
                 }
             });
         });
-        drop(p2_prover_tx);
+        // drop(p2_prover_tx);
 
         // Spawn the phase 2 prover thread.
         let p2_open_span = tracing::Span::current().clone();
         let p2_open_handle = s.spawn(move || {
             let _span = p2_open_span.enter();
-            let shard_proofs = Arc::new(Mutex::new(Vec::new()));
+            let mut shard_proofs = Vec::new();
             tracing::info_span!("phase 2 open").in_scope(|| {
                 for main_data in p2_prover_rx.into_iter() {
                     tracing::info_span!("batch").in_scope(|| {
@@ -511,7 +511,7 @@ where
                                 //     }
                                 // }
 
-                                shard_proofs.lock().unwrap().push(proof);
+                                shard_proofs.push(proof);
                             // }
                         // );
                     });
@@ -525,6 +525,7 @@ where
 
         // Wait until the records and traces have been fully generated for phase 2.
         p2_record_and_trace_gen_handles.into_iter().for_each(|handle| handle.join().unwrap());
+        drop(p2_prover_tx);
 
         p2_commit_handle.join().unwrap();
 
@@ -562,7 +563,7 @@ where
             }
         }
 
-        let proof = MachineProof::<SC> { shard_proofs: shard_proofs.lock().unwrap().to_vec() };
+        let proof = MachineProof::<SC> { shard_proofs };
         let cycles = report_aggregate.total_instruction_count();
 
         // Print the summary.
