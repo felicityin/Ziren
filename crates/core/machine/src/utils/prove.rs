@@ -446,7 +446,7 @@ where
 
         // Spawn the phase 2 prover thread.
         let (p2_prover_tx, p2_prover_rx) =
-            sync_channel::<ShardMainData<SC, P::DeviceMatrix, P::DeviceProverData>>(
+            sync_channel::<Vec<ShardMainData<SC, P::DeviceMatrix, P::DeviceProverData>>>(
                 opts.records_and_traces_channel_capacity * 2,
             );
         let p2_prover_tx_cloned = p2_prover_tx.clone();
@@ -478,9 +478,7 @@ where
                         ).collect();
 
                         tracing::info!("main data: {}", main_datas.len());
-                        for main_data in main_datas {
-                            p2_prover_tx_cloned.send(main_data).unwrap();
-                        }
+                        p2_prover_tx_cloned.send(main_datas).unwrap();
                     });
                 }
             });
@@ -493,25 +491,33 @@ where
             let _span = p2_open_span.enter();
             let mut shard_proofs = Vec::new();
             tracing::info_span!("phase 2 open").in_scope(|| {
-                for main_data in p2_prover_rx.into_iter() {
+                for main_datas in p2_prover_rx.into_iter() {
                     tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
 
-                        tracing::info!("in loop 1");
-                        tracing::info_span!("batch").in_scope(|| {
-                            tracing::info!("shard_proofs2: {}", shard_proofs.len());
-                            let span = tracing::Span::current().clone();
+                        shard_proofs.par_extend(
+                            main_datas.into_par_iter().map(|main_data| {
+                                prover
+                                    .open(pk, main_data, &mut challenger.clone())
+                                    .unwrap()
+                            })
+                        );
 
-                            let _span = span.enter();
+                        // tracing::info!("in loop 1");
+                        // tracing::info_span!("batch").in_scope(|| {
+                        //     tracing::info!("shard_proofs2: {}", shard_proofs.len());
+                        //     let span = tracing::Span::current().clone();
 
-                            let proof = prover
-                                .open(pk, main_data, &mut challenger.clone())
-                                .unwrap();
+                        //     let _span = span.enter();
 
-                            tracing::info!("shard_proofs2: {}", shard_proofs.len());
-                            shard_proofs.push(proof);
-                            tracing::info!("shard_proofs1: {}", shard_proofs.len());
-                        });
+                        //     let proof = prover
+                        //         .open(pk, main_data, &mut challenger.clone())
+                        //         .unwrap();
+
+                        //     tracing::info!("shard_proofs2: {}", shard_proofs.len());
+                        //     shard_proofs.push(proof);
+                        //     tracing::info!("shard_proofs1: {}", shard_proofs.len());
+                        // });
                     });
                 }
             });
