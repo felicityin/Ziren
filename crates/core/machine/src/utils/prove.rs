@@ -456,7 +456,7 @@ where
                     tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
 
-                        let _ = records.into_par_iter().zip(traces.into_par_iter()).map(
+                        records.into_par_iter().zip(traces.into_par_iter()).for_each(
                             |(record, main_traces)| {
                                 let _span = span.enter();
 
@@ -489,8 +489,8 @@ where
                                 });
 
                                 // proof
-                            },
-                        );
+                            }
+                        )
 
                         // shard_proofs.par_extend(
                         //     records.into_par_iter().zip(traces.into_par_iter()).map(
