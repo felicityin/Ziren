@@ -417,6 +417,7 @@ where
                             // Send the records to the phase 2 prover.
                             let chunked_records = chunk_vec(records, opts.shard_batch_size);
                             let chunked_main_traces = chunk_vec(main_traces, opts.shard_batch_size);
+                            tracing::info!("chunked_records: {}", chunked_records.len());
                             chunked_records
                                 .into_iter()
                                 .zip(chunked_main_traces.into_iter())
@@ -463,11 +464,11 @@ where
                                 let main_data = prover.commit(&record, main_traces);
                                 a.exit();
 
-                                // let opening_span = tracing::info_span!("opening").entered();
-                                // let proof = prover
-                                //     .open(pk, main_data, &mut challenger.clone())
-                                //     .unwrap();
-                                // opening_span.exit();
+                                let opening_span = tracing::info_span!("opening").entered();
+                                let proof = prover
+                                    .open(pk, main_data, &mut challenger.clone())
+                                    .unwrap();
+                                opening_span.exit();
 
                                 // #[cfg(debug_assertions)]
                                 // {
