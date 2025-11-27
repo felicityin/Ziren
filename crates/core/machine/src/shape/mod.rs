@@ -105,22 +105,22 @@ impl<F: PrimeField32> CoreShapeConfig<F> {
             }
 
             if let Some(shape) = minimal_shape {
-                let shard = record.public_values.shard;
-                tracing::info!(
-                    "Shard Lifted: Index={}, Cluster={}",
-                    shard,
-                    minimal_cluster.unwrap()
-                );
-                for (air, height) in heights.iter() {
-                    if shape.contains(air) {
-                        tracing::info!(
-                            "Chip {:<20}: {:<3} -> {:<3}",
-                            air,
-                            log2_ceil_usize(*height),
-                            shape.log2_height(air).unwrap(),
-                        );
-                    }
-                }
+                // let shard = record.public_values.shard;
+                // tracing::info!(
+                //     "Shard Lifted: Index={}, Cluster={}",
+                //     shard,
+                //     minimal_cluster.unwrap()
+                // );
+                // for (air, height) in heights.iter() {
+                //     if shape.contains(air) {
+                        // tracing::info!(
+                        //     "Chip {:<20}: {:<3} -> {:<3}",
+                        //     air,
+                        //     log2_ceil_usize(*height),
+                        //     shape.log2_height(air).unwrap(),
+                        // );
+                //     }
+                // }
                 record.shape.as_mut().unwrap().extend(shape);
                 return Ok(());
             }
@@ -157,20 +157,20 @@ impl<F: PrimeField32> CoreShapeConfig<F> {
             }
 
             if let Some(shape) = minimal_shape {
-                let shard = record.public_values.shard;
-                let cluster = minimal_cluster.unwrap();
-                tracing::info!("Shard Lifted: Index={}, Cluster={}", shard, cluster);
+                // let shard = record.public_values.shard;
+                // let cluster = minimal_cluster.unwrap();
+                // tracing::info!("Shard Lifted: Index={}, Cluster={}", shard, cluster);
 
-                for (air, height) in heights.iter() {
-                    if shape.contains(air) {
-                        tracing::info!(
-                            "Chip {:<20}: {:<3} -> {:<3}",
-                            air,
-                            log2_ceil_usize(*height),
-                            shape.log2_height(air).unwrap(),
-                        );
-                    }
-                }
+                // for (air, height) in heights.iter() {
+                //     if shape.contains(air) {
+                        // tracing::info!(
+                        //     "Chip {:<20}: {:<3} -> {:<3}",
+                        //     air,
+                        //     log2_ceil_usize(*height),
+                        //     shape.log2_height(air).unwrap(),
+                        // );
+                //     }
+                // }
                 record.shape.as_mut().unwrap().extend(shape);
                 return Ok(());
             }
