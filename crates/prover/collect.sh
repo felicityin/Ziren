@@ -35,7 +35,7 @@ RUST_LOG=info cargo run --release -p zkm-prover --bin find_maximal_shapes -- \
     --initial "maximal_shapes.json" \
     --shard-sizes "17 18 19 20 21 22" \
     --reth \
-    --elf "../ziren-shape-bin/goat/reth" \
+    --elf "../ziren-shape-bin/goat/program.bin" \
     --stdin "../ziren-shape-bin/goat/stdin" \
     --start-block 7561350 \
     --end-block 9332491
@@ -45,7 +45,7 @@ RUST_LOG=info cargo run --release -p zkm-prover --bin find_maximal_shapes -- \
     --initial "maximal_shapes.json" \
     --shard-sizes "17 18 19 20 21 22" \
     --reth \
-    --elf "../ziren-shape-bin/reth/reth" \
+    --elf "../ziren-shape-bin/reth/program.bin" \
     --stdin "../ziren-shape-bin/reth/stdin" \
     --start-block 23694436 \
     --end-block 23968125
