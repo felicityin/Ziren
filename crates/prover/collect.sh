@@ -38,7 +38,7 @@ RUST_LOG=info cargo run --release -p zkm-prover --bin find_maximal_shapes -- \
     --elf "../ziren-shape-bin/goat/reth" \
     --stdin "../ziren-shape-bin/goat/stdin" \
     --start-block 7561350 \
-    --end-block 7561550
+    --end-block 9332491
 
 # Generate Shapes for the ETH Chain using RETH
 RUST_LOG=info cargo run --release -p zkm-prover --bin find_maximal_shapes -- \
@@ -48,7 +48,7 @@ RUST_LOG=info cargo run --release -p zkm-prover --bin find_maximal_shapes -- \
     --elf "../ziren-shape-bin/reth/reth" \
     --stdin "../ziren-shape-bin/reth/stdin" \
     --start-block 23694436 \
-    --end-block 23701500
+    --end-block 23968125
 
 # Generate Shapes for the ETH Chain using GETH
 # RUST_LOG=info cargo run --release -p zkm-prover --bin find_maximal_shapes -- \
