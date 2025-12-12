@@ -512,9 +512,9 @@ impl<C: ZKMProverComponents> SubproofVerifier for ZKMProver<C> {
         // Check that the committed value digest matches the one from syscall
         let public_values: &RecursionPublicValues<_> =
             proof.proof.public_values.as_slice().borrow();
-        // if public_values.vk_root != self.recursion_vk_root {
-        //     return Err(MachineVerificationError::InvalidPublicValues("vk_root mismatch"));
-        // }
+        if public_values.vk_root != self.recursion_vk_root {
+            return Err(MachineVerificationError::InvalidPublicValues("vk_root mismatch"));
+        }
         for (i, word) in public_values.committed_value_digest.iter().enumerate() {
             if *word != committed_value_digest[i].into() {
                 return Err(MachineVerificationError::InvalidPublicValues(
