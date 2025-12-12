@@ -62,9 +62,14 @@ name = "aggregation-host"
 version = "1.1.0"
 dependencies = [
  "bincode",
+ "p3-koala-bear",
  "tracing",
  "zkm-build",
+ "zkm-prover",
+ "zkm-recursion-circuit",
+ "zkm-recursion-core",
  "zkm-sdk",
+ "zkm-stark",
 ]
 
 [[package]]

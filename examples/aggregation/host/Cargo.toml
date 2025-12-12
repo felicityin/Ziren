@@ -6,8 +6,14 @@ publish = false
 
 [dependencies]
 bincode = "1.3.3"
+p3-koala-bear = { git = "https://github.com/ProjectZKM/Plonky3" }
+
 zkm-sdk = { workspace = true }
 tracing = { workspace = true }
+zkm-recursion-circuit = { workspace = true }
+zkm-stark = { path = "../../../crates/stark" }
+zkm-prover = { workspace = true }
+zkm-recursion-core = { path = "../../../crates/recursion/core" }
 
 [build-dependencies]
 zkm-build = { workspace = true }
