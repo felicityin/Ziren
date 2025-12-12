@@ -8,7 +8,7 @@ fn main() {
     utils::setup_logger();
 
     // Create an input stream and write '1000' to it.
-    let n = 1000u32;
+    let n = 10u32;
 
     // The input stream that the guest will read from using `zkm_zkvm::io::read`. Note that the
     // types of the elements in the input stream must match the types being read in the guest.
@@ -24,7 +24,7 @@ fn main() {
 
     // Generate the proof for the given guest and input.
     let (pk, vk) = client.setup(ELF);
-    let mut proof = client.prove(&pk, stdin).run().unwrap();
+    let mut proof = client.prove(&pk, stdin).compressed().run().unwrap();
 
     println!("generated proof");
 
@@ -43,9 +43,13 @@ fn main() {
     client.verify(&proof, &vk).expect("verification failed");
 
     // Test a round trip of proof serialization and deserialization.
-    proof.save("proof-with-pis.bin").expect("saving proof failed");
+    proof.save("proof-with-pvs.bin").expect("saving proof failed");
+    std::fs::write("vk.bin", bincode::serialize(&vk).unwrap()).unwrap();
+
     let deserialized_proof =
-        ZKMProofWithPublicValues::load("proof-with-pis.bin").expect("loading proof failed");
+        ZKMProofWithPublicValues::load("proof-with-pvs.bin").expect("loading proof failed");
+    let vk: zkm_sdk::ZKMVerifyingKey =
+        bincode::deserialize(&std::fs::read("vk.bin").unwrap()).unwrap();
 
     // Verify the deserialized proof.
     client.verify(&deserialized_proof, &vk).expect("verification failed");

@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 hex = "0.4.3"
+bincode = "1.3.3"
 zkm-sdk = { workspace = true }
 
 [build-dependencies]
