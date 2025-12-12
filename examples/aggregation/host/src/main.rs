@@ -28,30 +28,15 @@ fn main() {
 
     // Setup the proving and verifying keys.
     let (aggregation_pk, _) = client.setup(AGGREGATION_ELF);
-    let (fibonacci_pk, fibonacci_vk) = client.setup(FIBONACCI_ELF);
 
     // Generate the fibonacci proofs.
-    let proof_1 = tracing::info_span!("generate fibonacci proof n=10").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&10);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
-    let proof_2 = tracing::info_span!("generate fibonacci proof n=20").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&20);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
-    let proof_3 = tracing::info_span!("generate fibonacci proof n=30").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&30);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
+    let proof_1 = ZKMProofWithPublicValues::load("proof-with-pvs.bin").expect("loading proof failed");
+    let fibonacci_vk: zkm_sdk::ZKMVerifyingKey =
+        bincode::deserialize(&std::fs::read("vk.bin").unwrap()).unwrap();
 
     // Setup the inputs to the aggregation program.
     let input_1 = AggregationInput { proof: proof_1, vk: fibonacci_vk.clone() };
-    let input_2 = AggregationInput { proof: proof_2, vk: fibonacci_vk.clone() };
-    let input_3 = AggregationInput { proof: proof_3, vk: fibonacci_vk.clone() };
-    let inputs = vec![input_1, input_2, input_3];
+    let inputs = vec![input_1];
 
     // Aggregate the proofs.
     tracing::info_span!("aggregate the proofs").in_scope(|| {
@@ -75,7 +60,7 @@ fn main() {
             stdin.write_proof(*proof, input.vk.vk);
         }
 
-        // Generate the plonk bn254 proof.
-        client.prove(&aggregation_pk, stdin).plonk().run().expect("proving failed");
+        // Generate the proof.
+        client.prove(&aggregation_pk, stdin).run().expect("proving failed");
     });
 }

@@ -61,6 +61,7 @@ dependencies = [
 name = "aggregation-host"
 version = "1.1.0"
 dependencies = [
+ "bincode",
  "tracing",
  "zkm-build",
  "zkm-sdk",
@@ -2882,6 +2883,7 @@ dependencies = [
 name = "fibonacci-host"
 version = "1.1.0"
 dependencies = [
+ "bincode",
  "hex",
  "zkm-build",
  "zkm-sdk",
