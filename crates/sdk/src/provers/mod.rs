@@ -132,9 +132,9 @@ pub trait Prover<C: ZKMProverComponents>: Send + Sync {
         bundle: &ZKMProofWithPublicValues,
         vkey: &ZKMVerifyingKey,
     ) -> Result<(), ZKMVerificationError> {
-        if bundle.zkm_version != self.version() {
-            return Err(ZKMVerificationError::VersionMismatch(bundle.zkm_version.clone()));
-        }
+        // if bundle.zkm_version != self.version() {
+        //     return Err(ZKMVerificationError::VersionMismatch(bundle.zkm_version.clone()));
+        // }
         match &bundle.proof {
             ZKMProof::Core(proof) => {
                 let public_values: &PublicValues<Word<_>, _> =

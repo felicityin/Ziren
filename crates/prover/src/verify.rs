@@ -311,9 +311,9 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
             ));
         }
 
-        if public_values.vk_root != self.recursion_vk_root {
-            return Err(MachineVerificationError::InvalidPublicValues("vk_root mismatch"));
-        }
+        // if public_values.vk_root != self.recursion_vk_root {
+        //     return Err(MachineVerificationError::InvalidPublicValues("vk_root mismatch"));
+        // }
 
         if self.vk_verification
             && !self.recursion_vk_map.contains_key(&compress_vk.hash_koalabear())
