@@ -169,11 +169,11 @@ where
         let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> =
             s.spawn(move || {
                 let _span = checkpoint_generator_span.enter();
-                tracing::debug_span!("checkpoint generator").in_scope(|| {
+                tracing::info_span!("checkpoint generator").in_scope(|| {
                     let mut index = 0;
                     loop {
                         // Enter the span.
-                        let span = tracing::debug_span!("batch");
+                        let span = tracing::info_span!("batch");
                         let _span = span.enter();
 
                         // Execute the runtime until we reach a checkpoint.
@@ -240,7 +240,7 @@ where
 
             let handle = s.spawn(move || {
                 let _span = span.enter();
-                tracing::debug_span!("phase 2 trace generation").in_scope(|| {
+                tracing::info_span!("phase 2 trace generation").in_scope(|| {
                     let _: () = loop {
                         // Receive the latest checkpoint.
                         let received = { checkpoints_rx.lock().unwrap().recv() };
@@ -250,7 +250,7 @@ where
                             let execution_state: ExecutionState =
                                 bincode::deserialize_from(&mut reader)
                                     .expect("failed to deserialize state");
-                            let (mut records, report) = tracing::debug_span!("trace checkpoint")
+                            let (mut records, report) = tracing::info_span!("trace checkpoint")
                                 .in_scope(|| {
                                     trace_checkpoint::<SC>(
                                         program.clone(),
@@ -325,7 +325,7 @@ where
                                 records_clone.append(&mut deferred);
 
                                 // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
+                                tracing::info_span!("generate dependencies", index).in_scope(
                                     || -> Result<(), ZKMCoreProverError> {
                                         match prover.machine().generate_dependencies(
                                             &mut records_clone,
@@ -387,7 +387,7 @@ where
                                 records.append(&mut deferred);
 
                                 // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
+                                tracing::info_span!("generate dependencies", index).in_scope(
                                     || -> Result<(), ZKMCoreProverError> {
                                         match prover.machine().generate_dependencies(
                                             &mut records,
@@ -424,7 +424,7 @@ where
                             all_records_tx.send(records.clone()).unwrap();
 
                             let main_traces_results: Vec<Result<_, _>> =
-                                tracing::debug_span!("generate main traces", index).in_scope(
+                                tracing::info_span!("generate main traces", index).in_scope(
                                     || {
                                         records
                                             .par_iter()
@@ -480,9 +480,9 @@ where
         let p2_prover_handle = s.spawn(move || {
             let _span = p2_prover_span.enter();
             let mut shard_proofs = Vec::new();
-            tracing::debug_span!("phase 2 prover").in_scope(|| {
+            tracing::info_span!("phase 2 prover").in_scope(|| {
                 for (records, traces) in p2_records_and_traces_rx.into_iter() {
-                    tracing::debug_span!("batch").in_scope(|| {
+                    tracing::info_span!("batch").in_scope(|| {
                         let span = tracing::Span::current().clone();
                         shard_proofs.par_extend(
                             records.into_par_iter().zip(traces.into_par_iter()).map(
@@ -491,7 +491,7 @@ where
 
                                     let main_data = prover.commit(&record, main_traces);
 
-                                    let opening_span = tracing::debug_span!("opening").entered();
+                                    let opening_span = tracing::info_span!("opening").entered();
                                     let proof = prover
                                         .open(pk, main_data, &mut challenger.clone())
                                         .unwrap();
@@ -585,7 +585,7 @@ where
             let all_records = all_records_rx.iter().flatten().collect::<Vec<_>>();
             let mut challenger = prover.machine().config().challenger();
             let pk_host = prover.pk_to_host(pk);
-            prover.machine().debug_constraints(&pk_host, all_records, &mut challenger);
+            prover.machine().info_constraints(&pk_host, all_records, &mut challenger);
         }
 
         Ok((proof, public_values_stream, cycles))
@@ -599,7 +599,7 @@ pub fn run_test_io<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
 ) -> Result<ZKMPublicValues, MachineVerificationError<KoalaBearPoseidon2>> {
     let shape_config = CoreShapeConfig::<KoalaBear>::default();
     shape_config.fix_preprocessed_shape(&mut program).unwrap();
-    let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
+    let runtime = tracing::info_span!("runtime.run(...)").in_scope(|| {
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.write_vecs(&inputs.buffer);
         runtime.run().unwrap();
@@ -616,7 +616,7 @@ pub fn run_test<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
 ) -> Result<MachineProof<KoalaBearPoseidon2>, MachineVerificationError<KoalaBearPoseidon2>> {
     let shape_config = CoreShapeConfig::default();
     shape_config.fix_preprocessed_shape(&mut program).unwrap();
-    let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
+    let runtime = tracing::info_span!("runtime.run(...)").in_scope(|| {
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.run().unwrap();
         runtime
@@ -677,10 +677,10 @@ where
     OpeningProof<SC>: Send + Sync,
 {
     let mut challenger = prover.config().challenger();
-    let prove_span = tracing::debug_span!("prove").entered();
+    let prove_span = tracing::info_span!("prove").entered();
 
     #[cfg(feature = "debug")]
-    prover.machine().debug_constraints(
+    prover.machine().info_constraints(
         &prover.pk_to_host(&pk),
         records.clone(),
         &mut challenger.clone(),
