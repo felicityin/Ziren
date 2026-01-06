@@ -458,7 +458,8 @@ mod tests {
     fn test_e2e_compressed() {
         utils::setup_logger();
         let client = ProverClient::cpu();
-        let elf = test_artifacts::FIBONACCI_ELF;
+        // let elf = test_artifacts::FIBONACCI_ELF;
+        let elf = test_artifacts::HELLO_WORLD_ELF;
         let (pk, vk) = client.setup(elf);
         let mut stdin = ZKMStdin::new();
         stdin.write(&10usize);

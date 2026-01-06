@@ -3,6 +3,7 @@ use p3_maybe_rayon::prelude::*;
 use p3_uni_stark::SymbolicAirBuilder;
 use serde::{de::DeserializeOwned, Serialize};
 use size::Size;
+use zkm_core_executor::CheckpointExecutor;
 use std::thread::ScopedJoinHandle;
 use std::{
     fs::File,
@@ -149,6 +150,10 @@ where
         runtime.write_proof(proof, vk);
     }
 
+    // let checkpoint_runtime = CheckpointExecutor {
+
+    // };
+
     #[cfg(feature = "debug")]
     let (all_records_tx, all_records_rx) = std::sync::mpsc::channel::<Vec<ExecutionRecord>>();
 
@@ -246,6 +251,9 @@ where
                             let execution_state: ExecutionState =
                                 bincode::deserialize_from(&mut reader)
                                     .expect("failed to deserialize state");
+                            println!("---recover: {} {:?} {} {} {}", execution_state.pc, execution_state.clks, num_cycles, execution_state.clk_index, execution_state.clk);
+                            // execution_state.clks = vec![17950];
+                            // execution_state.clk_index = 0;
                             let (mut records, report) = tracing::debug_span!("trace checkpoint")
                                 .in_scope(|| {
                                     trace_checkpoint::<SC>(

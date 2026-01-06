@@ -169,6 +169,116 @@ pub struct Executor<'a> {
     pub lde_size_threshold: u64,
 }
 
+/// An executor for the MIPS zkVM.
+///
+/// The executor is responsible for executing a user program and tracing important events which
+/// occur during execution (i.e., memory reads, alu operations, etc).
+pub struct CheckpointExecutor<'a> {
+    /// The program.
+    pub program: Arc<Program>,
+
+    // /// The mode the executor is running in.
+    // pub executor_mode: ExecutorMode,
+
+    /// Whether the runtime is in constrained mode or not.
+    ///
+    /// In unconstrained mode, any events, clock, register, or memory changes are reset after
+    /// leaving the unconstrained block. The only thing preserved is written to the input
+    /// stream.
+    pub unconstrained: bool,
+
+    // /// Whether we should write to the report.
+    // pub print_report: bool,
+
+    // /// Whether we should emit global memory init and finalize events. This can be enabled in
+    // /// Checkpoint mode and disabled in Trace mode.
+    // pub emit_global_memory_events: bool,
+
+    /// The maximum size of each shard.
+    pub shard_size: u32,
+
+    /// The maximum number of shards to execute at once.
+    pub shard_batch_size: u32,
+
+    /// The maximum number of cycles for a syscall.
+    pub max_syscall_cycles: u32,
+
+    // /// The mapping between syscall codes and their implementations.
+    pub syscall_map: HashMap<SyscallCode, Arc<dyn Syscall>>,
+
+    /// The options for the runtime.
+    pub opts: ZKMCoreOpts,
+
+    /// Memory addresses that were touched in this batch of shards. Used to minimize the size of
+    /// checkpoints.
+    pub memory_checkpoint: Memory<Option<MemoryRecord>>,
+
+    /// Memory addresses that were initialized in this batch of shards. Used to minimize the size of
+    /// checkpoints. The value stored is whether it had a value at the beginning of the batch.
+    pub uninitialized_memory_checkpoint: Memory<bool>,
+
+    /// The memory accesses for the current cycle.
+    pub memory_accesses: MemoryAccessRecord,
+
+    /// The maximum number of cpu cycles to use for execution.
+    pub max_cycles: Option<u64>,
+
+    /// Skip deferred proof verification. This check is informational only, not related to circuit
+    /// correctness.
+    pub deferred_proof_verification: DeferredProofVerification,
+
+    /// The state of the execution.
+    pub state: ExecutionState,
+
+    /// The current trace of the execution that is being collected.
+    pub record: ExecutionRecord,
+
+    /// The collected records, split by cpu cycles.
+    pub records: Vec<ExecutionRecord>,
+
+    /// Local memory access events.
+    pub local_memory_access: HashMap<u32, MemoryLocalEvent>,
+
+    // /// A counter for the number of cycles that have been executed in certain functions.
+    // pub cycle_tracker: HashMap<String, (u64, u32)>,
+
+    /// A buffer for stdout and stderr IO.
+    pub io_buf: HashMap<u32, String>,
+
+    // /// A buffer for writing trace events to a file.
+    // pub trace_buf: Option<BufWriter<File>>,
+
+    /// The state of the runtime when in unconstrained mode.
+    pub unconstrained_state: ForkState,
+
+    // /// Report of the program execution.
+    // pub report: ExecutionReport,
+
+    // /// Statistics for event counts.
+    // pub local_counts: LocalCounts,
+
+    /// Verifier used to sanity check `verify_zkm_proof` during runtime.
+    pub subproof_verifier: Option<&'a dyn SubproofVerifier>,
+
+    /// Registry of hooks, to be invoked by writing to certain file descriptors.
+    pub hook_registry: HookRegistry<'a>,
+
+    /// The maximal shapes for the program.
+    pub maximal_shapes: Option<MaximalShapes>,
+
+    /// The costs of the program.
+    pub costs: HashMap<MipsAirId, u64>,
+
+    /// The frequency to check the stopping condition.
+    pub shape_check_frequency: u64,
+
+    /// Early exit if the estimate LDE size is too big.
+    pub lde_size_check: bool,
+
+    /// The maximum LDE size to allow.
+    pub lde_size_threshold: u64,
+}
+
 /// The different modes the executor can run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutorMode {
@@ -1044,8 +1154,8 @@ impl<'a> Executor<'a> {
 
     /// Write to a register.
     pub fn rw_cpu(&mut self, register: Register, value: u32, position: MemoryAccessPosition) {
-        // Register %x0 should always be 0. See 2.6 Load and Store Instruction on
-        // P.18 of the RISC-V spec. We always write 0 to %x0.
+        // Register %x0 should always be 0. 
+        // We always write 0 to %x0.
         let value = if register == Register::ZERO { 0 } else { value };
 
         // Read the address from memory and create a memory read record.
@@ -1432,6 +1542,147 @@ impl<'a> Executor<'a> {
 
     /// Execute the given instruction over the current state of the runtime.
     #[allow(clippy::too_many_lines)]
+    fn execute_operation_checkpoint(&mut self, instruction: &Instruction) -> Result<(), ExecutionError> {
+        let mut pc = self.state.pc;
+        let mut clk = self.state.clk;
+        let mut exit_code = 0u32; // use in halt code
+
+        let mut next_pc = self.state.next_pc;
+        let mut next_next_pc = self.state.next_pc + 4;
+
+        let mut a = 0;
+        let mut b = 0;
+        let mut c = 0;
+        let mut hi_or_prev_a = None;
+        let mut syscall_code = 0u32;
+
+        self.state.next_is_delayslot = false;
+
+        // if self.executor_mode == ExecutorMode::Trace {
+        //     self.memory_accesses = MemoryAccessRecord::default();
+        // }
+
+        // if !self.unconstrained {
+        //     self.report.opcode_counts[instruction.opcode] += 1;
+        //     self.local_counts.event_counts[instruction.opcode] += 1;
+        //     if instruction.is_memory_load_instruction() {
+        //         self.local_counts.event_counts[Opcode::ADD] += 2;
+        //     } else if instruction.is_branch_cmp_instruction() {
+        //         self.local_counts.event_counts[Opcode::ADD] += 1;
+        //         self.local_counts.event_counts[Opcode::SLT] += 2;
+        //     } else if instruction.is_mov_cond_instruction() {
+        //         self.local_counts.event_counts[Opcode::ADD] += 1;
+        //     } else if instruction.opcode == Opcode::EXT {
+        //         self.local_counts.event_counts[Opcode::SLL] += 1;
+        //         self.local_counts.event_counts[Opcode::SRL] += 1;
+        //     } else if instruction.is_cloclz_instruction() {
+        //         self.local_counts.event_counts[Opcode::SRL] += 1;
+        //     } else if instruction.is_maddsubu_instruction() {
+        //         self.local_counts.event_counts[Opcode::MULTU] += 1;
+        //     } else if instruction.opcode == Opcode::INS {
+        //         self.local_counts.event_counts[Opcode::ROR] += 2;
+        //         self.local_counts.event_counts[Opcode::SLL] += 1;
+        //         self.local_counts.event_counts[Opcode::SRL] += 1;
+        //         self.local_counts.event_counts[Opcode::ADD] += 1;
+        //     } else if instruction.opcode == Opcode::DIV {
+        //         self.local_counts.event_counts[Opcode::MULT] += 2;
+        //         self.local_counts.event_counts[Opcode::ADD] += 2;
+        //         self.local_counts.event_counts[Opcode::SLTU] += 1;
+        //     } else if instruction.opcode == Opcode::DIVU {
+        //         self.local_counts.event_counts[Opcode::MULTU] += 2;
+        //         self.local_counts.event_counts[Opcode::ADD] += 2;
+        //         self.local_counts.event_counts[Opcode::SLTU] += 1;
+        //     } else if instruction.is_maddsub_instruction() {
+        //         self.local_counts.event_counts[Opcode::MULT] += 1;
+        //     } else if instruction.opcode == Opcode::JumpDirect {
+        //         self.local_counts.event_counts[Opcode::ADD] += 1;
+        //     }
+        // }
+
+        if instruction.is_alu_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_alu(instruction)?;
+        } else if instruction.is_memory_load_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_load(instruction)?;
+        } else if instruction.is_memory_store_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_store(instruction)?;
+        } else if instruction.is_branch_instruction() {
+            (a, b, c, next_next_pc) = self.execute_branch(instruction, next_pc, next_next_pc);
+            self.state.next_is_delayslot = true;
+        } else if instruction.is_jump_instruction() {
+            // Jump instructions.
+            (a, b, c, next_next_pc) = if instruction.opcode == Opcode::Jump {
+                self.execute_jump(instruction)
+            } else if instruction.opcode == Opcode::Jumpi {
+                self.execute_jumpi(instruction)
+            } else {
+                self.execute_jump_direct(instruction)
+            };
+            self.state.next_is_delayslot = true;
+        } else if instruction.is_mov_cond_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_condmov(instruction);
+        } else if instruction.is_misc_instruction() {
+            if instruction.opcode == Opcode::WSBH {
+                (a, b, c) = self.execute_wsbh(instruction);
+            } else if instruction.opcode == Opcode::EXT {
+                (a, b, c) = self.execute_ext(instruction);
+            } else if instruction.opcode == Opcode::MADDU {
+                (hi_or_prev_a, a, b, c) = self.execute_maddu(instruction);
+            } else if instruction.opcode == Opcode::INS {
+                (hi_or_prev_a, a, b, c) = self.execute_ins(instruction);
+            } else if instruction.opcode == Opcode::SEXT {
+                (a, b, c) = self.execute_sext(instruction);
+            } else if instruction.opcode == Opcode::TEQ {
+                (a, b, c) = self.execute_teq(instruction)?;
+            } else if instruction.opcode == Opcode::MSUBU {
+                (hi_or_prev_a, a, b, c) = self.execute_msubu(instruction);
+            } else if instruction.opcode == Opcode::MADD {
+                (hi_or_prev_a, a, b, c) = self.execute_madd(instruction);
+            } else if instruction.opcode == Opcode::MSUB {
+                (hi_or_prev_a, a, b, c) = self.execute_msub(instruction);
+            }
+        } else if instruction.opcode == Opcode::SYSCALL {
+            (hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code) = self.execute_syscall()?;
+        } else if instruction.opcode == Opcode::UNIMPL {
+            log::error!("{:X}: {:X}", self.state.pc, instruction.op_c);
+            return Err(ExecutionError::UnsupportedInstruction(instruction.op_c));
+        } else {
+            unreachable!()
+        }
+
+        if next_next_pc == 0 {
+            log::error!("Null pointer reference {:X}: {:X}", self.state.pc, instruction.op_c);
+            return Err(ExecutionError::NullPointerReference());
+        }
+
+        // // Emit the CPU event for this cycle.
+        // if self.executor_mode == ExecutorMode::Trace {
+        //     self.emit_events(
+        //         clk,
+        //         pc,
+        //         next_pc,
+        //         next_next_pc,
+        //         instruction,
+        //         a,
+        //         b,
+        //         c,
+        //         hi_or_prev_a,
+        //         self.memory_accesses,
+        //         exit_code,
+        //         syscall_code,
+        //     );
+        // };
+
+        // Update the program counter.
+        self.state.pc = next_pc;
+        self.state.next_pc = next_next_pc;
+
+        // Update the clk to the next cycle.
+        self.state.clk += 5;
+        Ok(())
+    }
+
+    /// Execute the given instruction over the current state of the runtime.
+    #[allow(clippy::too_many_lines)]
     fn execute_operation(&mut self, instruction: &Instruction) -> Result<(), ExecutionError> {
         let mut pc = self.state.pc;
         let mut clk = self.state.clk;
@@ -1531,88 +1782,7 @@ impl<'a> Executor<'a> {
                 (hi_or_prev_a, a, b, c) = self.execute_msub(instruction);
             }
         } else if instruction.opcode == Opcode::SYSCALL {
-            let syscall_id = self.register(Register::V0);
-            c = self.rr_cpu(Register::A1, MemoryAccessPosition::C);
-            b = self.rr_cpu(Register::A0, MemoryAccessPosition::B);
-            let syscall = SyscallCode::from_u32(syscall_id);
-            let mut prev_a = syscall_id;
-            log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", self.state.pc, syscall_id, b, c);
-
-            if self.print_report && !self.unconstrained {
-                self.report.syscall_counts[syscall] += 1;
-            }
-
-            // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
-            // Other syscalls are not allowed because they can lead to non-deterministic
-            // behavior, especially since many syscalls modify memory in place,
-            // which is not permitted in unconstrained mode. This will result in
-            // non-zero memory lookups when generating a proof.
-
-            if self.unconstrained
-                && (syscall != SyscallCode::EXIT_UNCONSTRAINED && syscall != SyscallCode::WRITE)
-            {
-                return Err(ExecutionError::InvalidSyscallUsage(syscall_id as u64));
-            }
-
-            // Update the syscall counts.
-            let syscall_for_count = syscall.count_map();
-            let syscall_count = self.state.syscall_counts.entry(syscall_for_count).or_insert(0);
-            *syscall_count += 1;
-
-            let syscall_impl = self.get_syscall(syscall).cloned();
-            syscall_code = syscall.syscall_id();
-            let mut precompile_rt = SyscallContext::new(self);
-            let (precompile_next_pc, precompile_cycles, returned_exit_code) =
-                if let Some(syscall_impl) = syscall_impl {
-                    // Executing a syscall optionally returns a value to write to the t0
-                    // register. If it returns None, we just keep the
-                    // syscall_id in t0.
-                    let res = syscall_impl.execute(&mut precompile_rt, syscall, b, c)?;
-                    if let Some(r0) = res {
-                        a = r0;
-                    } else {
-                        a = syscall_id;
-                    }
-
-                    // If the syscall is `HALT` and the exit code is non-zero, return an error.
-                    if syscall == SyscallCode::HALT && precompile_rt.exit_code != 0 {
-                        return Err(ExecutionError::HaltWithNonZeroExitCode(
-                            precompile_rt.exit_code,
-                        ));
-                    }
-
-                    (
-                        precompile_rt.next_pc,
-                        syscall_impl.num_extra_cycles(),
-                        precompile_rt.exit_code,
-                    )
-                } else {
-                    return Err(ExecutionError::UnsupportedSyscall(syscall_id));
-                };
-
-            if syscall == SyscallCode::HALT && returned_exit_code == 0 {
-                self.state.exited = true;
-            }
-
-            // If the syscall is `EXIT_UNCONSTRAINED`, the memory was restored to pre-unconstrained code
-            // in the execute function, so we need to re-read from A0 and A1.  Just do a peek on the
-            // registers.
-            if syscall == SyscallCode::EXIT_UNCONSTRAINED {
-                b = self.register(Register::A0);
-                c = self.register(Register::A1);
-                prev_a = self.register(Register::V0);
-            }
-
-            // Allow the syscall impl to modify state.clk/pc (exit unconstrained does this)
-            clk = self.state.clk;
-            pc = self.state.pc;
-
-            self.rw_cpu(Register::V0, a, MemoryAccessPosition::A);
-            next_pc = precompile_next_pc;
-            next_next_pc = precompile_next_pc + 4;
-            self.state.clk += precompile_cycles;
-            exit_code = returned_exit_code;
-            hi_or_prev_a = Some(prev_a);
+            (hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code) = self.execute_syscall()?;
         } else if instruction.opcode == Opcode::UNIMPL {
             log::error!("{:X}: {:X}", self.state.pc, instruction.op_c);
             return Err(ExecutionError::UnsupportedInstruction(instruction.op_c));
@@ -1650,6 +1820,94 @@ impl<'a> Executor<'a> {
         // Update the clk to the next cycle.
         self.state.clk += 5;
         Ok(())
+    }
+
+    fn execute_syscall(&mut self) -> Result<(Option<u32>, u32, u32, u32, u32, u32, u32, u32, u32, u32), ExecutionError> {
+        let syscall_id = self.register(Register::V0);
+        let mut a = 0;
+        let mut c = self.rr_cpu(Register::A1, MemoryAccessPosition::C);
+        let mut b = self.rr_cpu(Register::A0, MemoryAccessPosition::B);
+        let syscall = SyscallCode::from_u32(syscall_id);
+        let mut prev_a = syscall_id;
+        log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", self.state.pc, syscall_id, b, c);
+
+        if self.print_report && !self.unconstrained {
+            self.report.syscall_counts[syscall] += 1;
+        }
+
+        // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
+        // Other syscalls are not allowed because they can lead to non-deterministic
+        // behavior, especially since many syscalls modify memory in place,
+        // which is not permitted in unconstrained mode. This will result in
+        // non-zero memory lookups when generating a proof.
+
+        if self.unconstrained
+            && (syscall != SyscallCode::EXIT_UNCONSTRAINED && syscall != SyscallCode::WRITE)
+        {
+            return Err(ExecutionError::InvalidSyscallUsage(syscall_id as u64));
+        }
+
+        // Update the syscall counts.
+        let syscall_for_count = syscall.count_map();
+        let syscall_count = self.state.syscall_counts.entry(syscall_for_count).or_insert(0);
+        *syscall_count += 1;
+
+        let syscall_impl = self.get_syscall(syscall).cloned();
+        let mut precompile_rt = SyscallContext::new(self);
+        let (precompile_next_pc, precompile_cycles, returned_exit_code) =
+            if let Some(syscall_impl) = syscall_impl {
+                // Executing a syscall optionally returns a value to write to the t0
+                // register. If it returns None, we just keep the
+                // syscall_id in t0.
+                let res = syscall_impl.execute(&mut precompile_rt, syscall, b, c)?;
+                if let Some(r0) = res {
+                    a = r0;
+                } else {
+                    a = syscall_id;
+                }
+
+                // If the syscall is `HALT` and the exit code is non-zero, return an error.
+                if syscall == SyscallCode::HALT && precompile_rt.exit_code != 0 {
+                    return Err(ExecutionError::HaltWithNonZeroExitCode(
+                        precompile_rt.exit_code,
+                    ));
+                }
+
+                (
+                    precompile_rt.next_pc,
+                    syscall_impl.num_extra_cycles(),
+                    precompile_rt.exit_code,
+                )
+            } else {
+                return Err(ExecutionError::UnsupportedSyscall(syscall_id));
+            };
+
+        if syscall == SyscallCode::HALT && returned_exit_code == 0 {
+            self.state.exited = true;
+        }
+
+        // If the syscall is `EXIT_UNCONSTRAINED`, the memory was restored to pre-unconstrained code
+        // in the execute function, so we need to re-read from A0 and A1.  Just do a peek on the
+        // registers.
+        if syscall == SyscallCode::EXIT_UNCONSTRAINED {
+            b = self.register(Register::A0);
+            c = self.register(Register::A1);
+            prev_a = self.register(Register::V0);
+        }
+
+        // Allow the syscall impl to modify state.clk/pc (exit unconstrained does this)
+        let clk = self.state.clk;
+        let pc = self.state.pc;
+
+        self.rw_cpu(Register::V0, a, MemoryAccessPosition::A);
+        let next_pc = precompile_next_pc;
+        let next_next_pc = precompile_next_pc + 4;
+        self.state.clk += precompile_cycles;
+        let exit_code = returned_exit_code;
+        let hi_or_prev_a = Some(prev_a);
+        let syscall_code = syscall.syscall_id();
+
+        Ok((hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code))
     }
 
     fn execute_maddu(&mut self, instruction: &Instruction) -> (Option<u32>, u32, u32, u32) {
@@ -2117,16 +2375,20 @@ impl<'a> Executor<'a> {
     /// Executes one cycle of the program, returning whether the program has finished.
     #[inline]
     #[allow(clippy::too_many_lines)]
-    fn execute_cycle(&mut self) -> Result<bool, ExecutionError> {
+    fn execute_cycle_checkpoint(&mut self) -> Result<bool, ExecutionError> {
         // Fetch the instruction at the current program counter.
         let instruction = self.fetch();
+        // let idx = (self.state.pc - self.program.pc_base) / 4;
+        // if idx % 100 == 0 {
+        //     println!("checkpoint idx: {} / {}", idx, self.program.instructions.len());
+        // }
 
         // Log the current state of the runtime.
         #[cfg(debug_assertions)]
         self.log(&instruction);
 
         // Execute the instruction.
-        self.execute_operation(&instruction)?;
+        self.execute_operation_checkpoint(&instruction)?;
 
         // Increment the clock.
         self.state.global_clk += 1;
@@ -2224,9 +2486,11 @@ impl<'a> Executor<'a> {
             }
 
             if cpu_exit || !shape_match_found {
+                self.state.clks.push(self.state.clk);
                 self.state.current_shard += 1;
                 self.state.clk = 0;
-                self.bump_record();
+                println!("[exe checkpoint] shard: {}, pc: {}", self.state.current_shard, self.state.pc);
+                // self.bump_record();
             }
         }
 
@@ -2242,6 +2506,159 @@ impl<'a> Executor<'a> {
             || self.state.pc.wrapping_sub(self.program.pc_base)
                 >= (self.program.instructions.len() * 4) as u32;
         if done && self.unconstrained {
+            println!("[exe checkpoint] shard: {}, pc: {}", self.state.current_shard, self.state.pc);
+            log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
+            return Err(ExecutionError::EndInUnconstrained());
+        }
+
+        if done {
+            self.state.clks.push(self.state.clk);
+        }
+
+        Ok(done)
+    }
+
+    /// Executes one cycle of the program, returning whether the program has finished.
+    #[inline]
+    #[allow(clippy::too_many_lines)]
+    fn execute_cycle(&mut self) -> Result<bool, ExecutionError> {
+        // Fetch the instruction at the current program counter.
+        let instruction = self.fetch();
+        // let idx = (self.state.pc - self.program.pc_base) / 4;
+        // if idx % 100 == 0 {
+        //     println!("exec idx: {} / {}", idx, self.program.instructions.len());
+        // }
+
+        // Log the current state of the runtime.
+        #[cfg(debug_assertions)]
+        self.log(&instruction);
+
+        // Execute the instruction.
+        self.execute_operation(&instruction)?;
+
+        // Increment the clock.
+        self.state.global_clk += 1;
+
+        if self.state.clk >= self.state.clks[self.state.clk_index as usize] {
+            self.state.current_shard += 1;
+            self.state.clk = 0;
+            self.state.clk_index += 1;
+            self.bump_record();
+        }
+
+        // // We restrict the execution of branch/jump and its delay slot to be in the same shard.
+        // if !self.unconstrained && !self.state.next_is_delayslot {
+        //     // If there's not enough cycles left for another instruction, move to the next shard.
+        //     let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
+        //     // println!("cpu exit {cpu_exit}, {} {}, {}", self.max_syscall_cycles, self.state.clk, self.shard_size);
+
+        //     // Every N cycles, check if there exists at least one shape that fits.
+        //     //
+        //     // If we're close to not fitting, early stop the shard to ensure we don't OOM.
+        //     let mut shape_match_found = true;
+        //     if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
+        //         // Estimate the number of events in the trace.
+        //         let event_counts = estimate_mips_event_counts(
+        //             (self.state.clk / 5) as u64,
+        //             self.local_counts.local_mem as u64,
+        //             self.local_counts.syscalls_sent as u64,
+        //             *self.local_counts.event_counts,
+        //         );
+
+        //         // Check if the LDE size is too large.
+        //         if self.lde_size_check {
+        //             let padded_event_counts =
+        //                 pad_mips_event_counts(event_counts, self.shape_check_frequency);
+        //             let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &self.costs);
+        //             if padded_lde_size > self.lde_size_threshold {
+        //                 tracing::warn!(
+        //                     "stopping shard early due to lde size: {} Gib",
+        //                     (padded_lde_size as f64) / (1 << 9) as f64,
+        //                 );
+        //                 shape_match_found = false;
+        //             }
+        //         } else if let Some(maximal_shapes) = &self.maximal_shapes {
+        //             // Check if we're too "close" to a maximal shape.
+
+        //             let distance = |threshold: usize, count: usize| {
+        //                 if count != 0 {
+        //                     threshold - count
+        //                 } else {
+        //                     usize::MAX
+        //                 }
+        //             };
+
+        //             shape_match_found = false;
+
+        //             for shape in maximal_shapes.iter() {
+        //                 let cpu_threshold = shape[MipsAirId::Cpu];
+        //                 if self.state.clk > ((1 << cpu_threshold) << 2) {
+        //                     continue;
+        //                 }
+
+        //                 let mut l_infinity = usize::MAX;
+        //                 let mut shape_too_small = false;
+        //                 for air in MipsAirId::core() {
+        //                     if air == MipsAirId::Cpu {
+        //                         continue;
+        //                     }
+
+        //                     let threshold = 1 << shape[air];
+        //                     let count = event_counts[air] as usize;
+        //                     if count > threshold {
+        //                         shape_too_small = true;
+        //                         break;
+        //                     }
+
+        //                     if distance(threshold, count) < l_infinity {
+        //                         l_infinity = distance(threshold, count);
+        //                     }
+        //                 }
+
+        //                 if shape_too_small {
+        //                     continue;
+        //                 }
+
+        //                 if l_infinity >= 32 * (self.shape_check_frequency as usize) {
+        //                     shape_match_found = true;
+        //                     break;
+        //                 }
+        //             }
+
+        //             if !shape_match_found {
+        //                 self.record.counts = Some(event_counts);
+        //                 log::debug!(
+        //                     "stopping shard early due to no shapes fitting: \
+        //                     clk: {},
+        //                     clk_usage: {}",
+        //                     (self.state.clk / 5).next_power_of_two().ilog2(),
+        //                     ((self.state.clk / 5) as f64).log2(),
+        //                 );
+        //             }
+        //         }
+        //     }
+
+        //     if cpu_exit || !shape_match_found {
+        //         self.state.current_shard += 1;
+        //         self.state.clk = 0;
+        //         println!("[exe cycle] shard: {}, pc: {}", self.state.current_shard, self.state.pc);
+        //         self.bump_record();
+        //     }
+        // }
+
+        // // If the cycle limit is exceeded, return an error.
+        // if let Some(max_cycles) = self.max_cycles {
+        //     if self.state.global_clk >= max_cycles {
+        //         return Err(ExecutionError::ExceededCycleLimit(max_cycles));
+        //     }
+        // }
+
+        let done = self.state.pc == 0
+            || self.state.exited
+            || self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32;
+        if done && self.unconstrained {
+            println!("[exe cycle] shard: {}, pc: {}", self.state.current_shard, self.state.pc);
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
@@ -2306,7 +2723,7 @@ impl<'a> Executor<'a> {
         self.state.uninitialized_memory = uninitialized_memory;
         self.state.proof_stream = proof_stream;
 
-        let done = tracing::debug_span!("execute").in_scope(|| self.execute())?;
+        let done = tracing::debug_span!("execute").in_scope(|| self.execute_checkpoint())?;
         // Create a checkpoint using `memory_checkpoint`. Just include all memory if `done` since we
         // need it all for MemoryFinalize.
         tracing::debug_span!("create memory checkpoint").in_scope(|| {
@@ -2347,6 +2764,7 @@ impl<'a> Executor<'a> {
         if !done {
             self.records.clear();
         }
+        checkpoint.clks = std::mem::take(&mut self.state.clks);
         Ok((checkpoint, done))
     }
 
@@ -2460,7 +2878,85 @@ impl<'a> Executor<'a> {
                 last_next_pc = record.public_values.next_pc;
                 last_exit_code = record.public_values.exit_code;
             }
+            println!("===exec start_pc: {}, next_pc: {}", record.public_values.start_pc, record.public_values.next_pc);
         }
+
+        Ok(done)
+    }
+
+    /// Executes up to `self.shard_batch_size` cycles of the program, returning whether the program
+    /// has finished.
+    pub fn execute_checkpoint(&mut self) -> Result<bool, ExecutionError> {
+        // // Get the program.
+        // let program = self.program.clone();
+
+        // // Get the current shard.
+        // let start_shard = self.state.current_shard;
+
+        // If it's the first cycle, initialize the program.
+        if self.state.global_clk == 0 {
+            self.initialize();
+        }
+
+        // Loop until we've executed `self.shard_batch_size` shards if `self.shard_batch_size` is
+        // set.
+        let mut done = false;
+        let mut current_shard = self.state.current_shard;
+        let mut num_shards_executed = 0;
+        loop {
+            if self.execute_cycle_checkpoint()? {
+                done = true;
+                println!("checkpoint-----{:?} {}", self.state.clks, num_shards_executed);
+                break;
+            }
+
+            if self.shard_batch_size > 0 && current_shard != self.state.current_shard {
+                num_shards_executed += 1;
+                current_shard = self.state.current_shard;
+                if num_shards_executed == self.shard_batch_size {
+                    println!("1-----{:?}", self.state.clks);
+                    break;
+                }
+            }
+        }
+
+        // Get the final public values.
+        // let public_values = self.record.public_values;
+
+        // if done {
+        //     // self.postprocess();
+
+        //     // Push the remaining execution record with memory initialize & finalize events.
+        //     // self.bump_record();
+        //     log::debug!("last step {}", self.state.global_clk);
+        // }
+
+        // // Push the remaining execution record, if there are any CPU events.
+        // if !self.record.cpu_events.is_empty() {
+        //     // self.bump_record();
+        // }
+
+        // Set the global public values for all shards.
+        // let mut last_next_pc = 0;
+        // let mut last_exit_code = 0;
+        // for (i, record) in self.records.iter_mut().enumerate() {
+        //     record.program = program.clone();
+        //     record.public_values = public_values;
+        //     record.public_values.committed_value_digest = public_values.committed_value_digest;
+        //     record.public_values.deferred_proofs_digest = public_values.deferred_proofs_digest;
+        //     record.public_values.execution_shard = start_shard + i as u32;
+        //     if record.cpu_events.is_empty() {
+        //         record.public_values.start_pc = last_next_pc;
+        //         record.public_values.next_pc = last_next_pc;
+        //         record.public_values.exit_code = last_exit_code;
+        //     } else {
+        //         record.public_values.start_pc = record.cpu_events[0].pc;
+        //         record.public_values.next_pc = record.cpu_events.last().unwrap().next_pc;
+        //         record.public_values.exit_code = record.cpu_events.last().unwrap().exit_code;
+        //         last_next_pc = record.public_values.next_pc;
+        //         last_exit_code = record.public_values.exit_code;
+        //     }
+        // }
 
         Ok(done)
     }
@@ -2494,7 +2990,7 @@ impl<'a> Executor<'a> {
             );
         }
         if self.state.input_stream_ptr != self.state.input_stream.len() {
-            tracing::warn!("Not all input bytes were read.");
+            tracing::warn!("Not all input bytes were read. Read bytes: {} / {}", self.state.input_stream_ptr, self.state.input_stream.len());
         }
 
         if self.emit_global_memory_events

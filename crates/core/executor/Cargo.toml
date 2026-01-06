@@ -47,8 +47,14 @@ vec_map = { version = "0.8.2", features = ["serde"] }
 enum-map = { version = "2.7.3", features = ["serde"] }
 sha2 = { workspace = true }
 anyhow = { workspace = true }
- tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true }
 env_logger = "0.11.6"
+derive-new = "0.6.0"
+
+[target.'cfg(any(unix, windows))'.dependencies]
+memmap2 = "0.9.5"
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.175"
 
 [dev-dependencies]
 zkm-zkvm = { workspace = true }
@@ -58,3 +64,7 @@ test-artifacts = { path = "../../test-artifacts" }
 [features]
 bigint-rug = ["zkm-curves/bigint-rug"]
 pre-alloc = []
+# use basic memory instead of mmap:
+basic-memory = []
+# Disable bounds checking in memory operations for performance
+unprotected = []

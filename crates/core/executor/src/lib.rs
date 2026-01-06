@@ -20,6 +20,7 @@ mod state;
 pub mod subproof;
 pub mod syscalls;
 mod utils;
+pub mod vm;
 
 pub use air::*;
 pub use context::*;
