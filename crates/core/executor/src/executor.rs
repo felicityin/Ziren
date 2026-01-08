@@ -1573,6 +1573,147 @@ impl<'a> Executor<'a> {
 
     /// Execute the given instruction over the current state of the runtime.
     #[allow(clippy::too_many_lines)]
+    fn execute_operation_fast(&mut self, instruction: &Instruction) -> Result<(), ExecutionError> {
+        let mut pc = self.state.pc;
+        let mut clk = self.state.clk;
+        let mut exit_code = 0u32; // use in halt code
+
+        let mut next_pc = self.state.next_pc;
+        let mut next_next_pc = self.state.next_pc + 4;
+
+        let mut a = 0;
+        let mut b = 0;
+        let mut c = 0;
+        let mut hi_or_prev_a = None;
+        let mut syscall_code = 0u32;
+
+        self.state.next_is_delayslot = false;
+
+        // if self.executor_mode == ExecutorMode::Trace {
+        //     self.memory_accesses = MemoryAccessRecord::default();
+        // }
+
+        if !self.unconstrained {
+            self.report.opcode_counts[instruction.opcode] += 1;
+            // self.local_counts.event_counts[instruction.opcode] += 1;
+            // if instruction.is_memory_load_instruction() {
+            //     self.local_counts.event_counts[Opcode::ADD] += 2;
+            // } else if instruction.is_branch_cmp_instruction() {
+            //     self.local_counts.event_counts[Opcode::ADD] += 1;
+            //     self.local_counts.event_counts[Opcode::SLT] += 2;
+            // } else if instruction.is_mov_cond_instruction() {
+            //     self.local_counts.event_counts[Opcode::ADD] += 1;
+            // } else if instruction.opcode == Opcode::EXT {
+            //     self.local_counts.event_counts[Opcode::SLL] += 1;
+            //     self.local_counts.event_counts[Opcode::SRL] += 1;
+            // } else if instruction.is_cloclz_instruction() {
+            //     self.local_counts.event_counts[Opcode::SRL] += 1;
+            // } else if instruction.is_maddsubu_instruction() {
+            //     self.local_counts.event_counts[Opcode::MULTU] += 1;
+            // } else if instruction.opcode == Opcode::INS {
+            //     self.local_counts.event_counts[Opcode::ROR] += 2;
+            //     self.local_counts.event_counts[Opcode::SLL] += 1;
+            //     self.local_counts.event_counts[Opcode::SRL] += 1;
+            //     self.local_counts.event_counts[Opcode::ADD] += 1;
+            // } else if instruction.opcode == Opcode::DIV {
+            //     self.local_counts.event_counts[Opcode::MULT] += 2;
+            //     self.local_counts.event_counts[Opcode::ADD] += 2;
+            //     self.local_counts.event_counts[Opcode::SLTU] += 1;
+            // } else if instruction.opcode == Opcode::DIVU {
+            //     self.local_counts.event_counts[Opcode::MULTU] += 2;
+            //     self.local_counts.event_counts[Opcode::ADD] += 2;
+            //     self.local_counts.event_counts[Opcode::SLTU] += 1;
+            // } else if instruction.is_maddsub_instruction() {
+            //     self.local_counts.event_counts[Opcode::MULT] += 1;
+            // } else if instruction.opcode == Opcode::JumpDirect {
+            //     self.local_counts.event_counts[Opcode::ADD] += 1;
+            // }
+        }
+
+        if instruction.is_alu_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_alu(instruction)?;
+        } else if instruction.is_memory_load_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_load(instruction)?;
+        } else if instruction.is_memory_store_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_store(instruction)?;
+        } else if instruction.is_branch_instruction() {
+            (a, b, c, next_next_pc) = self.execute_branch(instruction, next_pc, next_next_pc);
+            self.state.next_is_delayslot = true;
+        } else if instruction.is_jump_instruction() {
+            // Jump instructions.
+            (a, b, c, next_next_pc) = if instruction.opcode == Opcode::Jump {
+                self.execute_jump(instruction)
+            } else if instruction.opcode == Opcode::Jumpi {
+                self.execute_jumpi(instruction)
+            } else {
+                self.execute_jump_direct(instruction)
+            };
+            self.state.next_is_delayslot = true;
+        } else if instruction.is_mov_cond_instruction() {
+            (hi_or_prev_a, a, b, c) = self.execute_condmov(instruction);
+        } else if instruction.is_misc_instruction() {
+            if instruction.opcode == Opcode::WSBH {
+                (a, b, c) = self.execute_wsbh(instruction);
+            } else if instruction.opcode == Opcode::EXT {
+                (a, b, c) = self.execute_ext(instruction);
+            } else if instruction.opcode == Opcode::MADDU {
+                (hi_or_prev_a, a, b, c) = self.execute_maddu(instruction);
+            } else if instruction.opcode == Opcode::INS {
+                (hi_or_prev_a, a, b, c) = self.execute_ins(instruction);
+            } else if instruction.opcode == Opcode::SEXT {
+                (a, b, c) = self.execute_sext(instruction);
+            } else if instruction.opcode == Opcode::TEQ {
+                (a, b, c) = self.execute_teq(instruction)?;
+            } else if instruction.opcode == Opcode::MSUBU {
+                (hi_or_prev_a, a, b, c) = self.execute_msubu(instruction);
+            } else if instruction.opcode == Opcode::MADD {
+                (hi_or_prev_a, a, b, c) = self.execute_madd(instruction);
+            } else if instruction.opcode == Opcode::MSUB {
+                (hi_or_prev_a, a, b, c) = self.execute_msub(instruction);
+            }
+        } else if instruction.opcode == Opcode::SYSCALL {
+            (hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code) = self.execute_syscall()?;
+        } else if instruction.opcode == Opcode::UNIMPL {
+            log::error!("{:X}: {:X}", self.state.pc, instruction.op_c);
+            return Err(ExecutionError::UnsupportedInstruction(instruction.op_c));
+        } else {
+            unreachable!()
+        }
+
+        if next_next_pc == 0 {
+            log::error!("Null pointer reference {:X}: {:X}", self.state.pc, instruction.op_c);
+            return Err(ExecutionError::NullPointerReference());
+        }
+
+        // // Emit the CPU event for this cycle.
+        // if self.executor_mode == ExecutorMode::Trace {
+        //     self.emit_events(
+        //         clk,
+        //         pc,
+        //         next_pc,
+        //         next_next_pc,
+        //         instruction,
+        //         a,
+        //         b,
+        //         c,
+        //         hi_or_prev_a,
+        //         self.memory_accesses,
+        //         exit_code,
+        //         syscall_code,
+        //     );
+        // };
+
+        // Update the program counter.
+        self.state.pc = next_pc;
+        self.state.next_pc = next_next_pc;
+
+        // Update the clk to the next cycle.
+        self.state.clk += 5;
+        Ok(())
+    }
+
+    /// Execute the given instruction over the current state of the runtime.
+    #[allow(clippy::too_many_lines)]
     fn execute_operation(&mut self, instruction: &Instruction) -> Result<(), ExecutionError> {
         let mut pc = self.state.pc;
         let mut clk = self.state.clk;
@@ -2308,6 +2449,52 @@ impl<'a> Executor<'a> {
         Ok(done)
     }
 
+    /// Executes one cycle of the program, returning whether the program has finished.
+    #[inline]
+    #[allow(clippy::too_many_lines)]
+    fn execute_cycle_fast(&mut self) -> Result<bool, ExecutionError> {
+        // Fetch the instruction at the current program counter.
+        let instruction = self.fetch();
+
+        // Log the current state of the runtime.
+        #[cfg(debug_assertions)]
+        self.log(&instruction);
+
+        // Execute the instruction.
+        self.execute_operation_fast(&instruction)?;
+
+        // Increment the clock.
+        self.state.global_clk += 1;
+
+        // We restrict the execution of branch/jump and its delay slot to be in the same shard.
+        if !self.unconstrained && !self.state.next_is_delayslot {
+            self.inc_shard_if_need();
+        }
+
+        // If the cycle limit is exceeded, return an error.
+        if let Some(max_cycles) = self.max_cycles {
+            if self.state.global_clk >= max_cycles {
+                return Err(ExecutionError::ExceededCycleLimit(max_cycles));
+            }
+        }
+
+        let done = self.state.pc == 0
+            || self.state.exited
+            || self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32;
+        if done && self.unconstrained {
+            println!("[exe checkpoint] shard: {}, pc: {}", self.state.current_shard, self.state.pc);
+            log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
+            return Err(ExecutionError::EndInUnconstrained());
+        }
+
+        if done {
+            self.state.max_clks.push(self.state.clk);
+        }
+
+        Ok(done)
+    }
+
     #[inline]
     fn inc_shard_if_need(&mut self) {
         // If there's not enough cycles left for another instruction, move to the next shard.
@@ -2669,7 +2856,7 @@ impl<'a> Executor<'a> {
     pub fn run_very_fast(&mut self) -> Result<(), ExecutionError> {
         self.executor_mode = ExecutorMode::Simple;
         self.print_report = false;
-        while !self.execute()? {}
+        while !self.execute_fast()? {}
         Ok(())
     }
 
@@ -2681,7 +2868,7 @@ impl<'a> Executor<'a> {
     pub fn run_fast(&mut self) -> Result<(), ExecutionError> {
         self.executor_mode = ExecutorMode::Simple;
         self.print_report = true;
-        while !self.execute()? {}
+        while !self.execute_fast()? {}
         Ok(())
     }
 
@@ -2810,12 +2997,88 @@ impl<'a> Executor<'a> {
         // let public_values = self.record.public_values;
 
         // if done {
-        //     // self.postprocess();
+        //     self.postprocess();
 
         //     // Push the remaining execution record with memory initialize & finalize events.
         //     // self.bump_record();
         //     log::debug!("last step {}", self.state.global_clk);
         // }
+
+        // // Push the remaining execution record, if there are any CPU events.
+        // if !self.record.cpu_events.is_empty() {
+        //     // self.bump_record();
+        // }
+
+        // Set the global public values for all shards.
+        // let mut last_next_pc = 0;
+        // let mut last_exit_code = 0;
+        // for (i, record) in self.records.iter_mut().enumerate() {
+        //     record.program = program.clone();
+        //     record.public_values = public_values;
+        //     record.public_values.committed_value_digest = public_values.committed_value_digest;
+        //     record.public_values.deferred_proofs_digest = public_values.deferred_proofs_digest;
+        //     record.public_values.execution_shard = start_shard + i as u32;
+        //     if record.cpu_events.is_empty() {
+        //         record.public_values.start_pc = last_next_pc;
+        //         record.public_values.next_pc = last_next_pc;
+        //         record.public_values.exit_code = last_exit_code;
+        //     } else {
+        //         record.public_values.start_pc = record.cpu_events[0].pc;
+        //         record.public_values.next_pc = record.cpu_events.last().unwrap().next_pc;
+        //         record.public_values.exit_code = record.cpu_events.last().unwrap().exit_code;
+        //         last_next_pc = record.public_values.next_pc;
+        //         last_exit_code = record.public_values.exit_code;
+        //     }
+        // }
+
+        Ok(done)
+    }
+
+    /// Executes up to `self.shard_batch_size` cycles of the program, returning whether the program
+    /// has finished.
+    pub fn execute_fast(&mut self) -> Result<bool, ExecutionError> {
+        // // Get the program.
+        // let program = self.program.clone();
+
+        // // Get the current shard.
+        // let start_shard = self.state.current_shard;
+
+        // If it's the first cycle, initialize the program.
+        if self.state.global_clk == 0 {
+            self.initialize();
+        }
+
+        // Loop until we've executed `self.shard_batch_size` shards if `self.shard_batch_size` is
+        // set.
+        let mut done = false;
+        let mut current_shard = self.state.current_shard;
+        let mut num_shards_executed = 0;
+        loop {
+            if self.execute_cycle_fast()? {
+                done = true;
+                break;
+            }
+
+            if self.shard_batch_size > 0 && current_shard != self.state.current_shard {
+                num_shards_executed += 1;
+                current_shard = self.state.current_shard;
+                if num_shards_executed == self.shard_batch_size {
+                    break;
+                }
+            }
+        }
+
+
+        // Get the final public values.
+        // let public_values = self.record.public_values;
+
+        if done {
+            self.postprocess();
+
+        //     // Push the remaining execution record with memory initialize & finalize events.
+        //     // self.bump_record();
+        //     log::debug!("last step {}", self.state.global_clk);
+        }
 
         // // Push the remaining execution record, if there are any CPU events.
         // if !self.record.cpu_events.is_empty() {
