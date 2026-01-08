@@ -551,17 +551,17 @@ impl<'a> Executor<'a> {
         // Get the memory record entry.
         let addr = register as u32;
         let entry = self.state.memory.registers.entry(addr);
-        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
-            match entry {
-                Entry::Occupied(ref entry) => {
-                    let record = entry.get();
-                    self.memory_checkpoint.registers.entry(addr).or_insert_with(|| Some(*record));
-                }
-                Entry::Vacant(_) => {
-                    self.memory_checkpoint.registers.entry(addr).or_insert(None);
-                }
-            }
-        }
+        // if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+        //     match entry {
+        //         Entry::Occupied(ref entry) => {
+        //             let record = entry.get();
+        //             self.memory_checkpoint.registers.entry(addr).or_insert_with(|| Some(*record));
+        //         }
+        //         Entry::Vacant(_) => {
+        //             self.memory_checkpoint.registers.entry(addr).or_insert(None);
+        //         }
+        //     }
+        // }
 
         // If we're in unconstrained mode, we don't want to modify state, so we'll save the
         // original state if it's the first time modifying it.
@@ -2442,10 +2442,6 @@ impl<'a> Executor<'a> {
             return Err(ExecutionError::EndInUnconstrained());
         }
 
-        if done {
-            self.state.max_clks.push(self.state.clk);
-        }
-
         Ok(done)
     }
 
@@ -2614,14 +2610,14 @@ impl<'a> Executor<'a> {
         // Increment the clock.
         self.state.global_clk += 1;
 
-        if self.state.clk >= self.state.max_clks[self.state.max_clks_index as usize] {
+        if !self.state.max_clks.is_empty() && self.state.clk >= self.state.max_clks[self.state.max_clks_index as usize] {
             self.state.current_shard += 1;
             self.state.clk = 0;
             self.state.max_clks_index += 1;
             self.bump_record();
         }
 
-        // // We restrict the execution of branch/jump and its delay slot to be in the same shard.
+        // We restrict the execution of branch/jump and its delay slot to be in the same shard.
         // if !self.unconstrained && !self.state.next_is_delayslot {
         //     // If there's not enough cycles left for another instruction, move to the next shard.
         //     let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
@@ -2631,102 +2627,103 @@ impl<'a> Executor<'a> {
         //     //
         //     // If we're close to not fitting, early stop the shard to ensure we don't OOM.
         //     let mut shape_match_found = true;
-        //     if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
-        //         // Estimate the number of events in the trace.
-        //         let event_counts = estimate_mips_event_counts(
-        //             (self.state.clk / 5) as u64,
-        //             self.local_counts.local_mem as u64,
-        //             self.local_counts.syscalls_sent as u64,
-        //             *self.local_counts.event_counts,
-        //         );
+        //     // if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
+        //     //     // Estimate the number of events in the trace.
+        //     //     let event_counts = estimate_mips_event_counts(
+        //     //         (self.state.clk / 5) as u64,
+        //     //         self.local_counts.local_mem as u64,
+        //     //         self.local_counts.syscalls_sent as u64,
+        //     //         *self.local_counts.event_counts,
+        //     //     );
 
-        //         // Check if the LDE size is too large.
-        //         if self.lde_size_check {
-        //             let padded_event_counts =
-        //                 pad_mips_event_counts(event_counts, self.shape_check_frequency);
-        //             let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &self.costs);
-        //             if padded_lde_size > self.lde_size_threshold {
-        //                 tracing::warn!(
-        //                     "stopping shard early due to lde size: {} Gib",
-        //                     (padded_lde_size as f64) / (1 << 9) as f64,
-        //                 );
-        //                 shape_match_found = false;
-        //             }
-        //         } else if let Some(maximal_shapes) = &self.maximal_shapes {
-        //             // Check if we're too "close" to a maximal shape.
+        //     //     // Check if the LDE size is too large.
+        //     //     if self.lde_size_check {
+        //     //         let padded_event_counts =
+        //     //             pad_mips_event_counts(event_counts, self.shape_check_frequency);
+        //     //         let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &self.costs);
+        //     //         if padded_lde_size > self.lde_size_threshold {
+        //     //             tracing::warn!(
+        //     //                 "stopping shard early due to lde size: {} Gib",
+        //     //                 (padded_lde_size as f64) / (1 << 9) as f64,
+        //     //             );
+        //     //             shape_match_found = false;
+        //     //         }
+        //     //     } else if let Some(maximal_shapes) = &self.maximal_shapes {
+        //     //         // Check if we're too "close" to a maximal shape.
 
-        //             let distance = |threshold: usize, count: usize| {
-        //                 if count != 0 {
-        //                     threshold - count
-        //                 } else {
-        //                     usize::MAX
-        //                 }
-        //             };
+        //     //         let distance = |threshold: usize, count: usize| {
+        //     //             if count != 0 {
+        //     //                 threshold - count
+        //     //             } else {
+        //     //                 usize::MAX
+        //     //             }
+        //     //         };
 
-        //             shape_match_found = false;
+        //     //         shape_match_found = false;
 
-        //             for shape in maximal_shapes.iter() {
-        //                 let cpu_threshold = shape[MipsAirId::Cpu];
-        //                 if self.state.clk > ((1 << cpu_threshold) << 2) {
-        //                     continue;
-        //                 }
+        //     //         for shape in maximal_shapes.iter() {
+        //     //             let cpu_threshold = shape[MipsAirId::Cpu];
+        //     //             if self.state.clk > ((1 << cpu_threshold) << 2) {
+        //     //                 continue;
+        //     //             }
 
-        //                 let mut l_infinity = usize::MAX;
-        //                 let mut shape_too_small = false;
-        //                 for air in MipsAirId::core() {
-        //                     if air == MipsAirId::Cpu {
-        //                         continue;
-        //                     }
+        //     //             let mut l_infinity = usize::MAX;
+        //     //             let mut shape_too_small = false;
+        //     //             for air in MipsAirId::core() {
+        //     //                 if air == MipsAirId::Cpu {
+        //     //                     continue;
+        //     //                 }
 
-        //                     let threshold = 1 << shape[air];
-        //                     let count = event_counts[air] as usize;
-        //                     if count > threshold {
-        //                         shape_too_small = true;
-        //                         break;
-        //                     }
+        //     //                 let threshold = 1 << shape[air];
+        //     //                 let count = event_counts[air] as usize;
+        //     //                 if count > threshold {
+        //     //                     shape_too_small = true;
+        //     //                     break;
+        //     //                 }
 
-        //                     if distance(threshold, count) < l_infinity {
-        //                         l_infinity = distance(threshold, count);
-        //                     }
-        //                 }
+        //     //                 if distance(threshold, count) < l_infinity {
+        //     //                     l_infinity = distance(threshold, count);
+        //     //                 }
+        //     //             }
 
-        //                 if shape_too_small {
-        //                     continue;
-        //                 }
+        //     //             if shape_too_small {
+        //     //                 continue;
+        //     //             }
 
-        //                 if l_infinity >= 32 * (self.shape_check_frequency as usize) {
-        //                     shape_match_found = true;
-        //                     break;
-        //                 }
-        //             }
+        //     //             if l_infinity >= 32 * (self.shape_check_frequency as usize) {
+        //     //                 shape_match_found = true;
+        //     //                 break;
+        //     //             }
+        //     //         }
 
-        //             if !shape_match_found {
-        //                 self.record.counts = Some(event_counts);
-        //                 log::debug!(
-        //                     "stopping shard early due to no shapes fitting: \
-        //                     clk: {},
-        //                     clk_usage: {}",
-        //                     (self.state.clk / 5).next_power_of_two().ilog2(),
-        //                     ((self.state.clk / 5) as f64).log2(),
-        //                 );
-        //             }
-        //         }
-        //     }
+        //     //         if !shape_match_found {
+        //     //             // self.record.counts = Some(event_counts);
+        //     //             log::debug!(
+        //     //                 "stopping shard early due to no shapes fitting: \
+        //     //                 clk: {},
+        //     //                 clk_usage: {}",
+        //     //                 (self.state.clk / 5).next_power_of_two().ilog2(),
+        //     //                 ((self.state.clk / 5) as f64).log2(),
+        //     //             );
+        //     //         }
+        //     //     }
+        //     // }
 
         //     if cpu_exit || !shape_match_found {
+        //         println!("------clk2: {} {}", self.state.max_clks_index, self.state.clk);
         //         self.state.current_shard += 1;
         //         self.state.clk = 0;
-        //         println!("[exe cycle] shard: {}, pc: {}", self.state.current_shard, self.state.pc);
+        //         // println!("[exe cycle] shard: {}, pc: {}", self.state.current_shard, self.state.pc);
         //         self.bump_record();
         //     }
         // }
 
-        // // If the cycle limit is exceeded, return an error.
-        // if let Some(max_cycles) = self.max_cycles {
-        //     if self.state.global_clk >= max_cycles {
-        //         return Err(ExecutionError::ExceededCycleLimit(max_cycles));
-        //     }
-        // }
+        // If the cycle limit is exceeded, return an error.
+        if let Some(max_cycles) = self.max_cycles {
+            if self.state.global_clk >= max_cycles {
+                return Err(ExecutionError::ExceededCycleLimit(max_cycles));
+            }
+        }
 
         let done = self.state.pc == 0
             || self.state.exited
