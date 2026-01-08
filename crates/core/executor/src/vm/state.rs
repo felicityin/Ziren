@@ -15,35 +15,56 @@ use crate::{
 /// Holds data describing the current state of a program's execution.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[repr(C)]
-pub struct VmExecState<MEM = GuestMemory> {
+pub struct VmSimpleState<MEM = GuestMemory> {
     /// The program counter.
     pub pc: u32,
 
     // because of delayed slot
     pub next_pc: u32,
 
-    // /// The shard clock keeps track of how many shards have been executed.
-    // pub current_shard: u32,
+    /// if exit
+    pub exited: bool,
+
+    /// The memory which instructions operate over.
+    pub memory: MEM,
+}
+
+/// Holds data describing the current state of a program's execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[repr(C)]
+pub struct VmCheckpointState<MEM = GuestMemory> {
+    /// The program counter.
+    pub pc: u32,
+
+    // because of delayed slot
+    pub next_pc: u32,
 
     /// if exit
     pub exited: bool,
 
-    // /// if the next instruction is in delay slot for branch and jump.
-    // pub next_is_delayslot: bool,
-
     /// The memory which instructions operate over.
     pub memory: MEM,
 
-    // /// The global clock keeps track of how many instructions have been executed through all shards.
-    // pub global_clk: u64,
+    /// if the next instruction is in delay slot for branch and jump.
+    pub next_is_delayslot: bool,
 
-    // /// The clock increments by 4 (possibly more in syscalls) for each instruction that has been
-    // /// executed in this shard.
-    // pub clk: u32,
+    /// The shard clock keeps track of how many shards have been executed.
+    pub current_shard: u32,
 
-    // /// Uninitialized memory addresses that have a specific value they should be initialized with.
-    // /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
-    // pub uninitialized_memory: Memory<u32>,
+    /// The global clock keeps track of how many instructions have been executed through all shards.
+    pub global_clk: u64,
+
+    /// The clock increments by 4 (possibly more in syscalls) for each instruction that has been
+    /// executed in this shard.
+    pub clk: u32,
+
+    pub clks: Vec<u32>,
+
+    pub clk_index: u32,
+
+    /// Uninitialized memory addresses that have a specific value they should be initialized with.
+    /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
+    pub uninitialized_memory: Memory<u32>,
 
     // /// A stream of input values (global to the entire program).
     // pub input_stream: Vec<Vec<u8>>,
@@ -51,9 +72,9 @@ pub struct VmExecState<MEM = GuestMemory> {
     // /// A ptr to the current position in the input stream incremented by `HINT_READ` opcode.
     // pub input_stream_ptr: usize,
 
-    // /// A stream of proofs (reduce vk, proof, verifying key) inputted to the program.
-    // pub proof_stream:
-    //     Vec<(ZKMReduceProof<KoalaBearPoseidon2>, StarkVerifyingKey<KoalaBearPoseidon2>)>,
+    /// A stream of proofs (reduce vk, proof, verifying key) inputted to the program.
+    pub proof_stream:
+        Vec<(ZKMReduceProof<KoalaBearPoseidon2>, StarkVerifyingKey<KoalaBearPoseidon2>)>,
 
     // /// A ptr to the current position in the proof stream, incremented after verifying a proof.
     // pub proof_stream_ptr: usize,
@@ -68,26 +89,85 @@ pub struct VmExecState<MEM = GuestMemory> {
     // pub syscall_counts: HashMap<SyscallCode, u64>,
 }
 
-impl VmExecState<GuestMemory> {
+impl VmSimpleState<GuestMemory> {
     #[must_use]
     /// Create a new [`ExecutionState`].
     pub fn new(pc_start: u32, next_pc: u32, memory: GuestMemory) -> Self {
         Self {
-            // global_clk: 0,
-            // Start at shard 1 since shard 0 is reserved for memory initialization.
-            // current_shard: 1,
-            // clk: 0,
             pc: pc_start,
             next_pc,
             exited: false,
-            // next_is_delayslot: false,
             memory,
-            // uninitialized_memory: Memory::new_preallocated(),
+        }
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn vm_read<T: Copy + Debug, const BLOCK_SIZE: usize>(
+        &mut self,
+        addr_space: u32,
+        ptr: u32,
+    ) -> [T; BLOCK_SIZE] {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        unsafe { self.memory.read(addr_space, ptr) }
+    }
+
+    /// Runtime write operation for a block of memory
+    #[inline(always)]
+    pub fn vm_write<T: Copy + Debug, const BLOCK_SIZE: usize>(
+        &mut self,
+        addr_space: u32,
+        ptr: u32,
+        data: &[T; BLOCK_SIZE],
+    ) {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        unsafe { self.memory.write(addr_space, ptr, *data) }
+    }
+
+    #[inline(always)]
+    pub fn vm_read_slice<T: Copy + Debug>(
+        &mut self,
+        addr_space: u32,
+        ptr: u32,
+        len: usize,
+    ) -> &[T] {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        // - panics if the slice is out of bounds
+        unsafe { self.memory.get_slice(addr_space, ptr, len) }
+    }
+}
+
+impl VmCheckpointState<GuestMemory> {
+    #[must_use]
+    /// Create a new [`ExecutionState`].
+    pub fn new(pc_start: u32, next_pc: u32, memory: GuestMemory) -> Self {
+        Self {
+            pc: pc_start,
+            next_pc,
+            exited: false,
+            memory,
+            global_clk: 0,
+            // Start at shard 1 since shard 0 is reserved for memory initialization.
+            current_shard: 1,
+            clk: 0,
+            clks: vec![],
+            clk_index: 0,
+            next_is_delayslot: false,
+            uninitialized_memory: Memory::new_preallocated(),
             // input_stream: Vec::new(),
             // input_stream_ptr: 0,
             // public_values_stream: Vec::new(),
             // public_values_stream_ptr: 0,
-            // proof_stream: Vec::new(),
+            proof_stream: Vec::new(),
             // proof_stream_ptr: 0,
             // syscall_counts: HashMap::new(),
         }

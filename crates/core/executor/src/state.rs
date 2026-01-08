@@ -25,12 +25,12 @@ pub struct ExecutionState {
     // because of delayed slot
     pub next_pc: u32,
 
-    pub clks: Vec<u32>,
+    pub max_clks: Vec<u32>,
 
     /// The shard clock keeps track of how many shards have been executed.
     pub current_shard: u32,
 
-    pub clk_index: u32,
+    pub max_clks_index: u32,
 
     /// if exit
     pub exited: bool,
@@ -80,15 +80,16 @@ impl ExecutionState {
     #[must_use]
     /// Create a new [`ExecutionState`].
     pub fn new(pc_start: u32, next_pc: u32) -> Self {
+        println!("------pc_start: {}", pc_start);
         Self {
             global_clk: 0,
             // Start at shard 1 since shard 0 is reserved for memory initialization.
             current_shard: 1,
-            clk_index: 0,
             clk: 0,
+            max_clks: vec![],
+            max_clks_index: 0,
             pc: pc_start,
             next_pc,
-            clks: vec![],
             exited: false,
             next_is_delayslot: false,
             memory: Memory::new_preallocated(),
@@ -128,7 +129,6 @@ impl ExecutionState {
     /// Save the execution state to a file.
     pub fn save(&self, file: &mut File) -> std::io::Result<()> {
         let mut writer = std::io::BufWriter::new(file);
-        println!("---save: {} {:?}", self.pc, self.clks);
         bincode::serialize_into(&mut writer, self).unwrap();
         writer.flush()?;
         writer.seek(std::io::SeekFrom::Start(0))?;

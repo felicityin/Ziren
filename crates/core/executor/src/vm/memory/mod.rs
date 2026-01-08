@@ -9,7 +9,7 @@ use std::{array::from_fn, collections::BTreeMap, fmt::Debug, num::NonZero};
 use itertools::zip_eq;
 use tracing::instrument;
 
-use crate::vm::memory::config::{AddressSpaceHostConfig, AddressSpaceHostLayout, MemoryConfig, RV32_MEMORY_AS};
+use crate::vm::memory::config::{AddressSpaceHostConfig, AddressSpaceHostLayout, MemoryConfig, MIPS_MEMORY_AS};
 
 #[cfg(all(any(unix, windows), not(feature = "basic-memory")))]
 pub type MemoryBackend = memmap::MmapMemory;
@@ -22,7 +22,7 @@ pub type Address = (u32, u32);
 /// Default mmap page size. Change this if using THB.
 pub const PAGE_SIZE: usize = 4096;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 #[repr(C)]
 pub struct GuestMemory {
     pub memory: AddressMap,
@@ -33,6 +33,10 @@ impl GuestMemory {
         let mut addr_map = AddressMap::default();
         addr_map.init(program_image);
         Self { memory: addr_map }
+    }
+
+    pub fn reset(&mut self) {
+        self.memory.fill_zero();
     }
 
     /// Returns `[pointer:BLOCK_SIZE]_{address_space}`
@@ -250,7 +254,7 @@ impl<M: LinearMemory> AddressMap<M> {
                 // - safety assumptions in function doc comments
                 unsafe {
                     self.mem
-                        .get_unchecked_mut(RV32_MEMORY_AS as usize)
+                        .get_unchecked_mut(MIPS_MEMORY_AS as usize)
                         .write_unaligned(addr as usize + i, byte);
                 }
             }

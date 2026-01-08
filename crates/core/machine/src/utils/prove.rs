@@ -3,7 +3,6 @@ use p3_maybe_rayon::prelude::*;
 use p3_uni_stark::SymbolicAirBuilder;
 use serde::{de::DeserializeOwned, Serialize};
 use size::Size;
-use zkm_core_executor::CheckpointExecutor;
 use std::thread::ScopedJoinHandle;
 use std::{
     fs::File,
@@ -150,10 +149,6 @@ where
         runtime.write_proof(proof, vk);
     }
 
-    // let checkpoint_runtime = CheckpointExecutor {
-
-    // };
-
     #[cfg(feature = "debug")]
     let (all_records_tx, all_records_rx) = std::sync::mpsc::channel::<Vec<ExecutionRecord>>();
 
@@ -251,16 +246,17 @@ where
                             let execution_state: ExecutionState =
                                 bincode::deserialize_from(&mut reader)
                                     .expect("failed to deserialize state");
-                            println!("---recover: {} {:?} {} {} {}", execution_state.pc, execution_state.clks, num_cycles, execution_state.clk_index, execution_state.clk);
-                            // execution_state.clks = vec![17950];
-                            // execution_state.clk_index = 0;
+                            println!("---------------");
+                            println!("pc: {}", execution_state.pc);
+                            // println!("memory: {:?}", execution_state.memory);
+
                             let (mut records, report) = tracing::debug_span!("trace checkpoint")
                                 .in_scope(|| {
                                     trace_checkpoint::<SC>(
                                         program.clone(),
                                         execution_state,
                                         opts,
-                                        shape_config,
+                                        // shape_config,
                                     )
                                 });
                             log::debug!("generated {} records", records.len());
@@ -695,7 +691,7 @@ pub fn trace_checkpoint<SC: StarkGenericConfig>(
     program: Program,
     state: ExecutionState,
     opts: ZKMCoreOpts,
-    shape_config: Option<&CoreShapeConfig<SC::Val>>,
+    // shape_config: Option<&CoreShapeConfig<SC::Val>>,
 ) -> (Vec<ExecutionRecord>, ExecutionReport)
 where
     <SC as StarkGenericConfig>::Val: PrimeField32,
@@ -703,9 +699,9 @@ where
     let noop = NoOpSubproofVerifier;
 
     let mut runtime = Executor::recover(program, state, opts);
-    runtime.maximal_shapes = shape_config.map(|config| {
-        config.maximal_core_shapes(opts.shard_size.ilog2() as usize).into_iter().collect()
-    });
+    // runtime.maximal_shapes = shape_config.map(|config| {
+    //     config.maximal_core_shapes(opts.shard_size.ilog2() as usize).into_iter().collect()
+    // });
 
     // We already passed the deferred proof verifier when creating checkpoints, so the proofs were
     // already verified. So here we use a noop verifier to not print any warnings.

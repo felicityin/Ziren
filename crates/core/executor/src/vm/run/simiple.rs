@@ -2,8 +2,10 @@ use std::{
     sync::Arc,
 };
 
+use hashbrown::HashMap;
+
 use crate::{
-    DEFAULT_PC_INC, ExecutionError, Instruction, Opcode, Program, Register, vm::{memory::{GuestMemory, config::RV32_REGISTER_AS}, state::VmExecState}
+    DEFAULT_PC_INC, ExecutionError, Instruction, Opcode, Program, Register, vm::{memory::{GuestMemory, config::MIPS_REGISTER_AS}, state::VmSimpleState}
 };
 
 /// An executor for the MIPS zkVM.
@@ -14,8 +16,11 @@ pub struct SimpleExecutor {
     /// The program.
     pub program: Arc<Program>,
 
+    /// A buffer for stdout and stderr IO.
+    pub io_buf: HashMap<u32, String>,
+
     /// The state of the execution.
-    pub state: VmExecState,
+    pub state: VmSimpleState,
 }
 
 impl SimpleExecutor {
@@ -26,17 +31,36 @@ impl SimpleExecutor {
         let program = Arc::new(program);
 
         let memory = GuestMemory::new(&program.image);
-        let state = VmExecState::new(program.pc_start, program.next_pc, memory);
+        let state = VmSimpleState::new(program.pc_start, program.next_pc, memory);
 
         Self {
             program,
+            io_buf: HashMap::new(),
             state,
         }
     }
 
     pub fn run(&mut self) -> Result<(), ExecutionError> {
         while !self.execute_cycle()? {}
+        self.postprocess();
         Ok(())
+    }
+
+    fn postprocess(&mut self) {
+        // Flush remaining stdout/stderr
+        for (fd, buf) in &self.io_buf {
+            if !buf.is_empty() {
+                match fd {
+                    1 => {
+                        println!("stdout: {buf}");
+                    }
+                    2 => {
+                        println!("stderr: {buf}");
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     /// Fetch the instruction at the current program counter.
@@ -114,14 +138,14 @@ impl SimpleExecutor {
         // } else if instruction.opcode == Opcode::SYSCALL {
         //     self.execute_syscall()?;
         } else if instruction.opcode == Opcode::UNIMPL {
-            log::error!("{:X}: {:X}", self.state.pc, instruction.op_c);
+            tracing::error!("{:X}: {:X}", self.state.pc, instruction.op_c);
             return Err(ExecutionError::UnsupportedInstruction(instruction.op_c));
         } else {
             unreachable!()
         }
 
         // if next_next_pc == 0 {
-        //     log::error!("Null pointer reference {:X}: {:X}", self.state.pc, instruction.op_c);
+        //     tracing::error!("Null pointer reference {:X}: {:X}", self.state.pc, instruction.op_c);
         //     return Err(ExecutionError::NullPointerReference());
         // }
 
@@ -313,7 +337,7 @@ impl SimpleExecutor {
     /// Read a register.
     #[inline]
     pub fn rr_cpu(&mut self, register: Register) -> u32 {
-        let rs = self.state.vm_read::<u8, 4>(RV32_REGISTER_AS, register as u32);
+        let rs = self.state.vm_read::<u8, 4>(MIPS_REGISTER_AS, register as u32);
         u32::from_le_bytes(rs)
     }
 
@@ -344,11 +368,11 @@ impl SimpleExecutor {
         let value = if register == Register::ZERO { 0 } else { value };
 
         let rd = value.to_le_bytes();
-        self.state.vm_write::<u8, 4>(RV32_REGISTER_AS, register as u32, &rd);
+        self.state.vm_write::<u8, 4>(MIPS_REGISTER_AS, register as u32, &rd);
     }
 
     pub fn register(&self, offset: usize) -> u32 {
-        let bytes = unsafe { self.state.memory.read::<u8, 4>(RV32_REGISTER_AS, offset as u32) };
+        let bytes = unsafe { self.state.memory.read::<u8, 4>(MIPS_REGISTER_AS, offset as u32) };
         u32::from_le_bytes(bytes)
     }
 }
