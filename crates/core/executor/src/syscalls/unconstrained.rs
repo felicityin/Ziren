@@ -48,16 +48,16 @@ impl Syscall for ExitUnconstrainedSyscall {
             ctx.rt.state.clk = ctx.rt.unconstrained_state.clk;
             ctx.rt.state.pc = ctx.rt.unconstrained_state.pc;
             ctx.next_pc = ctx.rt.state.pc.wrapping_add(4);
-            for (addr, value) in ctx.rt.unconstrained_state.memory_diff.drain() {
-                match value {
-                    Some(value) => {
-                        ctx.rt.state.memory.insert(addr, value);
-                    }
-                    None => {
-                        ctx.rt.state.memory.remove(addr);
-                    }
-                }
-            }
+            // for (addr, value) in ctx.rt.unconstrained_state.memory_diff.drain() {
+            //     match value {
+            //         Some(value) => {
+            //             ctx.rt.state.memory.insert(addr, value);
+            //         }
+            //         None => {
+            //             ctx.rt.state.memory.remove(addr);
+            //         }
+            //     }
+            // }
             ctx.rt.record = std::mem::take(&mut ctx.rt.unconstrained_state.record);
             ctx.rt.memory_accesses = std::mem::take(&mut ctx.rt.unconstrained_state.op_record);
             ctx.rt.executor_mode = ctx.rt.unconstrained_state.executor_mode;

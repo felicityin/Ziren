@@ -19,14 +19,16 @@ pub fn main() {
     // Write n to public input
     zkm_zkvm::io::commit(&n);
 
+    let mut c = 0;
+
     // Compute the n'th fibonacci number, using normal Rust code.
     let mut a = 0;
     let mut b = 1;
     for _ in 0..n {
-        let mut c = a + b;
-        c %= 7919; // Modulus to prevent overflow.
         a = b;
         b = c;
+        c = a + b;
+        c %= 7919; // Modulus to prevent overflow.
     }
 
     // Write the output of the program.
@@ -35,4 +37,5 @@ pub fn main() {
     // outputs to the prover.
     zkm_zkvm::io::commit(&a);
     zkm_zkvm::io::commit(&b);
+    zkm_zkvm::io::commit(&c);
 }

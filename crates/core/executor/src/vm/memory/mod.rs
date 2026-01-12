@@ -2,6 +2,7 @@
 pub mod basic;
 pub mod config;
 pub mod memmap;
+pub mod paged_vec;
 
 use std::{array::from_fn, collections::BTreeMap, fmt::Debug, num::NonZero};
 
@@ -17,13 +18,15 @@ pub type MemoryBackend = memmap::MmapMemory;
 #[cfg(any(not(any(unix, windows)), feature = "basic-memory"))]
 pub type MemoryBackend = basic::BasicMemory;
 
+pub use paged_vec::PagedVec;
+
 /// (address_space, pointer)
 pub type Address = (u32, u32);
 
 /// Default mmap page size. Change this if using THB.
 pub const PAGE_SIZE: usize = 4096;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 #[repr(C)]
 pub struct GuestMemory {
     pub memory: AddressMap,
@@ -57,6 +60,7 @@ impl GuestMemory {
         T: Copy + Debug,
     {
         self.debug_assert_cell_type::<T>(addr_space);
+
         // SAFETY:
         // - `T` should be "plain old data"
         // - alignment for `[T; BLOCK_SIZE]` is automatic since we multiply by `size_of::<T>()`

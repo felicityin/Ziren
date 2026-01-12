@@ -8,7 +8,7 @@ fn main() {
     utils::setup_logger();
 
     // Create an input stream and write '1000' to it.
-    let n = 1000u32;
+    let n = 3u32;
 
     // The input stream that the guest will read from using `zkm_zkvm::io::read`. Note that the
     // types of the elements in the input stream must match the types being read in the guest.
@@ -32,12 +32,15 @@ fn main() {
     //
     // Note that this output is read from values committed to in the guest using
     // `zkm_zkvm::io::commit`.
-    let _ = proof.public_values.read::<u32>();
+    let n = proof.public_values.read::<u32>();
     let a = proof.public_values.read::<u32>();
     let b = proof.public_values.read::<u32>();
+    let c = proof.public_values.read::<u32>();
 
+    println!("n: {}", n);
     println!("a: {}", a);
     println!("b: {}", b);
+    println!("c: {}", c);
 
     // Verify proof and public values
     client.verify(&proof, &vk).expect("verification failed");

@@ -1,18 +1,22 @@
 use std::{
-    fs::File,
-    io::{Seek, Write},
+    collections::BTreeMap, fs::File, io::{Seek, Write}
 };
+use std::fmt::Debug;
 
 use hashbrown::HashMap;
+use itertools::zip_eq;
 use serde::{Deserialize, Serialize};
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    ExecutorMode, ZKMReduceProof, events::{MemoryAccessMeta, MemoryRecord}, memory::Memory, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode, vm::memory::GuestMemory
+    ExecutorMode, ZKMReduceProof, events::{MemoryAccessMeta, MemoryRecord}, memory::Memory, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode, vm::memory::{GuestMemory, LinearMemory, PagedVec, config::{AddressSpaceHostLayout, MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE}}
 };
 
+/// Default mmap page size. Change this if using THB.
+pub const PAGE_SIZE: usize = 4096;
+
 /// Holds data describing the current state of a program's execution.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 #[repr(C)]
 pub struct ExecutionState {
     /// The program counter.
@@ -34,12 +38,15 @@ pub struct ExecutionState {
     /// if the next instruction is in delay slot for branch and jump.
     pub next_is_delayslot: bool,
 
-    /// The memory which instructions operate over. Values contain the memory value and last shard
-    /// + timestamp that each memory address was accessed.
-    pub memory: Memory<MemoryRecord>,
+    // /// The memory which instructions operate over. Values contain the memory value and last shard
+    // /// + timestamp that each memory address was accessed.
+    // pub memory: Memory<MemoryRecord>,
 
-    // pub mem: GuestMemory,
-    // pub access_meta: Memory<MemoryAccessMeta>,
+    pub mem: GuestMemory,
+    pub mem_access_meta: Memory<MemoryAccessMeta>,
+    /// For each `addr_space`, the minimum block size allowed for memory accesses. In other words,
+    /// all memory accesses in `addr_space` must be aligned to this block size.
+    // pub min_block_size: Vec<u32>,
 
     /// The global clock keeps track of how many instructions have been executed through all shards.
     pub global_clk: u64,
@@ -76,10 +83,25 @@ pub struct ExecutionState {
 }
 
 impl ExecutionState {
+    /// The number of lower bits to ignore, since addresses (except registers) are a multiple of 4.
+    const NUM_IGNORED_LOWER_BITS: usize = 2;
+
     #[must_use]
     /// Create a new [`ExecutionState`].
-    pub fn new(pc_start: u32, next_pc: u32) -> Self {
-        println!("------pc_start: {}", pc_start);
+    pub fn new(pc_start: u32, next_pc: u32, image: &BTreeMap<u32, u32>) -> Self {
+        // println!("------pc_start: {}", pc_start);
+        let mem = GuestMemory::new(image);
+
+        // let (meta, min_block_size): (Vec<_>, Vec<_>) =
+        //     zip_eq(mem.memory.get_memory(), &mem.memory.config)
+        //         .map(|(mem, addr_sp)| {
+        //             let num_cells = mem.size() / addr_sp.layout.size();
+        //             let min_block_size = addr_sp.min_block_size;
+        //             let total_metadata_len = num_cells.div_ceil(min_block_size);
+        //             (PagedVec::new(total_metadata_len), min_block_size as u32)
+        //         })
+        //         .unzip();
+
         Self {
             global_clk: 0,
             // Start at shard 1 since shard 0 is reserved for memory initialization.
@@ -91,7 +113,10 @@ impl ExecutionState {
             next_pc,
             exited: false,
             next_is_delayslot: false,
-            memory: Memory::new_preallocated(),
+            // memory: Memory::new_preallocated(),
+            mem,
+            mem_access_meta: Memory::new_preallocated(),
+            // min_block_size,
             uninitialized_memory: Memory::new_preallocated(),
             input_stream: Vec::new(),
             input_stream_ptr: 0,
@@ -101,6 +126,106 @@ impl ExecutionState {
             proof_stream_ptr: 0,
             syscall_counts: HashMap::new(),
         }
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn vm_read<T: Copy + Debug, const BLOCK_SIZE: usize>(
+        &self,
+        addr_space: u32,
+        ptr: u32,
+    ) -> [T; BLOCK_SIZE] {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        unsafe { self.mem.read(addr_space, ptr) }
+    }
+
+    /// Runtime write operation for a block of memory
+    #[inline(always)]
+    pub fn vm_write<T: Copy + Debug, const BLOCK_SIZE: usize>(
+        &mut self,
+        addr_space: u32,
+        ptr: u32,
+        data: &[T; BLOCK_SIZE],
+    ) {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        unsafe { self.mem.write(addr_space, ptr, *data) }
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn read_register(
+        &self,
+        ptr: u32,
+    ) -> u32 {
+        let value = self.vm_read::<u32, 1>(MIPS_REGISTER_SPACE, ptr);
+        value[0]
+        // u32::from_le_bytes(value)
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn write_register(
+        &mut self,
+        ptr: u32,
+        value: u32,
+    ) {
+        // let value = value.to_le_bytes();
+        self.vm_write::<u32, 1>(MIPS_REGISTER_SPACE, ptr, &[value]);
+
+        // let value = self.vm_read::<u8, 4>(addr_space, ptr);
+        // println!("-----vm write: {} {}", ptr, u32::from_le_bytes(value));
+    }
+
+    /// Compress an address from the sparse address space to a contiguous space.
+    #[inline]
+    const fn compress_addr(addr: u32) -> u32 {
+        addr >> Self::NUM_IGNORED_LOWER_BITS
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn read_memory(
+        &self,
+        ptr: u32,
+    ) -> u32 {
+        let value = self.vm_read::<u32, 1>(MIPS_MEMORY_SPACE, Self::compress_addr(ptr));
+        value[0]
+        // u32::from_le_bytes(value)
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn write_memory(
+        &mut self,
+        ptr: u32,
+        value: u32,
+    ) {
+        // let value = value.to_le_bytes();
+        self.vm_write::<u32, 1>(MIPS_MEMORY_SPACE, Self::compress_addr(ptr), &[value]);
+
+        // let value = self.vm_read::<u8, 4>(addr_space, ptr);
+        // println!("-----vm write: {} {}", ptr, u32::from_le_bytes(value));
+    }
+
+    #[inline(always)]
+    pub fn vm_read_slice<T: Copy + Debug>(
+        &mut self,
+        addr_space: u32,
+        ptr: u32,
+        len: usize,
+    ) -> &[T] {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        // - panics if the slice is out of bounds
+        unsafe { self.mem.get_slice(addr_space, ptr, len) }
     }
 }
 
@@ -127,10 +252,10 @@ pub struct ForkState {
 impl ExecutionState {
     /// Save the execution state to a file.
     pub fn save(&self, file: &mut File) -> std::io::Result<()> {
-        let mut writer = std::io::BufWriter::new(file);
-        bincode::serialize_into(&mut writer, self).unwrap();
-        writer.flush()?;
-        writer.seek(std::io::SeekFrom::Start(0))?;
+        // let mut writer = std::io::BufWriter::new(file);
+        // bincode::serialize_into(&mut writer, self).unwrap();
+        // writer.flush()?;
+        // writer.seek(std::io::SeekFrom::Start(0))?;
         Ok(())
     }
 }

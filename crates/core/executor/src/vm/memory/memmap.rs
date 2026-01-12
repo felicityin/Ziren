@@ -11,7 +11,7 @@ use super::{LinearMemory, PAGE_SIZE};
 pub const CELL_STRIDE: usize = 1;
 
 /// Mmap-backed linear memory. OS-memory pages are paged in on-demand and zero-initialized.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug)]
 pub struct MmapMemory {
     mmap: MmapMut,
 }
