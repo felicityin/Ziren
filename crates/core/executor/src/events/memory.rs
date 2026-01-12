@@ -18,6 +18,15 @@ pub struct MemoryRecord {
     pub value: u32,
 }
 
+#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
+#[repr(C)]
+pub struct MemoryAccessMeta {
+    /// The shard number.
+    pub shard: u32,
+    /// The timestamp.
+    pub timestamp: u32,
+}
+
 /// Memory Access Position.
 ///
 /// This enum represents the position of a memory access in a register. For example, if a memory

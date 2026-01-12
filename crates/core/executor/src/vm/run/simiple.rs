@@ -5,7 +5,7 @@ use std::{
 use hashbrown::HashMap;
 
 use crate::{
-    DEFAULT_PC_INC, ExecutionError, Instruction, Opcode, Program, Register, vm::{memory::{GuestMemory, config::MIPS_REGISTER_AS}, state::VmSimpleState}
+    DEFAULT_PC_INC, ExecutionError, Instruction, Opcode, Program, Register, vm::{memory::{GuestMemory, config::MIPS_REGISTER_SPACE}, state::VmSimpleState}
 };
 
 /// An executor for the MIPS zkVM.
@@ -337,7 +337,7 @@ impl SimpleExecutor {
     /// Read a register.
     #[inline]
     pub fn rr_cpu(&mut self, register: Register) -> u32 {
-        let rs = self.state.vm_read::<u8, 4>(MIPS_REGISTER_AS, register as u32);
+        let rs = self.state.vm_read::<u8, 4>(MIPS_REGISTER_SPACE, register as u32);
         u32::from_le_bytes(rs)
     }
 
@@ -368,11 +368,11 @@ impl SimpleExecutor {
         let value = if register == Register::ZERO { 0 } else { value };
 
         let rd = value.to_le_bytes();
-        self.state.vm_write::<u8, 4>(MIPS_REGISTER_AS, register as u32, &rd);
+        self.state.vm_write::<u8, 4>(MIPS_REGISTER_SPACE, register as u32, &rd);
     }
 
     pub fn register(&self, offset: usize) -> u32 {
-        let bytes = unsafe { self.state.memory.read::<u8, 4>(MIPS_REGISTER_AS, offset as u32) };
+        let bytes = unsafe { self.state.memory.read::<u8, 4>(MIPS_REGISTER_SPACE, offset as u32) };
         u32::from_le_bytes(bytes)
     }
 }

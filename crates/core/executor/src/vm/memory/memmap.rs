@@ -3,6 +3,7 @@ use std::{
     mem::{align_of, size_of, size_of_val},
 };
 
+use serde::{Deserialize, Serialize};
 use memmap2::MmapMut;
 
 use super::{LinearMemory, PAGE_SIZE};
@@ -10,7 +11,7 @@ use super::{LinearMemory, PAGE_SIZE};
 pub const CELL_STRIDE: usize = 1;
 
 /// Mmap-backed linear memory. OS-memory pages are paged in on-demand and zero-initialized.
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct MmapMemory {
     mmap: MmapMut,
 }

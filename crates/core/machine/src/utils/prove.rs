@@ -247,7 +247,8 @@ where
                                 bincode::deserialize_from(&mut reader)
                                     .expect("failed to deserialize state");
                             println!("---------------");
-                            println!("pc: {}", execution_state.pc);
+                            println!("global clk: {}", execution_state.global_clk);
+                            println!("clk: {}", execution_state.clk);
                             // println!("memory: {:?}", execution_state.memory);
 
                             let (mut records, report) = tracing::debug_span!("trace checkpoint")

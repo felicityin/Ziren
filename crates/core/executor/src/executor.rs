@@ -465,6 +465,7 @@ impl<'a> Executor<'a> {
     ) -> MemoryReadRecord {
         // Get the memory record entry.
         let entry = self.state.memory.page_table.entry(addr);
+        print!("mr({:x}) ", addr);
         if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
             match entry {
                 Entry::Occupied(ref entry) => {
@@ -548,6 +549,7 @@ impl<'a> Executor<'a> {
     ///
     /// Assumes that the executor mode IS NOT [`ExecutorMode::Trace`]
     pub fn rr(&mut self, register: Register, shard: u32, timestamp: u32) -> u32 {
+        println!("============rr");
         // Get the memory record entry.
         let addr = register as u32;
         let entry = self.state.memory.registers.entry(addr);
@@ -589,6 +591,7 @@ impl<'a> Executor<'a> {
 
         record.shard = shard;
         record.timestamp = timestamp;
+        println!("rr: {:?}", record);
         record.value
     }
 
@@ -679,6 +682,7 @@ impl<'a> Executor<'a> {
     ) -> MemoryWriteRecord {
         // Get the memory record entry.
         let entry = self.state.memory.page_table.entry(addr);
+        print!("mw({:x}) ", addr);
         if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
             match entry {
                 Entry::Occupied(ref entry) => {
@@ -990,6 +994,7 @@ impl<'a> Executor<'a> {
         record.value = value;
         record.shard = shard;
         record.timestamp = timestamp;
+        println!("rw: {:?}", record);
     }
 
     /// Read from memory, assuming that all addresses are aligned.
@@ -2420,11 +2425,6 @@ impl<'a> Executor<'a> {
         // Increment the clock.
         self.state.global_clk += 1;
 
-        // We restrict the execution of branch/jump and its delay slot to be in the same shard.
-        if !self.unconstrained && !self.state.next_is_delayslot {
-            self.inc_shard_if_need();
-        }
-
         // If the cycle limit is exceeded, return an error.
         if let Some(max_cycles) = self.max_cycles {
             if self.state.global_clk >= max_cycles {
@@ -2492,7 +2492,7 @@ impl<'a> Executor<'a> {
     }
 
     #[inline]
-    fn inc_shard_if_need(&mut self) {
+    fn inc_shard_if_need(&mut self) -> bool {
         // If there's not enough cycles left for another instruction, move to the next shard.
         let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
 
@@ -2586,7 +2586,9 @@ impl<'a> Executor<'a> {
             self.state.max_clks.push(self.state.clk);
             self.state.current_shard += 1;
             self.state.clk = 0;
+            return true;
         }
+        false
     }
 
     /// Executes one cycle of the program, returning whether the program has finished.
@@ -2718,12 +2720,12 @@ impl<'a> Executor<'a> {
         //     }
         // }
 
-        // If the cycle limit is exceeded, return an error.
-        if let Some(max_cycles) = self.max_cycles {
-            if self.state.global_clk >= max_cycles {
-                return Err(ExecutionError::ExceededCycleLimit(max_cycles));
-            }
-        }
+        // // If the cycle limit is exceeded, return an error.
+        // if let Some(max_cycles) = self.max_cycles {
+        //     if self.state.global_clk >= max_cycles {
+        //         return Err(ExecutionError::ExceededCycleLimit(max_cycles));
+        //     }
+        // }
 
         let done = self.state.pc == 0
             || self.state.exited
@@ -2789,12 +2791,12 @@ impl<'a> Executor<'a> {
         // Clone self.state without memory, uninitialized_memory, proof_stream in it so it's faster.
         // let memory = std::mem::take(&mut self.state.memory);
         // let uninitialized_memory = std::mem::take(&mut self.state.uninitialized_memory);
-        // let proof_stream = std::mem::take(&mut self.state.proof_stream);
+        let proof_stream = std::mem::take(&mut self.state.proof_stream);
         let mut checkpoint = tracing::debug_span!("clone").in_scope(|| self.state.clone());
 
         // self.state.memory = memory;
         // self.state.uninitialized_memory = uninitialized_memory;
-        // self.state.proof_stream = proof_stream;
+        self.state.proof_stream = proof_stream;
 
         let done = tracing::debug_span!("execute").in_scope(|| self.execute_checkpoint())?;
         // Create a checkpoint using `memory_checkpoint`. Just include all memory if `done` since we
@@ -2973,7 +2975,6 @@ impl<'a> Executor<'a> {
         // Loop until we've executed `self.shard_batch_size` shards if `self.shard_batch_size` is
         // set.
         let mut done = false;
-        let mut current_shard = self.state.current_shard;
         let mut num_shards_executed = 0;
         loop {
             if self.execute_cycle_checkpoint()? {
@@ -2981,11 +2982,13 @@ impl<'a> Executor<'a> {
                 break;
             }
 
-            if self.shard_batch_size > 0 && current_shard != self.state.current_shard {
-                num_shards_executed += 1;
-                current_shard = self.state.current_shard;
-                if num_shards_executed == self.shard_batch_size {
-                    break;
+            // We restrict the execution of branch/jump and its delay slot to be in the same shard.
+            if !self.unconstrained && !self.state.next_is_delayslot {
+                if self.inc_shard_if_need() {
+                    num_shards_executed += 1;
+                    if num_shards_executed >= self.shard_batch_size {
+                        break;
+                    }
                 }
             }
         }
@@ -3143,6 +3146,8 @@ impl<'a> Executor<'a> {
             && (self.executor_mode == ExecutorMode::Trace
                 || self.executor_mode == ExecutorMode::Checkpoint)
         {
+            println!("self.record.global_memory_finalize_events.len: {}", self.record.global_memory_finalize_events.len());
+            println!("self.record.global_memory_initialize_events.len: {}", self.record.global_memory_initialize_events.len());
             // SECTION: Set up all MemoryInitializeFinalizeEvents needed for memory argument.
             let memory_finalize_events = &mut self.record.global_memory_finalize_events;
 
@@ -3180,8 +3185,11 @@ impl<'a> Executor<'a> {
                             .push(MemoryInitializeFinalizeEvent::initialize(addr, *initial_value));
                     }
 
+                    // let mut record = record.clone();
+                    // record.timestamp = self.state.clk;
+                    // print!("{} ", self.state.clk);
                     memory_finalize_events
-                        .push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, record));
+                        .push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, &record));
                 }
             }
             for addr in self.state.memory.page_table.keys() {
@@ -3364,7 +3372,7 @@ mod tests {
 
     //
     #[test]
-    fn test_add() {
+    fn test_add1() {
         // main:
         //     addi x29, x0, 5
         //     addi x30, x0, 37
@@ -3376,7 +3384,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
+        runtime.run_fast().unwrap();
         assert_eq!(runtime.register(Register::RA), 42);
     }
 

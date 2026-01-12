@@ -27,7 +27,7 @@ fn main() {
     let client = ProverClient::new();
 
     // Setup the proving and verifying keys.
-    let (aggregation_pk, _) = client.setup(AGGREGATION_ELF);
+    let (aggregation_pk, aggregation_vk) = client.setup(AGGREGATION_ELF);
     let (fibonacci_pk, fibonacci_vk) = client.setup(FIBONACCI_ELF);
 
     // Generate the fibonacci proofs.
@@ -36,22 +36,23 @@ fn main() {
         stdin.write(&10);
         client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
     });
-    let proof_2 = tracing::info_span!("generate fibonacci proof n=20").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&20);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
-    let proof_3 = tracing::info_span!("generate fibonacci proof n=30").in_scope(|| {
-        let mut stdin = ZKMStdin::new();
-        stdin.write(&30);
-        client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
-    });
+    // let proof_2 = tracing::info_span!("generate fibonacci proof n=20").in_scope(|| {
+    //     let mut stdin = ZKMStdin::new();
+    //     stdin.write(&20);
+    //     client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
+    // });
+    // let proof_3 = tracing::info_span!("generate fibonacci proof n=30").in_scope(|| {
+    //     let mut stdin = ZKMStdin::new();
+    //     stdin.write(&30);
+    //     client.prove(&fibonacci_pk, stdin).compressed().run().expect("proving failed")
+    // });
 
     // Setup the inputs to the aggregation program.
     let input_1 = AggregationInput { proof: proof_1, vk: fibonacci_vk.clone() };
-    let input_2 = AggregationInput { proof: proof_2, vk: fibonacci_vk.clone() };
-    let input_3 = AggregationInput { proof: proof_3, vk: fibonacci_vk.clone() };
-    let inputs = vec![input_1, input_2, input_3];
+    // let input_2 = AggregationInput { proof: proof_2, vk: fibonacci_vk.clone() };
+    // let input_3 = AggregationInput { proof: proof_3, vk: fibonacci_vk.clone() };
+    // let inputs = vec![input_1, input_2, input_3];
+    let inputs = vec![input_1];
 
     // Aggregate the proofs.
     tracing::info_span!("aggregate the proofs").in_scope(|| {
@@ -76,6 +77,9 @@ fn main() {
         }
 
         // Generate the plonk bn254 proof.
-        client.prove(&aggregation_pk, stdin).plonk().run().expect("proving failed");
+        let proof = client.prove(&aggregation_pk, stdin).compressed().run().expect("proving failed");
+
+        // Verify proof and public values
+        client.verify(&proof, &aggregation_vk).expect("verification failed");
     });
 }

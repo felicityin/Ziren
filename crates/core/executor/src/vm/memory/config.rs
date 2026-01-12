@@ -8,8 +8,8 @@ use derive_new::new;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub const MIPS_IMM_AS: u32 = 0;
-pub const MIPS_REGISTER_AS: u32 = 1;
-pub const MIPS_MEMORY_AS: u32 = 2;
+pub const MIPS_REGISTER_SPACE: u32 = 1;
+pub const MIPS_MEMORY_SPACE: u32 = 2;
 pub const PUBLIC_VALUES_AS: u32 = 3;
 pub const NATIVE_AS: u32 = 4;
 
@@ -140,8 +140,8 @@ impl Default for MemoryConfig {
         let mut addr_spaces =
             Self::empty_address_space_configs((1 << 3) + ADDR_SPACE_OFFSET as usize);
         const MAX_CELLS: usize = 1 << 29;
-        addr_spaces[MIPS_REGISTER_AS as usize].num_cells = 32 * size_of::<u32>();
-        addr_spaces[MIPS_MEMORY_AS as usize].num_cells = MAX_CELLS;
+        addr_spaces[MIPS_REGISTER_SPACE as usize].num_cells = 32 * size_of::<u32>();
+        addr_spaces[MIPS_MEMORY_SPACE as usize].num_cells = MAX_CELLS;
         addr_spaces[PUBLIC_VALUES_AS as usize].num_cells = DEFAULT_MAX_NUM_PUBLIC_VALUES;
         addr_spaces[NATIVE_AS as usize].num_cells = MAX_CELLS;
         Self::new(3, addr_spaces, POINTER_MAX_BITS, 29)
@@ -161,10 +161,10 @@ impl MemoryConfig {
             num_addr_spaces
         ];
         addr_spaces[MIPS_IMM_AS as usize] = AddressSpaceHostConfig::new(0, 1, MemoryCellType::Null);
-        addr_spaces[MIPS_REGISTER_AS as usize] =
+        addr_spaces[MIPS_REGISTER_SPACE as usize] =
             AddressSpaceHostConfig::new(0, DEFAULT_U8_BLOCK_SIZE, MemoryCellType::U8);
 
-        addr_spaces[MIPS_MEMORY_AS as usize] =
+        addr_spaces[MIPS_MEMORY_SPACE as usize] =
                 AddressSpaceHostConfig::new(0, DEFAULT_U8_BLOCK_SIZE, MemoryCellType::U8);
 
         addr_spaces[PUBLIC_VALUES_AS as usize] =

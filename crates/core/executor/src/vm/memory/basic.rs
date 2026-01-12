@@ -3,8 +3,11 @@ use std::{
     ptr::NonNull,
 };
 
+// use serde::{Deserialize, Serialize};
+
 use crate::vm::memory::{LinearMemory, PAGE_SIZE};
 
+// #[derive(Debug, Deserialize, Serialize)]
 pub struct BasicMemory {
     ptr: NonNull<u8>,
     size: usize,

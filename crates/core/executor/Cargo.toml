@@ -52,7 +52,7 @@ env_logger = "0.11.6"
 derive-new = "0.6.0"
 
 [target.'cfg(any(unix, windows))'.dependencies]
-memmap2 = "0.9.5"
+memmap2 = { version = "0.9.5", features = ["serde"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.175"
 

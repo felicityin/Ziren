@@ -8,11 +8,7 @@ use serde::{Deserialize, Serialize};
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    events::MemoryRecord,
-    memory::Memory,
-    record::{ExecutionRecord, MemoryAccessRecord},
-    syscalls::SyscallCode,
-    ExecutorMode, ZKMReduceProof,
+    ExecutorMode, ZKMReduceProof, events::{MemoryAccessMeta, MemoryRecord}, memory::Memory, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode, vm::memory::GuestMemory
 };
 
 /// Holds data describing the current state of a program's execution.
@@ -41,6 +37,9 @@ pub struct ExecutionState {
     /// The memory which instructions operate over. Values contain the memory value and last shard
     /// + timestamp that each memory address was accessed.
     pub memory: Memory<MemoryRecord>,
+
+    // pub mem: GuestMemory,
+    // pub access_meta: Memory<MemoryAccessMeta>,
 
     /// The global clock keeps track of how many instructions have been executed through all shards.
     pub global_clk: u64,

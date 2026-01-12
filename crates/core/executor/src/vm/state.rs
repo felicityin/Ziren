@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    ExecutorMode, ZKMReduceProof, events::MemoryRecord, memory::Memory, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode, vm::memory::GuestMemory
+    ExecutorMode, MAX_MEMORY, ZKMReduceProof, events::MemoryRecord, memory::Memory, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode, vm::memory::GuestMemory
 };
 
 /// Holds data describing the current state of a program's execution.
@@ -45,8 +45,11 @@ pub struct VmCheckpointState<MEM = GuestMemory> {
     /// The memory which instructions operate over.
     pub memory: MEM,
 
-    /// if the next instruction is in delay slot for branch and jump.
-    pub next_is_delayslot: bool,
+    /// The shard number.
+    pub shards: Vec<u32>,
+
+    /// The timestamp.
+    pub timestamps: Vec<u32>,
 
     /// The shard clock keeps track of how many shards have been executed.
     pub current_shard: u32,
@@ -58,36 +61,99 @@ pub struct VmCheckpointState<MEM = GuestMemory> {
     /// executed in this shard.
     pub clk: u32,
 
-    pub clks: Vec<u32>,
+    pub max_clks: Vec<u32>,
 
-    pub clk_index: u32,
+    pub max_clks_index: u32,
 
-    /// Uninitialized memory addresses that have a specific value they should be initialized with.
-    /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
-    pub uninitialized_memory: Memory<u32>,
+    /// A stream of input values (global to the entire program).
+    pub input_stream: Vec<Vec<u8>>,
 
-    // /// A stream of input values (global to the entire program).
-    // pub input_stream: Vec<Vec<u8>>,
-
-    // /// A ptr to the current position in the input stream incremented by `HINT_READ` opcode.
-    // pub input_stream_ptr: usize,
+    /// A ptr to the current position in the input stream incremented by `HINT_READ` opcode.
+    pub input_stream_ptr: usize,
 
     /// A stream of proofs (reduce vk, proof, verifying key) inputted to the program.
     pub proof_stream:
         Vec<(ZKMReduceProof<KoalaBearPoseidon2>, StarkVerifyingKey<KoalaBearPoseidon2>)>,
 
-    // /// A ptr to the current position in the proof stream, incremented after verifying a proof.
-    // pub proof_stream_ptr: usize,
+    /// A ptr to the current position in the proof stream, incremented after verifying a proof.
+    pub proof_stream_ptr: usize,
 
-    // /// A stream of public values from the program (global to entire program).
-    // pub public_values_stream: Vec<u8>,
+    /// A stream of public values from the program (global to entire program).
+    pub public_values_stream: Vec<u8>,
 
-    // /// A ptr to the current position in the public values stream, incremented when reading from
-    // /// `public_values_stream`.
-    // pub public_values_stream_ptr: usize,
-    // // /// Keeps track of how many times a certain syscall has been called.
+    /// A ptr to the current position in the public values stream, incremented when reading from
+    /// `public_values_stream`.
+    pub public_values_stream_ptr: usize,
+
+    // /// Keeps track of how many times a certain syscall has been called.
+    // pub syscall_counts: HashMap<SyscallCode, u64>,
+
+    /// Uninitialized memory addresses that have a specific value they should be initialized with.
+    /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
+    pub uninitialized_memory: Memory<u32>,
+
+    /// if the next instruction is in delay slot for branch and jump.
+    pub next_is_delayslot: bool,
+}
+
+/// Holds data describing the current state of a program's execution.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[repr(C)]
+pub struct VmRecordState<MEM = GuestMemory> {
+    /// The program counter.
+    pub pc: u32,
+
+    // because of delayed slot
+    pub next_pc: u32,
+
+    /// if exit
+    pub exited: bool,
+
+    /// The memory which instructions operate over.
+    pub memory: MEM,
+
+    /// The shard clock keeps track of how many shards have been executed.
+    pub current_shard: u32,
+
+    /// The global clock keeps track of how many instructions have been executed through all shards.
+    pub global_clk: u64,
+
+    /// The clock increments by 4 (possibly more in syscalls) for each instruction that has been
+    /// executed in this shard.
+    pub clk: u32,
+
+    pub max_clks: Vec<u32>,
+
+    pub max_clks_index: u32,
+
+    /// Uninitialized memory addresses that have a specific value they should be initialized with.
+    /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
+    pub uninitialized_memory: Memory<u32>,
+
+    /// A stream of input values (global to the entire program).
+    pub input_stream: Vec<Vec<u8>>,
+
+    /// A ptr to the current position in the input stream incremented by `HINT_READ` opcode.
+    pub input_stream_ptr: usize,
+
+    /// A stream of proofs (reduce vk, proof, verifying key) inputted to the program.
+    pub proof_stream:
+        Vec<(ZKMReduceProof<KoalaBearPoseidon2>, StarkVerifyingKey<KoalaBearPoseidon2>)>,
+
+    /// A ptr to the current position in the proof stream, incremented after verifying a proof.
+    pub proof_stream_ptr: usize,
+
+    /// A stream of public values from the program (global to entire program).
+    pub public_values_stream: Vec<u8>,
+
+    /// A ptr to the current position in the public values stream, incremented when reading from
+    /// `public_values_stream`.
+    pub public_values_stream_ptr: usize,
+
+    // /// Keeps track of how many times a certain syscall has been called.
     // pub syscall_counts: HashMap<SyscallCode, u64>,
 }
+
 
 impl VmSimpleState<GuestMemory> {
     #[must_use]
@@ -155,20 +221,22 @@ impl VmCheckpointState<GuestMemory> {
             next_pc,
             exited: false,
             memory,
+            shards: Vec::with_capacity(MAX_MEMORY),
+            timestamps: Vec::with_capacity(MAX_MEMORY),
             global_clk: 0,
             // Start at shard 1 since shard 0 is reserved for memory initialization.
             current_shard: 1,
             clk: 0,
-            clks: vec![],
-            clk_index: 0,
+            max_clks: vec![],
+            max_clks_index: 0,
             next_is_delayslot: false,
             uninitialized_memory: Memory::new_preallocated(),
-            // input_stream: Vec::new(),
-            // input_stream_ptr: 0,
-            // public_values_stream: Vec::new(),
-            // public_values_stream_ptr: 0,
+            input_stream: Vec::new(),
+            input_stream_ptr: 0,
+            public_values_stream: Vec::new(),
+            public_values_stream_ptr: 0,
             proof_stream: Vec::new(),
-            // proof_stream_ptr: 0,
+            proof_stream_ptr: 0,
             // syscall_counts: HashMap::new(),
         }
     }

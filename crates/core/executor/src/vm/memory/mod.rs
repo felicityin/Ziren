@@ -6,10 +6,11 @@ pub mod memmap;
 use std::{array::from_fn, collections::BTreeMap, fmt::Debug, num::NonZero};
 
 // use getset::Getters;
+use serde::{Deserialize, Serialize};
 use itertools::zip_eq;
 use tracing::instrument;
 
-use crate::vm::memory::config::{AddressSpaceHostConfig, AddressSpaceHostLayout, MemoryConfig, MIPS_MEMORY_AS};
+use crate::vm::memory::config::{AddressSpaceHostConfig, AddressSpaceHostLayout, MemoryConfig, MIPS_MEMORY_SPACE};
 
 #[cfg(all(any(unix, windows), not(feature = "basic-memory")))]
 pub type MemoryBackend = memmap::MmapMemory;
@@ -22,7 +23,7 @@ pub type Address = (u32, u32);
 /// Default mmap page size. Change this if using THB.
 pub const PAGE_SIZE: usize = 4096;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[repr(C)]
 pub struct GuestMemory {
     pub memory: AddressMap,
@@ -215,7 +216,7 @@ pub trait LinearMemory {
 /// address space has memory cells of a fixed type (e.g., `u8, F`). We do not use a typemap for
 /// performance reasons, and it is up to the user to enforce types. Needless to say, this is a very
 /// `unsafe` API.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[repr(C)]
 pub struct AddressMap<M: LinearMemory = MemoryBackend> {
     /// Underlying memory data.
@@ -254,7 +255,7 @@ impl<M: LinearMemory> AddressMap<M> {
                 // - safety assumptions in function doc comments
                 unsafe {
                     self.mem
-                        .get_unchecked_mut(MIPS_MEMORY_AS as usize)
+                        .get_unchecked_mut(MIPS_MEMORY_SPACE as usize)
                         .write_unaligned(addr as usize + i, byte);
                 }
             }

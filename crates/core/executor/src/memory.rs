@@ -291,6 +291,7 @@ impl<V: Copy> PagedMemory<V> {
     /// Gets the memory entry for the given address.
     #[inline]
     pub fn entry(&mut self, addr: u32) -> Entry<'_, V> {
+        print!("index({:x}) ", Self::compress_addr(addr));
         let (upper, lower) = Self::indices(addr);
         let index = self.index[upper];
         if index == NO_PAGE {

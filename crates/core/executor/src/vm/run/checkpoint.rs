@@ -15,7 +15,7 @@ use crate::{
         AluEvent, BranchEvent, CompAluEvent, CpuEvent, JumpEvent, MemInstrEvent,
         MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryLocalEvent, MemoryReadRecord,
         MemoryRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent, SyscallEvent,
-    }, hook::{HookEnv, HookRegistry}, memory::{Entry, Memory}, pad_mips_event_counts, record::{ExecutionRecord, MemoryAccessRecord}, sign_extend, state::{ExecutionState, ForkState}, subproof::SubproofVerifier, syscalls::{Syscall, SyscallCode, SyscallContext, default_syscall_map}, vm::{memory::{AddressMap, GuestMemory, config::{MemoryConfig, MIPS_REGISTER_AS}}, state::{VmCheckpointState, VmSimpleState}}
+    }, hook::{HookEnv, HookRegistry}, memory::{Entry, Memory}, pad_mips_event_counts, record::{ExecutionRecord, MemoryAccessRecord}, sign_extend, state::{ExecutionState, ForkState}, subproof::SubproofVerifier, syscalls::{Syscall, SyscallCode, SyscallContext, default_syscall_map}, vm::{memory::{AddressMap, GuestMemory, config::{MemoryConfig, MIPS_REGISTER_SPACE}}, state::{VmCheckpointState, VmSimpleState}}
 };
 
 /// An executor for the MIPS zkVM.
@@ -31,14 +31,6 @@ pub struct CheckpointGenerator<'a, MEM = GuestMemory>  {
 
     /// The state of the execution.
     pub state: VmCheckpointState<MEM>,
-
-    /// Memory addresses that were touched in this batch of shards. Used to minimize the size of
-    /// checkpoints.
-    pub memory_checkpoint: MEM,
-
-    /// Memory addresses that were initialized in this batch of shards. Used to minimize the size of
-    /// checkpoints. The value stored is whether it had a value at the beginning of the batch.
-    pub uninitialized_memory_checkpoint: Memory<bool>,
 
     /// Whether the runtime is in constrained mode or not.
     ///
@@ -110,8 +102,6 @@ impl<'a> CheckpointGenerator<'a>  {
             program,
             io_buf: HashMap::new(),
             state,
-            memory_checkpoint: GuestMemory::default(),
-            uninitialized_memory_checkpoint: Memory::default(),
             unconstrained: false,
             print_report: false,
             shard_size: (opts.shard_size as u32) * 4,
@@ -130,59 +120,15 @@ impl<'a> CheckpointGenerator<'a>  {
     }
 
     pub fn run(&mut self) -> Result<(VmCheckpointState, bool), ExecutionError> {
-        // Clone self.state without memory, uninitialized_memory, proof_stream in it so it's faster.
-        let memory = std::mem::take(&mut self.state.memory);
-        let uninitialized_memory = std::mem::take(&mut self.state.uninitialized_memory);
+        // Clone self.state without proof_stream in it so it's faster.
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
         let mut checkpoint = tracing::debug_span!("clone").in_scope(|| self.state.clone());
-        self.state.memory = memory;
-        self.state.uninitialized_memory = uninitialized_memory;
         self.state.proof_stream = proof_stream;
 
         let done = tracing::debug_span!("execute").in_scope(|| self.execute())?;
 
-        // Create a checkpoint using `memory_checkpoint`. Just include all memory if `done` since we
-        // need it all for MemoryFinalize.
-        tracing::debug_span!("create memory checkpoint").in_scope(|| {
-            let memory_checkpoint = std::mem::take(&mut self.memory_checkpoint);
-            let uninitialized_memory_checkpoint =
-                std::mem::take(&mut self.uninitialized_memory_checkpoint);
-            if done {
-                // If it's the last shard, we need to include all memory
-                // so that memory events can be emitted from the checkpoint. But we need
-                // to first reset any modified memory to as it was before the execution.
-                checkpoint.memory.clone_from(&self.state.memory);
-                // memory_checkpoint.into_iter().for_each(|(addr, record)| {
-                //     if let Some(record) = record {
-                //         checkpoint.memory.insert(addr, record);
-                //     } else {
-                //         checkpoint.memory.remove(addr);
-                //     }
-                // });
-                checkpoint.uninitialized_memory = self.state.uninitialized_memory.clone();
-                // Remove memory that was written to in this batch.
-                for (addr, is_old) in uninitialized_memory_checkpoint {
-                    if !is_old {
-                        checkpoint.uninitialized_memory.remove(addr);
-                    }
-                }
-            } else {
-                checkpoint.memory = memory_checkpoint;
-                checkpoint.uninitialized_memory = uninitialized_memory_checkpoint
-                    .into_iter()
-                    .filter(|&(_, has_value)| has_value)
-                    .map(|(addr, _)| (addr, *self.state.uninitialized_memory.get(addr).unwrap()))
-                    .collect();
-            }
-        });
-        checkpoint.clks = std::mem::take(&mut self.state.clks);
+        checkpoint.max_clks = std::mem::take(&mut self.state.max_clks);
         Ok((checkpoint, done))
-    }
-
-    /// Fetch the instruction at the current program counter.
-    #[inline]
-    fn fetch(&self) -> Instruction {
-        self.program.fetch(self.state.pc)
     }
 
     /// Executes one cycle of the program, returning whether the program has finished.
@@ -190,7 +136,6 @@ impl<'a> CheckpointGenerator<'a>  {
     #[allow(clippy::too_many_lines)]
     fn execute(&mut self) -> Result<bool, ExecutionError> {
         let mut done = false;
-        let mut current_shard = self.state.current_shard;
         let mut num_shards_executed = 0;
     
         // Loop until we've executed `self.shard_batch_size` shards if `self.shard_batch_size` is set.
@@ -200,37 +145,24 @@ impl<'a> CheckpointGenerator<'a>  {
                 break;
             }
 
-            if self.shard_batch_size > 0 && current_shard != self.state.current_shard {
-                num_shards_executed += 1;
-                current_shard = self.state.current_shard;
-                if num_shards_executed == self.shard_batch_size {
-                    break;
+            // We restrict the execution of branch/jump and its delay slot to be in the same shard.
+            if !self.unconstrained && !self.state.next_is_delayslot {
+                if self.inc_shard_if_need() {
+                    num_shards_executed += 1;
+                    if num_shards_executed >= self.shard_batch_size {
+                        break;
+                    }
                 }
             }
-        }
-
-        if done {
-            self.postprocess();
         }
 
         Ok(done)
     }
 
-    fn postprocess(&mut self) {
-        // Flush remaining stdout/stderr
-        for (fd, buf) in &self.io_buf {
-            if !buf.is_empty() {
-                match fd {
-                    1 => {
-                        println!("stdout: {buf}");
-                    }
-                    2 => {
-                        println!("stderr: {buf}");
-                    }
-                    _ => {}
-                }
-            }
-        }
+    /// Fetch the instruction at the current program counter.
+    #[inline]
+    fn fetch(&self) -> Instruction {
+        self.program.fetch(self.state.pc)
     }
 
     /// Executes one cycle of the program, returning whether the program has finished.
@@ -250,11 +182,6 @@ impl<'a> CheckpointGenerator<'a>  {
         // Increment the clock.
         self.state.global_clk += 1;
 
-        // We restrict the execution of branch/jump and its delay slot to be in the same shard.
-        if !self.unconstrained && !self.state.next_is_delayslot {
-           self.inc_shard_if_need();
-        }
-
         // If the cycle limit is exceeded, return an error.
         if let Some(max_cycles) = self.max_cycles {
             if self.state.global_clk >= max_cycles {
@@ -267,8 +194,6 @@ impl<'a> CheckpointGenerator<'a>  {
             || self.state.pc.wrapping_sub(self.program.pc_base)
                 >= (self.program.instructions.len() * 4) as u32;
         if done {
-            self.state.clks.push(self.state.clk);
-
             if self.unconstrained {
                 tracing::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
                 return Err(ExecutionError::EndInUnconstrained());
@@ -278,7 +203,7 @@ impl<'a> CheckpointGenerator<'a>  {
         Ok(done)
     }
 
-    fn inc_shard_if_need(&mut self) {
+    fn inc_shard_if_need(&mut self) -> bool {
         // If there's not enough cycles left for another instruction, move to the next shard.
         let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
 
@@ -368,10 +293,12 @@ impl<'a> CheckpointGenerator<'a>  {
         }
 
         if cpu_exit || !shape_match_found {
-            self.state.clks.push(self.state.clk);
+            self.state.max_clks.push(self.state.clk);
             self.state.current_shard += 1;
             self.state.clk = 0;
+            return true;
         }
+        false
     }
 
     /// Execute the given instruction over the current state of the runtime.
@@ -528,13 +455,13 @@ impl<'a> CheckpointGenerator<'a>  {
                 (instruction.op_b as u8).into(),
                 (instruction.op_c as u8).into(),
             );
-            let c = self.rr_cpu(rs2);
-            let b = self.rr_cpu(rs1);
+            let c = self.rr_cpu(rs2, MemoryAccessPosition::C);
+            let b = self.rr_cpu(rs1, MemoryAccessPosition::B);
             (rd, b, c)
         } else if !instruction.imm_b && instruction.imm_c {
             let (rd, rs1, imm) =
                 (instruction.op_a.into(), (instruction.op_b as u8).into(), instruction.op_c);
-            let (rd, b, c) = (rd, self.rr_cpu(rs1), imm);
+            let (rd, b, c) = (rd, self.rr_cpu(rs1, MemoryAccessPosition::B), imm);
             (rd, b, c)
         } else {
             debug_assert!(instruction.imm_b && instruction.imm_c);
@@ -545,9 +472,23 @@ impl<'a> CheckpointGenerator<'a>  {
 
     /// Read a register.
     #[inline]
-    pub fn rr_cpu(&mut self, register: Register) -> u32 {
-        let rs = self.state.vm_read::<u8, 4>(MIPS_REGISTER_AS, register as u32);
+    pub fn rr_cpu(&mut self, register: Register, position: MemoryAccessPosition) -> u32 {
+        let rs = self.state.vm_read::<u8, 4>(MIPS_REGISTER_SPACE, register as u32);
         u32::from_le_bytes(rs)
+    }
+
+    /// Get the current timestamp for a given memory access position.
+    #[must_use]
+    #[inline]
+    pub const fn timestamp(&self, position: &MemoryAccessPosition) -> u32 {
+        self.state.clk + *position as u32
+    }
+
+    /// Get the current shard.
+    #[must_use]
+    #[inline]
+    pub fn shard(&self) -> u32 {
+        self.state.current_shard
     }
 
     /// Set the destination register with the result and emit an ALU event.
@@ -577,24 +518,17 @@ impl<'a> CheckpointGenerator<'a>  {
         let value = if register == Register::ZERO { 0 } else { value };
 
         let rd = value.to_le_bytes();
-        self.state.vm_write::<u8, 4>(MIPS_REGISTER_AS, register as u32, &rd);
+        self.state.vm_write::<u8, 4>(MIPS_REGISTER_SPACE, register as u32, &rd);
     }
 
     pub fn register(&self, offset: usize) -> u32 {
-        let bytes = unsafe { self.state.memory.read::<u8, 4>(MIPS_REGISTER_AS, offset as u32) };
+        let bytes = unsafe { self.state.memory.read::<u8, 4>(MIPS_REGISTER_SPACE, offset as u32) };
         u32::from_le_bytes(bytes)
     }
 
     #[inline]
     #[cfg(debug_assertions)]
     fn log(&mut self, _: &Instruction) {
-        // // Write the current program counter to the trace buffer for the cycle tracer.
-        // if let Some(ref mut buf) = self.trace_buf {
-        //     if !self.unconstrained {
-        //         buf.write_all(&u32::to_be_bytes(self.state.pc)).unwrap();
-        //     }
-        // }
-
         if !self.unconstrained && self.state.global_clk.is_multiple_of(10_000_000) {
             tracing::info!("clk = {} pc = 0x{:x?}", self.state.global_clk, self.state.pc);
         }
