@@ -10,6 +10,6 @@
 zkm_zkvm::entrypoint!(main);
 
 pub fn main() {
-    let a = "hello world";
-    zkm_zkvm::io::commit(&a);
+    // let a = "hello world";
+    // zkm_zkvm::io::commit(&a);
 }

@@ -732,6 +732,7 @@ impl<'a> Executor<'a> {
 
         let addr = register as u32;
         let value = self.state.read_register(addr);
+        // println!("rr_traced: register {} value {}", addr, value);
         let entry = self.state.mem_access_meta.registers.entry(addr);
 
         // If it's the first time accessing this address, initialize previous values.
@@ -747,6 +748,7 @@ impl<'a> Executor<'a> {
         record.timestamp = timestamp;
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
+            // println!("---------------===rr_traced===---------------");
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -756,6 +758,7 @@ impl<'a> Executor<'a> {
             local_memory_access
                 .entry(addr)
                 .and_modify(|e| {
+                    // println!("modifying local_memory_access for addr {}: {:?}", addr, e);
                     e.final_mem_access = MemoryRecord { shard, timestamp, value };
                 })
                 .or_insert(MemoryLocalEvent {
@@ -763,6 +766,7 @@ impl<'a> Executor<'a> {
                     initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value },
                     final_mem_access: MemoryRecord { shard: record.shard, timestamp: record.timestamp, value }
                 });
+            // println!("local_memory_access: {:?}", self.local_memory_access);
         }
 
         // Construct the memory read record.
@@ -909,7 +913,7 @@ impl<'a> Executor<'a> {
                 })
                 .or_insert(MemoryLocalEvent {
                     addr,
-                    initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value },
+                    initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value: prev_value },
                     final_mem_access: MemoryRecord { shard: record.shard, timestamp: record.timestamp, value }
                 });
         }
@@ -1062,7 +1066,7 @@ impl<'a> Executor<'a> {
                 })
                 .or_insert(MemoryLocalEvent {
                     addr,
-                    initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value },
+                    initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value: prev_value },
                     final_mem_access: MemoryRecord { shard: record.shard, timestamp: record.timestamp, value }
                 });
         }
@@ -1198,7 +1202,7 @@ impl<'a> Executor<'a> {
                 })
                 .or_insert(MemoryLocalEvent {
                     addr,
-                    initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value },
+                    initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value: prev_value },
                     final_mem_access: MemoryRecord { shard: record.shard, timestamp: record.timestamp, value }
                 });
         }
@@ -3219,6 +3223,14 @@ impl<'a> Executor<'a> {
 
         if done {
             self.postprocess();
+            
+            println!("self.local_memory_access: {:?}", self.local_memory_access);
+            println!("-----------\n");
+            println!("self.record.cpu_local_memory_access: {:?}", self.record.cpu_local_memory_access);
+            println!("-----------\n");
+            println!("self.record.global_memory_initialize_events: {:?}", self.record.global_memory_initialize_events);
+            println!("-----------\n");
+            println!("self.record.global_memory_finalize_events: {:?}", self.record.global_memory_finalize_events);
 
             // Push the remaining execution record with memory initialize & finalize events.
             self.bump_record();
@@ -3254,6 +3266,21 @@ impl<'a> Executor<'a> {
 
         Ok(done)
     }
+
+    // fn print_sorted_by_key<K, V>(map: &HashMap<K, V>)
+    // where
+    //     K: std::fmt::Display + Ord + Clone,
+    //     V: std::fmt::Display,
+    // {
+    //     let mut keys: Vec<&K> = map.keys().collect();
+    //     keys.sort();
+        
+    //     for key in keys {
+    //         if let Some(value) = map.get(key) {
+    //             println!("{}: {}", key, value);
+    //         }
+    //     }
+    // }
 
     /// Executes up to `self.shard_batch_size` cycles of the program, returning whether the program
     /// has finished.
@@ -3439,6 +3466,8 @@ impl<'a> Executor<'a> {
             tracing::warn!("Not all input bytes were read. Read bytes: {} / {}", self.state.input_stream_ptr, self.state.input_stream.len());
         }
 
+        println!("self.emit_global_memory_events: {}", self.emit_global_memory_events);
+
         if self.emit_global_memory_events
             && (self.executor_mode == ExecutorMode::Trace
                 || self.executor_mode == ExecutorMode::Checkpoint)
@@ -3581,7 +3610,7 @@ mod tests {
     use crate::programs::tests::{
         fibonacci_program, max_memory_program, panic_program, secp256r1_add_program,
         secp256r1_double_program, simple_memory_program, simple_program, ssz_withdrawals_program,
-        u256xu2048_mul_program,
+        u256xu2048_mul_program, hello_world_program,
     };
     use zkm_stark::ZKMCoreOpts;
 
@@ -3594,6 +3623,13 @@ mod tests {
     /// Runtime needs to be Send so we can use it across async calls.
     fn _assert_runtime_is_send() {
         _assert_send::<Executor>();
+    }
+
+    #[test]
+    fn test_hello_run() {
+        let program = hello_world_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
     }
 
     #[test]
@@ -3705,7 +3741,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run_fast().unwrap();
+        runtime.run().unwrap();
         assert_eq!(runtime.register(Register::RA), 42);
     }
 
