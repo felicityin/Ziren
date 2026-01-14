@@ -1,5 +1,5 @@
 use anyhow::Result;
-use zkm_core_executor::ZKMContext;
+use zkm_core_executor::{Instruction, ZKMContext};
 use zkm_core_machine::io::ZKMStdin;
 use zkm_prover::{components::DefaultProverComponents, ZKMProver};
 
@@ -73,6 +73,11 @@ impl Prover<DefaultProverComponents> for CpuProver {
         (pk, vk)
     }
 
+    fn setup_debug(&self, instructions: Vec<Instruction>) -> (ZKMProvingKey, ZKMVerifyingKey) {
+        let (pk, _, _, vk) = self.prover.setup_debug(instructions);
+        (pk, vk)
+    }
+
     fn zkm_prover(&self) -> &ZKMProver<DefaultProverComponents> {
         &self.prover
     }
@@ -91,6 +96,12 @@ impl Prover<DefaultProverComponents> for CpuProver {
         }
 
         let program = self.prover.get_program(&pk.elf).unwrap();
+        // let instructions = vec![
+        //     Instruction::new(zkm_core_executor::Opcode::ADD, 29, 0, 5, false, true),
+        //     Instruction::new(zkm_core_executor::Opcode::ADD, 30, 0, 37, false, true),
+        //     Instruction::new(zkm_core_executor::Opcode::ADD, 31, 30, 29, false, false),
+        // ];
+        // let program = zkm_core_executor::Program::new(instructions, 0, 0);
 
         // Generate the core proof.
         let proof: zkm_prover::ZKMProofWithMetadata<zkm_prover::ZKMCoreProofData> =

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    ExecutorMode, ZKMReduceProof, events::{MemoryAccessMeta, MemoryRecord}, memory::Memory, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode, vm::memory::{GuestMemory, LinearMemory, PagedVec, config::{AddressSpaceHostLayout, MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE}}
+    ExecutorMode, NUM_REGISTERS, ZKMReduceProof, events::{MemoryAccessMeta, MemoryRecord}, memory::Memory, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode, vm::memory::{GuestMemory, LinearMemory, PagedVec, config::{AddressSpaceHostLayout, MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE}}
 };
 
 /// Default mmap page size. Change this if using THB.
@@ -83,14 +83,13 @@ pub struct ExecutionState {
 }
 
 impl ExecutionState {
-    /// The number of lower bits to ignore, since addresses (except registers) are a multiple of 4.
-    const NUM_IGNORED_LOWER_BITS: usize = 2;
-
     #[must_use]
     /// Create a new [`ExecutionState`].
     pub fn new(pc_start: u32, next_pc: u32, image: &BTreeMap<u32, u32>) -> Self {
+        let mem_access_meta = Memory::new_preallocated();
         // println!("------pc_start: {}", pc_start);
-        let mem = GuestMemory::new(image);
+        // let mem = GuestMemory::new(image, &mut mem_access_meta);
+        let mem = GuestMemory::default();
 
         // let (meta, min_block_size): (Vec<_>, Vec<_>) =
         //     zip_eq(mem.memory.get_memory(), &mem.memory.config)
@@ -102,7 +101,7 @@ impl ExecutionState {
         //         })
         //         .unzip();
 
-        Self {
+        let mut state = Self {
             global_clk: 0,
             // Start at shard 1 since shard 0 is reserved for memory initialization.
             current_shard: 1,
@@ -115,7 +114,7 @@ impl ExecutionState {
             next_is_delayslot: false,
             // memory: Memory::new_preallocated(),
             mem,
-            mem_access_meta: Memory::new_preallocated(),
+            mem_access_meta,
             // min_block_size,
             uninitialized_memory: Memory::new_preallocated(),
             input_stream: Vec::new(),
@@ -125,7 +124,21 @@ impl ExecutionState {
             proof_stream: Vec::new(),
             proof_stream_ptr: 0,
             syscall_counts: HashMap::new(),
+        };
+
+        // Initialize memory with program image.
+        for (addr, value) in image {
+            if *addr < NUM_REGISTERS as u32 {
+                println!("Initializing register at addr {} with value {}", addr, value);
+                state.mem_access_meta.registers.insert(*addr, MemoryAccessMeta::default());
+                state.write_register(*addr, *value);
+            } else {
+                state.mem_access_meta.page_table.insert(*addr, MemoryAccessMeta::default());
+                state.write_memory(*addr, *value);
+            }
         }
+
+        state
     }
 
     /// Runtime read operation for a block of memory
@@ -182,19 +195,13 @@ impl ExecutionState {
         // println!("-----vm write: {} {}", ptr, u32::from_le_bytes(value));
     }
 
-    /// Compress an address from the sparse address space to a contiguous space.
-    #[inline]
-    const fn compress_addr(addr: u32) -> u32 {
-        addr >> Self::NUM_IGNORED_LOWER_BITS
-    }
-
     /// Runtime read operation for a block of memory
     #[inline(always)]
     pub fn read_memory(
         &self,
         ptr: u32,
     ) -> u32 {
-        let value = self.vm_read::<u32, 1>(MIPS_MEMORY_SPACE, Self::compress_addr(ptr));
+        let value = self.vm_read::<u32, 1>(MIPS_MEMORY_SPACE, ptr >> 2);
         value[0]
         // u32::from_le_bytes(value)
     }
@@ -207,7 +214,7 @@ impl ExecutionState {
         value: u32,
     ) {
         // let value = value.to_le_bytes();
-        self.vm_write::<u32, 1>(MIPS_MEMORY_SPACE, Self::compress_addr(ptr), &[value]);
+        self.vm_write::<u32, 1>(MIPS_MEMORY_SPACE, ptr >> 2, &[value]);
 
         // let value = self.vm_read::<u8, 4>(addr_space, ptr);
         // println!("-----vm write: {} {}", ptr, u32::from_le_bytes(value));

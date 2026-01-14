@@ -543,7 +543,9 @@ impl<'a> Executor<'a> {
         let record: &mut MemoryAccessMeta = match access_meta {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                entry.insert(MemoryAccessMeta { shard: 0, timestamp: 0 })
+                let a = entry.insert(MemoryAccessMeta { shard: 0, timestamp: 0 });
+                // print!("{} ", self.state.mem_access_meta.page_table.keys().len());
+                a
             }
         };
 
@@ -732,14 +734,16 @@ impl<'a> Executor<'a> {
 
         let addr = register as u32;
         let value = self.state.read_register(addr);
-        // println!("rr_traced: register {} value {}", addr, value);
+        if addr == 7 && value == 2551751680 {
+            println!("rr_traced: register {} value {}", addr, value);
+        }
         let entry = self.state.mem_access_meta.registers.entry(addr);
 
         // If it's the first time accessing this address, initialize previous values.
         let record: &mut MemoryAccessMeta = match entry {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                entry.insert(MemoryAccessMeta { shard: 0, timestamp: 0 })
+                entry.insert(MemoryAccessMeta::default())
             }
         };
 
@@ -755,9 +759,11 @@ impl<'a> Executor<'a> {
                 &mut self.local_memory_access
             };
 
+            let mut init = false;
             local_memory_access
                 .entry(addr)
                 .and_modify(|e| {
+                    init = true;
                     // println!("modifying local_memory_access for addr {}: {:?}", addr, e);
                     e.final_mem_access = MemoryRecord { shard, timestamp, value };
                 })
@@ -766,7 +772,12 @@ impl<'a> Executor<'a> {
                     initial_mem_access: MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value },
                     final_mem_access: MemoryRecord { shard: record.shard, timestamp: record.timestamp, value }
                 });
-            // println!("local_memory_access: {:?}", self.local_memory_access);
+            // if init {
+            //     println!("({} {:?})", addr, MemoryRecord { shard, timestamp, value });
+            // } else {
+            //     println!("({} {:?}", addr, MemoryRecord { shard: prev_record.shard, timestamp: prev_record.timestamp, value });
+            //     println!("{} {:?})", addr, MemoryRecord { shard: record.shard, timestamp: record.timestamp, value });
+            // }
         }
 
         // Construct the memory read record.
@@ -1025,6 +1036,9 @@ impl<'a> Executor<'a> {
         let addr = register as u32;
 
         let prev_value = self.state.read_register(addr);
+        if addr == 7 && prev_value == 2551751680 {
+            println!("rw_cpu_traced: register {} value {}", addr, prev_value);
+        }
         self.state.write_register(addr, value);
 
         // Get the memory record entry.
@@ -1171,6 +1185,9 @@ impl<'a> Executor<'a> {
         let addr = register as u32;
 
         let prev_value = self.state.read_register(addr);
+        if addr == 7 && prev_value == 2551751680 {
+            println!("rw_traced: register {} value {}", addr, prev_value);
+        }
         self.state.write_register(addr, value);
 
         // Get the memory record entry.
@@ -2077,6 +2094,12 @@ impl<'a> Executor<'a> {
             }
         }
 
+        // let value = self.state.read_register(7);
+        // if value == 3674076275 {
+        //     print!("([1] {}, {pc}, {clk}, {value}) ", instruction.opcode);
+        // }
+
+        // println!("Executing instruction at PC: {}, {}", self.state.pc, instruction.opcode);
         if instruction.is_alu_instruction() {
             (hi_or_prev_a, a, b, c) = self.execute_alu(instruction)?;
         } else if instruction.is_memory_load_instruction() {
@@ -2126,6 +2149,11 @@ impl<'a> Executor<'a> {
         } else {
             unreachable!()
         }
+
+        // let value = self.state.read_register(7);
+        // if value == 3674076275 {
+        //     print!("([2] {}, {pc}, {clk}, {value}) ", instruction.opcode);
+        // }
 
         if next_next_pc == 0 {
             log::error!("Null pointer reference {:X}: {:X}", self.state.pc, instruction.op_c);
@@ -2898,6 +2926,7 @@ impl<'a> Executor<'a> {
     fn execute_cycle(&mut self) -> Result<bool, ExecutionError> {
         // Fetch the instruction at the current program counter.
         let instruction = self.fetch();
+        // print!("ins: {} ", instruction.opcode);
         // let idx = (self.state.pc - self.program.pc_base) / 4;
         // if idx % 100 == 0 {
         //     println!("exec idx: {} / {}", idx, self.program.instructions.len());
@@ -3223,14 +3252,32 @@ impl<'a> Executor<'a> {
 
         if done {
             self.postprocess();
-            
-            println!("self.local_memory_access: {:?}", self.local_memory_access);
-            println!("-----------\n");
-            println!("self.record.cpu_local_memory_access: {:?}", self.record.cpu_local_memory_access);
-            println!("-----------\n");
-            println!("self.record.global_memory_initialize_events: {:?}", self.record.global_memory_initialize_events);
-            println!("-----------\n");
-            println!("self.record.global_memory_finalize_events: {:?}", self.record.global_memory_finalize_events);
+
+            // for a in self.record.global_memory_initialize_events.iter() {
+            //     if self.local_memory_access.get(&a.addr).is_some() {
+            //         let b = self.local_memory_access.get(&a.addr).unwrap().initial_mem_access;
+            //         if b.value != a.value || b.shard != a.shard || b.timestamp != a.timestamp {
+            //             // println!("addr: {}, local initial value: {:?}, global initial value: {:?}", a.addr, b, a);
+            //         }
+            //     }
+            // }
+
+            // for a in self.record.global_memory_finalize_events.iter() {
+            //     if self.local_memory_access.get(&a.addr).is_some() {
+            //         let b = self.local_memory_access.get(&a.addr).unwrap().final_mem_access;
+            //         if b.value != a.value || b.shard != a.shard || b.timestamp != a.timestamp {
+            //             // println!("addr: {}, local final value: {:?}, global final value: {:?}", a.addr, b, a);
+            //         }
+            //     }
+            // }
+
+            // println!("self.local_memory_access: {:?}", self.local_memory_access);
+            // println!("-----------\n");
+            // println!("self.record.cpu_local_memory_access: {:?}", self.record.cpu_local_memory_access);
+            // println!("-----------\n");
+            // println!("self.record.global_memory_initialize_events: {:?}", self.record.global_memory_initialize_events);
+            // println!("-----------\n");
+            // println!("self.record.global_memory_finalize_events: {:?}", self.record.global_memory_finalize_events);
 
             // Push the remaining execution record with memory initialize & finalize events.
             self.bump_record();
@@ -3506,7 +3553,7 @@ impl<'a> Executor<'a> {
             for addr in 1..NUM_REGISTERS as u32 {
                 // let record = self.state.memory.registers.get(addr);
                 let value = self.state.read_register(addr);
-                let record = self.state.mem_access_meta.registers.get(addr).cloned().map(|meta| {
+                let record = self.state.mem_access_meta.registers.get(addr).map(|meta| {
                     MemoryRecord {
                         value,
                         shard: meta.shard,

@@ -8,6 +8,7 @@ pub use mock::MockProver;
 
 use itertools::Itertools;
 use p3_field::PrimeField32;
+use zkm_core_executor::Instruction;
 use std::borrow::Borrow;
 use std::time::Duration;
 
@@ -79,6 +80,10 @@ pub trait Prover<C: ZKMProverComponents>: Send + Sync {
 
     /// Generate the proving and verifying keys for the given program.
     fn setup(&self, elf: &[u8]) -> (ZKMProvingKey, ZKMVerifyingKey);
+
+    fn setup_debug(&self, _instructions: Vec<Instruction>) -> (ZKMProvingKey, ZKMVerifyingKey) {
+        todo!()
+    }
 
     /// Prove the execution of a MIPS ELF with the given inputs, according to the given proof mode.
     fn prove(

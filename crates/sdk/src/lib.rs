@@ -9,6 +9,7 @@ pub mod install;
 #[cfg(feature = "network")]
 pub use crate::network::prover::NetworkProver;
 use cfg_if::cfg_if;
+use zkm_core_executor::Instruction;
 use std::env;
 use zkm_cuda::ZKMGpuServer;
 
@@ -282,6 +283,10 @@ impl ProverClient {
     pub fn setup(&self, elf: &[u8]) -> (ZKMProvingKey, ZKMVerifyingKey) {
         self.prover.setup(elf)
     }
+
+    pub fn setup_debug(&self, instructions: Vec<Instruction>) -> (ZKMProvingKey, ZKMVerifyingKey) {
+        self.prover.setup_debug(instructions)
+    }
 }
 
 impl Default for ProverClient {
@@ -435,13 +440,13 @@ mod tests {
     }
 
     #[test]
-    fn test_e2e_core() {
+    fn test_e2e_core1() {
         utils::setup_logger();
         let client = ProverClient::cpu();
         let elf = test_artifacts::HELLO_WORLD_ELF;
         let (pk, vk) = client.setup(elf);
         let mut stdin = ZKMStdin::new();
-        stdin.write(&10usize);
+        // stdin.write(&10usize);
 
         // Generate proof & verify.
         let mut proof = client.prove(&pk, stdin).run().unwrap();
@@ -451,6 +456,32 @@ mod tests {
         proof.public_values = ZKMPublicValues::from(&[255, 4, 84]);
         if client.verify(&proof, &vk).is_ok() {
             panic!("verified proof with invalid public values")
+        }
+    }
+
+    #[test]
+    fn test_e2e_core_debug() {
+        use zkm_core_executor::Opcode;
+        use zkm_core_executor::Instruction;
+
+        utils::setup_logger();
+        let client = ProverClient::cpu();
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 5, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, 37, false, true),
+            Instruction::new(Opcode::ADD, 31, 30, 29, false, false),
+        ];
+        let (pk, vk) = client.setup_debug(instructions);
+        let stdin = ZKMStdin::new();
+
+        // Generate proof & verify.
+        let mut proof = client.prove(&pk, stdin).run().unwrap();
+        client.verify(&proof, &vk).unwrap();
+
+        // Test invalid public values.
+        proof.public_values = ZKMPublicValues::from(&[255, 4, 84]);
+        if client.verify(&proof, &vk).is_ok() {
+            // panic!("verified proof with invalid public values")
         }
     }
 

@@ -38,7 +38,7 @@ use p3_koala_bear::KoalaBear;
 use p3_matrix::dense::RowMajorMatrix;
 use shapes::ZKMProofShape;
 use tracing::instrument;
-use zkm_core_executor::{ExecutionError, ExecutionReport, Executor, Program, ZKMContext};
+use zkm_core_executor::{ExecutionError, ExecutionReport, Executor, Instruction, Program, ZKMContext};
 use zkm_core_machine::{
     io::ZKMStdin,
     mips::MipsAir,
@@ -292,6 +292,24 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         let pk = ZKMProvingKey {
             pk: self.core_prover.pk_to_host(&pk),
             elf: elf.to_vec(),
+            vk: vk.clone(),
+        };
+        let pk_d = self.core_prover.pk_to_device(&pk.pk);
+        (pk, pk_d, program, vk)
+    }
+
+    /// Creates a proving key and a verifying key for a given MIPS ELF.
+    #[instrument(name = "setup", level = "debug", skip_all)]
+    pub fn setup_debug(
+        &self,
+        instructions: Vec<Instruction>,
+    ) -> (ZKMProvingKey, DeviceProvingKey<C>, Program, ZKMVerifyingKey) {
+        let program = Program::new(instructions, 0, 0);
+        let (pk, vk) = self.core_prover.setup(&program);
+        let vk = ZKMVerifyingKey { vk };
+        let pk = ZKMProvingKey {
+            pk: self.core_prover.pk_to_host(&pk),
+            elf: vec![],
             vk: vk.clone(),
         };
         let pk_d = self.core_prover.pk_to_device(&pk.pk);

@@ -143,7 +143,7 @@ impl Default for MemoryConfig {
             Self::empty_address_space_configs((1 << 3) + ADDR_SPACE_OFFSET as usize);
         // const MAX_CELLS: usize = 1 << 29;
         const MAX_CELLS: usize = MAX_MEMORY >> 2;
-        addr_spaces[MIPS_REGISTER_SPACE as usize].num_cells = 32;
+        addr_spaces[MIPS_REGISTER_SPACE as usize].num_cells = NUM_REGISTERS;
         addr_spaces[MIPS_MEMORY_SPACE as usize].num_cells = MAX_CELLS;
         // addr_spaces[PUBLIC_VALUES_AS as usize].num_cells = DEFAULT_MAX_NUM_PUBLIC_VALUES;
         // addr_spaces[NATIVE_AS as usize].num_cells = MAX_CELLS;

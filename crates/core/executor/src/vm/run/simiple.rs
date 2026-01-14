@@ -30,7 +30,8 @@ impl SimpleExecutor {
         // Create a shared reference to the program.
         let program = Arc::new(program);
 
-        let memory = GuestMemory::new(&program.image);
+        // let memory = GuestMemory::new(&program.image);
+        let memory = GuestMemory::default();
         let state = VmSimpleState::new(program.pc_start, program.next_pc, memory);
 
         Self {

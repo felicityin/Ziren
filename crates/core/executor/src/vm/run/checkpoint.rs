@@ -86,7 +86,8 @@ impl<'a> CheckpointGenerator<'a>  {
         // Create a shared reference to the program.
         let program = Arc::new(program);
 
-        let memory = GuestMemory::new(&program.image);
+        // let memory = GuestMemory::new(&program.image);
+        let memory = GuestMemory::default();
         let state = VmCheckpointState::new(program.pc_start, program.next_pc, memory);
 
         // Determine the maximum number of cycles for any syscall.

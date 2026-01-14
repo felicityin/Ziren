@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use itertools::zip_eq;
 use tracing::instrument;
 
-use crate::vm::memory::config::{AddressSpaceHostConfig, AddressSpaceHostLayout, MemoryConfig, MIPS_MEMORY_SPACE};
+use crate::{NUM_REGISTERS, events::MemoryAccessMeta, memory::Memory, vm::memory::config::{AddressSpaceHostConfig, AddressSpaceHostLayout, MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE, MemoryConfig}};
 
 #[cfg(all(any(unix, windows), not(feature = "basic-memory")))]
 pub type MemoryBackend = memmap::MmapMemory;
@@ -33,9 +33,9 @@ pub struct GuestMemory {
 }
 
 impl GuestMemory {
-    pub fn new(program_image: &BTreeMap<u32, u32>) -> Self {
+    pub fn new(program_image: &BTreeMap<u32, u32>, mem_access_meta: &mut Memory<MemoryAccessMeta>) -> Self {
         let mut addr_map = AddressMap::default();
-        addr_map.init(program_image);
+        addr_map.init(program_image, mem_access_meta);
         Self { memory: addr_map }
     }
 
@@ -252,15 +252,32 @@ impl<M: LinearMemory> AddressMap<M> {
     /// # Safety
     /// - `T` **must** be the correct type for a single memory cell for `addr_space`
     /// - Assumes `addr_space` is within the configured memory and not out of bounds
-    pub fn init(&mut self, program_image: &BTreeMap<u32, u32>) {
+    pub fn init(&mut self, program_image: &BTreeMap<u32, u32>, access_meta: &mut Memory<MemoryAccessMeta>) {
         for (&addr, value) in program_image {
-            for (i, byte) in value.to_le_bytes().into_iter().enumerate() {
-                // SAFETY:
-                // - safety assumptions in function doc comments
+            // println!("Initializing memory at addr {} with value {}", addr >> 2, value);
+            // for (i, byte) in value.to_be_bytes().into_iter().enumerate() {
+            //     // SAFETY:
+            //     // - safety assumptions in function doc comments
+            //     unsafe {
+            //         self.mem
+            //             .get_unchecked_mut(MIPS_MEMORY_SPACE as usize)
+            //             .write_unaligned(addr as usize + i, byte);
+            //     }
+            // }
+            if addr < NUM_REGISTERS as u32 {
+                println!("Initializing register at addr {} with value {}", addr, value);
+                access_meta.registers.insert(addr, MemoryAccessMeta::default());
+                unsafe {
+                    self.mem
+                        .get_unchecked_mut(MIPS_REGISTER_SPACE as usize)
+                        .write(addr as usize * 4, &[value]);
+                }
+            } else {
+                access_meta.page_table.insert(addr, MemoryAccessMeta::default());
                 unsafe {
                     self.mem
                         .get_unchecked_mut(MIPS_MEMORY_SPACE as usize)
-                        .write_unaligned(addr as usize + i, byte);
+                        .write(addr as usize, &[value]);
                 }
             }
         }
