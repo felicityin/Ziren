@@ -164,8 +164,9 @@ where
 
         // Spawn the checkpoint generator thread.
         let checkpoint_generator_span = tracing::Span::current().clone();
+        // TODO: ExecutionState is too big to send through channel, use temp files instead
         let (checkpoints_tx, checkpoints_rx) =
-            sync_channel::<(usize, File, bool, u64)>(opts.checkpoints_channel_capacity);
+            sync_channel::<(usize, ExecutionState, bool, u64)>(opts.checkpoints_channel_capacity);
         let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> =
             s.spawn(move || {
                 let _span = checkpoint_generator_span.enter();
@@ -181,16 +182,9 @@ where
                             .execute_state(false)
                             .map_err(ZKMCoreProverError::ExecutionError)?;
 
-                        // Save the checkpoint to a temp file.
-                        let mut checkpoint_file =
-                            tempfile::tempfile().map_err(ZKMCoreProverError::IoError)?;
-                        checkpoint
-                            .save(&mut checkpoint_file)
-                            .map_err(ZKMCoreProverError::IoError)?;
-
                         // Send the checkpoint.
                         checkpoints_tx
-                            .send((index, checkpoint_file, done, runtime.state.global_clk))
+                            .send((index, checkpoint, done, runtime.state.global_clk))
                             .unwrap();
 
                         // If we've reached the final checkpoint, break out of the loop.
@@ -244,12 +238,9 @@ where
                     let _: () = loop {
                         // Receive the latest checkpoint.
                         let received = { checkpoints_rx.lock().unwrap().recv() };
-                        if let Ok((index, mut checkpoint, done, num_cycles)) = received {
+                        if let Ok((index, checkpoint, done, num_cycles)) = received {
                             // Trace the checkpoint and reconstruct the execution records.
-                            let mut reader = io::BufReader::new(&checkpoint);
-                            let execution_state: ExecutionState =
-                                bincode::deserialize_from(&mut reader)
-                                    .expect("failed to deserialize state");
+                            let execution_state: ExecutionState = checkpoint;
                             let (mut records, report) = tracing::debug_span!("trace checkpoint")
                                 .in_scope(|| {
                                     trace_checkpoint::<SC>(
@@ -261,7 +252,6 @@ where
                                 });
                             log::debug!("generated {} records", records.len());
                             *report_aggregate.lock().unwrap() += report;
-                            reset_seek(&mut checkpoint);
 
                             // Wait for our turn to update the state.
                             record_gen_sync.wait_for_turn(index);
@@ -748,6 +738,7 @@ where
     (records, runtime.report)
 }
 
+#[allow(dead_code)]
 fn reset_seek(file: &mut File) {
     file.seek(std::io::SeekFrom::Start(0)).expect("failed to seek to start of tempfile");
 }

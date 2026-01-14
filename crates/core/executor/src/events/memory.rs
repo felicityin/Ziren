@@ -18,6 +18,15 @@ pub struct MemoryRecord {
     pub value: u32,
 }
 
+#[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
+#[repr(C)]
+pub struct MemoryAccessMeta {
+    /// The shard number.
+    pub shard: u32,
+    /// The timestamp.
+    pub timestamp: u32,
+}
+
 /// Memory Access Position.
 ///
 /// This enum represents the position of a memory access in a register. For example, if a memory
@@ -202,8 +211,14 @@ impl MemoryInitializeFinalizeEvent {
 
     /// Creates a new [``MemoryInitializeFinalizeEvent``] for a finalization.
     #[must_use]
-    pub const fn finalize_from_record(addr: u32, record: &MemoryRecord) -> Self {
-        Self { addr, value: record.value, shard: record.shard, timestamp: record.timestamp }
+    pub const fn finalize(addr: u32, value: u32, meta: &MemoryAccessMeta) -> Self {
+        Self { addr, value, shard: meta.shard, timestamp: meta.timestamp }
+    }
+
+    /// Creates a new [``MemoryInitializeFinalizeEvent``] for a finalization.
+    #[must_use]
+    pub const fn new(addr: u32, value: u32, shard: u32, timestamp: u32) -> Self {
+        Self { addr, value, shard, timestamp }
     }
 }
 
