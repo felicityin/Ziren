@@ -1639,6 +1639,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive-new"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cdc8d50f426189eef89dac62fabfa0abb27d5cc008f25bf4156a0203325becc"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
+]
+
+[[package]]
 name = "derive_more"
 version = "0.99.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3860,6 +3871,15 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+
+[[package]]
+name = "memmap2"
+version = "0.9.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "memuse"
@@ -8313,13 +8333,16 @@ dependencies = [
  "anyhow",
  "bincode",
  "bytemuck",
+ "derive-new",
  "elf",
  "enum-map",
  "eyre",
  "hashbrown 0.14.5",
  "hex",
  "itertools 0.13.0",
+ "libc",
  "log",
+ "memmap2",
  "nohash-hasher",
  "num",
  "p3-field",
@@ -8457,7 +8480,7 @@ dependencies = [
 [[package]]
 name = "zkm-lib"
 version = "1.2.3"
-source = "git+https://github.com/ProjectZKM/Ziren#b8e13ca38217f898529fa9bdcb64932c3d480844"
+source = "git+https://github.com/ProjectZKM/Ziren#64c30dda3cfd3e9e08f0988519f3a7f2ced5a398"
 dependencies = [
  "bincode",
  "cfg-if",
@@ -8487,7 +8510,7 @@ dependencies = [
 [[package]]
 name = "zkm-primitives"
 version = "1.2.3"
-source = "git+https://github.com/ProjectZKM/Ziren#b8e13ca38217f898529fa9bdcb64932c3d480844"
+source = "git+https://github.com/ProjectZKM/Ziren#64c30dda3cfd3e9e08f0988519f3a7f2ced5a398"
 dependencies = [
  "bincode",
  "hex",

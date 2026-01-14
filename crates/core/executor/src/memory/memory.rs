@@ -1,5 +1,4 @@
-use super::program::MAX_MEMORY;
-use crate::register::NUM_REGISTERS;
+use crate::{register::NUM_REGISTERS, MAX_MEMORY};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use vec_map::VecMap;
 

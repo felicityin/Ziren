@@ -1,22 +1,21 @@
-use std::{
-    fs::File,
-    io::{Seek, Write},
-};
+use std::{fmt::Debug, fs::File};
 
 use hashbrown::HashMap;
-use serde::{Deserialize, Serialize};
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    events::MemoryRecord,
-    memory::Memory,
+    events::MemoryAccessMeta,
+    memory::{
+        config::{MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE},
+        GuestMemory, Memory,
+    },
     record::{ExecutionRecord, MemoryAccessRecord},
     syscalls::SyscallCode,
     ExecutorMode, ZKMReduceProof,
 };
 
 /// Holds data describing the current state of a program's execution.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 #[repr(C)]
 pub struct ExecutionState {
     /// The program counter.
@@ -34,9 +33,11 @@ pub struct ExecutionState {
     /// if the next instruction is in delay slot for branch and jump.
     pub next_is_delayslot: bool,
 
-    /// The memory which instructions operate over. Values contain the memory value and last shard
-    /// + timestamp that each memory address was accessed.
-    pub memory: Memory<MemoryRecord>,
+    /// The memory which instructions operate over.
+    pub memory: GuestMemory,
+
+    /// Values contain the memory value and last shard + timestamp that each memory address was accessed.
+    pub access_meta: Memory<MemoryAccessMeta>,
 
     /// The global clock keeps track of how many instructions have been executed through all shards.
     pub global_clk: u64,
@@ -85,7 +86,8 @@ impl ExecutionState {
             next_pc,
             exited: false,
             next_is_delayslot: false,
-            memory: Memory::new_preallocated(),
+            memory: GuestMemory::default(),
+            access_meta: Memory::new_preallocated(),
             uninitialized_memory: Memory::new_preallocated(),
             input_stream: Vec::new(),
             input_stream_ptr: 0,
@@ -95,6 +97,61 @@ impl ExecutionState {
             proof_stream_ptr: 0,
             syscall_counts: HashMap::new(),
         }
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn read_register(&self, ptr: u32) -> u32 {
+        let value = self.vm_read::<u32, 1>(MIPS_REGISTER_SPACE, ptr);
+        value[0]
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn write_register(&mut self, ptr: u32, value: u32) {
+        self.vm_write::<u32, 1>(MIPS_REGISTER_SPACE, ptr, &[value]);
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn read_memory(&self, ptr: u32) -> u32 {
+        let value = self.vm_read::<u32, 1>(MIPS_MEMORY_SPACE, ptr >> 2);
+        value[0]
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn write_memory(&mut self, ptr: u32, value: u32) {
+        self.vm_write::<u32, 1>(MIPS_MEMORY_SPACE, ptr >> 2, &[value]);
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn vm_read<T: Copy + Debug, const BLOCK_SIZE: usize>(
+        &self,
+        addr_space: u32,
+        ptr: u32,
+    ) -> [T; BLOCK_SIZE] {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        unsafe { self.memory.read(addr_space, ptr) }
+    }
+
+    /// Runtime write operation for a block of memory
+    #[inline(always)]
+    pub fn vm_write<T: Copy + Debug, const BLOCK_SIZE: usize>(
+        &mut self,
+        addr_space: u32,
+        ptr: u32,
+        data: &[T; BLOCK_SIZE],
+    ) {
+        // SAFETY:
+        // - T is stack-allocated repr(C) or repr(transparent), usually u8 or F where F is the base
+        //   field
+        // - T is the exact memory cell type for this address space, satisfying the type requirement
+        unsafe { self.memory.write(addr_space, ptr, *data) }
     }
 }
 
@@ -108,8 +165,10 @@ pub struct ForkState {
     pub clk: u32,
     /// The original `pc` value at the fork point.
     pub pc: u32,
-    /// All memory changes since the fork point.
-    pub memory_diff: HashMap<u32, Option<MemoryRecord>>,
+    /// The original memory which instructions operate over.
+    pub memory: GuestMemory,
+    /// The original values contain the memory value and last shard + timestamp that each memory address was accessed.
+    pub access_meta: Memory<MemoryAccessMeta>,
     /// The original memory access record at the fork point.
     pub op_record: MemoryAccessRecord,
     /// The original execution record at the fork point.
@@ -120,11 +179,11 @@ pub struct ForkState {
 
 impl ExecutionState {
     /// Save the execution state to a file.
-    pub fn save(&self, file: &mut File) -> std::io::Result<()> {
-        let mut writer = std::io::BufWriter::new(file);
-        bincode::serialize_into(&mut writer, self).unwrap();
-        writer.flush()?;
-        writer.seek(std::io::SeekFrom::Start(0))?;
+    pub fn save(&self, _file: &mut File) -> std::io::Result<()> {
+        // let mut writer = std::io::BufWriter::new(file);
+        // bincode::serialize_into(&mut writer, self).unwrap();
+        // writer.flush()?;
+        // writer.seek(std::io::SeekFrom::Start(0))?;
         Ok(())
     }
 }

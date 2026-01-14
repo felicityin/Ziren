@@ -42,7 +42,7 @@ impl Syscall for HintReadSyscall {
             );
             return Err(ExecutionError::InvalidSyscallArgs());
         }
-        let vec = &ctx.rt.state.input_stream[ctx.rt.state.input_stream_ptr];
+        let vec = std::mem::take(&mut ctx.rt.state.input_stream[ctx.rt.state.input_stream_ptr]);
         ctx.rt.state.input_stream_ptr += 1;
         if ctx.rt.unconstrained {
             log::error!("hint read should not be used in a unconstrained block");
@@ -70,9 +70,10 @@ impl Syscall for HintReadSyscall {
             let b4 = vec.get(i as usize + 3).copied().unwrap_or(0);
             let word = u32::from_le_bytes([b1, b2, b3, b4]);
 
+            ctx.rt.state.write_memory(ptr, word);
+
             // Save the data into runtime state so the runtime will use the desired data instead of
             // 0 when first reading/writing from this address.
-            ctx.rt.uninitialized_memory_checkpoint.entry(ptr + i).or_insert_with(|| false);
             match ctx.rt.state.uninitialized_memory.entry(ptr + i) {
                 Entry::Occupied(_entry) => {
                     log::error!("hint read address is initialized already");

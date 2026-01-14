@@ -1,5 +1,3 @@
-use hashbrown::HashMap;
-
 use crate::{state::ForkState, ExecutionError, ExecutorMode};
 
 use super::{Syscall, SyscallCode, SyscallContext};
@@ -22,7 +20,8 @@ impl Syscall for EnterUnconstrainedSyscall {
             global_clk: ctx.rt.state.global_clk,
             clk: ctx.rt.state.clk,
             pc: ctx.rt.state.pc,
-            memory_diff: HashMap::default(),
+            memory: ctx.rt.state.memory.clone(),
+            access_meta: std::mem::take(&mut ctx.rt.state.access_meta),
             record: std::mem::take(&mut ctx.rt.record),
             op_record: std::mem::take(&mut ctx.rt.memory_accesses),
             executor_mode: ctx.rt.executor_mode,
@@ -48,16 +47,8 @@ impl Syscall for ExitUnconstrainedSyscall {
             ctx.rt.state.clk = ctx.rt.unconstrained_state.clk;
             ctx.rt.state.pc = ctx.rt.unconstrained_state.pc;
             ctx.next_pc = ctx.rt.state.pc.wrapping_add(4);
-            for (addr, value) in ctx.rt.unconstrained_state.memory_diff.drain() {
-                match value {
-                    Some(value) => {
-                        ctx.rt.state.memory.insert(addr, value);
-                    }
-                    None => {
-                        ctx.rt.state.memory.remove(addr);
-                    }
-                }
-            }
+            ctx.rt.state.memory = std::mem::take(&mut ctx.rt.unconstrained_state.memory);
+            ctx.rt.state.access_meta = std::mem::take(&mut ctx.rt.unconstrained_state.access_meta);
             ctx.rt.record = std::mem::take(&mut ctx.rt.unconstrained_state.record);
             ctx.rt.memory_accesses = std::mem::take(&mut ctx.rt.unconstrained_state.op_record);
             ctx.rt.executor_mode = ctx.rt.unconstrained_state.executor_mode;
