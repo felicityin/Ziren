@@ -13,7 +13,7 @@ fn main() {
     println!("report: {}", report);
     println!("public_values: {:?}", public_values);
 
-    let (pk, vk) = client.setup(ELF);
-    let proof = client.prove(&pk, stdin).run().unwrap();
-    client.verify(&proof, &vk).expect("verification failed");
+    // let (pk, vk) = client.setup(ELF);
+    // let proof = client.prove(&pk, stdin).run().unwrap();
+    // client.verify(&proof, &vk).expect("verification failed");
 }

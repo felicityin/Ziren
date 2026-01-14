@@ -13,6 +13,7 @@ impl Write for SyscallWriter {
     fn write(&mut self, buf: &[u8]) -> Result<usize> {
         let nbytes = buf.len();
         let write_buf = buf.as_ptr();
+        println!("SyscallWriter write: fd={} nbytes={}", self.fd, nbytes);
         unsafe {
             syscall_write(self.fd, write_buf, nbytes);
         }
@@ -141,5 +142,6 @@ pub fn hint_slice(buf: &[u8]) {
 /// zkm_zkvm::io::write(3, &data);
 /// ```
 pub fn write(fd: u32, buf: &[u8]) {
+    println!("io::write called with fd: {}, nbytes: {}", fd, buf.len());
     SyscallWriter { fd }.write_all(buf).unwrap();
 }

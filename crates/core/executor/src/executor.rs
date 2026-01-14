@@ -3197,7 +3197,7 @@ impl<'a> Executor<'a> {
     pub fn run_fast(&mut self) -> Result<(), ExecutionError> {
         self.executor_mode = ExecutorMode::Simple;
         self.print_report = true;
-        while !self.execute_fast()? {}
+        while !self.execute()? {}
         Ok(())
     }
 

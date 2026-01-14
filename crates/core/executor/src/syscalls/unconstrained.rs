@@ -22,7 +22,10 @@ impl Syscall for EnterUnconstrainedSyscall {
             global_clk: ctx.rt.state.global_clk,
             clk: ctx.rt.state.clk,
             pc: ctx.rt.state.pc,
-            memory_diff: HashMap::default(),
+            // memory_diff: HashMap::default(),
+            // mem: std::mem::take(&mut ctx.rt.state.mem),
+            mem: ctx.rt.state.mem.clone(),
+            mem_access_meta: std::mem::take(&mut ctx.rt.state.mem_access_meta),
             record: std::mem::take(&mut ctx.rt.record),
             op_record: std::mem::take(&mut ctx.rt.memory_accesses),
             executor_mode: ctx.rt.executor_mode,
@@ -58,6 +61,8 @@ impl Syscall for ExitUnconstrainedSyscall {
             //         }
             //     }
             // }
+            ctx.rt.state.mem = std::mem::take(&mut ctx.rt.unconstrained_state.mem);
+            ctx.rt.state.mem_access_meta = std::mem::take(&mut ctx.rt.unconstrained_state.mem_access_meta);
             ctx.rt.record = std::mem::take(&mut ctx.rt.unconstrained_state.record);
             ctx.rt.memory_accesses = std::mem::take(&mut ctx.rt.unconstrained_state.op_record);
             ctx.rt.executor_mode = ctx.rt.unconstrained_state.executor_mode;

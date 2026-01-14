@@ -11,6 +11,7 @@ cfg_if::cfg_if! {
 #[allow(unused_variables)]
 #[no_mangle]
 pub extern "C" fn syscall_write(fd: u32, write_buf: *const u8, nbytes: usize) {
+    // println!("syscall_write called with fd: {}, nbytes: {}", fd, nbytes);
     cfg_if::cfg_if! {
         if #[cfg(target_os = "zkvm")] {
             unsafe {

@@ -246,8 +246,10 @@ pub struct ForkState {
     pub clk: u32,
     /// The original `pc` value at the fork point.
     pub pc: u32,
-    /// All memory changes since the fork point.
-    pub memory_diff: HashMap<u32, Option<MemoryRecord>>,
+    pub mem: GuestMemory,
+    pub mem_access_meta: Memory<MemoryAccessMeta>,
+    // /// All memory changes since the fork point.
+    // pub memory_diff: HashMap<u32, Option<MemoryRecord>>,
     /// The original memory access record at the fork point.
     pub op_record: MemoryAccessRecord,
     /// The original execution record at the fork point.

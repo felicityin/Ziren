@@ -5,12 +5,15 @@ use k256::FieldElement;
 zkm_zkvm::entrypoint!(main);
 
 pub fn main() {
+    // zkm_zkvm::lib::io::write(
+    //     zkm_zkvm::lib::io::FD_STDOUT,
+    //     b"hello world\n",
+    // );
     const MODULUS: &str = "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141";
     const NQR: FieldElement = FieldElement::from_u64(3);
     let value = FieldElement::from_u64(1);
     let (status, result) =
         call_sqrt_hook(value.to_bytes().as_slice(), MODULUS, NQR.to_bytes().as_slice());
-    println!("status: {:?}", status);
     zkm_zkvm::io::commit(&status);
 }
 

@@ -31,6 +31,8 @@ pub fn main() {
         c %= 7919; // Modulus to prevent overflow.
     }
 
+    // println!("Fibonacci number {} is {}", n, a);
+
     // Write the output of the program.
     //
     // Behind the scenes, this also compiles down to a system call which handles writing
