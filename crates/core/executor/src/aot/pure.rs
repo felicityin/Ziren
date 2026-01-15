@@ -69,7 +69,7 @@ impl AotCompiler {
             let pc = self.program.pc(i);
             asm_str += &format!("asm_execute_pc_{pc}:\n");
 
-            asm_str += &(self.generate_instruction_asm(instruction, pc)?);
+            asm_str += &(Self::generate_instruction_asm(instruction, pc)?);
 
             asm_str += &format!("    dec {REG_INSTRET_END}\n");
             asm_str += &format!("    cmp {REG_INSTRET_END}, 0\n");
@@ -109,29 +109,28 @@ impl AotCompiler {
         Ok(asm_str)
     }
 
-    fn generate_instruction_asm(
-        &self,
-        instruction: &Instruction,
-        pc: u32,
-    ) -> Result<String, AotError> {
+    fn generate_instruction_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         if instruction.is_alu_instruction() {
-            return self.generate_alu_asm(instruction, pc);
+            return Self::generate_alu_asm(instruction, pc);
         }
         Ok(String::new())
     }
 
-    fn generate_alu_asm(&self, instruction: &Instruction, _pc: u32) -> Result<String, AotError> {
+    fn generate_alu_asm(instruction: &Instruction, _pc: u32) -> Result<String, AotError> {
         let mut asm_str = String::new();
         match instruction.opcode {
             Opcode::ADD | Opcode::SUB | Opcode::OR | Opcode::AND | Opcode::XOR | Opcode::MUL => {
-                asm_str += &self.generate_base_alu_asm(instruction)?;
+                asm_str += &Self::generate_base_alu_asm(instruction)?;
+            }
+            Opcode::SLL | Opcode::SRL | Opcode::SRA | Opcode::ROR => {
+                asm_str += &Self::generate_shift_asm(instruction)?;
             }
             _ => return Err(AotError::NotSupported),
         }
         Ok(asm_str)
     }
 
-    fn generate_base_alu_asm(&self, instruction: &Instruction) -> Result<String, AotError> {
+    fn generate_base_alu_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm_str = String::new();
 
         let asm_opcode = match instruction.opcode {
@@ -173,6 +172,65 @@ impl AotCompiler {
             asm_str += &delta_str_c; // have to get a return value here, since it modifies further registers too
             asm_str += &format!("   {asm_opcode} {gpr_reg_b}, {gpr_reg_c}\n");
             asm_str += &gpr_to_xmm(&gpr_reg_b, a);
+        }
+
+        Ok(asm_str)
+    }
+
+    fn generate_shift_asm(instruction: &Instruction) -> Result<String, AotError> {
+        let mut asm_str = String::new();
+
+        let a = instruction.op_a;
+        let b = instruction.op_b as u8;
+        let c = instruction.op_c;
+
+        let str_reg_a = if MIPS_TO_X86_OVERRIDE_MAP[a as usize].is_some() {
+            MIPS_TO_X86_OVERRIDE_MAP[a as usize].unwrap()
+        } else {
+            REG_A_W
+        };
+
+        if instruction.imm_c {
+            let asm_opcode = match instruction.opcode {
+                Opcode::SLL => "shl",
+                Opcode::SRL => "shr",
+                Opcode::SRA => "sar",
+                Opcode::ROR => "ror",
+                _ => return Err(AotError::NotSupported),
+            };
+
+            let (reg_b, delta_str_b) = &xmm_to_gpr(b, str_reg_a, true);
+            asm_str += delta_str_b;
+            asm_str += &format!("   {asm_opcode} {reg_b}, {c}\n");
+            asm_str += &gpr_to_xmm(reg_b, a);
+        } else if instruction.opcode == Opcode::ROR {
+            let (reg_b, delta_str_b) = &xmm_to_gpr(b, str_reg_a, false);
+            asm_str += delta_str_b;
+
+            let (_reg_c, delta_str_c) = &xmm_to_gpr(c as u8, "ecx", false);
+            asm_str += delta_str_c;
+
+            asm_str += &format!("   ror {reg_b}, cl\n");
+
+            asm_str += &gpr_to_xmm(reg_b, a);
+        } else {
+            let asm_opcode = match instruction.opcode {
+                Opcode::SLL => "shlx",
+                Opcode::SRL => "shrx",
+                Opcode::SRA => "sarx",
+                _ => return Err(AotError::NotSupported),
+            };
+
+            let (reg_b, delta_str_b) = &xmm_to_gpr(b, REG_B_W, false);
+            // after this force write, we set [a:4]_1 <- [b:4]_1
+            asm_str += delta_str_b;
+
+            let (reg_c, delta_str_c) = &xmm_to_gpr(c as u8, REG_C_W, false);
+            asm_str += delta_str_c;
+
+            asm_str += &format!("   {asm_opcode} {str_reg_a}, {reg_b}, {reg_c}\n");
+
+            asm_str += &gpr_to_xmm(str_reg_a, a);
         }
 
         Ok(asm_str)

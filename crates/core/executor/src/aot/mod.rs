@@ -46,7 +46,7 @@ impl AotExecutor {
 
         let aot = AotCompiler::new(program);
         let asm_code = aot.create_pure_asm()?;
-        // println!("{asm_code}");
+        println!("{asm_code}");
         let lib = asm_to_lib(&asm_code)?;
 
         Ok(Self { lib, executor_mode, state, instructions_count })
@@ -305,6 +305,29 @@ mod tests {
         simple_op_code_test(Opcode::MUL, 0x00000001, 0xffffffff, 0xffffffff);
         simple_op_code_test(Opcode::MUL, 0xffffffff, 0xffffffff, 0x00000001);
         simple_op_code_test(Opcode::MUL, 0xffffffff, 0x00000001, 0xffffffff);
+    }
+
+    #[test]
+    fn test_aot_shift() {
+        // sllv
+        simple_op_code_test(Opcode::SLL, 1 << 2, 1, 2);
+        // srlv
+        simple_op_code_test(Opcode::SRL, 8 >> 1, 8, 1);
+        // srav
+        simple_op_code_test(Opcode::SRA, 37 >> 4, 37, 4);
+        // rotrv
+        let c = (((0x12345678 as u64) + ((0x12345678 as u64) << 32)) >> 4) as u32;
+        simple_op_code_test(Opcode::ROR, c, 0x12345678, 4);
+
+        // sll
+        simple_op_code_i_test(Opcode::SLL, 1 << 2 << 3, 1, 2, 3);
+        // srl
+        simple_op_code_i_test(Opcode::SRL, 8 >> 1 >> 1, 8, 1, 1);
+        // sra
+        simple_op_code_i_test(Opcode::SRA, 37 >> 4 >> 1, 37, 4, 1);
+        // rotr
+        let c = ((c as u64) + ((c as u64) << 32)) >> 4;
+        simple_op_code_i_test(Opcode::ROR, c as u32, 0x12345678, 4, 4);
     }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
