@@ -47,6 +47,8 @@ enum-map = { version = "2.7.3", features = ["serde"] }
 sha2 = { workspace = true }
 anyhow = { workspace = true }
 derive-new = "0.7.0"
+libloading = { version = "0.8", optional = true }
+tempfile = { version =  "3.13.0", optional = true }
 
 [target.'cfg(any(unix, windows))'.dependencies]
 memmap2 = "0.9.9"
@@ -57,9 +59,14 @@ libc = "0.2.175"
 test-artifacts = { path = "../../test-artifacts" }
 
 [features]
+default = ["aot"]
 bigint-rug = ["zkm-curves/bigint-rug"]
 pre-alloc = []
 # use basic memory instead of mmap:
 basic-memory = []
 # Disable bounds checking in memory operations for performance
 unprotected = []
+aot = [
+    "dep:libloading",
+    "dep:tempfile",
+]

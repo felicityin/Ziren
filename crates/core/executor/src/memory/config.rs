@@ -6,15 +6,6 @@ use crate::{MAX_MEMORY, NUM_REGISTERS};
 pub const MIPS_REGISTER_SPACE: u32 = 0;
 pub const MIPS_MEMORY_SPACE: u32 = 1;
 
-// @dev Currently this is only used for debug assertions, but we may switch to making it constant
-// and removing from MemoryConfig
-pub const POINTER_MAX_BITS: usize = 29;
-
-/// Offset for address space indices. This is used to distinguish between different memory spaces.
-pub const ADDR_SPACE_OFFSET: u32 = 1;
-
-pub const DEFAULT_MAX_NUM_PUBLIC_VALUES: usize = 32;
-
 const DEFAULT_NATIVE_BLOCK_SIZE: usize = 1;
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, new)]

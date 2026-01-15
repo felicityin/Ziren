@@ -48,6 +48,11 @@ impl Program {
         Self { instructions, pc_start, pc_base, next_pc: pc_start + 4, ..Default::default() }
     }
 
+    #[inline]
+    pub fn pc(&self, instructions_idx: usize) -> u32 {
+        self.pc_base + (instructions_idx << 2) as u32
+    }
+
     /// Initialize a MIPS Program from an appropriate ELF file
     pub fn from(elf_code: &[u8]) -> Result<Program> {
         let max_mem = MAX_CODE_MEMORY as u32;

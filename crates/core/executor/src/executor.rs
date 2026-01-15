@@ -2118,14 +2118,13 @@ impl<'a> Executor<'a> {
             }
 
             // We restrict the execution of branch/jump and its delay slot to be in the same shard.
-            if !self.unconstrained && !self.state.next_is_delayslot
-                && self.inc_shard_if_need() {
-                    num_shards_executed += 1;
-                    self.bump_record();
-                    if num_shards_executed >= self.shard_batch_size {
-                        break;
-                    }
+            if !self.unconstrained && !self.state.next_is_delayslot && self.inc_shard_if_need() {
+                num_shards_executed += 1;
+                self.bump_record();
+                if num_shards_executed >= self.shard_batch_size {
+                    break;
                 }
+            }
         }
 
         // Get the final public values.
@@ -2553,6 +2552,7 @@ mod tests {
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
         assert_eq!(runtime.register(Register::RA), 42);
     }
 

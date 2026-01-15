@@ -1,4 +1,5 @@
 mod air;
+mod aot;
 mod context;
 mod cost;
 mod dependencies;
@@ -22,6 +23,7 @@ pub mod syscalls;
 mod utils;
 
 pub use air::*;
+pub use aot::*;
 pub use context::*;
 pub use cost::*;
 pub use executor::*;
