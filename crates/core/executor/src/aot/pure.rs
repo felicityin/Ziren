@@ -131,6 +131,9 @@ impl AotCompiler {
             Opcode::DIV | Opcode::DIVU | Opcode::MOD | Opcode::MODU => {
                 asm += &Self::generate_div_mod_asm(instruction)?;
             }
+            Opcode::SLT | Opcode::SLTU => {
+                asm += &Self::generate_slt_asm(instruction)?;
+            }
             _ => return Err(AotError::NotSupported),
         }
         Ok(asm)
@@ -319,6 +322,43 @@ impl AotCompiler {
             }
             _ => return Err(AotError::NotSupported),
         }
+
+        Ok(asm)
+    }
+
+    fn generate_slt_asm(instruction: &Instruction) -> Result<String, AotError> {
+        let mut asm = String::new();
+
+        let a = instruction.op_a;
+        let b = instruction.op_b as u8;
+        let c = instruction.op_c as u8;
+
+        if instruction.imm_c {
+            let (gpr_reg_b, delta_str_b) = xmm_to_gpr(b, REG_B_W, false);
+            asm += &delta_str_b;
+            asm += &format!("   cmp {gpr_reg_b}, {c}\n");
+            match instruction.opcode {
+                Opcode::SLT => asm += "   setl al\n",
+                Opcode::SLTU => asm += "   setb al\n",
+                _ => return Err(AotError::NotSupported),
+            }
+            asm += "   movzx eax, al\n";
+            asm += &gpr_to_xmm("eax", a);
+        } else {
+            let (gpr_reg_b, delta_str_b) = xmm_to_gpr(b, REG_B_W, false);
+            asm += &delta_str_b;
+            let (gpr_reg_c, delta_str_c) = xmm_to_gpr(c, REG_C_W, false);
+            asm += &delta_str_c;
+            asm += &format!("   cmp {gpr_reg_b}, {gpr_reg_c}\n");
+            match instruction.opcode {
+                Opcode::SLT => asm += "   setl al\n",
+                Opcode::SLTU => asm += "   setb al\n",
+                _ => return Err(AotError::NotSupported),
+            }
+            asm += "   movzx eax, al\n";
+            asm += &gpr_to_xmm("eax", a);
+        }
+
         Ok(asm)
     }
 }

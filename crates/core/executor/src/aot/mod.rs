@@ -446,19 +446,6 @@ mod tests {
         }
     }
 
-    fn lo_hi_op_code_test(opcode: Opcode, expected_hi: u32, expected_lo: u32, a: u32, b: u32) {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, a, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, b, false, true),
-            Instruction::new(opcode, Register::RA as u8, 29, 30, false, false),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = AotExecutor::new(program).unwrap();
-        runtime.run().unwrap();
-        assert_eq!(runtime.register(Register::LO), expected_lo);
-        assert_eq!(runtime.register(Register::HI), expected_hi);
-    }
-
     #[test]
     fn test_aot_mod() {
         let modu = |b: u32, c: u32| -> u32 { b % c };
@@ -483,6 +470,26 @@ mod tests {
             let expected = mod_signed(b, c);
             simple_op_code_test(Opcode::MOD, expected, b, c);
         }
+    }
+
+    #[test]
+    fn test_aot_slt() {
+        // slt
+        simple_op_code_test(Opcode::SLT, 1, 5, 10);
+        simple_op_code_test(Opcode::SLT, 0, 10, 5);
+        simple_op_code_test(Opcode::SLT, 0, 10, 10);
+        // slti
+        slt_i_test(Opcode::SLT, 1, 5, 10);
+        slt_i_test(Opcode::SLT, 0, 10, 5);
+        slt_i_test(Opcode::SLT, 0, 10, 10);
+        // sltu
+        simple_op_code_test(Opcode::SLTU, 1, 5, 10);
+        simple_op_code_test(Opcode::SLTU, 0, 10, 5);
+        simple_op_code_test(Opcode::SLTU, 0, 10, 10);
+        // sltiu
+        slt_i_test(Opcode::SLTU, 1, 5, 10);
+        slt_i_test(Opcode::SLTU, 0, 10, 5);
+        slt_i_test(Opcode::SLTU, 0, 10, 10);
     }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
@@ -515,5 +522,29 @@ mod tests {
         runtime.run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
         assert_eq!(runtime.state.pc, 12);
+    }
+
+    fn lo_hi_op_code_test(opcode: Opcode, expected_hi: u32, expected_lo: u32, a: u32, b: u32) {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, a, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, b, false, true),
+            Instruction::new(opcode, Register::RA as u8, 29, 30, false, false),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.register(Register::LO), expected_lo);
+        assert_eq!(runtime.register(Register::HI), expected_hi);
+    }
+
+    fn slt_i_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, a, false, true),
+            Instruction::new(opcode, Register::RA as u8, 29, b, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.register(Register::RA), expected);
     }
 }
