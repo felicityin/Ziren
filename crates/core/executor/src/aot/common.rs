@@ -27,7 +27,7 @@ pub const REG_AS2_PTR: &str = "r15";
 
 pub const DEFAULT_PC_OFFSET: i32 = 4;
 
-pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 32] = [
+pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 34] = [
     None,         // x0
     None,         // x1
     None,         // x2
@@ -60,6 +60,8 @@ pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 32] = [
     None,         // x29
     None,         // x30
     None,         // x31
+    None,
+    None,
 ];
 
 pub fn sync_xmm_to_gpr() -> String {
@@ -108,11 +110,20 @@ pub fn xmm_to_gpr(
         }
         return (override_reg.to_string(), "".to_string());
     }
-    let xmm_map_reg = mips_src_reg / 2;
-    if mips_src_reg % 2 == 0 {
-        (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 0\n"))
+    if mips_src_reg < 32 {
+        let xmm_map_reg = mips_src_reg / 2;
+        if mips_src_reg % 2 == 0 {
+            (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 0\n"))
+        } else {
+            (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 1\n"))
+        }
     } else {
-        (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 1\n"))
+        let xmm_map_reg = (mips_src_reg - 6) / 2;
+        if mips_src_reg % 2 == 0 {
+            (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 2\n"))
+        } else {
+            (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 3\n"))
+        }
     }
 }
 
@@ -124,10 +135,19 @@ pub fn gpr_to_xmm(x86_dst_reg: &str, mips_src_reg: u8) -> String {
         }
         return format!("   mov {override_reg}, {x86_dst_reg}\n");
     }
-    let xmm_map_reg = mips_src_reg / 2;
-    if mips_src_reg % 2 == 0 {
-        format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 0\n")
+    if mips_src_reg < 32 {
+        let xmm_map_reg = mips_src_reg / 2;
+        if mips_src_reg % 2 == 0 {
+            format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 0\n")
+        } else {
+            format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 1\n")
+        }
     } else {
-        format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 1\n")
+        let xmm_map_reg = (mips_src_reg - 6) / 2;
+        if mips_src_reg % 2 == 0 {
+            format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 2\n")
+        } else {
+            format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 3\n")
+        }
     }
 }

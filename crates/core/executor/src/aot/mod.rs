@@ -149,6 +149,11 @@ impl AotCompiler {
             asm_str += &format!("   pinsrq xmm{r}, rdi, 0\n");
         }
 
+        for r in 16..17 {
+            asm_str += &format!("   mov rdi, [{REG_AS2_PTR} + 8*{r}]\n");
+            asm_str += &format!("   pinsrq xmm{}, rdi, 1\n", r - 3);
+        }
+
         asm_str += &format!("    pop {REG_AS2_PTR}\n");
 
         asm_str += &sync_xmm_to_gpr();
@@ -167,6 +172,11 @@ impl AotCompiler {
         for r in 0..16 {
             // at each iteration we save register 2r and 2r+1 of the guest mem to xmm
             asm_str += &format!("   movq [{REG_AS2_PTR} + 8*{r}], xmm{r}\n");
+        }
+
+        for r in 16..17 {
+            // at each iteration we save register 2r and 2r+1 of the guest mem to xmm
+            asm_str += &format!("   pextrq [{REG_AS2_PTR} + 8*{r}], xmm{}, 1\n", r - 3);
         }
 
         asm_str += &format!("    pop {REG_AS2_PTR}\n");
@@ -328,6 +338,151 @@ mod tests {
         // rotr
         let c = ((c as u64) + ((c as u64) << 32)) >> 4;
         simple_op_code_i_test(Opcode::ROR, c as u32, 0x12345678, 4, 4);
+    }
+
+    #[test]
+    fn test_aot_shifts() {
+        simple_op_code_test(Opcode::SLL, 0x00000001, 0x00000001, 0);
+        simple_op_code_test(Opcode::SLL, 0x00000002, 0x00000001, 1);
+        simple_op_code_test(Opcode::SLL, 0x00000080, 0x00000001, 7);
+        simple_op_code_test(Opcode::SLL, 0x00004000, 0x00000001, 14);
+        simple_op_code_test(Opcode::SLL, 0x80000000, 0x00000001, 31);
+        simple_op_code_test(Opcode::SLL, 0xffffffff, 0xffffffff, 0);
+        simple_op_code_test(Opcode::SLL, 0xfffffffe, 0xffffffff, 1);
+        simple_op_code_test(Opcode::SLL, 0xffffff80, 0xffffffff, 7);
+        simple_op_code_test(Opcode::SLL, 0xffffc000, 0xffffffff, 14);
+        simple_op_code_test(Opcode::SLL, 0x80000000, 0xffffffff, 31);
+        simple_op_code_test(Opcode::SLL, 0x21212121, 0x21212121, 0);
+        simple_op_code_test(Opcode::SLL, 0x42424242, 0x21212121, 1);
+        simple_op_code_test(Opcode::SLL, 0x90909080, 0x21212121, 7);
+        simple_op_code_test(Opcode::SLL, 0x48484000, 0x21212121, 14);
+        simple_op_code_test(Opcode::SLL, 0x80000000, 0x21212121, 31);
+        simple_op_code_test(Opcode::SLL, 0x21212121, 0x21212121, 0xffffffe0);
+        simple_op_code_test(Opcode::SLL, 0x42424242, 0x21212121, 0xffffffe1);
+        simple_op_code_test(Opcode::SLL, 0x90909080, 0x21212121, 0xffffffe7);
+        simple_op_code_test(Opcode::SLL, 0x48484000, 0x21212121, 0xffffffee);
+        simple_op_code_test(Opcode::SLL, 0x00000000, 0x21212120, 0xffffffff);
+
+        simple_op_code_test(Opcode::SRL, 0xffff8000, 0xffff8000, 0);
+        simple_op_code_test(Opcode::SRL, 0x7fffc000, 0xffff8000, 1);
+        simple_op_code_test(Opcode::SRL, 0x01ffff00, 0xffff8000, 7);
+        simple_op_code_test(Opcode::SRL, 0x0003fffe, 0xffff8000, 14);
+        simple_op_code_test(Opcode::SRL, 0x0001ffff, 0xffff8001, 15);
+        simple_op_code_test(Opcode::SRL, 0xffffffff, 0xffffffff, 0);
+        simple_op_code_test(Opcode::SRL, 0x7fffffff, 0xffffffff, 1);
+        simple_op_code_test(Opcode::SRL, 0x01ffffff, 0xffffffff, 7);
+        simple_op_code_test(Opcode::SRL, 0x0003ffff, 0xffffffff, 14);
+        simple_op_code_test(Opcode::SRL, 0x00000001, 0xffffffff, 31);
+        simple_op_code_test(Opcode::SRL, 0x21212121, 0x21212121, 0);
+        simple_op_code_test(Opcode::SRL, 0x10909090, 0x21212121, 1);
+        simple_op_code_test(Opcode::SRL, 0x00424242, 0x21212121, 7);
+        simple_op_code_test(Opcode::SRL, 0x00008484, 0x21212121, 14);
+        simple_op_code_test(Opcode::SRL, 0x00000000, 0x21212121, 31);
+        simple_op_code_test(Opcode::SRL, 0x21212121, 0x21212121, 0xffffffe0);
+        simple_op_code_test(Opcode::SRL, 0x10909090, 0x21212121, 0xffffffe1);
+        simple_op_code_test(Opcode::SRL, 0x00424242, 0x21212121, 0xffffffe7);
+        simple_op_code_test(Opcode::SRL, 0x00008484, 0x21212121, 0xffffffee);
+        simple_op_code_test(Opcode::SRL, 0x00000000, 0x21212121, 0xffffffff);
+
+        simple_op_code_test(Opcode::SRA, 0x00000000, 0x00000000, 0);
+        simple_op_code_test(Opcode::SRA, 0xc0000000, 0x80000000, 1);
+        simple_op_code_test(Opcode::SRA, 0xff000000, 0x80000000, 7);
+        simple_op_code_test(Opcode::SRA, 0xfffe0000, 0x80000000, 14);
+        simple_op_code_test(Opcode::SRA, 0xffffffff, 0x80000001, 31);
+        simple_op_code_test(Opcode::SRA, 0x7fffffff, 0x7fffffff, 0);
+        simple_op_code_test(Opcode::SRA, 0x3fffffff, 0x7fffffff, 1);
+        simple_op_code_test(Opcode::SRA, 0x00ffffff, 0x7fffffff, 7);
+        simple_op_code_test(Opcode::SRA, 0x0001ffff, 0x7fffffff, 14);
+        simple_op_code_test(Opcode::SRA, 0x00000000, 0x7fffffff, 31);
+        simple_op_code_test(Opcode::SRA, 0x81818181, 0x81818181, 0);
+        simple_op_code_test(Opcode::SRA, 0xc0c0c0c0, 0x81818181, 1);
+        simple_op_code_test(Opcode::SRA, 0xff030303, 0x81818181, 7);
+        simple_op_code_test(Opcode::SRA, 0xfffe0606, 0x81818181, 14);
+        simple_op_code_test(Opcode::SRA, 0xffffffff, 0x81818181, 31);
+    }
+
+    #[test]
+    fn test_aot_mult() {
+        let mult = |b: u32, c: u32| -> (u32, u32) {
+            let out = (((b as i32) as i64) * ((c as i32) as i64)) as u64;
+            (out as u32, (out >> 32) as u32) // lo,hi
+        };
+        let multu = |b: u32, c: u32| -> (u32, u32) {
+            let out = b as u64 * c as u64;
+            (out as u32, (out >> 32) as u32) //lo,hi
+        };
+
+        let tests =
+            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
+        for (b, c) in tests {
+            let (lo, hi) = mult(b, c);
+            lo_hi_op_code_test(Opcode::MULT, hi, lo, b, c);
+
+            let (lo, hi) = multu(b, c);
+            lo_hi_op_code_test(Opcode::MULTU, hi, lo, b, c);
+        }
+    }
+
+    #[test]
+    fn test_aot_div() {
+        let div = |b: u32, c: u32| -> (u32, u32) {
+            (
+                ((b as i32) / (c as i32)) as u32, // lo
+                ((b as i32) % (c as i32)) as u32, // hi
+            )
+        };
+        let divu = |b: u32, c: u32| -> (u32, u32) {
+            (b / c, b % c) // lo,hi
+        };
+
+        let tests =
+            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
+        for (b, c) in tests {
+            let (lo, hi) = div(b, c);
+            lo_hi_op_code_test(Opcode::DIV, hi, lo, b, c);
+
+            let (lo, hi) = divu(b, c);
+            lo_hi_op_code_test(Opcode::DIVU, hi, lo, b, c);
+        }
+    }
+
+    fn lo_hi_op_code_test(opcode: Opcode, expected_hi: u32, expected_lo: u32, a: u32, b: u32) {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, a, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, b, false, true),
+            Instruction::new(opcode, Register::RA as u8, 29, 30, false, false),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.register(Register::LO), expected_lo);
+        assert_eq!(runtime.register(Register::HI), expected_hi);
+    }
+
+    #[test]
+    fn test_aot_mod() {
+        let modu = |b: u32, c: u32| -> u32 { b % c };
+        let modu_tests =
+            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
+        for (b, c) in modu_tests {
+            let expected = modu(b, c);
+            simple_op_code_test(Opcode::MODU, expected, b, c);
+        }
+
+        let mod_signed = |b: u32, c: u32| -> u32 { ((b as i32) % (c as i32)) as u32 };
+        let mod_tests = vec![
+            (10, 3),
+            (100, 7),
+            (1234, 56),
+            (0xffff, 0xff),
+            (u32::MAX - 1, u32::MAX - 2),
+            (0xffff_ffff, 3),
+            (0xffff_fffe, 7),
+        ];
+        for (b, c) in mod_tests {
+            let expected = mod_signed(b, c);
+            simple_op_code_test(Opcode::MOD, expected, b, c);
+        }
     }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {

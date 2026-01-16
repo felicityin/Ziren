@@ -1701,15 +1701,15 @@ impl<'a> Executor<'a> {
             }
             Opcode::MULTU => {
                 let out = b as u64 * c as u64;
-                (out as u32, (out >> 32) as u32) //lo,hi
+                (out as u32, (out >> 32) as u32) // lo,hi
             }
             Opcode::DIV => (
                 ((b as i32) / (c as i32)) as u32, // lo
                 ((b as i32) % (c as i32)) as u32, // hi
             ),
-            Opcode::DIVU => (b / c, b % c), //lo,hi
+            Opcode::DIVU => (b / c, b % c), // lo,hi
             Opcode::MOD => (((b as i32) % (c as i32)) as u32, 0),
-            Opcode::MODU => (b % c, 0), //lo,hi
+            Opcode::MODU => (b % c, 0), // lo,hi
             Opcode::AND => (b & c, 0),
             Opcode::OR => (b | c, 0),
             Opcode::XOR => (b ^ c, 0),
@@ -2922,6 +2922,82 @@ mod tests {
         runtime.run().unwrap();
         assert_eq!(runtime.state.next_pc, 100);
         assert_eq!(runtime.register(5.into()), 12);
+    }
+
+    #[test]
+    fn test_mult_div() {
+        let mult = |b: u32, c: u32| -> (u32, u32) {
+            let out = (((b as i32) as i64) * ((c as i32) as i64)) as u64;
+            (out as u32, (out >> 32) as u32) // lo,hi
+        };
+        let multu = |b: u32, c: u32| -> (u32, u32) {
+            let out = b as u64 * c as u64;
+            (out as u32, (out >> 32) as u32) //lo,hi
+        };
+        let div = |b: u32, c: u32| -> (u32, u32) {
+            (
+                ((b as i32) / (c as i32)) as u32, // lo
+                ((b as i32) % (c as i32)) as u32,
+            ) // hi
+        };
+        let divu = |b: u32, c: u32| -> (u32, u32) {
+            (b / c, b % c) // lo,hi
+        };
+
+        let tests =
+            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
+        for (b, c) in tests {
+            let (lo, hi) = mult(b, c);
+            lo_hi_op_code_test(Opcode::MULT, hi, lo, b, c);
+
+            let (lo, hi) = multu(b, c);
+            lo_hi_op_code_test(Opcode::MULTU, hi, lo, b, c);
+
+            let (lo, hi) = div(b, c);
+            lo_hi_op_code_test(Opcode::DIV, hi, lo, b, c);
+
+            let (lo, hi) = divu(b, c);
+            lo_hi_op_code_test(Opcode::DIVU, hi, lo, b, c);
+        }
+    }
+
+    #[test]
+    fn test_mod() {
+        let modu = |b: u32, c: u32| -> u32 { b % c };
+        let modu_tests =
+            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
+        for (b, c) in modu_tests {
+            let expected = modu(b, c);
+            simple_op_code_test(Opcode::MODU, expected, b, c);
+        }
+
+        let mod_signed = |b: u32, c: u32| -> u32 { ((b as i32) % (c as i32)) as u32 };
+        let mod_tests = vec![
+            (10, 3),
+            (100, 7),
+            (1234, 56),
+            (0xffff, 0xff),
+            (u32::MAX - 1, u32::MAX - 2),
+            (0xffff_ffff, 3),
+            (0xffff_fffe, 7),
+        ];
+        for (b, c) in mod_tests {
+            let expected = mod_signed(b, c);
+            simple_op_code_test(Opcode::MOD, expected, b, c);
+        }
+    }
+
+    fn lo_hi_op_code_test(opcode: Opcode, expected_hi: u32, expected_lo: u32, a: u32, b: u32) {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 10, 0, a, false, true),
+            Instruction::new(Opcode::ADD, 11, 0, b, false, true),
+            Instruction::new(opcode, 12, 10, 11, false, false),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+        assert_eq!(runtime.register(Register::LO), expected_lo);
+        assert_eq!(runtime.register(Register::HI), expected_hi);
     }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
