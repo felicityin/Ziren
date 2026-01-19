@@ -492,6 +492,30 @@ mod tests {
         slt_i_test(Opcode::SLTU, 0, 10, 10);
     }
 
+    #[test]
+    fn test_aot_nor() {
+        let nor = |b: u32, c: u32| -> u32 { !(b | c) };
+        let mod_tests =
+            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
+        for (b, c) in mod_tests {
+            let expected = nor(b, c);
+            simple_op_code_test(Opcode::NOR, expected, b, c);
+        }
+    }
+
+    #[test]
+    fn test_aot_cloz() {
+        let clz = |b: u32| -> u32 { b.leading_zeros() };
+        let clo = |b: u32| -> u32 { b.leading_ones() };
+        let cloz_tests = vec![10, 100, 1234, 0xffff, u32::MAX - 1];
+        for b in cloz_tests {
+            let expected = clz(b);
+            op_code_one_test(Opcode::CLZ, expected, b);
+            let expected = clo(b);
+            op_code_one_test(Opcode::CLO, expected, b);
+        }
+    }
+
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
         // addi x29, x0, a
         // addi x30, x0, b
@@ -540,6 +564,17 @@ mod tests {
     fn slt_i_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
         let instructions = vec![
             Instruction::new(Opcode::ADD, 29, 0, a, false, true),
+            Instruction::new(opcode, Register::RA as u8, 29, b, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.register(Register::RA), expected);
+    }
+
+    fn op_code_one_test(opcode: Opcode, expected: u32, b: u32) {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, b, false, true),
             Instruction::new(opcode, Register::RA as u8, 29, b, false, true),
         ];
         let program = Program::new(instructions, 0, 0);

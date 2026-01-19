@@ -122,6 +122,9 @@ impl AotCompiler {
             Opcode::ADD | Opcode::SUB | Opcode::OR | Opcode::AND | Opcode::XOR | Opcode::MUL => {
                 asm += &Self::generate_base_alu_asm(instruction)?;
             }
+            Opcode::NOR => {
+                asm += &Self::generate_nor_asm(instruction)?;
+            }
             Opcode::SLL | Opcode::SRL | Opcode::SRA | Opcode::ROR => {
                 asm += &Self::generate_shift_asm(instruction)?;
             }
@@ -133,6 +136,9 @@ impl AotCompiler {
             }
             Opcode::SLT | Opcode::SLTU => {
                 asm += &Self::generate_slt_asm(instruction)?;
+            }
+            Opcode::CLO | Opcode::CLZ => {
+                asm += &Self::generate_cloz_asm(instruction)?;
             }
             _ => return Err(AotError::NotSupported),
         }
@@ -182,6 +188,30 @@ impl AotCompiler {
             asm += &format!("   {asm_opcode} {gpr_reg_b}, {gpr_reg_c}\n");
             asm += &gpr_to_xmm(&gpr_reg_b, a);
         }
+
+        Ok(asm)
+    }
+
+    fn generate_nor_asm(instruction: &Instruction) -> Result<String, AotError> {
+        let mut asm = String::new();
+
+        let a = instruction.op_a;
+        let b = instruction.op_b as u8;
+        let c = instruction.op_c;
+
+        let str_reg_a = if MIPS_TO_X86_OVERRIDE_MAP[a as usize].is_some() {
+            MIPS_TO_X86_OVERRIDE_MAP[a as usize].unwrap()
+        } else {
+            REG_A_W
+        };
+
+        let (gpr_reg_b, delta_str_b) = xmm_to_gpr(b, str_reg_a, true);
+        asm += &delta_str_b; // data is now in gpr_reg_b
+        let (gpr_reg_c, delta_str_c) = xmm_to_gpr(c as u8, REG_C_W, false); // data is in gpr_reg_c now
+        asm += &delta_str_c; // have to get a return value here, since it modifies further registers too
+        asm += &format!("   or {gpr_reg_b}, {gpr_reg_c}\n");
+        asm += &format!("   not {gpr_reg_b}\n");
+        asm += &gpr_to_xmm(&gpr_reg_b, a);
 
         Ok(asm)
     }
@@ -358,6 +388,31 @@ impl AotCompiler {
             asm += "   movzx eax, al\n";
             asm += &gpr_to_xmm("eax", a);
         }
+
+        Ok(asm)
+    }
+
+    fn generate_cloz_asm(instruction: &Instruction) -> Result<String, AotError> {
+        let mut asm = String::new();
+
+        let a = instruction.op_a;
+        let b = instruction.op_b as u8;
+
+        let str_reg_a = if MIPS_TO_X86_OVERRIDE_MAP[a as usize].is_some() {
+            MIPS_TO_X86_OVERRIDE_MAP[a as usize].unwrap()
+        } else {
+            REG_A_W
+        };
+
+        let (gpr_reg_b, delta_str_b) = xmm_to_gpr(b, str_reg_a, a != b);
+        asm += &delta_str_b;
+
+        if instruction.opcode == Opcode::CLO {
+            asm += &format!("   not {gpr_reg_b}\n");
+        }
+
+        asm += &format!("   lzcnt {gpr_reg_b}, {gpr_reg_b}\n");
+        asm += &gpr_to_xmm(&gpr_reg_b, a);
 
         Ok(asm)
     }

@@ -2987,6 +2987,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_nor() {
+        let nor = |b: u32, c: u32| -> u32 { !(b | c) };
+        let nor_tests =
+            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
+        for (b, c) in nor_tests {
+            let expected = nor(b, c);
+            simple_op_code_test(Opcode::NOR, expected, b, c);
+        }
+    }
+
+    #[test]
+    fn test_cloz() {
+        let clz = |b: u32| -> u32 { b.leading_zeros() };
+        let clo = |b: u32| -> u32 { b.leading_ones() };
+        let cloz_tests = vec![10, 100, 1234, 0xffff, u32::MAX - 1];
+        for b in cloz_tests {
+            let expected = clz(b);
+            op_code_one_test(Opcode::CLZ, expected, b);
+            let expected = clo(b);
+            op_code_one_test(Opcode::CLO, expected, b);
+        }
+    }
+
+    fn op_code_one_test(opcode: Opcode, expected: u32, b: u32) {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 10, 0, b, false, true),
+            Instruction::new(opcode, 12, 10, 11, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+        assert_eq!(runtime.register(12.into()), expected);
+    }
+
     fn lo_hi_op_code_test(opcode: Opcode, expected_hi: u32, expected_lo: u32, a: u32, b: u32) {
         let instructions = vec![
             Instruction::new(Opcode::ADD, 10, 0, a, false, true),
