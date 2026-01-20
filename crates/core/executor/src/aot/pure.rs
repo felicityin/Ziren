@@ -67,6 +67,8 @@ impl AotCompiler {
             asm += "\n";
         }
 
+        let most_pc = self.program.pc_base + self.program.instructions.len() as u32 * 4;
+
         let mut i = 0;
         while i < self.program.instructions.len() {
             let pc = self.program.pc(i);
@@ -74,9 +76,9 @@ impl AotCompiler {
             asm += &format!("asm_execute_pc_{pc}:\n");
 
             // Check if we should suspend or not
-            asm += &format!("    dec {REG_INSTRET_END}\n");
-            asm += &format!("    cmp {REG_INSTRET_END}, 0\n");
-            asm += &format!("    je asm_run_end_{pc}\n");
+            asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
+            asm += &"    je asm_run_end\n".to_string();
+            asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
             i += 1;
 
             if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
@@ -84,9 +86,9 @@ impl AotCompiler {
                 let next_instruction = &self.program.instructions[i];
                 let next_pc = self.program.pc(i);
                 asm += &format!("asm_execute_pc_{next_pc}:\n");
-                asm += &format!("    dec {REG_INSTRET_END}\n");
-                asm += &format!("    cmp {REG_INSTRET_END}, 0\n");
-                asm += &format!("    je asm_run_end_{next_pc}\n");
+                asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
+                asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
+                asm += &"    je asm_run_end\n".to_string();
                 i += 1;
                 asm += &(Self::generate_instruction_asm(next_instruction, pc)?);
 
@@ -98,20 +100,15 @@ impl AotCompiler {
 
         let set_pc_ptr = format!("{:p}", set_pc as *const ());
 
-        // asm_run_end part
-        for i in 0..self.program.instructions.len() {
-            let pc = self.program.pc(i);
-            let next_pc = pc + 4;
-            asm += &format!("asm_run_end_{pc}:\n");
-            asm += &Self::xmm_to_mips_regs();
-            asm += &format!("    mov {REG_FIRST_ARG}, rbx\n");
-            asm += &format!("    mov {REG_SECOND_ARG}, {next_pc}\n");
-            asm += &format!("    mov {REG_D}, {set_pc_ptr}\n");
-            asm += &format!("    call {REG_D}\n");
-            asm += &Self::pop_external_registers();
-            asm += &format!("    xor {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-            asm += "    ret\n";
-        }
+        asm += &"asm_run_end:\n".to_string();
+        asm += &Self::xmm_to_mips_regs();
+        asm += &format!("    mov {REG_FIRST_ARG}, rbx\n");
+        asm += &format!("    mov {REG_SECOND_ARG}, {REG_NEXT_PC}\n");
+        asm += &format!("    mov {REG_D}, {set_pc_ptr}\n");
+        asm += &format!("    call {REG_D}\n");
+        asm += &Self::pop_external_registers();
+        asm += &format!("    xor {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
+        asm += "    ret\n";
 
         // map_pc_base part
         asm += ".section .rodata\n";
@@ -126,7 +123,7 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        std::fs::write("asm_dump.s", &asm).expect("failed to write asm_str");
+        std::fs::write("asm_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
     }
@@ -136,6 +133,8 @@ impl AotCompiler {
             return Self::generate_alu_asm(instruction, pc);
         } else if instruction.is_branch_instruction() {
             return Self::generate_branch_asm(instruction, pc);
+        } else if instruction.is_jump_instruction() {
+            return Self::generate_jump_asm(instruction, pc);
         }
         Ok(String::new())
     }
@@ -483,7 +482,47 @@ impl AotCompiler {
             _ => unreachable!(),
         }
 
-        std::fs::write("asm_dump.s", &asm).expect("failed to write asm_str");
+        Ok(asm)
+    }
+
+    fn generate_jump_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+        let mut asm = String::new();
+
+        let next_pc = pc + 4;
+        let return_pc = next_pc + 4;
+
+        let a = instruction.op_a;
+        let b = instruction.op_b as u8;
+
+        if a != 0 {
+            asm += &format!("   mov {REG_A_W}, {return_pc}\n");
+            asm += &gpr_to_xmm(REG_A_W, a);
+        }
+
+        let (gpr_reg_b, delta_str_b) = &xmm_to_gpr(b, REG_B_W, false);
+        asm += delta_str_b;
+
+        match instruction.opcode {
+            Opcode::Jump => {
+                let gpr_reg_b_64 = convert_x86_reg(gpr_reg_b, Width::W64).unwrap();
+                asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
+                asm += &format!("   movsxd {REG_A}, [{REG_C} + {gpr_reg_b_64}]\n");
+                asm += &format!("   add {REG_A}, {REG_C}\n");
+                asm += &format!("   jmp {REG_A}\n");
+            }
+            Opcode::Jumpi => {
+                let target_pc = instruction.op_b;
+                asm += &format!("   jmp asm_execute_pc_{target_pc}\n");
+            }
+            Opcode::JumpDirect => {
+                asm += &format!("   mov {REG_A_W}, {return_pc}\n");
+                asm += &gpr_to_xmm(REG_A_W, a);
+
+                let target_pc = next_pc + instruction.op_b;
+                asm += &format!("   jmp asm_execute_pc_{target_pc}\n");
+            }
+            _ => unreachable!(),
+        }
 
         Ok(asm)
     }
