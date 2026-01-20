@@ -27,6 +27,13 @@ pub struct ExecutionState {
     /// The shard clock keeps track of how many shards have been executed.
     pub current_shard: u32,
 
+    /// The clock increments by 5 (possibly more in syscalls) for each instruction that has been
+    /// executed in this shard.
+    pub clk: u32,
+
+    /// The global clock keeps track of how many instructions have been executed through all shards.
+    pub global_clk: u64,
+
     /// if exit
     pub exited: bool,
 
@@ -38,13 +45,6 @@ pub struct ExecutionState {
 
     /// Values contain the memory value and last shard + timestamp that each memory address was accessed.
     pub access_meta: Memory<MemoryAccessMeta>,
-
-    /// The global clock keeps track of how many instructions have been executed through all shards.
-    pub global_clk: u64,
-
-    /// The clock increments by 5 (possibly more in syscalls) for each instruction that has been
-    /// executed in this shard.
-    pub clk: u32,
 
     /// Max clocks for each record.
     pub records_clk: Vec<u32>,

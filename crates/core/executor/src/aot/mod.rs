@@ -13,7 +13,8 @@ use crate::{
     ExecutionError, ExecutionState, ExecutorMode, Program,
 };
 
-type AsmRunFn = unsafe extern "C" fn(vm_state_ptr: *mut c_void, instructions_count: u32);
+type AsmRunFn =
+    unsafe extern "C" fn(vm_state_ptr: *mut c_void, instructions_count: u32, pc: u32, next_pc: u32);
 
 /// An aot executor for the MIPS zkVM.
 ///
@@ -46,7 +47,6 @@ impl AotExecutor {
 
         let aot = AotCompiler::new(program);
         let asm_code = aot.create_pure_asm()?;
-        println!("{asm_code}");
         let lib = asm_to_lib(&asm_code)?;
 
         Ok(Self { lib, executor_mode, state, instructions_count })
@@ -64,7 +64,12 @@ impl AotExecutor {
             let asm_run: libloading::Symbol<AsmRunFn> =
                 self.lib.get(b"asm_run").expect("Failed to get asm_run symbol");
 
-            asm_run(vm_state_ptr.cast(), self.instructions_count as u32);
+            asm_run(
+                vm_state_ptr.cast(),
+                self.instructions_count as u32,
+                self.state.pc,
+                self.state.next_pc,
+            );
         });
 
         Ok(())
@@ -229,9 +234,9 @@ pub(crate) fn asm_to_lib(asm_source: &str) -> Result<Library, StaticProgramError
     Ok(lib)
 }
 
-unsafe extern "C" fn set_pc(state_ptr: *mut c_void, pc: u32) {
+unsafe extern "C" fn set_pc(state_ptr: *mut c_void, next_pc: u32) {
     let state = &mut *(state_ptr as *mut ExecutionState);
-    state.pc = pc;
+    state.pc = next_pc;
 }
 
 extern "C" fn get_pc(state_ptr: *mut c_void) -> *mut u64 {
@@ -514,6 +519,161 @@ mod tests {
             let expected = clo(b);
             op_code_one_test(Opcode::CLO, expected, b);
         }
+    }
+
+    #[test]
+    fn test_aot_beq_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, 1, false, true),
+            Instruction::new(Opcode::BEQ, 29, 30, 4, false, false),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 24);
+    }
+
+    #[test]
+    fn test_aot_beq_not_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, 2, false, true),
+            Instruction::new(Opcode::BEQ, 29, 30, 100, false, false),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 16);
+    }
+
+    #[test]
+    fn test_aot_bne_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::BNE, Register::A0 as u8, 0, 8, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
+    }
+
+    #[test]
+    fn test_aot_bne_not_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::BNE, Register::A0 as u8, 0, 100, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 8);
+    }
+
+    #[test]
+    fn test_aot_bltz_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 0xFFFF_FFFF, false, true),
+            Instruction::new(Opcode::BLTZ, 29, 0, 4, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
+    }
+
+    #[test]
+    fn test_aot_bltz_not_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::BLTZ, Register::A0 as u8, 0, 100, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 8);
+    }
+
+    #[test]
+    fn test_aot_blez_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::BLEZ, Register::A0 as u8, 0, 4, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 8);
+    }
+
+    #[test]
+    fn test_aot_blez_not_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
+            Instruction::new(Opcode::BLEZ, 29, 0, 100, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
+    }
+
+    #[test]
+    fn test_aot_bgtz_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
+            Instruction::new(Opcode::BGTZ, 29, 0, 4, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
+    }
+
+    #[test]
+    fn test_aot_bgtz_not_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::BGTZ, Register::A0 as u8, 0, 100, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 8);
+    }
+
+    #[test]
+    fn test_aot_bgez_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::BGEZ, Register::A0 as u8, 0, 4, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 8);
+    }
+
+    #[test]
+    fn test_aot_bgez_not_jump() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 0xFFFF_FFFF, false, true),
+            Instruction::new(Opcode::BGEZ, 29, 0, 100, true, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
     }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {

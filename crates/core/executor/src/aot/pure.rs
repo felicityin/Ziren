@@ -27,6 +27,8 @@ impl AotCompiler {
 
         asm += &format!("   mov {REG_EXEC_STATE_PTR}, {REG_FIRST_ARG}\n");
         asm += &format!("   mov {REG_INSTRET_END}, {REG_SECOND_ARG}\n");
+        asm += &format!("   mov {REG_PC}, {REG_THIRD_ARG}\n");
+        asm += &format!("   mov {REG_NEXT_PC}, {REG_FOURTH_ARG}\n");
 
         let get_pc_ptr = format!("{:p}", get_pc as *const ());
         let get_address_space_ptr = format!("{:p}", get_address_space as *const ());
@@ -65,15 +67,33 @@ impl AotCompiler {
             asm += "\n";
         }
 
-        for (i, instruction) in self.program.instructions.iter().enumerate() {
+        let mut i = 0;
+        while i < self.program.instructions.len() {
             let pc = self.program.pc(i);
+            let instruction = &self.program.instructions[i];
             asm += &format!("asm_execute_pc_{pc}:\n");
 
-            asm += &(Self::generate_instruction_asm(instruction, pc)?);
-
+            // Check if we should suspend or not
             asm += &format!("    dec {REG_INSTRET_END}\n");
             asm += &format!("    cmp {REG_INSTRET_END}, 0\n");
             asm += &format!("    je asm_run_end_{pc}\n");
+            i += 1;
+
+            if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
+                // Processing the delay slot
+                let next_instruction = &self.program.instructions[i];
+                let next_pc = self.program.pc(i);
+                asm += &format!("asm_execute_pc_{next_pc}:\n");
+                asm += &format!("    dec {REG_INSTRET_END}\n");
+                asm += &format!("    cmp {REG_INSTRET_END}, 0\n");
+                asm += &format!("    je asm_run_end_{next_pc}\n");
+                i += 1;
+                asm += &(Self::generate_instruction_asm(next_instruction, pc)?);
+
+                asm += &(Self::generate_instruction_asm(instruction, pc)?);
+            } else {
+                asm += &(Self::generate_instruction_asm(instruction, pc)?);
+            }
         }
 
         let set_pc_ptr = format!("{:p}", set_pc as *const ());
@@ -106,12 +126,16 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
+        std::fs::write("asm_dump.s", &asm).expect("failed to write asm_str");
+
         Ok(asm)
     }
 
     fn generate_instruction_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         if instruction.is_alu_instruction() {
             return Self::generate_alu_asm(instruction, pc);
+        } else if instruction.is_branch_instruction() {
+            return Self::generate_branch_asm(instruction, pc);
         }
         Ok(String::new())
     }
@@ -155,7 +179,7 @@ impl AotCompiler {
             Opcode::OR => "or",
             Opcode::XOR => "xor",
             Opcode::MUL => "imul",
-            _ => return Err(AotError::NotSupported),
+            _ => unreachable!(),
         };
 
         let a = instruction.op_a;
@@ -235,7 +259,7 @@ impl AotCompiler {
                 Opcode::SRL => "shr",
                 Opcode::SRA => "sar",
                 Opcode::ROR => "ror",
-                _ => return Err(AotError::NotSupported),
+                _ => unreachable!(),
             };
 
             let (reg_b, delta_str_b) = &xmm_to_gpr(b, str_reg_a, true);
@@ -296,7 +320,7 @@ impl AotCompiler {
             Opcode::MULTU => {
                 asm += &format!("   mul {gpr_reg_c}\n");
             }
-            _ => return Err(AotError::NotSupported),
+            _ => unreachable!(),
         }
 
         asm += &gpr_to_xmm("edx", Register::HI as u8);
@@ -350,7 +374,7 @@ impl AotCompiler {
 
                 asm += &gpr_to_xmm("edx", a);
             }
-            _ => return Err(AotError::NotSupported),
+            _ => unreachable!(),
         }
 
         Ok(asm)
@@ -370,7 +394,7 @@ impl AotCompiler {
             match instruction.opcode {
                 Opcode::SLT => asm += "   setl al\n",
                 Opcode::SLTU => asm += "   setb al\n",
-                _ => return Err(AotError::NotSupported),
+                _ => unreachable!(),
             }
             asm += "   movzx eax, al\n";
             asm += &gpr_to_xmm("eax", a);
@@ -383,7 +407,7 @@ impl AotCompiler {
             match instruction.opcode {
                 Opcode::SLT => asm += "   setl al\n",
                 Opcode::SLTU => asm += "   setb al\n",
-                _ => return Err(AotError::NotSupported),
+                _ => unreachable!(),
             }
             asm += "   movzx eax, al\n";
             asm += &gpr_to_xmm("eax", a);
@@ -413,6 +437,53 @@ impl AotCompiler {
 
         asm += &format!("   lzcnt {gpr_reg_b}, {gpr_reg_b}\n");
         asm += &gpr_to_xmm(&gpr_reg_b, a);
+
+        Ok(asm)
+    }
+
+    fn generate_branch_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+        let mut asm = String::new();
+
+        let next_pc = pc + 4;
+        let next_next_pc = next_pc + instruction.op_c;
+
+        let a = instruction.op_a;
+        let b = instruction.op_b as u8;
+
+        let (reg_a, delta_str_a) = &xmm_to_gpr(a, REG_A_W, false);
+        asm += delta_str_a;
+
+        if instruction.opcode == Opcode::BEQ || instruction.opcode == Opcode::BNE {
+            let (reg_b, delta_str_b) = &xmm_to_gpr(b, REG_B_W, false);
+            asm += delta_str_b;
+            asm += &format!("   cmp {reg_a}, {reg_b}\n");
+        } else {
+            asm += &format!("   test {reg_a}, {reg_a}\n");
+        }
+
+        match instruction.opcode {
+            Opcode::BEQ => {
+                asm += &format!("   je asm_execute_pc_{next_next_pc}\n");
+            }
+            Opcode::BNE => {
+                asm += &format!("   jne asm_execute_pc_{next_next_pc}\n");
+            }
+            Opcode::BLTZ => {
+                asm += &format!("   js asm_execute_pc_{next_next_pc}\n");
+            }
+            Opcode::BLEZ => {
+                asm += &format!("   jle asm_execute_pc_{next_next_pc}\n");
+            }
+            Opcode::BGTZ => {
+                asm += &format!("   jg asm_execute_pc_{next_next_pc}\n");
+            }
+            Opcode::BGEZ => {
+                asm += &format!("   jns asm_execute_pc_{next_next_pc}\n");
+            }
+            _ => unreachable!(),
+        }
+
+        std::fs::write("asm_dump.s", &asm).expect("failed to write asm_str");
 
         Ok(asm)
     }

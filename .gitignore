@@ -5,6 +5,7 @@ crates/test-artifacts/guests/Cargo.lock
 .vscode
 *.log
 bins
+asm_dump.s
 
 # Proofs
 **/proof-with-pis.bin
