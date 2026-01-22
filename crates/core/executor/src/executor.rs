@@ -2427,7 +2427,7 @@ mod tests {
     use crate::programs::tests::{
         fibonacci_program, max_memory_program, panic_program, secp256r1_add_program,
         secp256r1_double_program, simple_memory_program, simple_program, ssz_withdrawals_program,
-        u256xu2048_mul_program,
+        u256xu2048_mul_program, unaligned_memory_program,
     };
     use zkm_stark::ZKMCoreOpts;
 
@@ -3169,7 +3169,51 @@ mod tests {
         assert_eq!(runtime.register(13.into()), 0x25252525);
 
         // Assert SH cases
-        assert_eq!(runtime.register(12.into()), 0x12346525);
+        assert_eq!(runtime.register(10.into()), 0x12346525);
         assert_eq!(runtime.register(11.into()), 0x65256525);
+    }
+
+    #[test]
+    fn test_sc() {
+        let instructions = vec![
+            // Save the value 0x12348765 into address 0x43627530
+            Instruction::new(Opcode::ADD, 29, 0, 0x12348765, false, true),
+            Instruction::new(Opcode::SC, 29, 0, 0x43627530, false, true),
+            Instruction::new(Opcode::LW, 28, 0, 0x43627530, false, true),
+        ];
+
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+
+        assert_eq!(runtime.register(28.into()), 0x12348765);
+        assert_eq!(runtime.register(29.into()), 1);
+    }
+
+    #[test]
+    fn test_unaligned_memory_program_run() {
+        let program = unaligned_memory_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+
+        assert_eq!(runtime.register(28.into()), 0x5678ccdd);
+        assert_eq!(runtime.register(27.into()), 0x345678dd);
+        assert_eq!(runtime.register(26.into()), 0x12345678);
+        assert_eq!(runtime.register(25.into()), 0x78bbccdd);
+
+        assert_eq!(runtime.register(24.into()), 0xaa123456);
+        assert_eq!(runtime.register(23.into()), 0xaabb1234);
+        assert_eq!(runtime.register(22.into()), 0xaabbcc12);
+        assert_eq!(runtime.register(21.into()), 0x12345678);
+
+        assert_eq!(runtime.word(0x11000000), 0x12345678);
+        assert_eq!(runtime.word(0x12000000), 0x125678cc);
+        assert_eq!(runtime.word(0x13000000), 0x5678ccdd);
+        assert_eq!(runtime.word(0x14000000), 0x12345656);
+
+        assert_eq!(runtime.word(0x15000000), 0x78ccdd78);
+        assert_eq!(runtime.word(0x16000000), 0xccdd5678);
+        assert_eq!(runtime.word(0x17000000), 0xdd345678);
+        assert_eq!(runtime.word(0x18000000), 0x5678ccdd);
     }
 }

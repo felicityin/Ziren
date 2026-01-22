@@ -78,8 +78,16 @@ impl AotExecutor {
     /// Get the current value of a register, but doesn't use a memory record.
     /// Careful call it directly.
     #[must_use]
+    #[inline]
     pub fn register(&mut self, register: Register) -> u32 {
         self.state.read_register(register as u32)
+    }
+
+    /// Get the current value of a word.
+    #[must_use]
+    #[inline]
+    pub fn word(&mut self, addr: u32) -> u32 {
+        self.state.read_memory(addr)
     }
 }
 
@@ -258,7 +266,10 @@ extern "C" fn get_address_space(state_ptr: *mut c_void, address_space: u32) -> *
 #[cfg(test)]
 mod tests {
     use super::AotExecutor;
-    use crate::{Instruction, Opcode, Program, Register};
+    use crate::{
+        programs::tests::{simple_memory_program, unaligned_memory_program},
+        Instruction, Opcode, Program, Register,
+    };
 
     #[test]
     fn test_aot_add() {
@@ -749,6 +760,89 @@ mod tests {
         runtime.run().unwrap();
         assert_eq!(runtime.state.pc, 16);
         assert_eq!(runtime.state.read_register(13), 12);
+    }
+
+    #[test]
+    fn test_aot_simple_memory_program_run() {
+        let program = simple_memory_program();
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+
+        // Assert SW & LW case
+        assert_eq!(runtime.register(28.into()), 0x12348765);
+
+        // Assert LBU cases
+        assert_eq!(runtime.register(27.into()), 0x65);
+        assert_eq!(runtime.register(26.into()), 0x87);
+        assert_eq!(runtime.register(25.into()), 0x34);
+        assert_eq!(runtime.register(24.into()), 0x12);
+
+        // Assert LB cases
+        assert_eq!(runtime.register(23.into()), 0x65);
+        assert_eq!(runtime.register(22.into()), 0xffffff87);
+
+        // Assert LHU cases
+        assert_eq!(runtime.register(21.into()), 0x8765);
+        assert_eq!(runtime.register(20.into()), 0x1234);
+
+        // Assert LH cases
+        assert_eq!(runtime.register(19.into()), 0xffff8765);
+        assert_eq!(runtime.register(18.into()), 0x1234);
+
+        // Assert SB cases
+        assert_eq!(runtime.register(16.into()), 0x12348725);
+        assert_eq!(runtime.register(15.into()), 0x12342525);
+        assert_eq!(runtime.register(14.into()), 0x12252525);
+        assert_eq!(runtime.register(13.into()), 0x25252525);
+
+        // Assert SH cases
+        assert_eq!(runtime.register(10.into()), 0x12346525);
+        assert_eq!(runtime.register(11.into()), 0x65256525);
+    }
+
+    #[test]
+    fn test_aot_sc() {
+        let instructions = vec![
+            // Save the value 0x12348765 into address 0x43627530
+            Instruction::new(Opcode::ADD, 29, 0, 0x12348765, false, true),
+            Instruction::new(Opcode::SC, 29, 0, 0x43627530, false, true),
+            Instruction::new(Opcode::LW, 28, 0, 0x43627530, false, true),
+        ];
+
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+
+        assert_eq!(runtime.register(28.into()), 0x12348765);
+        assert_eq!(runtime.register(29.into()), 1);
+    }
+
+    #[test]
+    fn test_aot_unaligned_memory_program_run() {
+        let program = unaligned_memory_program();
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+
+        assert_eq!(runtime.word(0x10000000), 0x12345678);
+        assert_eq!(runtime.register(28.into()), 0x5678ccdd);
+        assert_eq!(runtime.register(27.into()), 0x345678dd);
+        assert_eq!(runtime.register(26.into()), 0x12345678);
+        assert_eq!(runtime.register(25.into()), 0x78bbccdd);
+
+        assert_eq!(runtime.register(24.into()), 0xaa123456);
+        assert_eq!(runtime.register(23.into()), 0xaabb1234);
+        assert_eq!(runtime.register(22.into()), 0xaabbcc12);
+        assert_eq!(runtime.register(21.into()), 0x12345678);
+
+        assert_eq!(runtime.word(0x11000000), 0x12345678);
+        assert_eq!(runtime.word(0x12000000), 0x125678cc);
+        assert_eq!(runtime.word(0x13000000), 0x5678ccdd);
+        assert_eq!(runtime.word(0x14000000), 0x12345656);
+
+        assert_eq!(runtime.word(0x15000000), 0x78ccdd78);
+        assert_eq!(runtime.word(0x16000000), 0xccdd5678);
+        assert_eq!(runtime.word(0x17000000), 0xdd345678);
+        assert_eq!(runtime.word(0x18000000), 0x5678ccdd);
     }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
