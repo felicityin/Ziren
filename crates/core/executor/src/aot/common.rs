@@ -70,27 +70,27 @@ pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 34] = [
 ];
 
 pub fn sync_xmm_to_gpr() -> String {
-    let mut asm_str = String::new();
+    let mut asm = String::new();
     for (mips_reg, override_reg_opt) in MIPS_TO_X86_OVERRIDE_MAP.iter().copied().enumerate() {
         if let Some(override_reg) = override_reg_opt {
             let xmm_reg = mips_reg / 2;
             let lane = mips_reg % 2;
-            asm_str += &format!("   pextrd {override_reg}, xmm{xmm_reg}, {lane}\n");
+            asm += &format!("   pextrd {override_reg}, xmm{xmm_reg}, {lane}\n");
         }
     }
-    asm_str
+    asm
 }
 
 pub fn sync_gpr_to_xmm() -> String {
-    let mut asm_str = String::new();
+    let mut asm = String::new();
     for (mips_reg, override_reg_opt) in MIPS_TO_X86_OVERRIDE_MAP.iter().copied().enumerate() {
         if let Some(override_reg) = override_reg_opt {
             let xmm_reg = mips_reg / 2;
             let lane = mips_reg % 2;
-            asm_str += &format!("   pinsrd xmm{xmm_reg}, {override_reg}, {lane}\n");
+            asm += &format!("   pinsrd xmm{xmm_reg}, {override_reg}, {lane}\n");
         }
     }
-    asm_str
+    asm
 }
 
 /*

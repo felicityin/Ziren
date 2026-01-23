@@ -9,6 +9,7 @@ use crate::OptionU32;
 
 /// MIPS Instruction.
 #[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[repr(C)]
 pub struct Instruction {
     /// The operation to execute.
     pub opcode: Opcode,
