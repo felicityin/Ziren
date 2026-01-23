@@ -1363,88 +1363,8 @@ impl<'a> Executor<'a> {
                 (hi_or_prev_a, a, b, c) = self.execute_msub(instruction);
             }
         } else if instruction.opcode == Opcode::SYSCALL {
-            let syscall_id = self.register(Register::V0);
-            c = self.rr_cpu(Register::A1, MemoryAccessPosition::C);
-            b = self.rr_cpu(Register::A0, MemoryAccessPosition::B);
-            let syscall = SyscallCode::from_u32(syscall_id);
-            let mut prev_a = syscall_id;
-            log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", self.state.pc, syscall_id, b, c);
-
-            if self.print_report && !self.unconstrained {
-                self.report.syscall_counts[syscall] += 1;
-            }
-
-            // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
-            // Other syscalls are not allowed because they can lead to non-deterministic
-            // behavior, especially since many syscalls modify memory in place,
-            // which is not permitted in unconstrained mode. This will result in
-            // non-zero memory lookups when generating a proof.
-
-            if self.unconstrained
-                && (syscall != SyscallCode::EXIT_UNCONSTRAINED && syscall != SyscallCode::WRITE)
-            {
-                return Err(ExecutionError::InvalidSyscallUsage(syscall_id as u64));
-            }
-
-            // Update the syscall counts.
-            let syscall_for_count = syscall.count_map();
-            let syscall_count = self.state.syscall_counts.entry(syscall_for_count).or_insert(0);
-            *syscall_count += 1;
-
-            let syscall_impl = self.get_syscall(syscall).cloned();
-            syscall_code = syscall.syscall_id();
-            let mut precompile_rt = SyscallContext::new(self);
-            let (precompile_next_pc, precompile_cycles, returned_exit_code) =
-                if let Some(syscall_impl) = syscall_impl {
-                    // Executing a syscall optionally returns a value to write to the t0
-                    // register. If it returns None, we just keep the
-                    // syscall_id in t0.
-                    let res = syscall_impl.execute(&mut precompile_rt, syscall, b, c)?;
-                    if let Some(r0) = res {
-                        a = r0;
-                    } else {
-                        a = syscall_id;
-                    }
-
-                    // If the syscall is `HALT` and the exit code is non-zero, return an error.
-                    if syscall == SyscallCode::HALT && precompile_rt.exit_code != 0 {
-                        return Err(ExecutionError::HaltWithNonZeroExitCode(
-                            precompile_rt.exit_code,
-                        ));
-                    }
-
-                    (
-                        precompile_rt.next_pc,
-                        syscall_impl.num_extra_cycles(),
-                        precompile_rt.exit_code,
-                    )
-                } else {
-                    return Err(ExecutionError::UnsupportedSyscall(syscall_id));
-                };
-
-            if syscall == SyscallCode::HALT && returned_exit_code == 0 {
-                self.state.exited = true;
-            }
-
-            // If the syscall is `EXIT_UNCONSTRAINED`, the memory was restored to pre-unconstrained code
-            // in the execute function, so we need to re-read from A0 and A1.  Just do a peek on the
-            // registers.
-            if syscall == SyscallCode::EXIT_UNCONSTRAINED {
-                b = self.register(Register::A0);
-                c = self.register(Register::A1);
-                prev_a = self.register(Register::V0);
-            }
-
-            // Allow the syscall impl to modify state.clk/pc (exit unconstrained does this)
-            clk = self.state.clk;
-            pc = self.state.pc;
-
-            self.rw_cpu(Register::V0, a, MemoryAccessPosition::A);
-            next_pc = precompile_next_pc;
-            next_next_pc = precompile_next_pc + 4;
-            self.state.clk += precompile_cycles;
-            exit_code = returned_exit_code;
-            hi_or_prev_a = Some(prev_a);
+            (hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code) =
+                self.execute_syscall()?;
         } else if instruction.opcode == Opcode::UNIMPL {
             log::error!("{:X}: {:X}", self.state.pc, instruction.op_c);
             return Err(ExecutionError::UnsupportedInstruction(instruction.op_c));
@@ -1482,6 +1402,87 @@ impl<'a> Executor<'a> {
         // Update the clk to the next cycle.
         self.state.clk += 5;
         Ok(())
+    }
+
+    // return: (hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code)
+    #[allow(clippy::type_complexity)]
+    fn execute_syscall(
+        &mut self,
+    ) -> Result<(Option<u32>, u32, u32, u32, u32, u32, u32, u32, u32, u32), ExecutionError> {
+        let syscall_id = self.register(Register::V0);
+        let mut c = self.rr_cpu(Register::A1, MemoryAccessPosition::C);
+        let mut b = self.rr_cpu(Register::A0, MemoryAccessPosition::B);
+        let syscall = SyscallCode::from_u32(syscall_id);
+        let mut prev_a = syscall_id;
+        log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", self.state.pc, syscall_id, b, c);
+
+        if self.print_report && !self.unconstrained {
+            self.report.syscall_counts[syscall] += 1;
+        }
+
+        // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
+        // Other syscalls are not allowed because they can lead to non-deterministic
+        // behavior, especially since many syscalls modify memory in place,
+        // which is not permitted in unconstrained mode. This will result in
+        // non-zero memory lookups when generating a proof.
+
+        if self.unconstrained
+            && (syscall != SyscallCode::EXIT_UNCONSTRAINED && syscall != SyscallCode::WRITE)
+        {
+            return Err(ExecutionError::InvalidSyscallUsage(syscall_id as u64));
+        }
+
+        // Update the syscall counts.
+        let syscall_for_count = syscall.count_map();
+        let syscall_count = self.state.syscall_counts.entry(syscall_for_count).or_insert(0);
+        *syscall_count += 1;
+
+        let syscall_impl = self.get_syscall(syscall).cloned();
+        let mut precompile_rt = SyscallContext::new(self);
+        let (a, precompile_next_pc, precompile_cycles, returned_exit_code) =
+            if let Some(syscall_impl) = syscall_impl {
+                // Executing a syscall optionally returns a value to write to the t0
+                // register. If it returns None, we just keep the
+                // syscall_id in t0.
+                let res = syscall_impl.execute(&mut precompile_rt, syscall, b, c)?;
+                let a = if let Some(r0) = res { r0 } else { syscall_id };
+
+                // If the syscall is `HALT` and the exit code is non-zero, return an error.
+                if syscall == SyscallCode::HALT && precompile_rt.exit_code != 0 {
+                    return Err(ExecutionError::HaltWithNonZeroExitCode(precompile_rt.exit_code));
+                }
+
+                (a, precompile_rt.next_pc, syscall_impl.num_extra_cycles(), precompile_rt.exit_code)
+            } else {
+                return Err(ExecutionError::UnsupportedSyscall(syscall_id));
+            };
+
+        if syscall == SyscallCode::HALT && returned_exit_code == 0 {
+            self.state.exited = true;
+        }
+
+        // If the syscall is `EXIT_UNCONSTRAINED`, the memory was restored to pre-unconstrained code
+        // in the execute function, so we need to re-read from A0 and A1.  Just do a peek on the
+        // registers.
+        if syscall == SyscallCode::EXIT_UNCONSTRAINED {
+            b = self.register(Register::A0);
+            c = self.register(Register::A1);
+            prev_a = self.register(Register::V0);
+        }
+
+        // Allow the syscall impl to modify state.clk/pc (exit unconstrained does this)
+        let clk = self.state.clk;
+        let pc = self.state.pc;
+
+        self.rw_cpu(Register::V0, a, MemoryAccessPosition::A);
+        let next_pc = precompile_next_pc;
+        let next_next_pc = precompile_next_pc + 4;
+        self.state.clk += precompile_cycles;
+        let exit_code = returned_exit_code;
+        let hi_or_prev_a = Some(prev_a);
+        let syscall_code = syscall.syscall_id();
+
+        Ok((hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code))
     }
 
     fn execute_maddu(&mut self, instruction: &Instruction) -> (Option<u32>, u32, u32, u32) {
