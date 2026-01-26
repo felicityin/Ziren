@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fs::File};
+use std::{fmt::Debug, fs::File, sync::Arc};
 
 use hashbrown::HashMap;
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
@@ -10,12 +10,12 @@ use crate::{
         GuestMemory, Memory,
     },
     record::{ExecutionRecord, MemoryAccessRecord},
-    syscalls::SyscallCode,
+    syscalls::{default_syscall_map, Syscall, SyscallCode},
     ExecutorMode, ZKMReduceProof,
 };
 
 /// Holds data describing the current state of a program's execution.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 #[repr(C)]
 pub struct ExecutionState {
     /// The program counter.
@@ -73,8 +73,10 @@ pub struct ExecutionState {
     /// A ptr to the current position in the public values stream, incremented when reading from
     /// `public_values_stream`.
     pub public_values_stream_ptr: usize,
-    // /// Keeps track of how many times a certain syscall has been called.
+    /// Keeps track of how many times a certain syscall has been called.
     pub syscall_counts: HashMap<SyscallCode, u64>,
+
+    pub syscall_map: HashMap<SyscallCode, Arc<dyn Syscall>>,
 }
 
 impl ExecutionState {
@@ -102,6 +104,7 @@ impl ExecutionState {
             proof_stream: Vec::new(),
             proof_stream_ptr: 0,
             syscall_counts: HashMap::new(),
+            syscall_map: default_syscall_map(),
         }
     }
 
@@ -164,6 +167,7 @@ impl ExecutionState {
 /// Holds data to track changes made to the runtime since a fork point.
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
+#[repr(C)]
 pub struct ForkState {
     /// The `global_clk` value at the fork point.
     pub global_clk: u64,

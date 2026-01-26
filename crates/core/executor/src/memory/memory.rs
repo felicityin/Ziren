@@ -8,6 +8,7 @@ use vec_map::VecMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "T: Serialize"))]
 #[serde(bound(deserialize = "T: DeserializeOwned"))]
+#[repr(C)]
 pub struct Memory<T: Copy> {
     /// The registers.
     pub registers: Registers<T>,
@@ -111,6 +112,7 @@ impl<V: Copy + Default> FromIterator<(u32, V)> for Memory<V> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "T: Serialize"))]
 #[serde(bound(deserialize = "T: DeserializeOwned"))]
+#[repr(C)]
 pub struct Registers<T: Copy> {
     pub registers: Vec<Option<T>>,
 }
@@ -208,6 +210,7 @@ const PAGE_MASK: usize = PAGE_LEN - 1;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "V: Serialize"))]
 #[serde(bound(deserialize = "V: DeserializeOwned"))]
+#[repr(C)]
 pub struct NewPage<V>(Vec<Option<V>>);
 
 impl<V: Copy> NewPage<V> {
@@ -226,6 +229,7 @@ impl<V: Copy> Default for NewPage<V> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "V: Serialize"))]
 #[serde(bound(deserialize = "V: DeserializeOwned"))]
+#[repr(C)]
 pub struct PagedMemory<V: Copy> {
     /// The internal page table.
     pub page_table: Vec<NewPage<V>>,

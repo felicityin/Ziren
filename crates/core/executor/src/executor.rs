@@ -8,11 +8,17 @@ use std::{
 use super::program::MAX_MEMORY;
 use enum_map::EnumMap;
 use hashbrown::HashMap;
+#[cfg(feature = "aot")]
+use libloading::Library;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zkm_curves::CurveError;
 use zkm_stark::ZKMCoreOpts;
 
+#[cfg(feature = "aot")]
+use crate::asm_to_lib;
+#[cfg(feature = "aot")]
+use crate::AotCompiler;
 use crate::{
     context::ZKMContext,
     dependencies::{
@@ -52,6 +58,7 @@ pub const DEFAULT_PC_INC: u32 = 4;
 pub const UNUSED_PC: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
 /// Whether to verify deferred proofs during execution.
 pub enum DeferredProofVerification {
     /// Verify deferred proofs during execution.
@@ -64,6 +71,7 @@ pub enum DeferredProofVerification {
 ///
 /// The executor is responsible for executing a user program and tracing important events which
 /// occur during execution (i.e., memory reads, alu operations, etc).
+#[repr(C)]
 pub struct Executor<'a> {
     /// The program.
     pub program: Arc<Program>,
@@ -94,7 +102,7 @@ pub struct Executor<'a> {
     /// The maximum number of cycles for a syscall.
     pub max_syscall_cycles: u32,
 
-    // /// The mapping between syscall codes and their implementations.
+    /// The mapping between syscall codes and their implementations.
     pub syscall_map: HashMap<SyscallCode, Arc<dyn Syscall>>,
 
     /// The options for the runtime.
@@ -168,10 +176,15 @@ pub struct Executor<'a> {
 
     /// The maximum LDE size to allow.
     pub lde_size_threshold: u64,
+
+    #[cfg(feature = "aot")]
+    /// Guest code
+    pub lib: Library,
 }
 
 /// The different modes the executor can run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
 pub enum ExecutorMode {
     /// Run the execution with no tracing or checkpointing.
     Simple,
@@ -183,6 +196,7 @@ pub enum ExecutorMode {
 
 /// Information about event counts which are relevant for shape fixing.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[repr(C)]
 pub struct LocalCounts {
     /// The event counts.
     pub event_counts: Box<EnumMap<Opcode, u64>>,
@@ -322,6 +336,11 @@ impl<'a> Executor<'a> {
         let costs: HashMap<MipsAirId, usize> =
             costs.into_iter().map(|(k, v)| (MipsAirId::from_str(&k).unwrap(), v)).collect();
 
+        #[cfg(feature = "aot")]
+        let aot = AotCompiler::new(program.clone());
+        let asm_code = aot.create_pure_asm().unwrap();
+        let lib = asm_to_lib(&asm_code).unwrap();
+
         Self {
             record,
             records: vec![],
@@ -359,6 +378,8 @@ impl<'a> Executor<'a> {
             shape_check_frequency: opts.shape_check_frequency,
             lde_size_check: false,
             lde_size_threshold: 0,
+            #[cfg(feature = "aot")]
+            lib,
         }
     }
 
@@ -2384,7 +2405,7 @@ impl<'a> Executor<'a> {
     }
 
     #[inline(always)]
-    fn get_syscall(&mut self, code: SyscallCode) -> Option<&Arc<dyn Syscall>> {
+    pub fn get_syscall(&mut self, code: SyscallCode) -> Option<&Arc<dyn Syscall>> {
         self.syscall_map.get(&code)
     }
 
@@ -2441,6 +2462,13 @@ mod tests {
     /// Runtime needs to be Send so we can use it across async calls.
     fn _assert_runtime_is_send() {
         _assert_send::<Executor>();
+    }
+
+    #[test]
+    fn test_hello_run() {
+        let program = Program::from(test_artifacts::HELLO_WORLD_ELF).unwrap();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
     }
 
     #[test]

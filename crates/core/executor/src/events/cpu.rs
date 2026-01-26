@@ -12,6 +12,7 @@ use super::memory::MemoryRecordEnum;
 /// This object encapsulates the information needed to prove a CPU operation. This includes its
 /// shard, opcode, operands, and other relevant information.
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[repr(C)]
 pub struct CpuEvent {
     /// The clock cycle.
     pub clk: u32,

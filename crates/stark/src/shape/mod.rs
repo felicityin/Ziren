@@ -22,6 +22,7 @@ use crate::air::MachineAir;
 
 /// A way to keep track of the log2 heights of some set of chips.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[repr(C)]
 pub struct Shape<K: Clone + Eq + Hash> {
     inner: HashMap<K, usize>,
 }

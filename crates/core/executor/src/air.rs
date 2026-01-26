@@ -16,6 +16,7 @@ use zkm_stark::shape::Shape;
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, PartialOrd, Ord, Enum,
 )]
+#[repr(C)]
 pub enum MipsAirId {
     /// The CPU chip.
     Cpu = 0,
@@ -219,6 +220,7 @@ impl Display for MipsAirId {
 
 /// Defines a set of maximal shapes for generating core proofs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
 pub struct MaximalShapes {
     inner: Vec<EnumMap<MipsAirId, u32>>,
 }

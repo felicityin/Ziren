@@ -111,6 +111,7 @@ impl ZKMProverOpts {
 
 /// Options for the core prover.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
 pub struct ZKMCoreOpts {
     /// The size of a shard in terms of cycles.
     pub shard_size: usize,

@@ -21,14 +21,11 @@ pub const REG_A_W: &str = "edi";
 pub const REG_RETURN_VAL: &str = "rax";
 pub const REG_D: &str = "rax";
 pub const REG_D_W: &str = "eax";
-pub const REG_INSTRET_END: &str = "r12";
 
-pub const REG_EXEC_STATE_PTR: &str = "rbx";
-pub const REG_TRACE_HEIGHT: &str = "r14";
-pub const REG_AS2_PTR: &str = "r15";
-pub const REG_PC: &str = "r8";
-pub const REG_NEXT_PC: &str = "r9";
-pub const REG_BRANCH_JMP: &str = "r7";
+pub const REG_STATE_PTR: &str = "rbx";
+pub const REG_EXECUTOR_PTR: &str = "r14";
+pub const REG_MEMORY_PTR: &str = "r15";
+pub const REG_NEXT_PC: &str = "r12";
 
 pub const DEFAULT_PC_OFFSET: i32 = 4;
 
@@ -177,7 +174,7 @@ pub fn gpr_to_mips_register(x86_reg: &str, mips_reg: u8) -> String {
 
 pub fn address_space_start_to_gpr(address_space: u32, gpr: &str) -> String {
     if address_space == MIPS_MEMORY_SPACE {
-        if REG_AS2_PTR != gpr {
+        if REG_MEMORY_PTR != gpr {
             return format!("    mov {gpr}, r15\n");
         }
         return "".to_string();

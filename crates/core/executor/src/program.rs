@@ -30,6 +30,7 @@ pub const WORD_SIZE: usize = core::mem::size_of::<u32>();
 
 /// A program that can be executed by the ZKM.
 #[derive(PartialEq, Debug, Clone, Default, Serialize, Deserialize)]
+#[repr(C)]
 pub struct Program {
     pub instructions: Vec<Instruction>,
     /// The entrypoint of the program, PC

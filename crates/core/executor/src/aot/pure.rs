@@ -2,12 +2,12 @@ use std::sync::Arc;
 
 use crate::aot::common::*;
 use crate::aot::{get_address_space, get_pc, set_pc, AotCompiler, AotError};
-use crate::{ExecutionState, Instruction, Opcode, Program, Register};
+use crate::syscalls::{SyscallCode, SyscallContext};
+use crate::{ExecutionState, Executor, Instruction, Opcode, Program, Register};
 
 impl AotCompiler {
     /// Create a new AOT instance for the given program.
-    pub fn new(program: Program) -> Self {
-        let program = Arc::new(program);
+    pub fn new(program: Arc<Program>) -> Self {
         Self { program }
     }
 
@@ -27,10 +27,8 @@ impl AotCompiler {
         asm += &Self::push_external_registers();
 
         asm += "    # get params\n";
-        asm += &format!("    mov {REG_EXEC_STATE_PTR}, {REG_FIRST_ARG}\n");
-        asm += &format!("    mov {REG_INSTRET_END}, {REG_SECOND_ARG}\n");
-        asm += &format!("    mov {REG_PC}, {REG_THIRD_ARG}\n");
-        asm += &format!("    mov {REG_NEXT_PC}, {REG_FOURTH_ARG}\n");
+        asm += &format!("    mov {REG_STATE_PTR}, {REG_FIRST_ARG}\n");
+        asm += &format!("    mov {REG_EXECUTOR_PTR}, {REG_SECOND_ARG}\n");
 
         let get_pc_ptr = format!("{:p}", get_pc as *const ());
         let get_address_space_ptr = format!("{:p}", get_address_space as *const ());
@@ -156,7 +154,7 @@ impl AotCompiler {
         } else if instruction.is_misc_instruction() {
             return Self::generate_misc_asm(instruction, pc);
         } else if instruction.is_syscall_instruction() {
-            panic!("not support syscall");
+            return Self::generate_syscall_asm(instruction, pc);
         }
         Ok(String::new())
     }
@@ -280,7 +278,7 @@ impl AotCompiler {
                 _ => unreachable!(),
             };
 
-            asm += &format!("   mov {str_reg_a}, {b}\n");
+            asm += &format!("   mov {str_reg_a}, {}\n", instruction.op_b);
             asm += &format!("   {asm_opcode} {str_reg_a}, {c}\n");
             asm += &gpr_to_xmm(str_reg_a, a);
         } else if instruction.imm_c {
@@ -588,7 +586,7 @@ impl AotCompiler {
         assert_eq!(gpr_reg_w64, REG_B);
 
         // REG_B = REG_B + REG_AS2_PTR = <memory address in host memory>
-        asm += &format!("   lea {gpr_reg_w64}, [{gpr_reg_w64} + {REG_AS2_PTR}]\n");
+        asm += &format!("   lea {gpr_reg_w64}, [{gpr_reg_w64} + {REG_MEMORY_PTR}]\n");
 
         let str_reg_a = if MIPS_TO_X86_OVERRIDE_MAP[a as usize].is_some() {
             MIPS_TO_X86_OVERRIDE_MAP[a as usize].unwrap()
@@ -752,7 +750,7 @@ impl AotCompiler {
         assert_eq!(gpr_reg_w64, REG_B);
 
         // REG_B = REG_B + REG_AS2_PTR = <memory address in host memory>
-        asm += &format!("   lea {gpr_reg_w64}, [{gpr_reg_w64} + {REG_AS2_PTR}]\n");
+        asm += &format!("   lea {gpr_reg_w64}, [{gpr_reg_w64} + {REG_MEMORY_PTR}]\n");
 
         let (gpr_reg_source, delta_str) = xmm_to_gpr(a, REG_C_W, false);
         asm += &delta_str;
@@ -901,7 +899,7 @@ impl AotCompiler {
         asm += &Self::xmm_to_mips_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXEC_STATE_PTR}\n");
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov r14, {extern_handler_ptr}\n");
         asm += "   call r14\n";
@@ -934,7 +932,7 @@ impl AotCompiler {
         asm += &Self::xmm_to_mips_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXEC_STATE_PTR}\n");
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov r14, {extern_handler_ptr}\n");
         asm += "   call r14\n";
@@ -943,6 +941,37 @@ impl AotCompiler {
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
         asm += &Self::mips_regs_to_xmm();
+
+        Ok(asm)
+    }
+
+    fn generate_syscall_asm(_instruction: &Instruction, _pc: u32) -> Result<String, AotError> {
+        let extern_handler_ptr = format!("{:p}", execute_syscall as *const ());
+
+        let mut asm = String::new();
+
+        asm += "   # syscall\n";
+        asm += &Self::xmm_to_mips_regs();
+        asm += &Self::push_address_space_start();
+        asm += &Self::push_internal_registers();
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov r14, {extern_handler_ptr}\n");
+        asm += "   call r14\n";
+        asm += &format!("   cmp {REG_RETURN_VAL}, 1\n");
+        asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
+        asm += &Self::pop_address_space_start();
+        // read the memory from the memory location of the MIPS registers in `GuestMemory`
+        // registers, to the appropriate XMM registers
+        asm += &Self::mips_regs_to_xmm();
+
+        asm += "   je asm_run_end\n";
+        asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
+        asm += &format!("   pextrq {REG_A}, xmm1, 1\n"); // extract the upper 64 bits of the xmm1 register to REG_A
+        asm += &format!("   mov {REG_A_W}, dword ptr [{REG_A}]\n");
+        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_A}]\n");
+        asm += &format!("   add {REG_A}, {REG_C}\n");
+        asm += &format!("   jmp {REG_A}\n");
 
         Ok(asm)
     }
@@ -1087,5 +1116,65 @@ extern "C" fn execute_teq(state: &mut ExecutionState, instruction: &Instruction)
 
     if src1 == src2 {
         panic!("ExecutionError::ExceptionOrTrap()");
+    }
+}
+
+extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executor) -> u32 {
+    let syscall_id = state.read_register(Register::V0 as u32);
+    let c = state.read_register(Register::A1 as u32);
+    let b = state.read_register(Register::A0 as u32);
+    let syscall = SyscallCode::from_u32(syscall_id);
+    log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", state.pc, syscall_id, b, c);
+    println!("pc: {} syscall {:?}, a0: {}, a1: {}", state.pc, syscall, b, c);
+
+    // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
+    // Other syscalls are not allowed because they can lead to non-deterministic
+    // behavior, especially since many syscalls modify memory in place,
+    // which is not permitted in unconstrained mode. This will result in
+    // non-zero memory lookups when generating a proof.
+
+    if executor.unconstrained
+        && (syscall != SyscallCode::EXIT_UNCONSTRAINED && syscall != SyscallCode::WRITE)
+    {
+        panic!("ExecutionError::InvalidSyscallUsage({syscall_id})");
+    }
+
+    // Update the syscall counts.
+    let syscall_for_count = syscall.count_map();
+    let syscall_count = state.syscall_counts.entry(syscall_for_count).or_insert(0);
+    *syscall_count += 1;
+
+    let syscall_impl = state.syscall_map.get(&syscall);
+    let mut precompile_rt = SyscallContext::new(executor);
+    let (a, _precompile_next_pc, precompile_cycles, returned_exit_code) =
+        if let Some(syscall_impl) = syscall_impl {
+            // Executing a syscall optionally returns a value to write to the t0
+            // register. If it returns None, we just keep the
+            // syscall_id in t0.
+            let res =
+                syscall_impl.execute(&mut precompile_rt, syscall, b, c).expect("syscall failed");
+            let a = if let Some(r0) = res { r0 } else { syscall_id };
+
+            // If the syscall is `HALT` and the exit code is non-zero, return an error.
+            if syscall == SyscallCode::HALT && precompile_rt.exit_code != 0 {
+                panic!("ExecutionError::HaltWithNonZeroExitCode({})", precompile_rt.exit_code);
+            }
+
+            (a, precompile_rt.next_pc, syscall_impl.num_extra_cycles(), precompile_rt.exit_code)
+        } else {
+            panic!("ExecutionError::UnsupportedSyscall({syscall_id}))");
+        };
+
+    if syscall == SyscallCode::HALT && returned_exit_code == 0 {
+        state.exited = true;
+    }
+
+    state.write_register(Register::V0 as u32, a);
+    state.clk += precompile_cycles;
+
+    if state.exited {
+        1
+    } else {
+        0
     }
 }

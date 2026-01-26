@@ -27,6 +27,7 @@ use crate::{
 /// The trace of the execution is represented as a list of "events" that occur every cycle.
 // todo: add logic opcode here, use bitwise_events
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[repr(C)]
 pub struct ExecutionRecord {
     /// The program.
     pub program: Arc<Program>,
@@ -301,6 +302,7 @@ impl ExecutionRecord {
 
 /// A memory access record.
 #[derive(Debug, Copy, Clone, Default)]
+#[repr(C)]
 pub struct MemoryAccessRecord {
     /// The memory access of the `a` register. read && write
     pub a: Option<MemoryRecordEnum>,
