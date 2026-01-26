@@ -99,7 +99,7 @@ impl AotCompiler {
                 asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
                 asm += "    je asm_run_end\n";
                 i += 1;
-                asm += &(Self::generate_instruction_asm(next_instruction, pc)?);
+                asm += &(Self::generate_instruction_asm(next_instruction, next_pc)?);
 
                 asm += &(Self::generate_instruction_asm(instruction, pc)?);
             } else {
@@ -155,6 +155,8 @@ impl AotCompiler {
             return Self::generate_mov_cond_asm(instruction, pc);
         } else if instruction.is_misc_instruction() {
             return Self::generate_misc_asm(instruction, pc);
+        } else if instruction.is_syscall_instruction() {
+            panic!("not support syscall");
         }
         Ok(String::new())
     }
@@ -272,7 +274,16 @@ impl AotCompiler {
             REG_A_W
         };
 
-        if instruction.imm_c {
+        if instruction.imm_b {
+            let asm_opcode = match instruction.opcode {
+                Opcode::SLL => "shl",
+                _ => unreachable!(),
+            };
+
+            asm += &format!("   mov {str_reg_a}, {b}\n");
+            asm += &format!("   {asm_opcode} {str_reg_a}, {c}\n");
+            asm += &gpr_to_xmm(str_reg_a, a);
+        } else if instruction.imm_c {
             let asm_opcode = match instruction.opcode {
                 Opcode::SLL => "shl",
                 Opcode::SRL => "shr",
@@ -464,7 +475,7 @@ impl AotCompiler {
         let mut asm = String::new();
 
         let next_pc = pc + 4;
-        let next_next_pc = next_pc + instruction.op_c;
+        let next_next_pc = next_pc.wrapping_add(instruction.op_c);
 
         let a = instruction.op_a;
         let b = instruction.op_b as u8;
@@ -519,11 +530,11 @@ impl AotCompiler {
             asm += &gpr_to_xmm(REG_A_W, a);
         }
 
-        let (gpr_reg_b, delta_str_b) = &xmm_to_gpr(b, REG_B_W, false);
-        asm += delta_str_b;
-
         match instruction.opcode {
             Opcode::Jump => {
+                let (gpr_reg_b, delta_str_b) = &xmm_to_gpr(b, REG_B_W, false);
+                asm += delta_str_b;
+
                 let gpr_reg_b_64 = convert_x86_reg(gpr_reg_b, Width::W64).unwrap();
                 asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
                 asm += &format!("   movsxd {REG_A}, [{REG_C} + {gpr_reg_b_64}]\n");
@@ -535,6 +546,9 @@ impl AotCompiler {
                 asm += &format!("   jmp asm_execute_pc_{target_pc}\n");
             }
             Opcode::JumpDirect => {
+                let (_gpr_reg_b, delta_str_b) = &xmm_to_gpr(b, REG_B_W, false);
+                asm += delta_str_b;
+
                 asm += &format!("   mov {REG_A_W}, {return_pc}\n");
                 asm += &gpr_to_xmm(REG_A_W, a);
 
@@ -966,7 +980,6 @@ extern "C" fn execute_maddu(state: &mut ExecutionState, instruction: &Instructio
     let out_lo = out as u32;
     let out_hi = (out >> 32) as u32;
 
-    println!("lo: {lo}, out_lo: {out_lo}");
     state.write_register(lo, out_lo);
     state.write_register(Register::HI as u32, out_hi);
 }

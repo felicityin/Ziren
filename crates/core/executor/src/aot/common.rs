@@ -117,14 +117,14 @@ pub fn xmm_to_gpr(
     }
     if mips_src_reg < 32 {
         let xmm_map_reg = mips_src_reg / 2;
-        if mips_src_reg % 2 == 0 {
+        if mips_src_reg.is_multiple_of(2) {
             (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 0\n"))
         } else {
             (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 1\n"))
         }
     } else {
         let xmm_map_reg = (mips_src_reg - 6) / 2;
-        if mips_src_reg % 2 == 0 {
+        if mips_src_reg.is_multiple_of(2) {
             (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 2\n"))
         } else {
             (x86_dst_reg.to_string(), format!("   pextrd {x86_dst_reg}, xmm{xmm_map_reg}, 3\n"))
@@ -142,14 +142,14 @@ pub fn gpr_to_xmm(x86_dst_reg: &str, mips_src_reg: u8) -> String {
     }
     if mips_src_reg < 32 {
         let xmm_map_reg = mips_src_reg / 2;
-        if mips_src_reg % 2 == 0 {
+        if mips_src_reg.is_multiple_of(2) {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 0\n")
         } else {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 1\n")
         }
     } else {
         let xmm_map_reg = (mips_src_reg - 6) / 2;
-        if mips_src_reg % 2 == 0 {
+        if mips_src_reg.is_multiple_of(2) {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 2\n")
         } else {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_dst_reg}, 3\n")
@@ -160,14 +160,14 @@ pub fn gpr_to_xmm(x86_dst_reg: &str, mips_src_reg: u8) -> String {
 pub fn gpr_to_mips_register(x86_reg: &str, mips_reg: u8) -> String {
     if mips_reg < 32 {
         let xmm_map_reg = mips_reg / 2;
-        if mips_reg % 2 == 0 {
+        if mips_reg.is_multiple_of(2) {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_reg}, 0\n")
         } else {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_reg}, 1\n")
         }
     } else {
         let xmm_map_reg = (mips_reg - 6) / 2;
-        if mips_reg % 2 == 0 {
+        if mips_reg.is_multiple_of(2) {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_reg}, 2\n")
         } else {
             format!("   pinsrd xmm{xmm_map_reg}, {x86_reg}, 3\n")

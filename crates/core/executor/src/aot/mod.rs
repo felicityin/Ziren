@@ -25,7 +25,7 @@ pub struct AotExecutor {
     pub executor_mode: ExecutorMode,
 
     /// The state of the execution.
-    pub state: Box<ExecutionState>,
+    pub state: ExecutionState,
 
     /// Guest code
     pub lib: Library,
@@ -42,7 +42,7 @@ impl AotExecutor {
     /// Compile the AOT assembly into a dynamic library and create an AotExecutor.
     pub fn new(program: Program) -> Result<Self, AotError> {
         let executor_mode = ExecutorMode::Trace;
-        let state = Box::new(ExecutionState::new(program.pc_start, program.next_pc));
+        let state = ExecutionState::new(program.pc_start, program.next_pc);
         let instructions_count = program.instructions.len();
 
         let aot = AotCompiler::new(program);
@@ -58,7 +58,7 @@ impl AotExecutor {
     ///
     /// This function will return an error if the program execution fails.
     pub fn run(&mut self) -> Result<(), ExecutionError> {
-        let vm_state_ptr = self.state.as_mut() as *mut ExecutionState;
+        let vm_state_ptr = &mut self.state as *mut ExecutionState;
 
         tracing::info_span!("execute").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<AsmRunFn> =
@@ -376,6 +376,14 @@ mod tests {
         // rotr
         let c = ((c as u64) + ((c as u64) << 32)) >> 4;
         simple_op_code_i_test(Opcode::ROR, c as u32, 0x12345678, 4, 4);
+
+        // sll
+        let instructions =
+            vec![Instruction::new(Opcode::SLL, Register::RA as u8, 40, 16, true, true)];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = AotExecutor::new(program).unwrap();
+        runtime.run().unwrap();
+        assert_eq!(runtime.register(Register::RA), 40 << 16);
     }
 
     #[test]
@@ -990,13 +998,20 @@ mod tests {
         assert_eq!(runtime.register(29.into()), expected);
     }
 
-    fn simple_op_code_test(opcode: Opcode, expected: u32, b: u32, c: u32) {
+    // #[test]
+    // fn test_aot_sha2_run() {
+    //     let program = Program::from(test_artifacts::SHA2_ELF).unwrap();
+    //     let mut runtime = AotExecutor::new(program).unwrap();
+    //     runtime.run().unwrap();
+    // }
+
+    fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
         // addi x29, x0, a
         // addi x30, x0, b
         // <opcode> RA, x29, x30
         let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, b, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, c, false, true),
+            Instruction::new(Opcode::ADD, 29, 0, a, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, b, false, true),
             Instruction::new(opcode, Register::RA as u8, 29, 30, false, false),
         ];
         let program = Program::new(instructions, 0, 0);
