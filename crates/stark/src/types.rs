@@ -34,6 +34,7 @@ impl<SC: StarkGenericConfig, M, P> ShardMainData<SC, M, P> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
 pub struct ShardCommitment<C> {
     pub main_commit: C,
     pub permutation_commit: C,
@@ -43,6 +44,7 @@ pub struct ShardCommitment<C> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "T: Serialize"))]
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
+#[repr(C)]
 pub struct AirOpenedValues<T> {
     pub local: Vec<T>,
     pub next: Vec<T>,
@@ -52,6 +54,7 @@ pub struct AirOpenedValues<T> {
 #[serde(bound(serialize = "F: Serialize, EF: Serialize"))]
 #[serde(bound(deserialize = "F: Deserialize<'de>, EF: Deserialize<'de>"))]
 #[allow(clippy::type_complexity)]
+#[repr(C)]
 pub struct ChipOpenedValues<F, EF> {
     pub preprocessed: AirOpenedValues<EF>,
     pub main: AirOpenedValues<EF>,
@@ -63,6 +66,7 @@ pub struct ChipOpenedValues<F, EF> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[repr(C)]
 pub struct ShardOpenedValues<F, EF> {
     pub chips: Vec<ChipOpenedValues<F, EF>>,
 }
@@ -74,6 +78,7 @@ pub const PROOF_MAX_NUM_PVS: usize = 231;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(bound = "")]
+#[repr(C)]
 pub struct ShardProof<SC: StarkGenericConfig> {
     pub commitment: ShardCommitment<Com<SC>>,
     pub opened_values: ShardOpenedValues<Val<SC>, Challenge<SC>>,

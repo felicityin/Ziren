@@ -4,6 +4,7 @@ use zkm_stark::{Dom, ShardProof, StarkGenericConfig, StarkVerifyingKey};
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(bound(serialize = "ShardProof<SC>: Serialize, Dom<SC>: Serialize"))]
 #[serde(bound(deserialize = "ShardProof<SC>: Deserialize<'de>, Dom<SC>: DeserializeOwned"))]
+#[repr(C)]
 pub struct ZKMReduceProof<SC: StarkGenericConfig> {
     /// The compress verifying key associated with the proof.
     pub vk: StarkVerifyingKey<SC>,

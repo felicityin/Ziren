@@ -28,10 +28,10 @@ pub extern "C" fn syscall_halt(exit_code: u8) -> ! {
                 .unwrap()
                 .finalize();
 
-        // // For each digest word, call COMMIT ecall.  In the runtime, this will store the digest
-        // // words into the runtime's execution record's public values digest.  In the AIR, it
-        // // will be used to verify that the provided public values digest matches the one
-        // // computed by the program.
+        // For each digest word, call COMMIT ecall.  In the runtime, this will store the digest
+        // words into the runtime's execution record's public values digest.  In the AIR, it
+        // will be used to verify that the provided public values digest matches the one
+        // computed by the program.
         // for i in 0..PV_DIGEST_NUM_WORDS {
         //     let word = u32::from_le_bytes(pv_digest_bytes[i * 4..(i + 1) * 4].try_into().unwrap());
         //     asm!("syscall", in("$2") crate::syscalls::COMMIT, in("$4") i, in("$5") word);

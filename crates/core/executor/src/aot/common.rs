@@ -11,6 +11,7 @@ pub const REG_C: &str = "rdx";
 pub const REG_C_W: &str = "edx";
 pub const REG_C_B: &str = "dx";
 pub const REG_C_LB: &str = "dl";
+pub const REG_HI: &str = "edx";
 
 pub const REG_B: &str = "rsi";
 pub const REG_B_W: &str = "esi";
@@ -21,49 +22,91 @@ pub const REG_A_W: &str = "edi";
 pub const REG_RETURN_VAL: &str = "rax";
 pub const REG_D: &str = "rax";
 pub const REG_D_W: &str = "eax";
+pub const REG_LO: &str = "eax";
+pub const REG_D_8L: &str = "al";
+pub const REG_CALLER: &str = "rax";
+
+pub const REG_ROR_W: &str = "ecx";
+pub const REG_ROR_8L: &str = "cl";
 
 pub const REG_STATE_PTR: &str = "rbx";
 pub const REG_EXECUTOR_PTR: &str = "r14";
 pub const REG_MEMORY_PTR: &str = "r15";
-pub const REG_NEXT_PC: &str = "r12";
+pub const REG_NEXT_PC: &str = "r13";
 
 pub const DEFAULT_PC_OFFSET: i32 = 4;
 
+// pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 34] = [
+//     None,         // x0
+//     None,         // x1
+//     None,         // x2
+//     None,         // x3
+//     None,         // x4
+//     None,         // x5
+//     None,         // x6
+//     None,         // x7
+//     None,         // x8
+//     None,         // x9
+//     Some("r10d"), // x10
+//     Some("r11d"), // x11
+//     Some("r9d"),  // x12
+//     Some("r8d"),  // x13
+//     Some("ebp"),  // x14
+//     Some("r13d"), // x15
+//     None,         // x16
+//     None,         // x17
+//     None,         // x18
+//     None,         // x19
+//     None,         // x20
+//     None,         // x21
+//     None,         // x22
+//     None,         // x23
+//     None,         // x24
+//     None,         // x25
+//     None,         // x26
+//     None,         // x27
+//     None,         // x28
+//     None,         // x29
+//     None,         // x30
+//     None,         // x31
+//     None,
+//     None,
+// ];
+
 pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 34] = [
-    None,         // x0
-    None,         // x1
-    None,         // x2
-    None,         // x3
-    None,         // x4
-    None,         // x5
-    None,         // x6
-    None,         // x7
-    None,         // x8
-    None,         // x9
-    Some("r10d"), // x10
-    Some("r11d"), // x11
-    Some("r9d"),  // x12
-    Some("r8d"),  // x13
-    Some("ebp"),  // x14
-    Some("r13d"), // x15
-    None,         // x16
-    None,         // x17
-    None,         // x18
-    None,         // x19
-    None,         // x20
-    None,         // x21
-    None,         // x22
-    None,         // x23
-    None,         // x24
-    None,         // x25
-    None,         // x26
-    None,         // x27
-    None,         // x28
-    None,         // x29
-    None,         // x30
-    None,         // x31
-    None,
-    None,
+    None, // x0
+    None, // x1
+    None, // x2
+    None, // x3
+    None, // x4
+    None, // x5
+    None, // x6
+    None, // x7
+    None, // x8
+    None, // x9
+    None, // x10
+    None, // x11
+    None, // x12
+    None, // x13
+    None, // x14
+    None, // x15
+    None, // x16
+    None, // x17
+    None, // x18
+    None, // x19
+    None, // x20
+    None, // x21
+    None, // x22
+    None, // x23
+    None, // x24
+    None, // x25
+    None, // x26
+    None, // x27
+    None, // x28
+    None, // x29
+    None, // x30
+    None, // x31
+    None, None,
 ];
 
 pub fn sync_xmm_to_gpr() -> String {

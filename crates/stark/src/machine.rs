@@ -90,6 +90,7 @@ impl<SC: StarkGenericConfig> StarkProvingKey<SC> {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "Dom<SC>: Serialize"))]
 #[serde(bound(deserialize = "Dom<SC>: DeserializeOwned"))]
+#[repr(C)]
 pub struct StarkVerifyingKey<SC: StarkGenericConfig> {
     /// The commitment to the preprocessed traces.
     pub commit: Com<SC>,

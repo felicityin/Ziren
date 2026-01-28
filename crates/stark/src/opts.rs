@@ -233,6 +233,7 @@ impl ZKMCoreOpts {
 
 /// Options for splitting deferred events.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
 pub struct SplitOpts {
     /// The threshold for default events.
     pub deferred: usize,

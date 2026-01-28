@@ -37,24 +37,25 @@ impl AotCompiler {
         asm += &Self::push_internal_registers();
 
         // Store the start of memory address space in r15
-        asm += "    # Store the start of memory address space in r15\n";
-        asm += &format!("    mov r14, {get_address_space_ptr}\n");
-        asm += "    mov rdi, rbx\n";
-        asm += "    mov rsi, 1\n";
-        asm += "    call r14\n";
-        asm += "    mov r15, rax\n";
+        // asm += "    # Store the start of memory address space in r15\n";
+        asm += &format!("    mov {REG_CALLER}, {get_address_space_ptr}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("    mov {REG_SECOND_ARG}, 1\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    mov {REG_MEMORY_PTR}, {REG_RETURN_VAL}\n");
         // Store the start of register address space in high 64 bits of xmm0
         asm += "    # Store the start of register address space in high 64 bits of xmm0\n";
-        asm += "    mov rdi, rbx\n";
-        asm += "    mov rsi, 0\n";
-        asm += "    call r14\n";
-        asm += "    pinsrq  xmm0, rax, 1\n";
+        asm += &format!("    mov {REG_CALLER}, {get_address_space_ptr}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("    mov {REG_SECOND_ARG}, 0\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    pinsrq  xmm0, {REG_RETURN_VAL}, 1\n");
         // Store the pointer to where `pc` is stored in the state in high 64 bits of xmm1
         asm += "    # Store the pointer to where `pc` is stored in the state in high 64 bits of xmm1\n";
-        asm += "    mov rdi, rbx\n";
-        asm += &format!("   mov {REG_D}, {get_pc_ptr}\n");
-        asm += &format!("   call {REG_D}\n");
-        asm += "    pinsrq  xmm1, rax, 1\n"; // write `eax` to the third lane of xmm1
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    pinsrq  xmm1, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm1
 
         asm += "    # pop_internal_registers\n";
         asm += &Self::pop_internal_registers();
@@ -111,10 +112,10 @@ impl AotCompiler {
         asm += "    # xmm_to_mips_regs\n";
         asm += &Self::xmm_to_mips_regs();
         asm += "    # call set_pc()\n";
-        asm += &format!("    mov {REG_FIRST_ARG}, rbx\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, {REG_NEXT_PC}\n");
-        asm += &format!("    mov {REG_D}, {set_pc_ptr}\n");
-        asm += &format!("    call {REG_D}\n");
+        asm += &format!("    mov {REG_CALLER}, {set_pc_ptr}\n");
+        asm += &format!("    call {REG_CALLER}\n");
         asm += "    # pop_external_registers\n";
         asm += &Self::pop_external_registers();
         asm += &format!("    xor {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
@@ -139,6 +140,7 @@ impl AotCompiler {
     }
 
     fn generate_instruction_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+        // println!("{:?}", instruction);
         if instruction.is_alu_instruction() {
             return Self::generate_alu_asm(instruction, pc);
         } else if instruction.is_branch_instruction() {
@@ -298,10 +300,10 @@ impl AotCompiler {
             let (reg_b, delta_str_b) = &xmm_to_gpr(b, str_reg_a, true);
             asm += delta_str_b;
 
-            let (_reg_c, delta_str_c) = &xmm_to_gpr(c as u8, "ecx", true);
+            let (_reg_c, delta_str_c) = &xmm_to_gpr(c as u8, REG_ROR_W, true);
             asm += delta_str_c;
 
-            asm += &format!("   ror {reg_b}, cl\n");
+            asm += &format!("   ror {reg_b}, {REG_ROR_8L}\n");
 
             asm += &gpr_to_xmm(reg_b, a);
         } else {
@@ -336,7 +338,7 @@ impl AotCompiler {
         // for implicit multiplication, we need to load the multiplicand into `eax`
         // result of hi bits are always stored in `edx`
         // can't use REG_C_W, because it is edx, and it gets overridden
-        let (_, delta_str_b) = &xmm_to_gpr(b, "eax", true);
+        let (_, delta_str_b) = &xmm_to_gpr(b, REG_LO, true);
         let (gpr_reg_c, delta_str_c) = &xmm_to_gpr(c, REG_A_W, false);
         asm += delta_str_b;
         asm += delta_str_c;
@@ -351,8 +353,8 @@ impl AotCompiler {
             _ => unreachable!(),
         }
 
-        asm += &gpr_to_xmm("edx", Register::HI as u8);
-        asm += &gpr_to_xmm("eax", Register::LO as u8);
+        asm += &gpr_to_xmm(REG_HI, Register::HI as u8);
+        asm += &gpr_to_xmm(REG_LO, Register::LO as u8);
 
         Ok(asm)
     }
@@ -367,11 +369,11 @@ impl AotCompiler {
         // Calculate the result. Inputs: eax, ecx. Outputs: eax, edx.
         // Note that for div we are tied to eax/edx because of idiv requirements
 
-        let (_, delta_str_b) = &xmm_to_gpr(b, "eax", true);
+        let (_, delta_str_b) = &xmm_to_gpr(b, REG_LO, true);
         asm += delta_str_b;
         let (reg_c, delta_str_c) = &xmm_to_gpr(c, REG_A_W, false);
         asm += delta_str_c;
-        asm += "   mov edx, 0\n";
+        asm += &format!("   mov {REG_HI}, 0\n");
 
         match instruction.opcode {
             Opcode::DIV => {
@@ -380,14 +382,14 @@ impl AotCompiler {
                 // eax = eax / ecx, edx = eax % ecx
                 asm += &format!("   idiv {reg_c}\n");
 
-                asm += &gpr_to_xmm("edx", Register::HI as u8);
-                asm += &gpr_to_xmm("eax", Register::LO as u8);
+                asm += &gpr_to_xmm(REG_HI, Register::HI as u8);
+                asm += &gpr_to_xmm(REG_LO, Register::LO as u8);
             }
             Opcode::DIVU => {
                 asm += &format!("   div {reg_c}\n");
 
-                asm += &gpr_to_xmm("edx", Register::HI as u8);
-                asm += &gpr_to_xmm("eax", Register::LO as u8);
+                asm += &gpr_to_xmm(REG_HI, Register::HI as u8);
+                asm += &gpr_to_xmm(REG_LO, Register::LO as u8);
             }
             Opcode::MOD => {
                 // sign-extend EAX into EDX:EAX
@@ -395,12 +397,12 @@ impl AotCompiler {
                 // eax = eax / ecx, edx = eax % ecx
                 asm += &format!("   idiv {reg_c}\n");
 
-                asm += &gpr_to_xmm("edx", a);
+                asm += &gpr_to_xmm(REG_HI, a);
             }
             Opcode::MODU => {
                 asm += &format!("   div {reg_c}\n");
 
-                asm += &gpr_to_xmm("edx", a);
+                asm += &gpr_to_xmm(REG_HI, a);
             }
             _ => unreachable!(),
         }
@@ -418,14 +420,14 @@ impl AotCompiler {
         if instruction.imm_c {
             let (gpr_reg_b, delta_str_b) = xmm_to_gpr(b, REG_B_W, false);
             asm += &delta_str_b;
-            asm += &format!("   cmp {gpr_reg_b}, {c}\n");
+            asm += &format!("   cmp {gpr_reg_b}, {}\n", instruction.op_c);
             match instruction.opcode {
-                Opcode::SLT => asm += "   setl al\n",
-                Opcode::SLTU => asm += "   setb al\n",
+                Opcode::SLT => asm += &format!("   setl {REG_D_8L}\n"),
+                Opcode::SLTU => asm += &format!("   setb {REG_D_8L}\n"),
                 _ => unreachable!(),
             }
-            asm += "   movzx eax, al\n";
-            asm += &gpr_to_xmm("eax", a);
+            asm += &format!("   movzx {REG_D_W}, {REG_D_8L}\n");
+            asm += &gpr_to_xmm(REG_D_W, a);
         } else {
             let (gpr_reg_b, delta_str_b) = xmm_to_gpr(b, REG_B_W, false);
             asm += &delta_str_b;
@@ -433,12 +435,12 @@ impl AotCompiler {
             asm += &delta_str_c;
             asm += &format!("   cmp {gpr_reg_b}, {gpr_reg_c}\n");
             match instruction.opcode {
-                Opcode::SLT => asm += "   setl al\n",
-                Opcode::SLTU => asm += "   setb al\n",
+                Opcode::SLT => asm += &format!("   setl {REG_D_8L}\n"),
+                Opcode::SLTU => asm += &format!("   setb {REG_D_8L}\n"),
                 _ => unreachable!(),
             }
-            asm += "   movzx eax, al\n";
-            asm += &gpr_to_xmm("eax", a);
+            asm += &format!("   movzx {REG_D_W}, {REG_D_8L}\n");
+            asm += &gpr_to_xmm(REG_D_W, a);
         }
 
         Ok(asm)
@@ -547,9 +549,6 @@ impl AotCompiler {
                 let (_gpr_reg_b, delta_str_b) = &xmm_to_gpr(b, REG_B_W, false);
                 asm += delta_str_b;
 
-                asm += &format!("   mov {REG_A_W}, {return_pc}\n");
-                asm += &gpr_to_xmm(REG_A_W, a);
-
                 let target_pc = next_pc + instruction.op_b;
                 asm += &format!("   jmp asm_execute_pc_{target_pc}\n");
             }
@@ -573,7 +572,7 @@ impl AotCompiler {
         asm += &format!("   add {gpr_reg}, {offset_ext}\n");
 
         if instruction.opcode == Opcode::LWR || instruction.opcode == Opcode::LWL {
-            asm += &format!("   mov eax, {gpr_reg}\n");
+            asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
             asm += &format!("   and {gpr_reg}, 0xfffffffc\n");
         }
 
@@ -631,12 +630,12 @@ impl AotCompiler {
                 let (gpr_reg_source, delta_str) = xmm_to_gpr(a, REG_C_W, false);
                 asm += &delta_str;
 
-                asm += "   and eax, 3\n";
-                asm += "   cmp eax, 0\n";
+                asm += &format!("   and {REG_D_W}, 3\n");
+                asm += &format!("   cmp {REG_D_W}, 0\n");
                 asm += &format!("   je .pc_{pc}_lwr_end\n");
-                asm += "   cmp eax, 1\n";
+                asm += &format!("   cmp {REG_D_W}, 1\n");
                 asm += &format!("   je .pc_{pc}_lwr_case1\n");
-                asm += "   cmp eax, 2\n";
+                asm += &format!("   cmp {REG_D_W}, 2\n");
                 asm += &format!("   je .pc_{pc}_lwr_case2\n");
 
                 asm += &format!(".pc_{pc}_lwr_case3:\n");
@@ -682,12 +681,12 @@ impl AotCompiler {
                 let (gpr_reg_source, delta_str) = xmm_to_gpr(a, REG_C_W, false);
                 asm += &delta_str;
 
-                asm += "   and eax, 3\n";
-                asm += "   cmp eax, 0\n";
+                asm += &format!("   and {REG_D_W}, 3\n");
+                asm += &format!("   cmp {REG_D_W}, 0\n");
                 asm += &format!("   je .pc_{pc}_lwl_case0\n");
-                asm += "   cmp eax, 1\n";
+                asm += &format!("   cmp {REG_D_W}, 1\n");
                 asm += &format!("   je .pc_{pc}_lwl_case1\n");
-                asm += "   cmp eax, 2\n";
+                asm += &format!("   cmp {REG_D_W}, 2\n");
                 asm += &format!("   je .pc_{pc}_lwl_case2\n");
 
                 asm += &format!(".pc_{pc}_lwl_case3:\n");
@@ -737,7 +736,7 @@ impl AotCompiler {
         asm += &format!("   add {gpr_reg}, {offset_ext}\n");
 
         if instruction.opcode == Opcode::SWR || instruction.opcode == Opcode::SWL {
-            asm += &format!("   mov eax, {gpr_reg}\n");
+            asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
             asm += &format!("   and {gpr_reg}, 0xfffffffc\n");
         }
 
@@ -790,12 +789,12 @@ impl AotCompiler {
                     }
                 */
 
-                asm += "   and eax, 3\n";
-                asm += "   cmp eax, 0\n";
+                asm += &format!("   and {REG_D_W}, 3\n");
+                asm += &format!("   cmp {REG_D_W}, 0\n");
                 asm += &format!("   je .pc_{pc}_swr_case0\n");
-                asm += "   cmp eax, 1\n";
+                asm += &format!("   cmp {REG_D_W}, 1\n");
                 asm += &format!("   je .pc_{pc}_swr_case1\n");
-                asm += "   cmp eax, 2\n";
+                asm += &format!("   cmp {REG_D_W}, 2\n");
                 asm += &format!("   je .pc_{pc}_swr_case2\n");
 
                 asm += &format!(".pc_{pc}_swr_case3:\n");
@@ -845,12 +844,12 @@ impl AotCompiler {
                         case 3: MEM[aligned_addr] = reg_value# break;
                 */
 
-                asm += "   and eax, 3\n";
-                asm += "   cmp eax, 0\n";
+                asm += &format!("   and {REG_D_W}, 3\n");
+                asm += &format!("   cmp {REG_D_W}, 0\n");
                 asm += &format!("   je .pc_{pc}_swl_case0\n");
-                asm += "   cmp eax, 1\n";
+                asm += &format!("   cmp {REG_D_W}, 1\n");
                 asm += &format!("   je .pc_{pc}_swl_case1\n");
-                asm += "   cmp eax, 2\n";
+                asm += &format!("   cmp {REG_D_W}, 2\n");
                 asm += &format!("   je .pc_{pc}_swl_case2\n");
 
                 asm += &format!(".pc_{pc}_swl_case3:\n");
@@ -901,8 +900,8 @@ impl AotCompiler {
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
-        asm += &format!("   mov r14, {extern_handler_ptr}\n");
-        asm += "   call r14\n";
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
         asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
@@ -934,8 +933,8 @@ impl AotCompiler {
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
-        asm += &format!("   mov r14, {extern_handler_ptr}\n");
-        asm += "   call r14\n";
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
         asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
@@ -954,21 +953,24 @@ impl AotCompiler {
         asm += &Self::xmm_to_mips_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
+
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov r14, {extern_handler_ptr}\n");
-        asm += "   call r14\n";
-        asm += &format!("   cmp {REG_RETURN_VAL}, 1\n");
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
+        asm += &format!("   cmp {REG_RETURN_VAL}, 0\n");
         asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
         asm += &Self::mips_regs_to_xmm();
 
+        // asm += &format!("   cmp {REG_NEXT_PC}, 0\n");
         asm += "   je asm_run_end\n";
         asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
-        asm += &format!("   pextrq {REG_A}, xmm1, 1\n"); // extract the upper 64 bits of the xmm1 register to REG_A
-        asm += &format!("   mov {REG_A_W}, dword ptr [{REG_A}]\n");
+        // asm += &format!("   pextrq {REG_A}, xmm1, 1\n"); // extract the upper 64 bits of the xmm1 register to REG_A
+        // asm += &format!("   mov {REG_A_W}, dword ptr [{REG_A}]\n");
+        asm += &format!("   mov {REG_A}, {REG_RETURN_VAL}\n");
         asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_A}]\n");
         asm += &format!("   add {REG_A}, {REG_C}\n");
         asm += &format!("   jmp {REG_A}\n");
@@ -1136,7 +1138,7 @@ extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executo
     if executor.unconstrained
         && (syscall != SyscallCode::EXIT_UNCONSTRAINED && syscall != SyscallCode::WRITE)
     {
-        panic!("ExecutionError::InvalidSyscallUsage({syscall_id})");
+        panic!("ExecutionError::InvalidSyscallUsage({syscall})");
     }
 
     // Update the syscall counts.
@@ -1144,26 +1146,28 @@ extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executo
     let syscall_count = state.syscall_counts.entry(syscall_for_count).or_insert(0);
     *syscall_count += 1;
 
-    let syscall_impl = state.syscall_map.get(&syscall);
+    // let syscall_impl = state.syscall_map.get(&syscall);
+    // let syscall_impl = executor.syscall_map.get(&syscall).cloned();
+    let syscall_impl = executor.get_syscall(syscall).cloned();
     let mut precompile_rt = SyscallContext::new(executor);
-    let (a, _precompile_next_pc, precompile_cycles, returned_exit_code) =
-        if let Some(syscall_impl) = syscall_impl {
-            // Executing a syscall optionally returns a value to write to the t0
-            // register. If it returns None, we just keep the
-            // syscall_id in t0.
-            let res =
-                syscall_impl.execute(&mut precompile_rt, syscall, b, c).expect("syscall failed");
-            let a = if let Some(r0) = res { r0 } else { syscall_id };
+    let (a, precompile_next_pc, precompile_cycles, returned_exit_code) = if let Some(syscall_impl) =
+        syscall_impl
+    {
+        // Executing a syscall optionally returns a value to write to the t0
+        // register. If it returns None, we just keep the
+        // syscall_id in t0.
+        let res = syscall_impl.execute(&mut precompile_rt, syscall, b, c).expect("syscall failed");
+        let a = if let Some(r0) = res { r0 } else { syscall_id };
 
-            // If the syscall is `HALT` and the exit code is non-zero, return an error.
-            if syscall == SyscallCode::HALT && precompile_rt.exit_code != 0 {
-                panic!("ExecutionError::HaltWithNonZeroExitCode({})", precompile_rt.exit_code);
-            }
+        // If the syscall is `HALT` and the exit code is non-zero, return an error.
+        if syscall == SyscallCode::HALT && precompile_rt.exit_code != 0 {
+            panic!("ExecutionError::HaltWithNonZeroExitCode({})", precompile_rt.exit_code);
+        }
 
-            (a, precompile_rt.next_pc, syscall_impl.num_extra_cycles(), precompile_rt.exit_code)
-        } else {
-            panic!("ExecutionError::UnsupportedSyscall({syscall_id}))");
-        };
+        (a, precompile_rt.next_pc, syscall_impl.num_extra_cycles(), precompile_rt.exit_code)
+    } else {
+        panic!("ExecutionError::UnsupportedSyscall({syscall_id}))");
+    };
 
     if syscall == SyscallCode::HALT && returned_exit_code == 0 {
         state.exited = true;
@@ -1171,10 +1175,12 @@ extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executo
 
     state.write_register(Register::V0 as u32, a);
     state.clk += precompile_cycles;
+    state.pc = precompile_next_pc;
+    state.next_pc = precompile_next_pc + 4;
 
     if state.exited {
-        1
-    } else {
         0
+    } else {
+        precompile_next_pc
     }
 }

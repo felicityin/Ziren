@@ -16,7 +16,7 @@ use zkm_stark::shape::Shape;
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, PartialOrd, Ord, Enum,
 )]
-#[repr(C)]
+#[repr(u32)]
 pub enum MipsAirId {
     /// The CPU chip.
     Cpu = 0,

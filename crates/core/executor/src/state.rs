@@ -1,4 +1,4 @@
-use std::{fmt::Debug, fs::File, sync::Arc};
+use std::{fmt::Debug, fs::File};
 
 use hashbrown::HashMap;
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
@@ -10,7 +10,7 @@ use crate::{
         GuestMemory, Memory,
     },
     record::{ExecutionRecord, MemoryAccessRecord},
-    syscalls::{default_syscall_map, Syscall, SyscallCode},
+    syscalls::SyscallCode,
     ExecutorMode, ZKMReduceProof,
 };
 
@@ -75,8 +75,6 @@ pub struct ExecutionState {
     pub public_values_stream_ptr: usize,
     /// Keeps track of how many times a certain syscall has been called.
     pub syscall_counts: HashMap<SyscallCode, u64>,
-
-    pub syscall_map: HashMap<SyscallCode, Arc<dyn Syscall>>,
 }
 
 impl ExecutionState {
@@ -104,7 +102,6 @@ impl ExecutionState {
             proof_stream: Vec::new(),
             proof_stream_ptr: 0,
             syscall_counts: HashMap::new(),
-            syscall_map: default_syscall_map(),
         }
     }
 

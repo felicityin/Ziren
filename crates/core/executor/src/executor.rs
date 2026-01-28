@@ -76,6 +76,15 @@ pub struct Executor<'a> {
     /// The program.
     pub program: Arc<Program>,
 
+    /// The maximum size of each shard.
+    pub shard_size: u32,
+
+    /// The maximum number of shards to execute at once.
+    pub shard_batch_size: u32,
+
+    /// The maximum number of cycles for a syscall.
+    pub max_syscall_cycles: u32,
+
     /// The mode the executor is running in.
     pub executor_mode: ExecutorMode,
 
@@ -92,15 +101,6 @@ pub struct Executor<'a> {
     /// Whether we should emit global memory init and finalize events. This can be enabled in
     /// Checkpoint mode and disabled in Trace mode.
     pub emit_global_memory_events: bool,
-
-    /// The maximum size of each shard.
-    pub shard_size: u32,
-
-    /// The maximum number of shards to execute at once.
-    pub shard_batch_size: u32,
-
-    /// The maximum number of cycles for a syscall.
-    pub max_syscall_cycles: u32,
 
     /// The mapping between syscall codes and their implementations.
     pub syscall_map: HashMap<SyscallCode, Arc<dyn Syscall>>,
@@ -184,7 +184,7 @@ pub struct Executor<'a> {
 
 /// The different modes the executor can run in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(C)]
+#[repr(u8)]
 pub enum ExecutorMode {
     /// Run the execution with no tracing or checkpointing.
     Simple,
@@ -1293,6 +1293,8 @@ impl<'a> Executor<'a> {
         let mut next_pc = self.state.next_pc;
         let mut next_next_pc = self.state.next_pc + 4;
 
+        println!("{pc} {instruction:?}");
+
         let mut a = 0;
         let mut b = 0;
         let mut c = 0;
@@ -1393,6 +1395,8 @@ impl<'a> Executor<'a> {
             unreachable!()
         }
 
+        // println!("{:?} {} {}", a, b, c);
+
         if next_next_pc == 0 {
             log::error!("Null pointer reference {:X}: {:X}", self.state.pc, instruction.op_c);
             return Err(ExecutionError::NullPointerReference());
@@ -1436,6 +1440,7 @@ impl<'a> Executor<'a> {
         let syscall = SyscallCode::from_u32(syscall_id);
         let mut prev_a = syscall_id;
         log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", self.state.pc, syscall_id, b, c);
+        println!("pc: {} syscall {:?}, a0: {}, a1: {}", self.state.pc, syscall, b, c);
 
         if self.print_report && !self.unconstrained {
             self.report.syscall_counts[syscall] += 1;
@@ -2951,6 +2956,20 @@ mod tests {
         runtime.run().unwrap();
         assert_eq!(runtime.state.next_pc, 100);
         assert_eq!(runtime.register(5.into()), 12);
+    }
+
+    #[test]
+    fn test_bal() {
+        let instructions = vec![
+            Instruction::new(Opcode::JumpDirect, 31, 4, 0, false, true),
+            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
+        assert_eq!(runtime.state.read_register(31), 8);
     }
 
     #[test]

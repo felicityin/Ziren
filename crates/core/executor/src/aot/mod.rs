@@ -256,6 +256,23 @@ mod tests {
         simple_op_code_i_test(Opcode::ADD, 37 + 5 + 42, 37, 5, 42);
         // addi negative
         simple_op_code_i_test(Opcode::ADD, 5 - 1 + 4, 5, 0xFFFF_FFFF, 4);
+
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 100, false, true),
+            Instruction::new(Opcode::ADD, Register::RA as u8, 0, 200, false, true),
+            Instruction::new(
+                Opcode::ADD,
+                Register::RA as u8,
+                29,
+                Register::RA as u32,
+                false,
+                false,
+            ),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+        assert_eq!(runtime.register(Register::RA), 300);
     }
 
     #[test]
@@ -745,6 +762,20 @@ mod tests {
         runtime.aot_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
         assert_eq!(runtime.state.read_register(13), 12);
+    }
+
+    #[test]
+    fn test_aot_bal() {
+        let instructions = vec![
+            Instruction::new(Opcode::JumpDirect, 31, 4, 0, false, true),
+            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+        assert_eq!(runtime.state.pc, 12);
+        assert_eq!(runtime.state.read_register(31), 8);
     }
 
     #[test]
