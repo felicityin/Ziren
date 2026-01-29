@@ -60,8 +60,8 @@ impl AotCompiler {
         asm += "    # pop_internal_registers\n";
         asm += &Self::pop_internal_registers();
 
-        asm += "    # mips_regs_to_xmm\n";
-        asm += &Self::mips_regs_to_xmm();
+        asm += "    # load_xmm_regs\n";
+        asm += &Self::load_xmm_regs();
 
         asm += "    # execute\n";
         asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
@@ -109,8 +109,8 @@ impl AotCompiler {
         let set_pc_ptr = format!("{:p}", set_pc as *const ());
 
         asm += "asm_run_end:\n";
-        asm += "    # xmm_to_mips_regs\n";
-        asm += &Self::xmm_to_mips_regs();
+        asm += "    # save_xmm_regs\n";
+        asm += &Self::save_xmm_regs();
         asm += "    # call set_pc()\n";
         asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, {REG_NEXT_PC}\n");
@@ -895,7 +895,7 @@ impl AotCompiler {
 
         let mut asm = String::new();
 
-        asm += &Self::xmm_to_mips_regs();
+        asm += &Self::save_xmm_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
@@ -906,7 +906,7 @@ impl AotCompiler {
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
-        asm += &Self::mips_regs_to_xmm();
+        asm += &Self::load_xmm_regs();
 
         Ok(asm)
     }
@@ -928,7 +928,7 @@ impl AotCompiler {
 
         let mut asm = String::new();
 
-        asm += &Self::xmm_to_mips_regs();
+        asm += &Self::save_xmm_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
@@ -939,7 +939,7 @@ impl AotCompiler {
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
-        asm += &Self::mips_regs_to_xmm();
+        asm += &Self::load_xmm_regs();
 
         Ok(asm)
     }
@@ -950,7 +950,7 @@ impl AotCompiler {
         let mut asm = String::new();
 
         asm += "   # syscall\n";
-        asm += &Self::xmm_to_mips_regs();
+        asm += &Self::save_xmm_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
 
@@ -963,17 +963,9 @@ impl AotCompiler {
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
-        asm += &Self::mips_regs_to_xmm();
+        asm += &Self::load_xmm_regs();
 
-        // asm += &format!("   cmp {REG_NEXT_PC}, 0\n");
         asm += "   je asm_run_end\n";
-        asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
-        // asm += &format!("   pextrq {REG_A}, xmm1, 1\n"); // extract the upper 64 bits of the xmm1 register to REG_A
-        // asm += &format!("   mov {REG_A_W}, dword ptr [{REG_A}]\n");
-        asm += &format!("   mov {REG_A}, {REG_RETURN_VAL}\n");
-        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_A}]\n");
-        asm += &format!("   add {REG_A}, {REG_C}\n");
-        asm += &format!("   jmp {REG_A}\n");
 
         Ok(asm)
     }

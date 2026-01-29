@@ -104,7 +104,7 @@ impl AotCompiler {
     }
 
     // r15 stores vm_register_address
-    fn mips_regs_to_xmm() -> String {
+    fn load_xmm_regs() -> String {
         let mut asm = String::new();
 
         asm += &format!("    push {REG_MEMORY_PTR}\n");
@@ -127,7 +127,7 @@ impl AotCompiler {
         asm
     }
 
-    fn xmm_to_mips_regs() -> String {
+    fn save_xmm_regs() -> String {
         let mut asm = String::new();
 
         asm += &sync_gpr_to_xmm();
@@ -244,7 +244,11 @@ mod tests {
 
     use crate::Executor;
     use crate::{
-        programs::tests::{simple_memory_program, unaligned_memory_program},
+        programs::tests::{
+            fibonacci_program, max_memory_program, panic_program, secp256r1_add_program,
+            secp256r1_double_program, simple_memory_program, simple_program,
+            ssz_withdrawals_program, u256xu2048_mul_program, unaligned_memory_program,
+        },
         Instruction, Opcode, Program, Register,
     };
 
@@ -991,16 +995,73 @@ mod tests {
         runtime.aot_run().unwrap();
     }
 
-    // #[test]
-    // fn test_aot_fibo_run() {
-    //     let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
-    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-    //     runtime.aot_run().unwrap();
-    // }
+    #[test]
+    fn test_aot_sha2_run() {
+        let program = Program::from(test_artifacts::SHA2_ELF).unwrap();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+    }
+
+    #[test]
+    fn test_aot_simple_program_run() {
+        let program = simple_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+    }
+
+    #[test]
+    fn test_aot_fibo_run() {
+        let program = fibonacci_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+    }
+
+    #[test]
+    fn test_max_memory_program_run() {
+        let program = max_memory_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+    }
+
+    #[test]
+    fn test_secp256r1_add_program_run() {
+        let program = secp256r1_add_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+    }
+
+    #[test]
+    fn test_secp256r1_double_program_run() {
+        let program = secp256r1_double_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+    }
+
+    #[test]
+    fn test_u256xu2048_mul() {
+        let program = u256xu2048_mul_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+    }
+
+    #[test]
+    fn test_ssz_withdrawals_program_run() {
+        let program = ssz_withdrawals_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_panic() {
+        let program = panic_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+    }
 
     // #[test]
-    // fn test_aot_sha2_run() {
-    //     let program = Program::from(test_artifacts::SHA2_ELF).unwrap();
+    // fn test_aot_unconstrained_run() {
+    //     let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
     //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
     //     runtime.aot_run().unwrap();
     // }
