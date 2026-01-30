@@ -91,6 +91,13 @@ impl AotCompiler {
 
             if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
                 // Processing the delay slot
+                // Note that the processing order here differs from that in the executor
+                // eg. The execution order of instructions in the executor is:
+                //   jump       %x0        %x31       0
+                //   sltu       %x2        %x1        1
+                // But here:
+                //   sltu       %x2        %x1        1
+                //   jump       %x0        %x31       0
                 let next_instruction = &self.program.instructions[i];
                 let next_pc = self.program.pc(i);
                 asm += &format!("asm_execute_pc_{next_pc}:\n");
@@ -944,7 +951,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_syscall_asm(_instruction: &Instruction, _pc: u32) -> Result<String, AotError> {
+    fn generate_syscall_asm(_instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let extern_handler_ptr = format!("{:p}", execute_syscall as *const ());
 
         let mut asm = String::new();
@@ -956,16 +963,22 @@ impl AotCompiler {
 
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   cmp {REG_RETURN_VAL}, 0\n");
+        asm += &format!("   mov {REG_TMP}, {REG_RETURN_VAL}\n");
         asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
         asm += &Self::load_xmm_regs();
 
+        asm += &format!("   cmp {REG_TMP}, 0\n"); // next pc
         asm += "   je asm_run_end\n";
+        asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
+        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_TMP}]\n");
+        asm += &format!("   add {REG_A}, {REG_C}\n");
+        asm += &format!("   jmp {REG_A}\n");
 
         Ok(asm)
     }
@@ -1113,7 +1126,8 @@ extern "C" fn execute_teq(state: &mut ExecutionState, instruction: &Instruction)
     }
 }
 
-extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executor) -> u32 {
+extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executor, pc: u32) -> u32 {
+    state.pc = pc;
     let syscall_id = state.read_register(Register::V0 as u32);
     let c = state.read_register(Register::A1 as u32);
     let b = state.read_register(Register::A0 as u32);

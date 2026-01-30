@@ -7,7 +7,7 @@ use std::{ffi::c_void, io::Write, process::Command, sync::Arc};
 use libloading::Library;
 
 use crate::aot::common::*;
-use crate::Executor;
+use crate::{Executor, ExecutorMode};
 use crate::{
     aot::error::{AotError, StaticProgramError},
     ExecutionError, ExecutionState, Program,
@@ -29,6 +29,7 @@ impl<'a> Executor<'a> {
     ///
     pub fn aot_run(&mut self) -> Result<(), ExecutionError> {
         self.print_report = false;
+        self.executor_mode = ExecutorMode::Simple;
 
         let vm_state_ptr = &mut self.state as *mut ExecutionState;
         let executor_ptr = self as *mut Executor;

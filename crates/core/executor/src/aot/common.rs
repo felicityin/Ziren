@@ -33,6 +33,7 @@ pub const REG_STATE_PTR: &str = "rbx";
 pub const REG_EXECUTOR_PTR: &str = "r14";
 pub const REG_MEMORY_PTR: &str = "r15";
 pub const REG_NEXT_PC: &str = "r13";
+pub const REG_TMP: &str = "r12";
 
 pub const DEFAULT_PC_OFFSET: i32 = 4;
 
