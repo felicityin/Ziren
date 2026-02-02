@@ -648,21 +648,18 @@ impl AotCompiler {
                 asm += &format!(".pc_{pc}_lwr_case3:\n");
                 asm += &format!("   and {gpr_reg_source}, 0xFFFFFF00\n");
                 asm += &format!("   shr {str_reg_a}, 24\n");
-                asm += &format!("   and {str_reg_a}, 0xFF\n");
                 asm += &format!("   or {str_reg_a}, {gpr_reg_source}\n");
                 asm += &format!("   jmp .pc_{pc}_lwr_end\n");
 
                 asm += &format!(".pc_{pc}_lwr_case2:\n");
                 asm += &format!("   and {gpr_reg_source}, 0xFFFF0000\n");
                 asm += &format!("   shr {str_reg_a}, 16\n");
-                asm += &format!("   and {str_reg_a}, 0xFFFF\n");
                 asm += &format!("   or {str_reg_a}, {gpr_reg_source}\n");
                 asm += &format!("   jmp .pc_{pc}_lwr_end\n");
 
                 asm += &format!(".pc_{pc}_lwr_case1:\n");
                 asm += &format!("   and {gpr_reg_source}, 0xFF000000\n");
                 asm += &format!("   shr {str_reg_a}, 8\n");
-                asm += &format!("   and {str_reg_a}, 0xFFFFFF\n");
                 asm += &format!("   or {str_reg_a}, {gpr_reg_source}\n");
                 asm += &format!("   jmp .pc_{pc}_lwr_end\n");
 
@@ -702,21 +699,18 @@ impl AotCompiler {
                 asm += &format!(".pc_{pc}_lwl_case2:\n");
                 asm += &format!("   and {gpr_reg_source}, 0x000000FF\n");
                 asm += &format!("   shl {str_reg_a}, 8\n");
-                asm += &format!("   and {str_reg_a}, 0xFFFFFF00\n");
                 asm += &format!("   or {str_reg_a}, {gpr_reg_source}\n");
                 asm += &format!("   jmp .pc_{pc}_lwl_end\n");
 
                 asm += &format!(".pc_{pc}_lwl_case1:\n");
                 asm += &format!("   and {gpr_reg_source}, 0x0000FFFF\n");
                 asm += &format!("   shl {str_reg_a}, 16\n");
-                asm += &format!("   and {str_reg_a}, 0xFFFF0000\n");
                 asm += &format!("   or {str_reg_a}, {gpr_reg_source}\n");
                 asm += &format!("   jmp .pc_{pc}_lwl_end\n");
 
                 asm += &format!(".pc_{pc}_lwl_case0:\n");
                 asm += &format!("   and {gpr_reg_source}, 0x00FFFFFF\n");
                 asm += &format!("   shl {str_reg_a}, 24\n");
-                asm += &format!("   and {str_reg_a}, 0xFF000000\n");
                 asm += &format!("   or {str_reg_a}, {gpr_reg_source}\n");
 
                 asm += &format!(".pc_{pc}_lwl_end:\n");
@@ -758,7 +752,7 @@ impl AotCompiler {
         // REG_B = REG_B + REG_AS2_PTR = <memory address in host memory>
         asm += &format!("   lea {gpr_reg_w64}, [{gpr_reg_w64} + {REG_MEMORY_PTR}]\n");
 
-        let (gpr_reg_source, delta_str) = xmm_to_gpr(a, REG_C_W, false);
+        let (gpr_reg_source, delta_str) = xmm_to_gpr(a, REG_A_W, false);
         asm += &delta_str;
 
         match instruction.opcode {
@@ -805,30 +799,27 @@ impl AotCompiler {
                 asm += &format!("   je .pc_{pc}_swr_case2\n");
 
                 asm += &format!(".pc_{pc}_swr_case3:\n");
-                asm += &format!("   mov {REG_A_W}, [{gpr_reg_w64}]\n");
-                asm += &format!("   and {REG_A_W}, 0x00FFFFFF\n");
+                asm += &format!("   mov {REG_C_W}, [{gpr_reg_w64}]\n");
+                asm += &format!("   and {REG_C_W}, 0x00FFFFFF\n");
                 asm += &format!("   shl {gpr_reg_source}, 24\n");
-                asm += &format!("   and {gpr_reg_source}, 0xFF000000\n");
-                asm += &format!("   or {REG_A_W}, {gpr_reg_source}\n");
-                asm += &format!("   mov [{gpr_reg_w64}], {REG_A_W}\n");
+                asm += &format!("   or {REG_C_W}, {gpr_reg_source}\n");
+                asm += &format!("   mov [{gpr_reg_w64}], {REG_C_W}\n");
                 asm += &format!("   jmp .pc_{pc}_swr_end\n");
 
                 asm += &format!(".pc_{pc}_swr_case2:\n");
-                asm += &format!("   mov {REG_A_W}, [{gpr_reg_w64}]\n");
-                asm += &format!("   and {REG_A_W}, 0x0000FFFF\n");
+                asm += &format!("   mov {REG_C_W}, [{gpr_reg_w64}]\n");
+                asm += &format!("   and {REG_C_W}, 0x0000FFFF\n");
                 asm += &format!("   shl {gpr_reg_source}, 16\n");
-                asm += &format!("   and {gpr_reg_source}, 0xFFFF0000\n");
-                asm += &format!("   or {REG_A_W}, {gpr_reg_source}\n");
-                asm += &format!("   mov [{gpr_reg_w64}], {REG_A_W}\n");
+                asm += &format!("   or {REG_C_W}, {gpr_reg_source}\n");
+                asm += &format!("   mov [{gpr_reg_w64}], {REG_C_W}\n");
                 asm += &format!("   jmp .pc_{pc}_swr_end\n");
 
                 asm += &format!(".pc_{pc}_swr_case1:\n");
-                asm += &format!("   mov {REG_A_W}, [{gpr_reg_w64}]\n");
-                asm += &format!("   and {REG_A_W}, 0x000000FF\n");
+                asm += &format!("   mov {REG_C_W}, [{gpr_reg_w64}]\n");
+                asm += &format!("   and {REG_C_W}, 0x000000FF\n");
                 asm += &format!("   shl {gpr_reg_source}, 8\n");
-                asm += &format!("   and {gpr_reg_source}, 0xFFFFFF00\n");
-                asm += &format!("   or {REG_A_W}, {gpr_reg_source}\n");
-                asm += &format!("   mov [{gpr_reg_w64}], {REG_A_W}\n");
+                asm += &format!("   or {REG_C_W}, {gpr_reg_source}\n");
+                asm += &format!("   mov [{gpr_reg_w64}], {REG_C_W}\n");
                 asm += &format!("   jmp .pc_{pc}_swr_end\n");
 
                 asm += &format!(".pc_{pc}_swr_case0:\n");
@@ -864,29 +855,27 @@ impl AotCompiler {
                 asm += &format!("   jmp .pc_{pc}_swl_end\n");
 
                 asm += &format!(".pc_{pc}_swl_case2:\n");
-                asm += &format!("   and {REG_A_W}, 0xFF000000\n");
+                asm += &format!("   mov {REG_C_W}, [{gpr_reg_w64}]\n");
+                asm += &format!("   and {REG_C_W}, 0xFF000000\n");
                 asm += &format!("   shr {gpr_reg_source}, 8\n");
-                asm += &format!("   and {gpr_reg_source}, 0x00FFFFFF\n");
-                asm += &format!("   or {REG_A_W}, {gpr_reg_source}\n");
-                asm += &format!("   mov [{gpr_reg_w64}], {REG_A_W}\n");
+                asm += &format!("   or {REG_C_W}, {gpr_reg_source}\n");
+                asm += &format!("   mov [{gpr_reg_w64}], {REG_C_W}\n");
                 asm += &format!("   jmp .pc_{pc}_swl_end\n");
 
                 asm += &format!(".pc_{pc}_swl_case1:\n");
-                asm += &format!("   mov {REG_A_W}, [{gpr_reg_w64}]\n");
-                asm += &format!("   and {REG_A_W}, 0xFFFF0000\n");
+                asm += &format!("   mov {REG_C_W}, [{gpr_reg_w64}]\n");
+                asm += &format!("   and {REG_C_W}, 0xFFFF0000\n");
                 asm += &format!("   shr {gpr_reg_source}, 16\n");
-                asm += &format!("   and {gpr_reg_source}, 0x0000FFFF\n");
-                asm += &format!("   or {REG_A_W}, {gpr_reg_source}\n");
-                asm += &format!("   mov [{gpr_reg_w64}], {REG_A_W}\n");
+                asm += &format!("   or {REG_C_W}, {gpr_reg_source}\n");
+                asm += &format!("   mov [{gpr_reg_w64}], {REG_C_W}\n");
                 asm += &format!("   jmp .pc_{pc}_swl_end\n");
 
                 asm += &format!(".pc_{pc}_swl_case0:\n");
-                asm += &format!("   mov {REG_A_W}, [{gpr_reg_w64}]\n");
-                asm += &format!("   and {REG_A_W}, 0xFFFFFF00\n");
+                asm += &format!("   mov {REG_C_W}, [{gpr_reg_w64}]\n");
+                asm += &format!("   and {REG_C_W}, 0xFFFFFF00\n");
                 asm += &format!("   shr {gpr_reg_source}, 24\n");
-                asm += &format!("   and {gpr_reg_source}, 0x000000FF\n");
-                asm += &format!("   or {REG_A_W}, {gpr_reg_source}\n");
-                asm += &format!("   mov [{gpr_reg_w64}], {REG_A_W}\n");
+                asm += &format!("   or {REG_C_W}, {gpr_reg_source}\n");
+                asm += &format!("   mov [{gpr_reg_w64}], {REG_C_W}\n");
 
                 asm += &format!(".pc_{pc}_swl_end:\n");
             }

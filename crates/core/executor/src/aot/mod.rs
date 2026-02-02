@@ -7,11 +7,11 @@ use std::{ffi::c_void, io::Write, process::Command, sync::Arc};
 use libloading::Library;
 
 use crate::aot::common::*;
-use crate::{Executor, ExecutorMode};
 use crate::{
     aot::error::{AotError, StaticProgramError},
     ExecutionError, ExecutionState, Program,
 };
+use crate::{Executor, ExecutorMode};
 
 type AsmRunFn = unsafe extern "C" fn(vm_state_ptr: *mut c_void, executor_ptr: *mut c_void);
 
@@ -839,6 +839,20 @@ mod tests {
     }
 
     #[test]
+    fn test_aot_swl() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 0xaabbccdd, false, true),
+            Instruction::new(Opcode::SW, 29, 0, 0x10000000, false, true),
+            Instruction::new(Opcode::ADD, 28, 0, 0x12345678, false, true),
+            Instruction::new(Opcode::SWL, 28, 0, 0x10000001, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+        assert_eq!(runtime.word(0x10000000), 0xaabb1234);
+    }
+
+    #[test]
     fn test_aot_unaligned_memory_program_run() {
         let program = unaligned_memory_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
@@ -1060,12 +1074,12 @@ mod tests {
         runtime.run().unwrap();
     }
 
-    // #[test]
-    // fn test_aot_unconstrained_run() {
-    //     let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
-    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-    //     runtime.aot_run().unwrap();
-    // }
+    #[test]
+    fn test_aot_unconstrained_run() {
+        let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+    }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
         // addi x29, x0, a
