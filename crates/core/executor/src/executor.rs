@@ -2073,7 +2073,7 @@ impl<'a> Executor<'a> {
         Ok((checkpoint, done))
     }
 
-    fn initialize(&mut self) {
+    pub fn initialize(&mut self) {
         self.state.clk = 0;
         self.state.records_clk_index = 0;
 

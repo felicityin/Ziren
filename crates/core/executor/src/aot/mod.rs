@@ -30,6 +30,7 @@ impl<'a> Executor<'a> {
     pub fn aot_run(&mut self) -> Result<(), ExecutionError> {
         self.print_report = false;
         self.executor_mode = ExecutorMode::Simple;
+        self.initialize();
 
         let executor_ptr = self as *mut Executor;
 
