@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::aot::common::*;
 use crate::aot::{get_address_space, get_pc, set_pc, AotCompiler, AotError};
 use crate::syscalls::{SyscallCode, SyscallContext};
-use crate::{ExecutionState, Executor, Instruction, Opcode, Program, Register};
+use crate::{Executor, Instruction, Opcode, Program, Register};
 
 impl AotCompiler {
     /// Create a new AOT instance for the given program.
@@ -27,8 +27,7 @@ impl AotCompiler {
         asm += &Self::push_external_registers();
 
         asm += "    # get params\n";
-        asm += &format!("    mov {REG_STATE_PTR}, {REG_FIRST_ARG}\n");
-        asm += &format!("    mov {REG_EXECUTOR_PTR}, {REG_SECOND_ARG}\n");
+        asm += &format!("    mov {REG_EXECUTOR_PTR}, {REG_FIRST_ARG}\n");
 
         let get_pc_ptr = format!("{:p}", get_pc as *const ());
         let get_address_space_ptr = format!("{:p}", get_address_space as *const ());
@@ -39,20 +38,20 @@ impl AotCompiler {
         // Store the start of memory address space in r15
         // asm += "    # Store the start of memory address space in r15\n";
         asm += &format!("    mov {REG_CALLER}, {get_address_space_ptr}\n");
-        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, 1\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += &format!("    mov {REG_MEMORY_PTR}, {REG_RETURN_VAL}\n");
         // Store the start of register address space in high 64 bits of xmm0
         asm += "    # Store the start of register address space in high 64 bits of xmm0\n";
         asm += &format!("    mov {REG_CALLER}, {get_address_space_ptr}\n");
-        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, 0\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += &format!("    pinsrq  xmm0, {REG_RETURN_VAL}, 1\n");
         // Store the pointer to where `pc` is stored in the state in high 64 bits of xmm1
         asm += "    # Store the pointer to where `pc` is stored in the state in high 64 bits of xmm1\n";
-        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += &format!("    pinsrq  xmm1, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm1
@@ -119,7 +118,7 @@ impl AotCompiler {
         asm += "    # save_xmm_regs\n";
         asm += &Self::save_xmm_regs();
         asm += "    # call set_pc()\n";
-        asm += &format!("    mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, {REG_NEXT_PC}\n");
         asm += &format!("    mov {REG_CALLER}, {set_pc_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
@@ -894,7 +893,7 @@ impl AotCompiler {
         asm += &Self::save_xmm_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
@@ -927,7 +926,7 @@ impl AotCompiler {
         asm += &Self::save_xmm_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
@@ -950,9 +949,8 @@ impl AotCompiler {
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
 
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_STATE_PTR}\n");
-        asm += &format!("   mov {REG_SECOND_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {pc}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   mov {REG_TMP}, {REG_RETURN_VAL}\n");
@@ -973,12 +971,12 @@ impl AotCompiler {
     }
 }
 
-extern "C" fn execute_mov_cond(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_mov_cond(executor: &mut Executor, instruction: &Instruction) {
     let (rd, rs, rt) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
-    let a = state.read_register(rd);
-    let c = state.read_register(rt);
-    let b = state.read_register(rs);
+    let a = executor.state.read_register(rd);
+    let c = executor.state.read_register(rt);
+    let b = executor.state.read_register(rs);
     let mov = match instruction.opcode {
         Opcode::MEQ => c == 0,
         Opcode::MNE => c != 0,
@@ -988,16 +986,16 @@ extern "C" fn execute_mov_cond(state: &mut ExecutionState, instruction: &Instruc
     };
 
     let a = if mov { b } else { a };
-    state.write_register(rd, a);
+    executor.state.write_register(rd, a);
 }
 
-extern "C" fn execute_maddu(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_maddu(executor: &mut Executor, instruction: &Instruction) {
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
-    let c = state.read_register(rs);
-    let b = state.read_register(rt);
-    let lo_val = state.read_register(Register::LO as u32);
-    let hi_val = state.read_register(Register::HI as u32);
+    let c = executor.state.read_register(rs);
+    let b = executor.state.read_register(rt);
+    let lo_val = executor.state.read_register(Register::LO as u32);
+    let hi_val = executor.state.read_register(Register::HI as u32);
 
     let multiply = b as u64 * c as u64;
     let addend = ((hi_val as u64) << 32) + lo_val as u64;
@@ -1005,17 +1003,17 @@ extern "C" fn execute_maddu(state: &mut ExecutionState, instruction: &Instructio
     let out_lo = out as u32;
     let out_hi = (out >> 32) as u32;
 
-    state.write_register(lo, out_lo);
-    state.write_register(Register::HI as u32, out_hi);
+    executor.state.write_register(lo, out_lo);
+    executor.state.write_register(Register::HI as u32, out_hi);
 }
 
-extern "C" fn execute_msubu(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_msubu(executor: &mut Executor, instruction: &Instruction) {
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
-    let c = state.read_register(rs);
-    let b = state.read_register(rt);
-    let lo_val = state.read_register(Register::LO as u32);
-    let hi_val = state.read_register(Register::HI as u32);
+    let c = executor.state.read_register(rs);
+    let b = executor.state.read_register(rt);
+    let lo_val = executor.state.read_register(Register::LO as u32);
+    let hi_val = executor.state.read_register(Register::HI as u32);
 
     let multiply = b as u64 * c as u64;
     let addend = ((hi_val as u64) << 32) + lo_val as u64;
@@ -1023,17 +1021,17 @@ extern "C" fn execute_msubu(state: &mut ExecutionState, instruction: &Instructio
     let out_lo = out as u32;
     let out_hi = (out >> 32) as u32;
 
-    state.write_register(lo, out_lo);
-    state.write_register(Register::HI as u32, out_hi);
+    executor.state.write_register(lo, out_lo);
+    executor.state.write_register(Register::HI as u32, out_hi);
 }
 
-extern "C" fn execute_madd(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_madd(executor: &mut Executor, instruction: &Instruction) {
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
-    let c = state.read_register(rs);
-    let b = state.read_register(rt);
-    let lo_val = state.read_register(Register::LO as u32);
-    let hi_val = state.read_register(Register::HI as u32);
+    let c = executor.state.read_register(rs);
+    let b = executor.state.read_register(rt);
+    let lo_val = executor.state.read_register(Register::LO as u32);
+    let hi_val = executor.state.read_register(Register::HI as u32);
 
     let multiply = (b as i32 as i64) * (c as i32 as i64);
     let addend = ((hi_val as u64) << 32) + lo_val as u64;
@@ -1041,17 +1039,17 @@ extern "C" fn execute_madd(state: &mut ExecutionState, instruction: &Instruction
     let out_lo = out as u32;
     let out_hi = (out >> 32) as u32;
 
-    state.write_register(lo, out_lo);
-    state.write_register(Register::HI as u32, out_hi);
+    executor.state.write_register(lo, out_lo);
+    executor.state.write_register(Register::HI as u32, out_hi);
 }
 
-extern "C" fn execute_msub(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_msub(executor: &mut Executor, instruction: &Instruction) {
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
-    let c = state.read_register(rs);
-    let b = state.read_register(rt);
-    let lo_val = state.read_register(Register::LO as u32);
-    let hi_val = state.read_register(Register::HI as u32);
+    let c = executor.state.read_register(rs);
+    let b = executor.state.read_register(rt);
+    let lo_val = executor.state.read_register(Register::LO as u32);
+    let hi_val = executor.state.read_register(Register::HI as u32);
 
     let multiply = (b as i32 as i64) * (c as i32 as i64);
     let addend = ((hi_val as u64) << 32) + lo_val as u64;
@@ -1059,41 +1057,41 @@ extern "C" fn execute_msub(state: &mut ExecutionState, instruction: &Instruction
     let out_lo = out as u32;
     let out_hi = (out >> 32) as u32;
 
-    state.write_register(lo, out_lo);
-    state.write_register(Register::HI as u32, out_hi);
+    executor.state.write_register(lo, out_lo);
+    executor.state.write_register(Register::HI as u32, out_hi);
 }
 
-extern "C" fn execute_wsbh(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_wsbh(executor: &mut Executor, instruction: &Instruction) {
     let (rd, rt) = (instruction.op_a.into(), (instruction.op_b as u8).into());
-    let b = state.read_register(rt);
+    let b = executor.state.read_register(rt);
     let a = (((b >> 16) & 0xFF) << 24)
         | (((b >> 24) & 0xFF) << 16)
         | ((b & 0xFF) << 8)
         | ((b >> 8) & 0xFF);
-    state.write_register(rd, a);
+    executor.state.write_register(rd, a);
 }
 
-extern "C" fn execute_ext(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_ext(executor: &mut Executor, instruction: &Instruction) {
     let (rd, rt, c) = (instruction.op_a.into(), (instruction.op_b as u8).into(), instruction.op_c);
-    let b = state.read_register(rt);
+    let b = executor.state.read_register(rt);
     let msbd = c >> 5;
     let lsb = c & 0x1f;
     let mask_msb = if msbd + lsb + 1 == 32 { 0xFFFFFFFF } else { (1u32 << (msbd + lsb + 1)) - 1 };
     let a = (b & mask_msb) >> lsb;
-    state.write_register(rd, a);
+    executor.state.write_register(rd, a);
 }
 
-extern "C" fn execute_sext(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_sext(executor: &mut Executor, instruction: &Instruction) {
     let (rd, rt, c) = (instruction.op_a.into(), (instruction.op_b as u8).into(), instruction.op_c);
-    let b = state.read_register(rt);
+    let b = executor.state.read_register(rt);
     let a = if c > 0 { (b & 0xffff) as i16 as i32 as u32 } else { (b & 0xff) as i8 as i32 as u32 };
-    state.write_register(rd, a);
+    executor.state.write_register(rd, a);
 }
 
-extern "C" fn execute_ins(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_ins(executor: &mut Executor, instruction: &Instruction) {
     let (rd, rt, c) = (instruction.op_a.into(), (instruction.op_b as u8).into(), instruction.op_c);
-    let b = state.read_register(rt);
-    let a = state.read_register(rd);
+    let b = executor.state.read_register(rt);
+    let a = executor.state.read_register(rd);
 
     let msb = c >> 5;
     let lsb = c & 0x1f;
@@ -1101,28 +1099,28 @@ extern "C" fn execute_ins(state: &mut ExecutionState, instruction: &Instruction)
     let mask_field = mask << lsb;
     let a = (a & !mask_field) | ((b << lsb) & mask_field);
 
-    state.write_register(rd, a);
+    executor.state.write_register(rd, a);
 }
 
-extern "C" fn execute_teq(state: &mut ExecutionState, instruction: &Instruction) {
+extern "C" fn execute_teq(executor: &mut Executor, instruction: &Instruction) {
     let (rs, rt) = (instruction.op_a.into(), (instruction.op_b as u8).into());
 
-    let src2 = state.read_register(rt);
-    let src1 = state.read_register(rs);
+    let src2 = executor.state.read_register(rt);
+    let src1 = executor.state.read_register(rs);
 
     if src1 == src2 {
         panic!("ExecutionError::ExceptionOrTrap()");
     }
 }
 
-extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executor, pc: u32) -> u32 {
-    state.pc = pc;
-    let syscall_id = state.read_register(Register::V0 as u32);
-    let c = state.read_register(Register::A1 as u32);
-    let b = state.read_register(Register::A0 as u32);
+extern "C" fn execute_syscall(executor: &mut Executor, pc: u32) -> u32 {
+    executor.state.pc = pc;
+    let syscall_id = executor.state.read_register(Register::V0 as u32);
+    let c = executor.state.read_register(Register::A1 as u32);
+    let b = executor.state.read_register(Register::A0 as u32);
     let syscall = SyscallCode::from_u32(syscall_id);
-    log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", state.pc, syscall_id, b, c);
-    println!("pc: {} syscall {:?}, a0: {}, a1: {}", state.pc, syscall, b, c);
+    log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", executor.state.pc, syscall_id, b, c);
+    println!("pc: {} syscall {:?}, a0: {}, a1: {}", executor.state.pc, syscall, b, c);
 
     // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
     // Other syscalls are not allowed because they can lead to non-deterministic
@@ -1138,11 +1136,9 @@ extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executo
 
     // Update the syscall counts.
     let syscall_for_count = syscall.count_map();
-    let syscall_count = state.syscall_counts.entry(syscall_for_count).or_insert(0);
+    let syscall_count = executor.state.syscall_counts.entry(syscall_for_count).or_insert(0);
     *syscall_count += 1;
 
-    // let syscall_impl = state.syscall_map.get(&syscall);
-    // let syscall_impl = executor.syscall_map.get(&syscall).cloned();
     let syscall_impl = executor.get_syscall(syscall).cloned();
     let mut precompile_rt = SyscallContext::new(executor);
     let (a, precompile_next_pc, precompile_cycles, returned_exit_code) = if let Some(syscall_impl) =
@@ -1165,15 +1161,15 @@ extern "C" fn execute_syscall(state: &mut ExecutionState, executor: &mut Executo
     };
 
     if syscall == SyscallCode::HALT && returned_exit_code == 0 {
-        state.exited = true;
+        executor.state.exited = true;
     }
 
-    state.write_register(Register::V0 as u32, a);
-    state.clk += precompile_cycles;
-    state.pc = precompile_next_pc;
-    state.next_pc = precompile_next_pc + 4;
+    executor.state.write_register(Register::V0 as u32, a);
+    executor.state.clk += precompile_cycles;
+    executor.state.pc = precompile_next_pc;
+    executor.state.next_pc = precompile_next_pc + 4;
 
-    if state.exited {
+    if executor.state.exited {
         0
     } else {
         precompile_next_pc

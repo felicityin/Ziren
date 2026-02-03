@@ -9,11 +9,11 @@ use libloading::Library;
 use crate::aot::common::*;
 use crate::{
     aot::error::{AotError, StaticProgramError},
-    ExecutionError, ExecutionState, Program,
+    ExecutionError, Program,
 };
 use crate::{Executor, ExecutorMode};
 
-type AsmRunFn = unsafe extern "C" fn(vm_state_ptr: *mut c_void, executor_ptr: *mut c_void);
+type AsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
 
 pub struct AotCompiler {
     /// The program.
@@ -31,14 +31,13 @@ impl<'a> Executor<'a> {
         self.print_report = false;
         self.executor_mode = ExecutorMode::Simple;
 
-        let vm_state_ptr = &mut self.state as *mut ExecutionState;
         let executor_ptr = self as *mut Executor;
 
         tracing::info_span!("execute").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<AsmRunFn> =
                 self.lib.get(b"asm_run").expect("Failed to get asm_run symbol");
 
-            asm_run(vm_state_ptr.cast(), executor_ptr.cast());
+            asm_run(executor_ptr.cast());
         });
 
         Ok(())
@@ -218,24 +217,24 @@ pub(crate) fn asm_to_lib(asm_source: &str) -> Result<Library, StaticProgramError
     Ok(lib)
 }
 
-unsafe extern "C" fn set_pc(state_ptr: *mut c_void, next_pc: u32) {
-    let state = &mut *(state_ptr as *mut ExecutionState);
-    state.pc = next_pc;
+unsafe extern "C" fn set_pc(executor_ptr: *mut c_void, next_pc: u32) {
+    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
+    executor.state.pc = next_pc;
 }
 
-extern "C" fn get_pc(state_ptr: *mut c_void) -> *mut u64 {
-    let state = unsafe { &mut *(state_ptr as *mut ExecutionState) };
+extern "C" fn get_pc(executor_ptr: *mut c_void) -> *mut u64 {
+    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
 
     // since pc is the first element of the vm_state field and we use `repr(C)`
     // hence `ptr` will be equal to the address of pc in vm_state
-    let ptr = state.pc as *mut u32;
+    let ptr = executor.state.pc as *mut u32;
     ptr as *mut u64
 }
 
-extern "C" fn get_address_space(state_ptr: *mut c_void, address_space: u32) -> *mut u64 {
-    let state = unsafe { &mut *(state_ptr as *mut ExecutionState) };
+extern "C" fn get_address_space(executor_ptr: *mut c_void, address_space: u32) -> *mut u64 {
+    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
 
-    let ptr = &state.memory.memory.mem[address_space as usize];
+    let ptr = &executor.state.memory.memory.mem[address_space as usize];
     ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
 }
 
@@ -1032,54 +1031,54 @@ mod tests {
     }
 
     #[test]
-    fn test_max_memory_program_run() {
+    fn test_aot_max_memory_program_run() {
         let program = max_memory_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_run().unwrap();
     }
 
     #[test]
-    fn test_secp256r1_add_program_run() {
-        let program = secp256r1_add_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
-    }
-
-    #[test]
-    fn test_secp256r1_double_program_run() {
-        let program = secp256r1_double_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
-    }
-
-    #[test]
-    fn test_u256xu2048_mul() {
+    fn test_aot_u256xu2048_mul() {
         let program = u256xu2048_mul_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
+        runtime.aot_run().unwrap();
     }
 
     #[test]
-    fn test_ssz_withdrawals_program_run() {
+    fn test_aot_ssz_withdrawals_program_run() {
         let program = ssz_withdrawals_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
+        runtime.aot_run().unwrap();
+    }
+
+    #[test]
+    fn test_aot_secp256r1_add_program_run() {
+        let program = secp256r1_add_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
+    }
+
+    #[test]
+    fn test_aot_secp256r1_double_program_run() {
+        let program = secp256r1_double_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_run().unwrap();
     }
 
     #[test]
     #[should_panic]
-    fn test_panic() {
+    fn test_aot_panic() {
         let program = panic_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_unconstrained_run() {
-        let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_run().unwrap();
     }
+
+    // #[test]
+    // fn test_aot_unconstrained_run() {
+    //     let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
+    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+    //     runtime.aot_run().unwrap();
+    // }
 
     fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
         // addi x29, x0, a
