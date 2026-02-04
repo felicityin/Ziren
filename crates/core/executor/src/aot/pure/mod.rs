@@ -1,16 +1,11 @@
-use std::sync::Arc;
+mod test;
 
 use crate::aot::common::*;
 use crate::aot::{get_address_space, get_pc, set_pc, AotCompiler, AotError};
 use crate::syscalls::{SyscallCode, SyscallContext};
-use crate::{Executor, Instruction, Opcode, Program, Register};
+use crate::{Executor, Instruction, Opcode, Register};
 
 impl AotCompiler {
-    /// Create a new AOT instance for the given program.
-    pub fn new(program: Arc<Program>) -> Self {
-        Self { program }
-    }
-
     pub fn create_pure_asm(&self) -> Result<String, AotError> {
         let mut asm = String::new();
 
@@ -55,6 +50,7 @@ impl AotCompiler {
         asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += &format!("    pinsrq  xmm1, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm1
+        asm += &format!("    mov {REG_NEXT_PC}, {REG_RETURN_VAL}\n");
 
         asm += "    # pop_internal_registers\n";
         asm += &Self::pop_internal_registers();
@@ -84,7 +80,7 @@ impl AotCompiler {
 
             // Check if we should suspend or not
             asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
-            asm += "    je asm_run_end\n";
+            asm += "    jae asm_run_end\n";
             asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
             i += 1;
 
@@ -101,8 +97,6 @@ impl AotCompiler {
                 let next_pc = self.program.pc(i);
                 asm += &format!("asm_execute_pc_{next_pc}:\n");
                 asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
-                asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
-                asm += "    je asm_run_end\n";
                 i += 1;
                 asm += &(Self::generate_instruction_asm(next_instruction, next_pc)?);
 
@@ -140,7 +134,7 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        std::fs::write("asm_dump.s", &asm).expect("failed to write asm");
+        std::fs::write("asm_pure_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
     }
@@ -192,10 +186,11 @@ impl AotCompiler {
             }
             _ => return Err(AotError::NotSupported),
         }
+
         Ok(asm)
     }
 
-    fn generate_base_alu_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_base_alu_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let asm_opcode = match instruction.opcode {
@@ -242,7 +237,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_nor_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_nor_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -266,7 +261,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_shift_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_shift_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -334,7 +329,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_mult_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_mult_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let b = instruction.op_b as u8;
@@ -364,7 +359,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_div_mod_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_div_mod_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -415,7 +410,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_slt_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_slt_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -451,7 +446,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_cloz_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_cloz_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -476,7 +471,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_branch_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_branch_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let next_pc = pc + 4;
@@ -521,7 +516,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_jump_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_jump_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let next_pc = pc + 4;
@@ -563,7 +558,10 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_memory_load_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_memory_load_asm(
+        instruction: &Instruction,
+        pc: u32,
+    ) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -721,7 +719,10 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_memory_store_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_memory_store_asm(
+        instruction: &Instruction,
+        pc: u32,
+    ) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -889,18 +890,12 @@ impl AotCompiler {
 
         let mut asm = String::new();
 
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
+        asm += &Self::before_call();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
-        asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
-        asm += &Self::pop_address_space_start();
-        // read the memory from the memory location of the MIPS registers in `GuestMemory`
-        // registers, to the appropriate XMM registers
-        asm += &Self::load_xmm_regs();
+        asm += &Self::after_call();
 
         Ok(asm)
     }
@@ -922,18 +917,12 @@ impl AotCompiler {
 
         let mut asm = String::new();
 
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
+        asm += &Self::before_call();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
-        asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
-        asm += &Self::pop_address_space_start();
-        // read the memory from the memory location of the MIPS registers in `GuestMemory`
-        // registers, to the appropriate XMM registers
-        asm += &Self::load_xmm_regs();
+        asm += &Self::after_call();
 
         Ok(asm)
     }
@@ -944,22 +933,16 @@ impl AotCompiler {
         let mut asm = String::new();
 
         asm += "   # syscall\n";
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-
+        asm += &Self::before_call();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {pc}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   mov {REG_TMP}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
-        asm += &Self::pop_address_space_start();
-        // read the memory from the memory location of the MIPS registers in `GuestMemory`
-        // registers, to the appropriate XMM registers
-        asm += &Self::load_xmm_regs();
+        asm += &Self::after_call();
 
         asm += &format!("   cmp {REG_TMP}, 0\n"); // Halt
+        asm += &format!("   mov {REG_NEXT_PC}, 0\n");
         asm += "   je asm_run_end\n";
         asm += &format!("   cmp {REG_TMP}, 1\n"); // !EXIT_UNCONSTRAINED
         asm += &format!("   je end_syscall_{pc}\n");

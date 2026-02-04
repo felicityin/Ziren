@@ -12,6 +12,7 @@ pub const REG_C_W: &str = "edx";
 pub const REG_C_B: &str = "dx";
 pub const REG_C_LB: &str = "dl";
 pub const REG_HI: &str = "edx";
+pub const REG_HI_64: &str = "edx";
 
 pub const REG_B: &str = "rsi";
 pub const REG_B_W: &str = "esi";
@@ -23,6 +24,7 @@ pub const REG_RETURN_VAL: &str = "rax";
 pub const REG_D: &str = "rax";
 pub const REG_D_W: &str = "eax";
 pub const REG_LO: &str = "eax";
+pub const REG_LO_64: &str = "rax";
 pub const REG_D_8L: &str = "al";
 pub const REG_CALLER: &str = "rax";
 
@@ -32,7 +34,10 @@ pub const REG_ROR_8L: &str = "cl";
 pub const REG_EXECUTOR_PTR: &str = "rbx";
 pub const REG_MEMORY_PTR: &str = "r15";
 pub const REG_NEXT_PC: &str = "r14";
-pub const REG_TMP: &str = "r13";
+pub const REG_CLK: &str = "r13";
+pub const REG_GLOBAL_CLK: &str = "r12";
+pub const REG_TMP: &str = "rbp";
+pub const REG_TMP_8L: &str = "bpl";
 
 pub const DEFAULT_PC_OFFSET: i32 = 4;
 

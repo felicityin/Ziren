@@ -1,3 +1,4 @@
+pub mod checkpoint;
 pub mod common;
 pub mod error;
 pub mod pure;
@@ -13,39 +14,190 @@ use crate::{
 };
 use crate::{Executor, ExecutorMode};
 
-type AsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
+type PureAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
+type MeteredAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
 
 pub struct AotCompiler {
     /// The program.
     pub program: Arc<Program>,
+
+    /// The maximum size of each shard.
+    pub shard_size: u32,
+
+    /// The maximum number of cycles for a syscall.
+    pub max_syscall_cycles: u32,
+
+    /// The frequency to check the stopping condition.
+    pub shape_check_frequency: u64,
+}
+
+impl AotCompiler {
+    /// Create a new AOT instance for the given program.
+    pub fn new(
+        program: Arc<Program>,
+        shard_size: u32,
+        max_syscall_cycles: u32,
+        shape_check_frequency: u64,
+    ) -> Self {
+        Self { program, shard_size, max_syscall_cycles, shape_check_frequency }
+    }
 }
 
 impl<'a> Executor<'a> {
+    pub fn aot_compile_pure_lib(&mut self) {
+        let aot = AotCompiler::new(
+            self.program.clone(),
+            self.shard_size,
+            self.max_syscall_cycles,
+            self.shape_check_frequency,
+        );
+        let asm_code = aot.create_pure_asm().unwrap();
+        let pure_lib = asm_to_lib(&asm_code).unwrap();
+        self.pure_lib = Some(pure_lib);
+    }
+
+    pub fn aot_compile_metered_lib(&mut self) {
+        let aot = AotCompiler::new(
+            self.program.clone(),
+            self.shard_size,
+            self.max_syscall_cycles,
+            self.shape_check_frequency,
+        );
+        let asm_code = aot.create_metered_asm().unwrap();
+        let metered_lib = asm_to_lib(&asm_code).unwrap();
+        self.metered_lib = Some(metered_lib);
+    }
+
     /// Executes the program.
     ///
     /// # Errors
     ///
     /// This function will return an error if the program execution fails.
     ///
-    pub fn aot_run(&mut self) -> Result<(), ExecutionError> {
+    pub fn aot_pure_run(&mut self) -> Result<(), ExecutionError> {
         self.print_report = false;
         self.executor_mode = ExecutorMode::Simple;
         self.initialize();
 
         let executor_ptr = self as *mut Executor;
 
-        tracing::info_span!("execute").in_scope(|| unsafe {
-            let asm_run: libloading::Symbol<AsmRunFn> =
-                self.lib.get(b"asm_run").expect("Failed to get asm_run symbol");
+        tracing::info_span!("aot execute").in_scope(|| unsafe {
+            let asm_run: libloading::Symbol<PureAsmRunFn> = self
+                .pure_lib
+                .as_ref()
+                .expect("Please complete AOT first")
+                .get(b"asm_run")
+                .expect("Failed to get asm_run symbol");
 
             asm_run(executor_ptr.cast());
         });
 
+        self.postprocess();
+
         Ok(())
+    }
+
+    pub fn aot_metered_run(&mut self) -> Result<(), ExecutionError> {
+        self.print_report = false;
+        self.executor_mode = ExecutorMode::Checkpoint;
+        while !self.aot_metered_execute()? {}
+        Ok(())
+    }
+
+    /// Executes the program.
+    ///
+    /// # Errors
+    ///
+    /// This function will return an error if the program execution fails.
+    ///
+    pub fn aot_metered_execute(&mut self) -> Result<bool, ExecutionError> {
+        // If it's the first cycle, initialize the program.
+        if self.state.global_clk == 0 {
+            self.initialize();
+        }
+
+        // Loop until we've executed `self.shard_batch_size` shards if `self.shard_batch_size` is
+        // set.
+        let mut done = false;
+        let mut num_shards_executed = 0;
+        loop {
+            if self.execute_metered_shard()? {
+                done = true;
+                println!("---done clk: {} {}", self.state.clk, self.state.global_clk);
+                self.postprocess();
+                break;
+            }
+
+            num_shards_executed += 1;
+            println!("num_shards_executed: {num_shards_executed}");
+            if num_shards_executed >= self.shard_batch_size {
+                break;
+            }
+        }
+        println!("self.shard_batch_size: {}", self.shard_batch_size);
+
+        Ok(done)
+    }
+
+    fn execute_metered_shard(&mut self) -> Result<bool, ExecutionError> {
+        let executor_ptr = self as *mut Executor;
+
+        tracing::info_span!("aot execute").in_scope(|| unsafe {
+            let asm_run: libloading::Symbol<MeteredAsmRunFn> = self
+                .metered_lib
+                .as_ref()
+                .expect("Please complete AOT first")
+                .get(b"asm_run")
+                .expect("Failed to get asm_run symbol");
+
+            asm_run(executor_ptr.cast());
+        });
+
+        let done = self.state.pc == 0
+            || self.state.exited
+            || self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32;
+        if done && self.unconstrained {
+            log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
+            return Err(ExecutionError::EndInUnconstrained());
+        }
+        println!("self.state.pc == 0: {}", self.state.pc == 0);
+        println!("self.state.exited: {}", self.state.exited);
+        println!(
+            "self.state.pc.wrapping_sub(self.program.pc_base): {}",
+            self.state.pc.wrapping_sub(self.program.pc_base)
+        );
+        println!("self.program.instructions.len() * 4: {}", self.program.instructions.len() * 4);
+        println!(
+            "self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32: {}",
+            self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32
+        );
+        println!("------done: {done}");
+        Ok(done)
     }
 }
 
 impl AotCompiler {
+    pub fn before_call() -> String {
+        let mut asm = String::new();
+        asm += &Self::save_xmm_regs();
+        asm += &Self::push_address_space_start();
+        asm += &Self::push_internal_registers();
+        asm
+    }
+
+    pub fn after_call() -> String {
+        let mut asm = String::new();
+        asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
+        asm += &Self::pop_address_space_start();
+        // read the memory from the memory location of the MIPS registers in `GuestMemory`
+        // registers, to the appropriate XMM registers
+        asm += &Self::load_xmm_regs();
+        asm
+    }
+
     pub fn push_external_registers() -> String {
         let mut asm = String::new();
         asm += "    push rbp\n";
@@ -226,8 +378,8 @@ unsafe extern "C" fn set_pc(executor_ptr: *mut c_void, next_pc: u32) {
 extern "C" fn get_pc(executor_ptr: *mut c_void) -> *mut u64 {
     let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
 
-    // since pc is the first element of the vm_state field and we use `repr(C)`
-    // hence `ptr` will be equal to the address of pc in vm_state
+    // since pc is the first element of the state field and we use `repr(C)`
+    // hence `ptr` will be equal to the address of pc in state
     let ptr = executor.state.pc as *mut u32;
     ptr as *mut u64
 }
@@ -237,941 +389,4 @@ extern "C" fn get_address_space(executor_ptr: *mut c_void, address_space: u32) -
 
     let ptr = &executor.state.memory.memory.mem[address_space as usize];
     ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
-}
-
-// Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot`
-// Otherwise, it may lead to insufficient memory.
-// Because each test will occupy at least 2GB of memory.
-#[cfg(test)]
-mod tests {
-    use zkm_stark::ZKMCoreOpts;
-
-    use crate::Executor;
-    use crate::{
-        programs::tests::{
-            fibonacci_program, max_memory_program, secp256r1_add_program, secp256r1_double_program,
-            simple_memory_program, simple_program, ssz_withdrawals_program, u256xu2048_mul_program,
-            unaligned_memory_program,
-        },
-        Instruction, Opcode, Program, Register,
-    };
-
-    #[test]
-    fn test_aot_add() {
-        // add
-        simple_op_code_test(Opcode::ADD, 37 + 5, 37, 5);
-        // addi
-        simple_op_code_i_test(Opcode::ADD, 37 + 5 + 42, 37, 5, 42);
-        // addi negative
-        simple_op_code_i_test(Opcode::ADD, 5 - 1 + 4, 5, 0xFFFF_FFFF, 4);
-
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 100, false, true),
-            Instruction::new(Opcode::ADD, Register::RA as u8, 0, 200, false, true),
-            Instruction::new(
-                Opcode::ADD,
-                Register::RA as u8,
-                29,
-                Register::RA as u32,
-                false,
-                false,
-            ),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::RA), 300);
-    }
-
-    #[test]
-    fn test_aot_sub() {
-        // sub
-        simple_op_code_test(Opcode::SUB, 37 - 5, 37, 5);
-        // subi
-        simple_op_code_i_test(Opcode::SUB, 37 - 5 - 2, 37, 5, 2);
-        // subi negative
-        simple_op_code_i_test(Opcode::SUB, 5 + 1 - 4, 5, 0xFFFF_FFFF, 4);
-    }
-
-    #[test]
-    fn test_aot_and() {
-        // and
-        simple_op_code_test(Opcode::AND, 37 & 5, 37, 5);
-        // andi
-        simple_op_code_i_test(Opcode::AND, 37 & 5 & 42, 37, 5, 42);
-    }
-
-    #[test]
-    fn test_aot_or() {
-        // or
-        simple_op_code_test(Opcode::OR, 37 | 5, 37, 5);
-        // ori
-        simple_op_code_i_test(Opcode::OR, 37 | 5 | 42, 37, 5, 42);
-    }
-
-    #[test]
-    fn test_aot_xor() {
-        // xor
-        simple_op_code_test(Opcode::XOR, 37 ^ 5, 37, 5);
-        // xori
-        simple_op_code_i_test(Opcode::XOR, 37 ^ 5 ^ 42, 37, 5, 42);
-    }
-
-    #[test]
-    fn test_aot_mul() {
-        simple_op_code_test(Opcode::MUL, 0x00001200, 0x00007e00, 0xb6db6db7);
-        simple_op_code_test(Opcode::MUL, 0x00001240, 0x00007fc0, 0xb6db6db7);
-        simple_op_code_test(Opcode::MUL, 0x00000000, 0x00000000, 0x00000000);
-        simple_op_code_test(Opcode::MUL, 0x00000001, 0x00000001, 0x00000001);
-        simple_op_code_test(Opcode::MUL, 0x00000015, 0x00000003, 0x00000007);
-        simple_op_code_test(Opcode::MUL, 0x00000000, 0x00000000, 0xffff8000);
-        simple_op_code_test(Opcode::MUL, 0x00000000, 0x80000000, 0x00000000);
-        simple_op_code_test(Opcode::MUL, 0x00000000, 0x80000000, 0xffff8000);
-        simple_op_code_test(Opcode::MUL, 0x0000ff7f, 0xaaaaaaab, 0x0002fe7d);
-        simple_op_code_test(Opcode::MUL, 0x0000ff7f, 0x0002fe7d, 0xaaaaaaab);
-        simple_op_code_test(Opcode::MUL, 0x00000000, 0xff000000, 0xff000000);
-        simple_op_code_test(Opcode::MUL, 0x00000001, 0xffffffff, 0xffffffff);
-        simple_op_code_test(Opcode::MUL, 0xffffffff, 0xffffffff, 0x00000001);
-        simple_op_code_test(Opcode::MUL, 0xffffffff, 0x00000001, 0xffffffff);
-    }
-
-    #[test]
-    fn test_aot_shift() {
-        // sllv
-        simple_op_code_test(Opcode::SLL, 1 << 2, 1, 2);
-        // srlv
-        simple_op_code_test(Opcode::SRL, 8 >> 1, 8, 1);
-        // srav
-        simple_op_code_test(Opcode::SRA, 37 >> 4, 37, 4);
-        // rotrv
-        let c = (((0x12345678 as u64) + ((0x12345678 as u64) << 32)) >> 4) as u32;
-        simple_op_code_test(Opcode::ROR, c, 0x12345678, 4);
-
-        // sll
-        simple_op_code_i_test(Opcode::SLL, 1 << 2 << 3, 1, 2, 3);
-        // srl
-        simple_op_code_i_test(Opcode::SRL, 8 >> 1 >> 1, 8, 1, 1);
-        // sra
-        simple_op_code_i_test(Opcode::SRA, 37 >> 4 >> 1, 37, 4, 1);
-        // rotr
-        let c = ((c as u64) + ((c as u64) << 32)) >> 4;
-        simple_op_code_i_test(Opcode::ROR, c as u32, 0x12345678, 4, 4);
-
-        // sll
-        let instructions =
-            vec![Instruction::new(Opcode::SLL, Register::RA as u8, 40, 16, true, true)];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::RA), 40 << 16);
-    }
-
-    #[test]
-    fn test_aot_shifts() {
-        simple_op_code_test(Opcode::SLL, 0x00000001, 0x00000001, 0);
-        simple_op_code_test(Opcode::SLL, 0x00000002, 0x00000001, 1);
-        simple_op_code_test(Opcode::SLL, 0x00000080, 0x00000001, 7);
-        simple_op_code_test(Opcode::SLL, 0x00004000, 0x00000001, 14);
-        simple_op_code_test(Opcode::SLL, 0x80000000, 0x00000001, 31);
-        simple_op_code_test(Opcode::SLL, 0xffffffff, 0xffffffff, 0);
-        simple_op_code_test(Opcode::SLL, 0xfffffffe, 0xffffffff, 1);
-        simple_op_code_test(Opcode::SLL, 0xffffff80, 0xffffffff, 7);
-        simple_op_code_test(Opcode::SLL, 0xffffc000, 0xffffffff, 14);
-        simple_op_code_test(Opcode::SLL, 0x80000000, 0xffffffff, 31);
-        simple_op_code_test(Opcode::SLL, 0x21212121, 0x21212121, 0);
-        simple_op_code_test(Opcode::SLL, 0x42424242, 0x21212121, 1);
-        simple_op_code_test(Opcode::SLL, 0x90909080, 0x21212121, 7);
-        simple_op_code_test(Opcode::SLL, 0x48484000, 0x21212121, 14);
-        simple_op_code_test(Opcode::SLL, 0x80000000, 0x21212121, 31);
-        simple_op_code_test(Opcode::SLL, 0x21212121, 0x21212121, 0xffffffe0);
-        simple_op_code_test(Opcode::SLL, 0x42424242, 0x21212121, 0xffffffe1);
-        simple_op_code_test(Opcode::SLL, 0x90909080, 0x21212121, 0xffffffe7);
-        simple_op_code_test(Opcode::SLL, 0x48484000, 0x21212121, 0xffffffee);
-        simple_op_code_test(Opcode::SLL, 0x00000000, 0x21212120, 0xffffffff);
-
-        simple_op_code_test(Opcode::SRL, 0xffff8000, 0xffff8000, 0);
-        simple_op_code_test(Opcode::SRL, 0x7fffc000, 0xffff8000, 1);
-        simple_op_code_test(Opcode::SRL, 0x01ffff00, 0xffff8000, 7);
-        simple_op_code_test(Opcode::SRL, 0x0003fffe, 0xffff8000, 14);
-        simple_op_code_test(Opcode::SRL, 0x0001ffff, 0xffff8001, 15);
-        simple_op_code_test(Opcode::SRL, 0xffffffff, 0xffffffff, 0);
-        simple_op_code_test(Opcode::SRL, 0x7fffffff, 0xffffffff, 1);
-        simple_op_code_test(Opcode::SRL, 0x01ffffff, 0xffffffff, 7);
-        simple_op_code_test(Opcode::SRL, 0x0003ffff, 0xffffffff, 14);
-        simple_op_code_test(Opcode::SRL, 0x00000001, 0xffffffff, 31);
-        simple_op_code_test(Opcode::SRL, 0x21212121, 0x21212121, 0);
-        simple_op_code_test(Opcode::SRL, 0x10909090, 0x21212121, 1);
-        simple_op_code_test(Opcode::SRL, 0x00424242, 0x21212121, 7);
-        simple_op_code_test(Opcode::SRL, 0x00008484, 0x21212121, 14);
-        simple_op_code_test(Opcode::SRL, 0x00000000, 0x21212121, 31);
-        simple_op_code_test(Opcode::SRL, 0x21212121, 0x21212121, 0xffffffe0);
-        simple_op_code_test(Opcode::SRL, 0x10909090, 0x21212121, 0xffffffe1);
-        simple_op_code_test(Opcode::SRL, 0x00424242, 0x21212121, 0xffffffe7);
-        simple_op_code_test(Opcode::SRL, 0x00008484, 0x21212121, 0xffffffee);
-        simple_op_code_test(Opcode::SRL, 0x00000000, 0x21212121, 0xffffffff);
-
-        simple_op_code_test(Opcode::SRA, 0x00000000, 0x00000000, 0);
-        simple_op_code_test(Opcode::SRA, 0xc0000000, 0x80000000, 1);
-        simple_op_code_test(Opcode::SRA, 0xff000000, 0x80000000, 7);
-        simple_op_code_test(Opcode::SRA, 0xfffe0000, 0x80000000, 14);
-        simple_op_code_test(Opcode::SRA, 0xffffffff, 0x80000001, 31);
-        simple_op_code_test(Opcode::SRA, 0x7fffffff, 0x7fffffff, 0);
-        simple_op_code_test(Opcode::SRA, 0x3fffffff, 0x7fffffff, 1);
-        simple_op_code_test(Opcode::SRA, 0x00ffffff, 0x7fffffff, 7);
-        simple_op_code_test(Opcode::SRA, 0x0001ffff, 0x7fffffff, 14);
-        simple_op_code_test(Opcode::SRA, 0x00000000, 0x7fffffff, 31);
-        simple_op_code_test(Opcode::SRA, 0x81818181, 0x81818181, 0);
-        simple_op_code_test(Opcode::SRA, 0xc0c0c0c0, 0x81818181, 1);
-        simple_op_code_test(Opcode::SRA, 0xff030303, 0x81818181, 7);
-        simple_op_code_test(Opcode::SRA, 0xfffe0606, 0x81818181, 14);
-        simple_op_code_test(Opcode::SRA, 0xffffffff, 0x81818181, 31);
-    }
-
-    #[test]
-    fn test_aot_mult() {
-        let mult = |b: u32, c: u32| -> (u32, u32) {
-            let out = (((b as i32) as i64) * ((c as i32) as i64)) as u64;
-            (out as u32, (out >> 32) as u32) // lo,hi
-        };
-        let multu = |b: u32, c: u32| -> (u32, u32) {
-            let out = b as u64 * c as u64;
-            (out as u32, (out >> 32) as u32) //lo,hi
-        };
-
-        let tests =
-            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
-        for (b, c) in tests {
-            let (lo, hi) = mult(b, c);
-            lo_hi_op_code_test(Opcode::MULT, hi, lo, b, c);
-
-            let (lo, hi) = multu(b, c);
-            lo_hi_op_code_test(Opcode::MULTU, hi, lo, b, c);
-        }
-    }
-
-    #[test]
-    fn test_aot_div() {
-        let div = |b: u32, c: u32| -> (u32, u32) {
-            (
-                ((b as i32) / (c as i32)) as u32, // lo
-                ((b as i32) % (c as i32)) as u32, // hi
-            )
-        };
-        let divu = |b: u32, c: u32| -> (u32, u32) {
-            (b / c, b % c) // lo,hi
-        };
-
-        let tests =
-            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
-        for (b, c) in tests {
-            let (lo, hi) = div(b, c);
-            lo_hi_op_code_test(Opcode::DIV, hi, lo, b, c);
-
-            let (lo, hi) = divu(b, c);
-            lo_hi_op_code_test(Opcode::DIVU, hi, lo, b, c);
-        }
-    }
-
-    #[test]
-    fn test_aot_mod() {
-        let modu = |b: u32, c: u32| -> u32 { b % c };
-        let modu_tests =
-            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
-        for (b, c) in modu_tests {
-            let expected = modu(b, c);
-            simple_op_code_test(Opcode::MODU, expected, b, c);
-        }
-
-        let mod_signed = |b: u32, c: u32| -> u32 { ((b as i32) % (c as i32)) as u32 };
-        let mod_tests = vec![
-            (10, 3),
-            (100, 7),
-            (1234, 56),
-            (0xffff, 0xff),
-            (u32::MAX - 1, u32::MAX - 2),
-            (0xffff_ffff, 3),
-            (0xffff_fffe, 7),
-        ];
-        for (b, c) in mod_tests {
-            let expected = mod_signed(b, c);
-            simple_op_code_test(Opcode::MOD, expected, b, c);
-        }
-    }
-
-    #[test]
-    fn test_aot_slt() {
-        // slt
-        simple_op_code_test(Opcode::SLT, 1, 5, 10);
-        simple_op_code_test(Opcode::SLT, 0, 10, 5);
-        simple_op_code_test(Opcode::SLT, 0, 10, 10);
-        // slti
-        op_code_one_i_test(Opcode::SLT, 1, 5, 10);
-        op_code_one_i_test(Opcode::SLT, 0, 10, 5);
-        op_code_one_i_test(Opcode::SLT, 0, 10, 10);
-        // sltu
-        simple_op_code_test(Opcode::SLTU, 1, 5, 10);
-        simple_op_code_test(Opcode::SLTU, 0, 10, 5);
-        simple_op_code_test(Opcode::SLTU, 0, 10, 10);
-        // sltiu
-        op_code_one_i_test(Opcode::SLTU, 1, 5, 10);
-        op_code_one_i_test(Opcode::SLTU, 0, 10, 5);
-        op_code_one_i_test(Opcode::SLTU, 0, 10, 10);
-    }
-
-    #[test]
-    fn test_aot_nor() {
-        let nor = |b: u32, c: u32| -> u32 { !(b | c) };
-        let mod_tests =
-            vec![(10, 3), (100, 7), (1234, 56), (0xffff, 0xff), (u32::MAX - 1, u32::MAX - 2)];
-        for (b, c) in mod_tests {
-            let expected = nor(b, c);
-            simple_op_code_test(Opcode::NOR, expected, b, c);
-        }
-    }
-
-    #[test]
-    fn test_aot_cloz() {
-        let clz = |b: u32| -> u32 { b.leading_zeros() };
-        let clo = |b: u32| -> u32 { b.leading_ones() };
-        let cloz_tests = vec![10, 100, 1234, 0xffff, u32::MAX - 1];
-        for b in cloz_tests {
-            let expected = clz(b);
-            op_code_one_test(Opcode::CLZ, expected, b);
-            let expected = clo(b);
-            op_code_one_test(Opcode::CLO, expected, b);
-        }
-    }
-
-    #[test]
-    fn test_aot_beq_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, 1, false, true),
-            Instruction::new(Opcode::BEQ, 29, 30, 8, false, false),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 24);
-    }
-
-    #[test]
-    fn test_aot_beq_not_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, 2, false, true),
-            Instruction::new(Opcode::BEQ, 29, 30, 100, false, false),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 16);
-    }
-
-    #[test]
-    fn test_aot_bne_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::BNE, Register::A0 as u8, 1, 8, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    #[test]
-    fn test_aot_bne_not_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::BNE, Register::A0 as u8, 0, 100, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 8);
-    }
-
-    #[test]
-    fn test_aot_bltz_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 0xFFFF_FFFF, false, true),
-            Instruction::new(Opcode::BLTZ, 29, 0, 4, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    #[test]
-    fn test_aot_bltz_not_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::BLTZ, Register::A0 as u8, 0, 100, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 8);
-    }
-
-    #[test]
-    fn test_aot_blez_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::BLEZ, Register::A0 as u8, 0, 4, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 8);
-    }
-
-    #[test]
-    fn test_aot_blez_not_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
-            Instruction::new(Opcode::BLEZ, 29, 0, 100, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    #[test]
-    fn test_aot_bgtz_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
-            Instruction::new(Opcode::BGTZ, 29, 0, 4, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    #[test]
-    fn test_aot_bgtz_not_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::BGTZ, Register::A0 as u8, 0, 100, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 8);
-    }
-
-    #[test]
-    fn test_aot_bgez_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::BGEZ, Register::A0 as u8, 0, 4, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 8);
-    }
-
-    #[test]
-    fn test_aot_bgez_not_jump() {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 0xFFFF_FFFF, false, true),
-            Instruction::new(Opcode::BGEZ, 29, 0, 100, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    #[test]
-    fn test_aot_j() {
-        //   j 8
-        //
-        // The j instruction performs an unconditional jump to a specified address.
-
-        let instructions = vec![
-            Instruction::new(Opcode::Jumpi, 0, 8, 0, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    #[test]
-    fn test_aot_jr() {
-        //   addi x11, x11, 12
-        //   jr x11
-        //
-        // The jr instruction jumps to an address stored in a register.
-
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 11, 11, 12, false, true),
-            Instruction::new(Opcode::Jump, 0, 11, 0, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 16);
-    }
-
-    #[test]
-    fn test_aot_jal() {
-        //   addi x11, x11, 8
-        //   jal x11
-        //
-        // The jal instruction jumps to an address and stores the return address in $ra.
-
-        let instructions = vec![
-            Instruction::new(Opcode::Jumpi, 13, 8, 0, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-        assert_eq!(runtime.state.read_register(13), 8);
-    }
-
-    #[test]
-    fn test_aot_jalr() {
-        //   addi x11, x11, 12
-        //   jalr x11
-        //
-        // Similar to jal, but jumps to an address stored in a register.
-
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 11, 11, 12, false, true),
-            Instruction::new(Opcode::Jump, 13, 11, 0, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 16);
-        assert_eq!(runtime.state.read_register(13), 12);
-    }
-
-    #[test]
-    fn test_aot_bal() {
-        let instructions = vec![
-            Instruction::new(Opcode::JumpDirect, 31, 4, 0, false, true),
-            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
-        assert_eq!(runtime.state.read_register(31), 8);
-    }
-
-    #[test]
-    fn test_aot_simple_memory_program_run() {
-        let program = simple_memory_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-
-        // Assert SW & LW case
-        assert_eq!(runtime.register(28.into()), 0x12348765);
-
-        // Assert LBU cases
-        assert_eq!(runtime.register(27.into()), 0x65);
-        assert_eq!(runtime.register(26.into()), 0x87);
-        assert_eq!(runtime.register(25.into()), 0x34);
-        assert_eq!(runtime.register(24.into()), 0x12);
-
-        // Assert LB cases
-        assert_eq!(runtime.register(23.into()), 0x65);
-        assert_eq!(runtime.register(22.into()), 0xffffff87);
-
-        // Assert LHU cases
-        assert_eq!(runtime.register(21.into()), 0x8765);
-        assert_eq!(runtime.register(20.into()), 0x1234);
-
-        // Assert LH cases
-        assert_eq!(runtime.register(19.into()), 0xffff8765);
-        assert_eq!(runtime.register(18.into()), 0x1234);
-
-        // Assert SB cases
-        assert_eq!(runtime.register(16.into()), 0x12348725);
-        assert_eq!(runtime.register(15.into()), 0x12342525);
-        assert_eq!(runtime.register(14.into()), 0x12252525);
-        assert_eq!(runtime.register(13.into()), 0x25252525);
-
-        // Assert SH cases
-        assert_eq!(runtime.register(10.into()), 0x12346525);
-        assert_eq!(runtime.register(11.into()), 0x65256525);
-    }
-
-    #[test]
-    fn test_aot_sc() {
-        let instructions = vec![
-            // Save the value 0x12348765 into address 0x43627530
-            Instruction::new(Opcode::ADD, 29, 0, 0x12348765, false, true),
-            Instruction::new(Opcode::SC, 29, 0, 0x43627530, false, true),
-            Instruction::new(Opcode::LW, 28, 0, 0x43627530, false, true),
-        ];
-
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-
-        assert_eq!(runtime.register(28.into()), 0x12348765);
-        assert_eq!(runtime.register(29.into()), 1);
-    }
-
-    #[test]
-    fn test_aot_swl() {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 0xaabbccdd, false, true),
-            Instruction::new(Opcode::SW, 29, 0, 0x10000000, false, true),
-            Instruction::new(Opcode::ADD, 28, 0, 0x12345678, false, true),
-            Instruction::new(Opcode::SWL, 28, 0, 0x10000001, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.word(0x10000000), 0xaabb1234);
-    }
-
-    #[test]
-    fn test_aot_unaligned_memory_program_run() {
-        let program = unaligned_memory_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-
-        assert_eq!(runtime.word(0x10000000), 0x12345678);
-        assert_eq!(runtime.register(28.into()), 0x5678ccdd);
-        assert_eq!(runtime.register(27.into()), 0x345678dd);
-        assert_eq!(runtime.register(26.into()), 0x12345678);
-        assert_eq!(runtime.register(25.into()), 0x78bbccdd);
-
-        assert_eq!(runtime.register(24.into()), 0xaa123456);
-        assert_eq!(runtime.register(23.into()), 0xaabb1234);
-        assert_eq!(runtime.register(22.into()), 0xaabbcc12);
-        assert_eq!(runtime.register(21.into()), 0x12345678);
-
-        assert_eq!(runtime.word(0x11000000), 0x12345678);
-        assert_eq!(runtime.word(0x12000000), 0x125678cc);
-        assert_eq!(runtime.word(0x13000000), 0x5678ccdd);
-        assert_eq!(runtime.word(0x14000000), 0x12345656);
-
-        assert_eq!(runtime.word(0x15000000), 0x78ccdd78);
-        assert_eq!(runtime.word(0x16000000), 0xccdd5678);
-        assert_eq!(runtime.word(0x17000000), 0xdd345678);
-        assert_eq!(runtime.word(0x18000000), 0x5678ccdd);
-    }
-
-    #[test]
-    fn test_aot_mov_cond() {
-        simple_op_code_test(Opcode::MEQ, 10, 10, 0);
-        simple_op_code_test(Opcode::MNE, 10, 10, 1);
-    }
-
-    #[test]
-    fn test_aot_maddu() {
-        let maddu = |hi_val: u32, lo_val: u32, b: u32, c: u32| -> (u32, u32) {
-            let multiply = b as u64 * c as u64;
-            let addend = ((hi_val as u64) << 32) + lo_val as u64;
-            let out = multiply.wrapping_add(addend);
-            let out_lo = out as u32;
-            let out_hi = (out >> 32) as u32;
-            (out_lo, out_hi)
-        };
-        let (expected_lo, expected_hi) = maddu(100, 200, 300, 400);
-        m_lo_hi_op_code_test(Opcode::MADDU, expected_hi, expected_lo, 100, 200, 300, 400);
-    }
-
-    #[test]
-    fn test_aot_msubu() {
-        let msubu = |hi_val: u32, lo_val: u32, b: u32, c: u32| -> (u32, u32) {
-            let multiply = b as u64 * c as u64;
-            let addend = ((hi_val as u64) << 32) + lo_val as u64;
-            let out = addend.wrapping_sub(multiply);
-            let out_lo = out as u32;
-            let out_hi = (out >> 32) as u32;
-            (out_lo, out_hi)
-        };
-        let (expected_lo, expected_hi) = msubu(100, 200, 300, 400);
-        m_lo_hi_op_code_test(Opcode::MSUBU, expected_hi, expected_lo, 100, 200, 300, 400);
-    }
-
-    #[test]
-    fn test_aot_madd() {
-        let madd = |hi_val: u32, lo_val: u32, b: u32, c: u32| -> (u32, u32) {
-            let multiply = (b as i32 as i64) * (c as i32 as i64);
-            let addend = ((hi_val as u64) << 32) + lo_val as u64;
-            let out = multiply.wrapping_add(addend as i64) as u64;
-            let out_lo = out as u32;
-            let out_hi = (out >> 32) as u32;
-            (out_lo, out_hi)
-        };
-        let (expected_lo, expected_hi) = madd(100, 200, 300, 400);
-        m_lo_hi_op_code_test(Opcode::MADDU, expected_hi, expected_lo, 100, 200, 300, 400);
-    }
-
-    #[test]
-    fn test_aot_msub() {
-        let msub = |hi_val: u32, lo_val: u32, b: u32, c: u32| -> (u32, u32) {
-            let multiply = (b as i32 as i64) * (c as i32 as i64);
-            let addend = ((hi_val as u64) << 32) + lo_val as u64;
-            let out = (addend as i64).wrapping_sub(multiply) as u64;
-            let out_lo = out as u32;
-            let out_hi = (out >> 32) as u32;
-            (out_lo, out_hi)
-        };
-        let (expected_lo, expected_hi) = msub(100, 200, 300, 400);
-        m_lo_hi_op_code_test(Opcode::MSUBU, expected_hi, expected_lo, 100, 200, 300, 400);
-    }
-
-    #[test]
-    fn test_aot_wsbh() {
-        let wsbh = |b: u32| -> u32 {
-            (((b >> 16) & 0xFF) << 24)
-                | (((b >> 24) & 0xFF) << 16)
-                | ((b & 0xFF) << 8)
-                | ((b >> 8) & 0xFF)
-        };
-        let expected = wsbh(200);
-        op_code_one_test(Opcode::WSBH, expected, 200);
-    }
-
-    #[test]
-    fn test_aot_ext() {
-        let ext = |b: u32, c: u32| -> u32 {
-            let msbd = c >> 5;
-            let lsb = c & 0x1f;
-            let mask_msb =
-                if msbd + lsb + 1 == 32 { 0xFFFFFFFF } else { (1u32 << (msbd + lsb + 1)) - 1 };
-            (b & mask_msb) >> lsb
-        };
-        let expected = ext(100, 200);
-        op_code_one_i_test(Opcode::EXT, expected, 100, 200);
-    }
-
-    #[test]
-    fn test_aot_sext() {
-        let sext = |b: u32, c: u32| -> u32 {
-            if c > 0 {
-                (b & 0xffff) as i16 as i32 as u32
-            } else {
-                (b & 0xff) as i8 as i32 as u32
-            }
-        };
-        let expected = sext(100, 200);
-        op_code_one_i_test(Opcode::SEXT, expected, 100, 200);
-    }
-
-    #[test]
-    fn test_aot_ins() {
-        let ins = |a: u32, b: u32, c: u32| -> u32 {
-            let msb = c >> 5;
-            let lsb = c & 0x1f;
-            let mask = if msb - lsb + 1 == 32 { 0xFFFFFFFF } else { (1u32 << (msb - lsb + 1)) - 1 };
-            let mask_field = mask << lsb;
-            let a = (a & !mask_field) | ((b << lsb) & mask_field);
-            a
-        };
-        let expected = ins(100, 200, 0b00000_00000_00000);
-
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, 100, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, 200, false, true),
-            Instruction::new(Opcode::INS, 29, 30, 0b00000_00000_00000, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(29.into()), expected);
-    }
-
-    #[test]
-    fn test_aot_hello_run() {
-        let program = Program::from(test_artifacts::HELLO_WORLD_ELF).unwrap();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_sha2_run() {
-        let program = Program::from(test_artifacts::SHA2_ELF).unwrap();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_simple_program_run() {
-        let program = simple_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_fibo_run() {
-        let program = fibonacci_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_max_memory_program_run() {
-        let program = max_memory_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_u256xu2048_mul() {
-        let program = u256xu2048_mul_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_ssz_withdrawals_program_run() {
-        let program = ssz_withdrawals_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_secp256r1_add_program_run() {
-        let program = secp256r1_add_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_secp256r1_double_program_run() {
-        let program = secp256r1_double_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    #[test]
-    fn test_aot_unconstrained_run() {
-        let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-    }
-
-    // Since it panics within the assembly code, it will cause a fatal runtime error.
-    // #[test]
-    // #[should_panic]
-    // fn test_aot_panic() {
-    //     let program = panic_program();
-    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-    //     runtime.aot_run().unwrap();
-    // }
-
-    fn simple_op_code_test(opcode: Opcode, expected: u32, a: u32, b: u32) {
-        // addi x29, x0, a
-        // addi x30, x0, b
-        // <opcode> RA, x29, x30
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, a, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, b, false, true),
-            Instruction::new(opcode, Register::RA as u8, 29, 30, false, false),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::RA), expected);
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    fn simple_op_code_i_test(opcode: Opcode, expected: u32, a: u32, b: u32, c: u32) {
-        // addi x29, x0, a
-        // <opcode i> x30, x29, b
-        // <opcode i> RA, x30, c
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, a, false, true),
-            Instruction::new(opcode, 30, 29, b, false, true),
-            Instruction::new(opcode, Register::RA as u8, 30, c, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::RA), expected);
-        assert_eq!(runtime.state.pc, 12);
-    }
-
-    fn lo_hi_op_code_test(opcode: Opcode, expected_hi: u32, expected_lo: u32, b: u32, c: u32) {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, b, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, c, false, true),
-            Instruction::new(opcode, Register::RA as u8, 29, 30, false, false),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::LO), expected_lo);
-        assert_eq!(runtime.register(Register::HI), expected_hi);
-    }
-
-    fn m_lo_hi_op_code_test(
-        opcode: Opcode,
-        expected_hi: u32,
-        expected_lo: u32,
-        hi: u32,
-        lo: u32,
-        b: u32,
-        c: u32,
-    ) {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, Register::LO as u8, 0, lo, false, true),
-            Instruction::new(Opcode::ADD, Register::HI as u8, 0, hi, false, true),
-            Instruction::new(Opcode::ADD, 29, 0, b, false, true),
-            Instruction::new(Opcode::ADD, 30, 0, c, false, true),
-            Instruction::new(opcode, Register::LO as u8, 29, 30, false, false),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::LO), expected_lo);
-        assert_eq!(runtime.register(Register::HI), expected_hi);
-    }
-
-    fn op_code_one_i_test(opcode: Opcode, expected: u32, b: u32, c: u32) {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, b, false, true),
-            Instruction::new(opcode, Register::RA as u8, 29, c, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::RA), expected);
-    }
-
-    fn op_code_one_test(opcode: Opcode, expected: u32, c: u32) {
-        let instructions = vec![
-            Instruction::new(Opcode::ADD, 29, 0, c, false, true),
-            Instruction::new(opcode, Register::RA as u8, 29, c, false, true),
-        ];
-        let program = Program::new(instructions, 0, 0);
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
-        assert_eq!(runtime.register(Register::RA), expected);
-    }
 }
