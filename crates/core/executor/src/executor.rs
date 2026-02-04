@@ -179,7 +179,10 @@ pub struct Executor<'a> {
 
     #[cfg(feature = "aot")]
     /// Guest code
-    pub lib: Library,
+    pub pure_lib: Library,
+    #[cfg(feature = "aot")]
+    /// Guest code
+    pub metered_lib: Library,
 }
 
 /// The different modes the executor can run in.
@@ -336,10 +339,12 @@ impl<'a> Executor<'a> {
         let costs: HashMap<MipsAirId, usize> =
             costs.into_iter().map(|(k, v)| (MipsAirId::from_str(&k).unwrap(), v)).collect();
 
-        #[cfg(feature = "aot")]
         let aot = AotCompiler::new(program.clone());
         let asm_code = aot.create_pure_asm().unwrap();
-        let lib = asm_to_lib(&asm_code).unwrap();
+        let pure_lib = asm_to_lib(&asm_code).unwrap();
+
+        let asm_code = aot.create_metered_asm().unwrap();
+        let metered_lib = asm_to_lib(&asm_code).unwrap();
 
         Self {
             record,
@@ -379,7 +384,9 @@ impl<'a> Executor<'a> {
             lde_size_check: false,
             lde_size_threshold: 0,
             #[cfg(feature = "aot")]
-            lib,
+            pure_lib,
+            #[cfg(feature = "aot")]
+            metered_lib,
         }
     }
 
@@ -1673,7 +1680,7 @@ impl<'a> Executor<'a> {
         (Some(prev_a), a, b, c)
     }
 
-    fn execute_alu(
+    pub fn execute_alu(
         &mut self,
         instruction: &Instruction,
     ) -> Result<(Option<u32>, u32, u32, u32), ExecutionError> {
@@ -1746,7 +1753,7 @@ impl<'a> Executor<'a> {
         Ok(self.alu_rw(instruction, rd, hi, a, b, c))
     }
 
-    fn execute_load(
+    pub fn execute_load(
         &mut self,
         instruction: &Instruction,
     ) -> Result<(Option<u32>, u32, u32, u32), ExecutionError> {
@@ -1825,7 +1832,7 @@ impl<'a> Executor<'a> {
         Ok((Some(rt), val, rs_raw, offset_ext))
     }
 
-    fn execute_store(
+    pub fn execute_store(
         &mut self,
         instruction: &Instruction,
     ) -> Result<(Option<u32>, u32, u32, u32), ExecutionError> {
@@ -1980,11 +1987,14 @@ impl<'a> Executor<'a> {
         #[cfg(debug_assertions)]
         self.log(&instruction);
 
+        println!("{} {:?}", self.state.pc, instruction);
+
         // Execute the instruction.
         self.execute_operation(&instruction)?;
 
         // Increment the clock.
         self.state.global_clk += 1;
+        println!("-----self.state.global_clk: {}, clk: {}", self.state.global_clk, self.state.clk);
 
         // If the cycle limit is exceeded, return an error.
         if let Some(max_cycles) = self.max_cycles {
@@ -2109,7 +2119,7 @@ impl<'a> Executor<'a> {
     ///
     /// This function will return an error if the program execution fails.
     pub fn run(&mut self) -> Result<(), ExecutionError> {
-        self.executor_mode = ExecutorMode::Trace;
+        self.executor_mode = ExecutorMode::Checkpoint;
         self.print_report = true;
         while !self.execute()? {}
         Ok(())
@@ -2136,6 +2146,7 @@ impl<'a> Executor<'a> {
         loop {
             if self.execute_cycle()? {
                 done = true;
+                self.postprocess();
                 break;
             }
 
@@ -2149,12 +2160,14 @@ impl<'a> Executor<'a> {
             }
         }
 
+        if self.executor_mode != ExecutorMode::Trace {
+            return Ok(done);
+        }
+
         // Get the final public values.
         let public_values = self.record.public_values;
 
         if done {
-            self.postprocess();
-
             // Push the remaining execution record with memory initialize & finalize events.
             self.bump_record();
             log::debug!("last step {}", self.state.global_clk);
@@ -2191,7 +2204,7 @@ impl<'a> Executor<'a> {
     }
 
     #[inline]
-    fn inc_shard_if_need(&mut self) -> bool {
+    pub fn inc_shard_if_need(&mut self) -> bool {
         if self.executor_mode == ExecutorMode::Trace {
             if !self.state.records_clk.is_empty()
                 && self.state.clk >= self.state.records_clk[self.state.records_clk_index as usize]
@@ -2206,6 +2219,9 @@ impl<'a> Executor<'a> {
 
         // If there's not enough cycles left for another instruction, move to the next shard.
         let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
+        // println!("self.max_syscall_cycles: {}", self.max_syscall_cycles);
+        // println!("self.state.clk: {}", self.state.clk);
+        // println!("self.shard_size: {}", self.shard_size);
 
         // Every N cycles, check if there exists at least one shape that fits.
         //
@@ -2294,6 +2310,7 @@ impl<'a> Executor<'a> {
         }
 
         if cpu_exit || !shape_match_found {
+            println!("=========executor.state.clk: {}", self.state.clk);
             self.state.records_clk.push(self.state.clk);
             self.state.current_shard += 1;
             self.state.clk = 0;
@@ -2302,7 +2319,7 @@ impl<'a> Executor<'a> {
         false
     }
 
-    fn postprocess(&mut self) {
+    pub fn postprocess(&mut self) {
         // Flush remaining stdout/stderr
         for (fd, buf) in &self.io_buf {
             if !buf.is_empty() {
@@ -2483,7 +2500,13 @@ mod tests {
     fn test_fibonacci_program_run() {
         let program = fibonacci_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run_very_fast().unwrap();
+        // runtime.shard_size = 10000;
+        runtime.executor_mode = crate::ExecutorMode::Checkpoint;
+        runtime.run().unwrap();
+        println!("shard size: {}", runtime.shard_size);
+        println!("executor.state.clk: {}", runtime.state.clk);
+        println!("executor.state.globak_clk: {}", runtime.state.global_clk);
+        println!("executor.state.current_shard: {}", runtime.state.current_shard);
     }
 
     #[test]
@@ -2499,6 +2522,7 @@ mod tests {
         let program = secp256r1_add_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.run().unwrap();
+
     }
     //
     #[test]
@@ -2506,6 +2530,7 @@ mod tests {
         let program = secp256r1_double_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.run().unwrap();
+        println!("records: {}", runtime.records.len());
     }
     //
     #[test]
@@ -2962,7 +2987,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_run().unwrap();
+        runtime.aot_pure_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
         assert_eq!(runtime.state.read_register(31), 8);
     }

@@ -1,3 +1,5 @@
+mod test;
+
 use std::sync::Arc;
 
 use crate::aot::common::*;
@@ -195,7 +197,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_base_alu_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_base_alu_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let asm_opcode = match instruction.opcode {
@@ -242,7 +244,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_nor_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_nor_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -266,7 +268,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_shift_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_shift_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -334,7 +336,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_mult_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_mult_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let b = instruction.op_b as u8;
@@ -364,7 +366,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_div_mod_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_div_mod_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -415,7 +417,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_slt_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_slt_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -451,7 +453,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_cloz_asm(instruction: &Instruction) -> Result<String, AotError> {
+    pub fn generate_cloz_asm(instruction: &Instruction) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -476,7 +478,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_branch_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_branch_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let next_pc = pc + 4;
@@ -521,7 +523,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_jump_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_jump_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let next_pc = pc + 4;
@@ -563,7 +565,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_memory_load_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_memory_load_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -721,7 +723,7 @@ impl AotCompiler {
         Ok(asm)
     }
 
-    fn generate_memory_store_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
+    pub fn generate_memory_store_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
         let a = instruction.op_a;
@@ -960,6 +962,7 @@ impl AotCompiler {
         asm += &Self::load_xmm_regs();
 
         asm += &format!("   cmp {REG_TMP}, 0\n"); // Halt
+        asm += &format!("   mov {REG_NEXT_PC}, 0\n");
         asm += "   je asm_run_end\n";
         asm += &format!("   cmp {REG_TMP}, 1\n"); // !EXIT_UNCONSTRAINED
         asm += &format!("   je end_syscall_{pc}\n");
