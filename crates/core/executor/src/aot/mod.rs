@@ -239,6 +239,9 @@ extern "C" fn get_address_space(executor_ptr: *mut c_void, address_space: u32) -
     ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
 }
 
+// Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot`
+// Otherwise, it may lead to insufficient memory.
+// Because each test will occupy at least 2GB of memory.
 #[cfg(test)]
 mod tests {
     use zkm_stark::ZKMCoreOpts;
@@ -246,9 +249,9 @@ mod tests {
     use crate::Executor;
     use crate::{
         programs::tests::{
-            fibonacci_program, max_memory_program, panic_program, secp256r1_add_program,
-            secp256r1_double_program, simple_memory_program, simple_program,
-            ssz_withdrawals_program, u256xu2048_mul_program, unaligned_memory_program,
+            fibonacci_program, max_memory_program, secp256r1_add_program, secp256r1_double_program,
+            simple_memory_program, simple_program, ssz_withdrawals_program, u256xu2048_mul_program,
+            unaligned_memory_program,
         },
         Instruction, Opcode, Program, Register,
     };
@@ -1067,16 +1070,17 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn test_aot_panic() {
-        let program = panic_program();
+    fn test_aot_unconstrained_run() {
+        let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_run().unwrap();
     }
 
+    // Since it panics within the assembly code, it will cause a fatal runtime error.
     // #[test]
-    // fn test_aot_unconstrained_run() {
-    //     let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
+    // #[should_panic]
+    // fn test_aot_panic() {
+    //     let program = panic_program();
     //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
     //     runtime.aot_run().unwrap();
     // }

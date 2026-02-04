@@ -1293,8 +1293,6 @@ impl<'a> Executor<'a> {
         let mut next_pc = self.state.next_pc;
         let mut next_next_pc = self.state.next_pc + 4;
 
-        println!("{pc} {instruction:?}");
-
         let mut a = 0;
         let mut b = 0;
         let mut c = 0;
@@ -1395,8 +1393,6 @@ impl<'a> Executor<'a> {
             unreachable!()
         }
 
-        // println!("{:?} {} {}", a, b, c);
-
         if next_next_pc == 0 {
             log::error!("Null pointer reference {:X}: {:X}", self.state.pc, instruction.op_c);
             return Err(ExecutionError::NullPointerReference());
@@ -1440,7 +1436,6 @@ impl<'a> Executor<'a> {
         let syscall = SyscallCode::from_u32(syscall_id);
         let mut prev_a = syscall_id;
         log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", self.state.pc, syscall_id, b, c);
-        println!("pc: {} syscall {:?}, a0: {}, a1: {}", self.state.pc, syscall, b, c);
 
         if self.print_report && !self.unconstrained {
             self.report.syscall_counts[syscall] += 1;

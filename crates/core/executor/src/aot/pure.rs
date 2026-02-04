@@ -146,7 +146,6 @@ impl AotCompiler {
     }
 
     fn generate_instruction_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
-        // println!("{:?}", instruction);
         if instruction.is_alu_instruction() {
             return Self::generate_alu_asm(instruction, pc);
         } else if instruction.is_branch_instruction() {
@@ -960,12 +959,42 @@ impl AotCompiler {
         // registers, to the appropriate XMM registers
         asm += &Self::load_xmm_regs();
 
-        asm += &format!("   cmp {REG_TMP}, 0\n"); // next pc
+        asm += &format!("   cmp {REG_TMP}, 0\n"); // Halt
         asm += "   je asm_run_end\n";
+        asm += &format!("   cmp {REG_TMP}, 1\n"); // !EXIT_UNCONSTRAINED
+        asm += &format!("   je end_syscall_{pc}\n");
+
+        // EXIT_UNCONSTRAINED
+        // Update the memory address space, register address space and xmm registers
+        let get_address_space_ptr = format!("{:p}", get_address_space as *const ());
+        asm += "    # push_internal_registers\n";
+        asm += &Self::push_internal_registers();
+        // Store the start of memory address space in r15
+        // asm += "    # Store the start of memory address space in r15\n";
+        asm += &format!("    mov {REG_CALLER}, {get_address_space_ptr}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_SECOND_ARG}, 1\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    mov {REG_MEMORY_PTR}, {REG_RETURN_VAL}\n");
+        // Store the start of register address space in high 64 bits of xmm0
+        asm += "    # Store the start of register address space in high 64 bits of xmm0\n";
+        asm += &format!("    mov {REG_CALLER}, {get_address_space_ptr}\n");
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_SECOND_ARG}, 0\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    pinsrq  xmm0, {REG_RETURN_VAL}, 1\n");
+        asm += "    # pop_internal_registers\n";
+        asm += &Self::pop_internal_registers();
+        asm += "    # load_xmm_regs\n";
+        asm += &Self::load_xmm_regs();
+
+        // Jump to the next instruction
         asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
         asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_TMP}]\n");
         asm += &format!("   add {REG_A}, {REG_C}\n");
         asm += &format!("   jmp {REG_A}\n");
+
+        asm += &format!("end_syscall_{pc}:\n");
 
         Ok(asm)
     }
@@ -1120,7 +1149,6 @@ extern "C" fn execute_syscall(executor: &mut Executor, pc: u32) -> u32 {
     let b = executor.state.read_register(Register::A0 as u32);
     let syscall = SyscallCode::from_u32(syscall_id);
     log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", executor.state.pc, syscall_id, b, c);
-    println!("pc: {} syscall {:?}, a0: {}, a1: {}", executor.state.pc, syscall, b, c);
 
     // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
     // Other syscalls are not allowed because they can lead to non-deterministic
@@ -1171,6 +1199,8 @@ extern "C" fn execute_syscall(executor: &mut Executor, pc: u32) -> u32 {
 
     if executor.state.exited {
         0
+    } else if syscall != SyscallCode::EXIT_UNCONSTRAINED {
+        1
     } else {
         precompile_next_pc
     }
