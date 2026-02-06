@@ -835,6 +835,25 @@ mod tests {
         runtime.aot_pure_run().unwrap();
     }
 
+    // #[test]
+    // fn test_aot_pure_reth_run() {
+    //     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+    //     pub struct ZKMStdin {
+    //         pub buffer: Vec<Vec<u8>>,
+    //         pub ptr: usize,
+    //     }
+    //     let elf: &[u8] = include_bytes!("../test/reth");
+    //     let stdin: &[u8] = include_bytes!("../test/23968125-stdin.bin");
+    //     let stdin: ZKMStdin = bincode::deserialize(stdin).unwrap();
+
+    //     let program = Program::from(elf).unwrap();
+    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+    //     runtime.write_vecs(&stdin.buffer);
+    //     let start = std::time::Instant::now();
+    //     runtime.aot_pure_run().unwrap();
+    //     println!("ExecutorMode::Simple: {:?}", start.elapsed());
+    // }
+
     // Since it panics within the assembly code, it will cause a fatal runtime error.
     // #[test]
     // #[should_panic]

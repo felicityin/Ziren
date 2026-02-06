@@ -1,18 +1,11 @@
 mod test;
 
-use std::sync::Arc;
-
 use crate::aot::common::*;
 use crate::aot::{get_address_space, get_pc, set_pc, AotCompiler, AotError};
 use crate::syscalls::{SyscallCode, SyscallContext};
-use crate::{Executor, Instruction, Opcode, Program, Register};
+use crate::{Executor, Instruction, Opcode, Register};
 
 impl AotCompiler {
-    /// Create a new AOT instance for the given program.
-    pub fn new(program: Arc<Program>) -> Self {
-        Self { program }
-    }
-
     pub fn create_pure_asm(&self) -> Result<String, AotError> {
         let mut asm = String::new();
 
@@ -142,7 +135,7 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        std::fs::write("asm_dump.s", &asm).expect("failed to write asm");
+        std::fs::write("asm_pure_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
     }
@@ -955,6 +948,7 @@ impl AotCompiler {
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   mov {REG_TMP}, {REG_RETURN_VAL}\n");
+
         asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`

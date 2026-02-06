@@ -1,13 +1,49 @@
 mod test;
 
+use std::mem::offset_of;
+
 use crate::aot::common::*;
 use crate::aot::{get_address_space, get_pc, set_pc, AotCompiler, AotError};
+use crate::events::{MemoryAccessMeta, MemoryAccessPosition};
+use crate::memory::Entry;
 use crate::syscalls::{SyscallCode, SyscallContext};
-use crate::{Executor, ExecutorMode, Instruction, MipsAirId, Opcode, Register, estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts};
+use crate::{ExecutionState, Executor, Instruction, MipsAirId, Opcode, Register, estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts};
+
+#[inline]
+fn sync_reg_to_global_clk() -> String {
+    let global_clk_offset = offset_of!(Executor, state)
+            + offset_of!(ExecutionState, global_clk);
+    format!(
+        "    mov QWORD PTR [{REG_EXECUTOR_PTR} + {global_clk_offset}], {REG_GLOBAL_CLK}\n"
+    )
+}
+
+#[inline]
+fn sync_global_clk_to_reg() -> String {
+    let global_clk_offset = offset_of!(Executor, state)
+            + offset_of!(ExecutionState, global_clk);
+    format!(
+        "    mov {REG_GLOBAL_CLK}, [{REG_EXECUTOR_PTR} + {global_clk_offset}]\n"
+    )
+}
 
 impl AotCompiler {
     pub fn create_metered_asm(&self) -> Result<String, AotError> {
         let mut asm = String::new();
+
+        let clk_offset = offset_of!(Executor, state)
+            + offset_of!(ExecutionState, clk);
+
+        let sync_reg_to_clk = || {
+            format!(
+                "    mov QWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK}\n"
+            )
+        };
+        let sync_clk_to_reg = || {
+            format!(
+                "    mov {REG_CLK}, [{REG_EXECUTOR_PTR} + {clk_offset}]\n"
+            )
+        };
 
         // header part
         asm += ".intel_syntax noprefix\n";
@@ -23,7 +59,6 @@ impl AotCompiler {
 
         asm += "    # get params\n";
         asm += &format!("    mov {REG_EXECUTOR_PTR}, {REG_FIRST_ARG}\n");
-        // asm += &format!("    mov {REG_NEXT_PC}, {REG_SECOND_ARG}\n");
 
         let get_pc_ptr = format!("{:p}", get_pc as *const ());
         let get_address_space_ptr = format!("{:p}", get_address_space as *const ());
@@ -58,6 +93,11 @@ impl AotCompiler {
         asm += "    # load_xmm_regs\n";
         asm += &Self::load_xmm_regs();
 
+        asm += "    # state.clk = 0\n";
+        asm += &format!("   mov {REG_CLK}, 0\n");
+        asm += "    # state.global_clk = 0\n";
+        asm += &format!("   mov {REG_GLOBAL_CLK}, 0\n");
+
         asm += "    # execute\n";
         asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
         asm += &format!("   pextrq {REG_A}, xmm1, 1\n"); // extract the upper 64 bits of the xmm1 register to REG_A
@@ -71,6 +111,7 @@ impl AotCompiler {
         }
 
         let most_pc = self.program.pc_base + self.program.instructions.len() as u32 * 4;
+        let most_clk = self.shard_size - self.max_syscall_cycles;
 
         let mut i = 0;
         while i < self.program.instructions.len() {
@@ -81,7 +122,11 @@ impl AotCompiler {
             // Check if we should suspend or not
             asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
             asm += "    je asm_run_end\n";
+            asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
+            asm += "    je asm_run_end\n";
             asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
+            asm += &format!("    add {REG_CLK}, 5\n");
+            asm += &format!("    inc {REG_GLOBAL_CLK}\n");
             i += 1;
 
             if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
@@ -99,6 +144,10 @@ impl AotCompiler {
                 asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
                 asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
                 asm += "    je asm_run_end\n";
+                asm += &format!("    add {REG_CLK}, 5\n");
+                asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
+                asm += "    je asm_run_end\n";
+                asm += &format!("    inc {REG_GLOBAL_CLK}\n");
                 i += 1;
                 asm += &(Self::generate_metered_instruction_asm(next_instruction, next_pc)?);
 
@@ -113,6 +162,10 @@ impl AotCompiler {
         asm += "asm_run_end:\n";
         asm += "    # save_xmm_regs\n";
         asm += &Self::save_xmm_regs();
+        asm += "    # sync_reg_to_clk\n";
+        asm += &sync_reg_to_clk();
+        asm += "    # sync_reg_to_global_clk\n";
+        asm += &sync_reg_to_global_clk();
         asm += "    # call set_pc()\n";
         asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, {REG_NEXT_PC}\n");
@@ -136,7 +189,7 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        std::fs::write("asm_dump.s", &asm).expect("failed to write asm");
+        std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
     }
@@ -209,6 +262,7 @@ impl AotCompiler {
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
@@ -216,7 +270,7 @@ impl AotCompiler {
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
 
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
+        // asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
         Ok(asm)
     }
 
@@ -391,14 +445,13 @@ impl AotCompiler {
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
 
-        asm += &Self::generate_branch_asm(instruction, pc)?;
-
         let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
         asm += &Self::save_xmm_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
         asm += &Self::pop_internal_registers();
@@ -406,6 +459,8 @@ impl AotCompiler {
         asm += &Self::load_xmm_regs();
 
         asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
+
+        asm += &Self::generate_branch_asm(instruction, pc)?;
 
         Ok(asm)
     }
@@ -427,14 +482,13 @@ impl AotCompiler {
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
 
-        asm += &Self::generate_jump_asm(instruction, pc)?;
-
         let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
         asm += &Self::save_xmm_regs();
         asm += &Self::push_address_space_start();
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
         asm += &Self::pop_internal_registers();
@@ -442,6 +496,8 @@ impl AotCompiler {
         asm += &Self::load_xmm_regs();
 
         asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
+
+        asm += &Self::generate_jump_asm(instruction, pc)?;
 
         Ok(asm)
     }
@@ -471,6 +527,7 @@ impl AotCompiler {
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
         asm += &Self::pop_internal_registers();
@@ -506,6 +563,7 @@ impl AotCompiler {
         asm += &Self::push_internal_registers();
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
         asm += &Self::pop_internal_registers();
@@ -663,7 +721,7 @@ extern "C" fn execute_mov_cond(executor: &mut Executor, instruction: &Instructio
     let a = if mov { b } else { a };
     executor.state.write_register(rd, a);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_maddu(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -684,7 +742,7 @@ extern "C" fn execute_maddu(executor: &mut Executor, instruction: &Instruction, 
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_msubu(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -705,7 +763,7 @@ extern "C" fn execute_msubu(executor: &mut Executor, instruction: &Instruction, 
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_madd(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -726,7 +784,7 @@ extern "C" fn execute_madd(executor: &mut Executor, instruction: &Instruction, p
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_msub(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -747,7 +805,7 @@ extern "C" fn execute_msub(executor: &mut Executor, instruction: &Instruction, p
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_wsbh(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -760,7 +818,7 @@ extern "C" fn execute_wsbh(executor: &mut Executor, instruction: &Instruction, p
         | ((b >> 8) & 0xFF);
     executor.state.write_register(rd, a);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_ext(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -773,7 +831,7 @@ extern "C" fn execute_ext(executor: &mut Executor, instruction: &Instruction, pc
     let a = (b & mask_msb) >> lsb;
     executor.state.write_register(rd, a);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_sext(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -782,7 +840,7 @@ extern "C" fn execute_sext(executor: &mut Executor, instruction: &Instruction, p
     let a = if c > 0 { (b & 0xffff) as i16 as i32 as u32 } else { (b & 0xff) as i8 as i32 as u32 };
     executor.state.write_register(rd, a);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_ins(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -799,7 +857,7 @@ extern "C" fn execute_ins(executor: &mut Executor, instruction: &Instruction, pc
 
     executor.state.write_register(rd, a);
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_teq(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
@@ -813,7 +871,7 @@ extern "C" fn execute_teq(executor: &mut Executor, instruction: &Instruction, pc
         panic!("ExecutionError::ExceptionOrTrap()");
     }
 
-    inc_shard_if_need(executor)
+    inc_shard_if_need(executor, instruction)
 }
 
 extern "C" fn execute_syscall(executor: &mut Executor, instruction: &Instruction, pc: u32) -> u32 {
@@ -873,7 +931,7 @@ extern "C" fn execute_syscall(executor: &mut Executor, instruction: &Instruction
     executor.state.pc = precompile_next_pc;
     executor.state.next_pc = precompile_next_pc + 4;
 
-    let inc_shard = inc_shard_if_need(executor);
+    let inc_shard = inc_shard_if_need(executor, instruction);
 
     if executor.state.exited {
         0
@@ -887,11 +945,54 @@ extern "C" fn execute_syscall(executor: &mut Executor, instruction: &Instruction
 }
 
 #[inline]
-extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
+fn record_access_timestamp(executor: &mut Executor, instruction: &Instruction) {
+    if instruction.is_alu_instruction() {
+        alu_rr_timestamp(executor, instruction);
+        alu_rw_timestamp(executor, instruction);
+    } else if instruction.is_memory_load_instruction() {
+        let (rt_reg, rs_reg) =
+            (instruction.op_a.into(), (instruction.op_b as u8).into());
+        register_timestamp(executor, rs_reg, MemoryAccessPosition::B);
+        register_timestamp(executor, rt_reg, MemoryAccessPosition::A);
+    } else if instruction.is_memory_store_instruction() {
+        let (rt_reg, rs_reg) =
+            (instruction.op_a.into(), (instruction.op_b as u8).into());
+        register_timestamp(executor, rs_reg, MemoryAccessPosition::B);
+        if instruction.opcode != Opcode::SC {
+            register_timestamp(executor,rt_reg, MemoryAccessPosition::A)
+        }
+    } else if instruction.is_branch_instruction() {
+        let (src1, src2) =
+            (instruction.op_a.into(), (instruction.op_b as u8).into());
+        if !instruction.opcode.only_one_operand() {
+            register_timestamp(executor,src2, MemoryAccessPosition::B)
+        };
+        register_timestamp(executor, src1, MemoryAccessPosition::A);
+    } else if instruction.is_jump_instruction() {
+        // if instruction.opcode == Opcode::Jump {
+        //     self.execute_jump(instruction)
+        // } else if instruction.opcode == Opcode::Jumpi {
+        //     self.execute_jumpi(instruction)
+        // } else {
+        //     self.execute_jump_direct(instruction)
+        // };
+    } else if instruction.is_mov_cond_instruction() {
+
+    } else if instruction.is_misc_instruction() {
+
+    } else if instruction.opcode == Opcode::SYSCALL {
+        
+    }
+}
+
+#[inline]
+extern "C" fn inc_shard_if_need(executor: &mut Executor, instruction: &Instruction) -> bool {
+    // record_access_timestamp(executor, instruction);
+
     // Increment the clock.
-    executor.state.global_clk += 1;
-    executor.state.clk += 5;
-    println!("-----self.state.global_clk: {}, clk: {}", executor.state.global_clk, executor.state.clk);
+    // executor.state.global_clk += 1;
+    // executor.state.clk += 5;
+    // println!("-----self.state.global_clk: {}, clk: {}", executor.state.global_clk, executor.state.clk);
 
     // If the cycle limit is exceeded, return an error.
     if let Some(max_cycles) = executor.max_cycles {
@@ -902,9 +1003,6 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
 
     // If there's not enough cycles left for another instruction, move to the next shard.
     let cpu_exit = executor.max_syscall_cycles + executor.state.clk >= executor.shard_size;
-    // println!("self.max_syscall_cycles: {}", executor.max_syscall_cycles);
-    // println!("self.state.clk: {}", executor.state.clk);
-    // println!("self.shard_size: {}", executor.shard_size);
 
     // Every N cycles, check if there exists at least one shape that fits.
     //
@@ -1002,45 +1100,58 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
     false
 }
 
-// #[inline]
-// extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
-//     // Update the clk to the next cycle.
-//     executor.state.clk += 5;
+#[inline]
+fn alu_rr_timestamp(executor: &mut Executor, instruction: &Instruction) {
+    if !instruction.imm_c {
+        let (rs1, rs2) = (
+            (instruction.op_b as u8).into(),
+            (instruction.op_c as u8).into(),
+        );
+        register_timestamp(executor, rs2, MemoryAccessPosition::C);
+        register_timestamp(executor,  rs1, MemoryAccessPosition::B);
+    } else if !instruction.imm_b && instruction.imm_c {
+        let rs1 = (instruction.op_b as u8).into();
+        register_timestamp(executor,  rs1, MemoryAccessPosition::B);
+    }
+}
 
-//     let ok = inc_shard_if_need_for_syscall(executor);
+#[inline]
+fn alu_rw_timestamp(executor: &mut Executor, instruction: &Instruction) {
+    if instruction.opcode.is_use_lo_hi_alu() {
+        register_timestamp(executor, Register::LO, MemoryAccessPosition::A);
+        register_timestamp(executor, Register::HI, MemoryAccessPosition::HI);
+    } else {
+        let rd = instruction.op_a.into();
+        register_timestamp(executor, rd, MemoryAccessPosition::A);
+    };
+}
 
-//     // println!("-------executor.state.clk: {}", executor.state.clk);
-//     // println!("-------executor.state.global_clk: {}", executor.state.global_clk);
-//     ok
-// }
+#[inline]
+fn register_timestamp(executor: &mut Executor, register: Register, position: MemoryAccessPosition) {
+    let addr = register as u32;
+    let entry = executor.state.access_meta.registers.entry(addr);
+
+    // If it's the first time accessing this address, initialize previous values.
+    let record: &mut MemoryAccessMeta = match entry {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
+    };
+
+    record.shard = executor.state.current_shard;
+    record.timestamp = executor.state.clk + position as u32;
+}
 
 extern "C" fn execute_alu(executor: &mut Executor, instruction: &Instruction, pc: u32) {
     println!("{pc} {:?}", instruction);
-    let a = executor.state.read_register(31);
-    // println!("------x31: {a}");
     executor.execute_alu(instruction).unwrap();
 }
 
-extern "C" fn execute_branch(executor: &mut Executor, instruction: &Instruction, pc: u32) {
-    // executor.execute_branch(instruction, pc + 4, pc);
+extern "C" fn execute_branch(_executor: &mut Executor, instruction: &Instruction, pc: u32) {
     println!("{pc} {:?}", instruction);
 }
 
-extern "C" fn execute_jump(executor: &mut Executor, instruction: &Instruction, pc: u32) {
-    // if instruction.opcode == Opcode::Jump {
-    //     executor.execute_jump(instruction);
-    // } else if instruction.opcode == Opcode::Jumpi {
-    //     executor.execute_jumpi(instruction);
-    // } else {
-    //     executor.execute_jump_direct(instruction);
-    // }
+extern "C" fn execute_jump(_executor: &mut Executor, instruction: &Instruction, pc: u32) {
     println!("{pc} {:?}", instruction);
-    let a = executor.state.read_register(31);
-    // println!(": {a}");
-}
-
-extern "C" fn read_b(executor: &mut Executor, b: u32) -> u32 {
-    executor.state.read_register(b)
 }
 
 extern "C" fn execute_memory_store(executor: &mut Executor, instruction: &Instruction, pc: u32) {

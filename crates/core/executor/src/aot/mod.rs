@@ -20,6 +20,22 @@ type MeteredAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void, max_clk: 
 pub struct AotCompiler {
     /// The program.
     pub program: Arc<Program>,
+
+    /// The maximum size of each shard.
+    pub shard_size: u32,
+
+    /// The maximum number of cycles for a syscall.
+    pub max_syscall_cycles: u32,
+
+    /// The frequency to check the stopping condition.
+    pub shape_check_frequency: u64,
+}
+
+impl AotCompiler {
+    /// Create a new AOT instance for the given program.
+    pub fn new(program: Arc<Program>, shard_size: u32, max_syscall_cycles: u32, shape_check_frequency: u64) -> Self {
+        Self { program, shard_size, max_syscall_cycles, shape_check_frequency }
+    }
 }
 
 impl<'a> Executor<'a> {
@@ -38,7 +54,7 @@ impl<'a> Executor<'a> {
 
         tracing::info_span!("aot execute").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<PureAsmRunFn> =
-                self.pure_lib.get(b"asm_run").expect("Failed to get asm_run symbol");
+                self.pure_lib.as_ref().unwrap().get(b"asm_run").expect("Failed to get asm_run symbol");
 
             asm_run(executor_ptr.cast());
         });
@@ -91,7 +107,7 @@ impl<'a> Executor<'a> {
 
         tracing::info_span!("aot execute").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<MeteredAsmRunFn> =
-                self.metered_lib.get(b"asm_run").expect("Failed to get asm_run symbol");
+                self.metered_lib.as_ref().unwrap().get(b"asm_run").expect("Failed to get asm_run symbol");
 
             asm_run(executor_ptr.cast(), max_clk);
         });
@@ -289,8 +305,8 @@ unsafe extern "C" fn set_pc(executor_ptr: *mut c_void, next_pc: u32) {
 extern "C" fn get_pc(executor_ptr: *mut c_void) -> *mut u64 {
     let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
 
-    // since pc is the first element of the vm_state field and we use `repr(C)`
-    // hence `ptr` will be equal to the address of pc in vm_state
+    // since pc is the first element of the state field and we use `repr(C)`
+    // hence `ptr` will be equal to the address of pc in state
     let ptr = executor.state.pc as *mut u32;
     ptr as *mut u64
 }

@@ -179,10 +179,10 @@ pub struct Executor<'a> {
 
     #[cfg(feature = "aot")]
     /// Guest code
-    pub pure_lib: Library,
+    pub pure_lib: Option<Library>,
     #[cfg(feature = "aot")]
     /// Guest code
-    pub metered_lib: Library,
+    pub metered_lib: Option<Library>,
 }
 
 /// The different modes the executor can run in.
@@ -339,7 +339,7 @@ impl<'a> Executor<'a> {
         let costs: HashMap<MipsAirId, usize> =
             costs.into_iter().map(|(k, v)| (MipsAirId::from_str(&k).unwrap(), v)).collect();
 
-        let aot = AotCompiler::new(program.clone());
+        let aot = AotCompiler::new(program.clone(), (opts.shard_size as u32) * 4, max_syscall_cycles, opts.shape_check_frequency);
         let asm_code = aot.create_pure_asm().unwrap();
         let pure_lib = asm_to_lib(&asm_code).unwrap();
 
@@ -383,10 +383,9 @@ impl<'a> Executor<'a> {
             shape_check_frequency: opts.shape_check_frequency,
             lde_size_check: false,
             lde_size_threshold: 0,
-            #[cfg(feature = "aot")]
-            pure_lib,
-            #[cfg(feature = "aot")]
-            metered_lib,
+            pure_lib: Some(pure_lib),
+            metered_lib: Some(metered_lib),
+            // metered_lib: None,
         }
     }
 
@@ -1987,14 +1986,14 @@ impl<'a> Executor<'a> {
         #[cfg(debug_assertions)]
         self.log(&instruction);
 
-        println!("{} {:?}", self.state.pc, instruction);
+        // println!("{} {:?}", self.state.pc, instruction);
 
         // Execute the instruction.
         self.execute_operation(&instruction)?;
 
         // Increment the clock.
         self.state.global_clk += 1;
-        println!("-----self.state.global_clk: {}, clk: {}", self.state.global_clk, self.state.clk);
+        // println!("-----self.state.global_clk: {}, clk: {}", self.state.global_clk, self.state.clk);
 
         // If the cycle limit is exceeded, return an error.
         if let Some(max_cycles) = self.max_cycles {
@@ -2481,6 +2480,28 @@ mod tests {
         _assert_send::<Executor>();
     }
 
+    // #[test]
+    // fn test_reth_run() {
+    //     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+    //     pub struct ZKMStdin {
+    //         pub buffer: Vec<Vec<u8>>,
+    //         pub ptr: usize,
+    //     }
+
+    //     let elf: &[u8] = include_bytes!("./aot/test/reth");
+    //     let stdin: &[u8] = include_bytes!("./aot/test/reth-stdin.bin");
+    //     let stdin: ZKMStdin = bincode::deserialize(stdin).unwrap();
+
+    //     let program = Program::from(elf).unwrap();
+    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+    //     println!("create runtime");
+    //     runtime.write_vecs(&stdin.buffer);
+    //     println!("write_vecs");
+    //     let start = std::time::Instant::now();
+    //     runtime.run_very_fast().unwrap();
+    //     println!("ExecutorMode::Simple: {:?}", start.elapsed());
+    // }
+
     #[test]
     fn test_hello_run() {
         let program = Program::from(test_artifacts::HELLO_WORLD_ELF).unwrap();
@@ -2500,7 +2521,7 @@ mod tests {
     fn test_fibonacci_program_run() {
         let program = fibonacci_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        // runtime.shard_size = 10000;
+        runtime.shard_size = 10000;
         runtime.executor_mode = crate::ExecutorMode::Checkpoint;
         runtime.run().unwrap();
         println!("shard size: {}", runtime.shard_size);
