@@ -73,6 +73,9 @@ pub enum DeferredProofVerification {
 /// occur during execution (i.e., memory reads, alu operations, etc).
 #[repr(C)]
 pub struct Executor<'a> {
+    /// The state of the execution.
+    pub state: ExecutionState,
+
     /// The program.
     pub program: Arc<Program>,
 
@@ -126,8 +129,8 @@ pub struct Executor<'a> {
     /// correctness.
     pub deferred_proof_verification: DeferredProofVerification,
 
-    /// The state of the execution.
-    pub state: ExecutionState,
+    // /// The state of the execution.
+    // pub state: ExecutionState,
 
     /// The current trace of the execution that is being collected.
     pub record: ExecutionRecord,
@@ -339,13 +342,6 @@ impl<'a> Executor<'a> {
         let costs: HashMap<MipsAirId, usize> =
             costs.into_iter().map(|(k, v)| (MipsAirId::from_str(&k).unwrap(), v)).collect();
 
-        let aot = AotCompiler::new(program.clone(), (opts.shard_size as u32) * 4, max_syscall_cycles, opts.shape_check_frequency);
-        let asm_code = aot.create_pure_asm().unwrap();
-        let pure_lib = asm_to_lib(&asm_code).unwrap();
-
-        let asm_code = aot.create_metered_asm().unwrap();
-        let metered_lib = asm_to_lib(&asm_code).unwrap();
-
         Self {
             record,
             records: vec![],
@@ -383,9 +379,8 @@ impl<'a> Executor<'a> {
             shape_check_frequency: opts.shape_check_frequency,
             lde_size_check: false,
             lde_size_threshold: 0,
-            pure_lib: Some(pure_lib),
-            metered_lib: Some(metered_lib),
-            // metered_lib: None,
+            pure_lib: None,
+            metered_lib: None,
         }
     }
 
@@ -1986,7 +1981,7 @@ impl<'a> Executor<'a> {
         #[cfg(debug_assertions)]
         self.log(&instruction);
 
-        // println!("{} {:?}", self.state.pc, instruction);
+        println!("{} {} {} {:?}", self.state.pc, self.state.clk + 5, self.state.global_clk + 1, instruction);
 
         // Execute the instruction.
         self.execute_operation(&instruction)?;
@@ -2506,7 +2501,12 @@ mod tests {
     fn test_hello_run() {
         let program = Program::from(test_artifacts::HELLO_WORLD_ELF).unwrap();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.shard_size = 10000;
         runtime.run().unwrap();
+        println!("shard size: {}", runtime.shard_size);
+        println!("executor.state.clk: {}", runtime.state.clk);
+        println!("executor.state.globak_clk: {}", runtime.state.global_clk);
+        println!("executor.state.current_shard: {}", runtime.state.current_shard);
     }
 
     #[test]

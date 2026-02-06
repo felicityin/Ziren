@@ -2,41 +2,51 @@ mod test;
 
 use std::mem::offset_of;
 
-use crate::aot::common::*;
+use crate::aot::{common::*, get_global_clk};
 use crate::aot::{get_address_space, get_pc, set_pc, AotCompiler, AotError};
 use crate::events::{MemoryAccessMeta, MemoryAccessPosition};
 use crate::memory::Entry;
 use crate::syscalls::{SyscallCode, SyscallContext};
 use crate::{ExecutionState, Executor, Instruction, MipsAirId, Opcode, Register, estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts};
 
-#[inline]
-fn sync_reg_to_global_clk() -> String {
-    let global_clk_offset = offset_of!(Executor, state)
-            + offset_of!(ExecutionState, global_clk);
-    format!(
-        "    mov QWORD PTR [{REG_EXECUTOR_PTR} + {global_clk_offset}], {REG_GLOBAL_CLK}\n"
-    )
-}
-
-#[inline]
-fn sync_global_clk_to_reg() -> String {
-    let global_clk_offset = offset_of!(Executor, state)
-            + offset_of!(ExecutionState, global_clk);
-    format!(
-        "    mov {REG_GLOBAL_CLK}, [{REG_EXECUTOR_PTR} + {global_clk_offset}]\n"
-    )
-}
-
 impl AotCompiler {
     pub fn create_metered_asm(&self) -> Result<String, AotError> {
         let mut asm = String::new();
 
+        let pc_offset = offset_of!(Executor, state)
+            + offset_of!(ExecutionState, pc);
+        println!("----pc_offset: {pc_offset}");
+        let sync_reg_to_pc = || {
+            format!(
+                "    mov DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_NEXT_PC}\n"
+            )
+        };
+        let sync_pc_to_reg = || {
+            format!(
+                "    mov {REG_NEXT_PC}, [{REG_EXECUTOR_PTR} + {pc_offset}]\n"
+            )
+        };
+
+        let global_clk_offset = offset_of!(Executor, state)
+            + offset_of!(ExecutionState, global_clk);
+        println!("----global_clk_offset: {global_clk_offset}");
+        let sync_reg_to_global_clk = || {
+            format!(
+                "    mov QWORD PTR [{REG_EXECUTOR_PTR} + {global_clk_offset}], {REG_GLOBAL_CLK}\n"
+            )
+        };
+        let sync_global_clk_to_reg = || {
+            format!(
+                "    mov {REG_GLOBAL_CLK}, [{REG_EXECUTOR_PTR} + {global_clk_offset}]\n"
+            )
+        };
+
         let clk_offset = offset_of!(Executor, state)
             + offset_of!(ExecutionState, clk);
-
+        println!("----clk_offset: {clk_offset}");
         let sync_reg_to_clk = || {
             format!(
-                "    mov QWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK}\n"
+                "    mov DWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK}\n"
             )
         };
         let sync_clk_to_reg = || {
@@ -62,6 +72,7 @@ impl AotCompiler {
 
         let get_pc_ptr = format!("{:p}", get_pc as *const ());
         let get_address_space_ptr = format!("{:p}", get_address_space as *const ());
+        let get_global_clk_ptr = format!("{:p}", get_global_clk as *const ());
 
         asm += "    # push_internal_registers\n";
         asm += &Self::push_internal_registers();
@@ -86,6 +97,12 @@ impl AotCompiler {
         asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += &format!("    pinsrq  xmm1, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm1
+        asm += &format!("    mov {REG_NEXT_PC}, {REG_RETURN_VAL}\n");
+        // Get global clk
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_CALLER}, {get_global_clk_ptr}\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    mov {REG_GLOBAL_CLK}, {REG_RETURN_VAL}\n");
 
         asm += "    # pop_internal_registers\n";
         asm += &Self::pop_internal_registers();
@@ -95,8 +112,11 @@ impl AotCompiler {
 
         asm += "    # state.clk = 0\n";
         asm += &format!("   mov {REG_CLK}, 0\n");
-        asm += "    # state.global_clk = 0\n";
-        asm += &format!("   mov {REG_GLOBAL_CLK}, 0\n");
+        // asm += "    # state.global_clk = 0\n";
+        // asm += &format!("   mov {REG_GLOBAL_CLK}, 0\n");
+
+        // asm += &sync_clk_to_reg();
+        // asm += &sync_global_clk_to_reg();
 
         asm += "    # execute\n";
         asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
@@ -121,9 +141,9 @@ impl AotCompiler {
 
             // Check if we should suspend or not
             asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
-            asm += "    je asm_run_end\n";
+            asm += "    jae asm_run_end\n";
             asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
-            asm += "    je asm_run_end\n";
+            asm += "    jae asm_run_end\n";
             asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
             asm += &format!("    add {REG_CLK}, 5\n");
             asm += &format!("    inc {REG_GLOBAL_CLK}\n");
@@ -142,11 +162,7 @@ impl AotCompiler {
                 let next_pc = self.program.pc(i);
                 asm += &format!("asm_execute_pc_{next_pc}:\n");
                 asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
-                asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
-                asm += "    je asm_run_end\n";
                 asm += &format!("    add {REG_CLK}, 5\n");
-                asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
-                asm += "    je asm_run_end\n";
                 asm += &format!("    inc {REG_GLOBAL_CLK}\n");
                 i += 1;
                 asm += &(Self::generate_metered_instruction_asm(next_instruction, next_pc)?);
@@ -157,19 +173,26 @@ impl AotCompiler {
             }
         }
 
-        let set_pc_ptr = format!("{:p}", set_pc as *const ());
+        let inc_shard_if_need_ptr = format!("{:p}", inc_shard_if_need as *const ());
+
+        println!("-----most_pc: {most_pc}");
+        println!("-----most_clk: {most_clk}");
 
         asm += "asm_run_end:\n";
         asm += "    # save_xmm_regs\n";
         asm += &Self::save_xmm_regs();
-        asm += "    # sync_reg_to_clk\n";
-        asm += &sync_reg_to_clk();
-        asm += "    # sync_reg_to_global_clk\n";
-        asm += &sync_reg_to_global_clk();
-        asm += "    # call set_pc()\n";
+        // asm += "    # sync_reg_to_pc\n";
+        // asm += &sync_reg_to_pc();
+        // asm += "    # sync_reg_to_clk\n";
+        // asm += &sync_reg_to_clk();
+        // asm += "    # sync_reg_to_global_clk\n";
+        // asm += &sync_reg_to_global_clk();
+        asm += "    # call inc_shard_if_need()\n";
         asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, {REG_NEXT_PC}\n");
-        asm += &format!("    mov {REG_CALLER}, {set_pc_ptr}\n");
+        asm += &format!("    mov {REG_THIRD_ARG}, {REG_CLK}\n");
+        asm += &format!("    mov {REG_FOURTH_ARG}, {REG_GLOBAL_CLK}\n");
+        asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += "    # pop_external_registers\n";
         asm += &Self::pop_external_registers();
@@ -251,26 +274,14 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {_pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &Self::pop_internal_registers();
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
 
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        // asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
         Ok(asm)
     }
 
@@ -278,20 +289,6 @@ impl AotCompiler {
         let mut asm = String::new();
 
         asm += &Self::generate_base_alu_asm(instruction)?;
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         Ok(asm)
     }
@@ -301,20 +298,6 @@ impl AotCompiler {
 
         asm += &Self::generate_nor_asm(instruction)?;
 
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
-
         Ok(asm)
     }
 
@@ -322,20 +305,6 @@ impl AotCompiler {
         let mut asm = String::new();
 
         asm += &Self::generate_shift_asm(instruction)?;
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         Ok(asm)
     }
@@ -345,20 +314,6 @@ impl AotCompiler {
 
         asm += &Self::generate_mult_asm(instruction)?;
 
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
-
         Ok(asm)
     }
 
@@ -366,20 +321,6 @@ impl AotCompiler {
         let mut asm = String::new();
 
         asm += &Self::generate_div_mod_asm(instruction)?;
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         Ok(asm)
     }
@@ -389,20 +330,6 @@ impl AotCompiler {
 
         asm += &Self::generate_slt_asm(instruction)?;
 
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
-
         Ok(asm)
     }
 
@@ -410,20 +337,6 @@ impl AotCompiler {
         let mut asm = String::new();
 
         asm += &Self::generate_cloz_asm(instruction)?;
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         Ok(asm)
     }
@@ -439,26 +352,13 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &Self::pop_internal_registers();
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         asm += &Self::generate_branch_asm(instruction, pc)?;
 
@@ -476,26 +376,13 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &Self::pop_internal_registers();
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         asm += &Self::generate_jump_asm(instruction, pc)?;
 
@@ -505,7 +392,7 @@ impl AotCompiler {
     fn generate_metered_memory_load_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
-        // asm += &Self::generate_memory_load_asm(instruction, pc)?;
+        asm += &Self::generate_memory_load_asm(instruction, pc)?;
 
         let extern_handler_ptr = format!("{:p}", execute_memory_load as *const ());
         let instruction_ptr = format!("{:p}", instruction as *const Instruction);
@@ -515,26 +402,13 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &Self::pop_internal_registers();
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         Ok(asm)
     }
@@ -542,7 +416,8 @@ impl AotCompiler {
     fn generate_metered_memory_store_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
-        // asm += &Self::generate_memory_store_asm(instruction, pc)?;
+        asm += &Self::generate_memory_store_asm(instruction, pc)?;
+
         let extern_handler_ptr = format!("{:p}", execute_memory_store as *const ());
         let instruction_ptr = format!("{:p}", instruction as *const Instruction);
         asm += &Self::save_xmm_regs();
@@ -551,26 +426,13 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &Self::pop_internal_registers();
         asm += &Self::pop_address_space_start();
         asm += &Self::load_xmm_regs();
-
-        let extern_handler_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        asm += &Self::save_xmm_regs();
-        asm += &Self::push_address_space_start();
-        asm += &Self::push_internal_registers();
-        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
-        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
-        asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
-        asm += &Self::pop_internal_registers();
-        asm += &Self::pop_address_space_start();
-        asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n"); // inc_shard_if_need() return true
 
         Ok(asm)
     }
@@ -587,16 +449,15 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
         asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
         asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n");
 
         Ok(asm)
     }
@@ -624,16 +485,15 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
-        asm += &format!("   test {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
         asm += &Self::pop_internal_registers(); // pop the internal registers from the stack
         asm += &Self::pop_address_space_start();
         // read the memory from the memory location of the MIPS registers in `GuestMemory`
         // registers, to the appropriate XMM registers
         asm += &Self::load_xmm_regs();
-
-        asm += &format!("    jnz asm_run_end\n");
 
         Ok(asm)
     }
@@ -652,6 +512,8 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   mov {REG_TMP}, {REG_RETURN_VAL}\n");
@@ -664,8 +526,6 @@ impl AotCompiler {
         asm += "   je asm_run_end\n";
         asm += &format!("   cmp {REG_TMP}, 1\n"); // !EXIT_UNCONSTRAINED
         asm += &format!("   je end_syscall_{pc}\n");
-        asm += &format!("   cmp {REG_TMP}, 2\n"); // Generate one shard
-        asm += "   je asm_run_end\n";
 
         // EXIT_UNCONSTRAINED
         // Update the memory address space, register address space and xmm registers
@@ -703,8 +563,8 @@ impl AotCompiler {
     }
 }
 
-extern "C" fn execute_mov_cond(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_mov_cond(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (rd, rs, rt) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
     let a = executor.state.read_register(rd);
@@ -720,12 +580,10 @@ extern "C" fn execute_mov_cond(executor: &mut Executor, instruction: &Instructio
 
     let a = if mov { b } else { a };
     executor.state.write_register(rd, a);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_maddu(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_maddu(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
     let c = executor.state.read_register(rs);
@@ -741,12 +599,10 @@ extern "C" fn execute_maddu(executor: &mut Executor, instruction: &Instruction, 
 
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_msubu(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_msubu(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
     let c = executor.state.read_register(rs);
@@ -762,12 +618,10 @@ extern "C" fn execute_msubu(executor: &mut Executor, instruction: &Instruction, 
 
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_madd(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_madd(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
     let c = executor.state.read_register(rs);
@@ -783,12 +637,10 @@ extern "C" fn execute_madd(executor: &mut Executor, instruction: &Instruction, p
 
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_msub(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_msub(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (lo, rt, rs) =
         (instruction.op_a.into(), (instruction.op_b as u8).into(), (instruction.op_c as u8).into());
     let c = executor.state.read_register(rs);
@@ -804,12 +656,10 @@ extern "C" fn execute_msub(executor: &mut Executor, instruction: &Instruction, p
 
     executor.state.write_register(lo, out_lo);
     executor.state.write_register(Register::HI as u32, out_hi);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_wsbh(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_wsbh(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (rd, rt) = (instruction.op_a.into(), (instruction.op_b as u8).into());
     let b = executor.state.read_register(rt);
     let a = (((b >> 16) & 0xFF) << 24)
@@ -817,12 +667,10 @@ extern "C" fn execute_wsbh(executor: &mut Executor, instruction: &Instruction, p
         | ((b & 0xFF) << 8)
         | ((b >> 8) & 0xFF);
     executor.state.write_register(rd, a);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_ext(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_ext(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (rd, rt, c) = (instruction.op_a.into(), (instruction.op_b as u8).into(), instruction.op_c);
     let b = executor.state.read_register(rt);
     let msbd = c >> 5;
@@ -830,21 +678,18 @@ extern "C" fn execute_ext(executor: &mut Executor, instruction: &Instruction, pc
     let mask_msb = if msbd + lsb + 1 == 32 { 0xFFFFFFFF } else { (1u32 << (msbd + lsb + 1)) - 1 };
     let a = (b & mask_msb) >> lsb;
     executor.state.write_register(rd, a);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_sext(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
+extern "C" fn execute_sext(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (rd, rt, c) = (instruction.op_a.into(), (instruction.op_b as u8).into(), instruction.op_c);
     let b = executor.state.read_register(rt);
     let a = if c > 0 { (b & 0xffff) as i16 as i32 as u32 } else { (b & 0xff) as i8 as i32 as u32 };
     executor.state.write_register(rd, a);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_ins(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_ins(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (rd, rt, c) = (instruction.op_a.into(), (instruction.op_b as u8).into(), instruction.op_c);
     let b = executor.state.read_register(rt);
     let a = executor.state.read_register(rd);
@@ -856,12 +701,10 @@ extern "C" fn execute_ins(executor: &mut Executor, instruction: &Instruction, pc
     let a = (a & !mask_field) | ((b << lsb) & mask_field);
 
     executor.state.write_register(rd, a);
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_teq(executor: &mut Executor, instruction: &Instruction, pc: u32) -> bool {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_teq(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    // println!("{pc} {clk} {global_clk} {:?}", instruction);
     let (rs, rt) = (instruction.op_a.into(), (instruction.op_b as u8).into());
 
     let src2 = executor.state.read_register(rt);
@@ -870,12 +713,10 @@ extern "C" fn execute_teq(executor: &mut Executor, instruction: &Instruction, pc
     if src1 == src2 {
         panic!("ExecutionError::ExceptionOrTrap()");
     }
-
-    inc_shard_if_need(executor, instruction)
 }
 
-extern "C" fn execute_syscall(executor: &mut Executor, instruction: &Instruction, pc: u32) -> u32 {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_syscall(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) -> u32 {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
     executor.state.pc = pc;
     let syscall_id = executor.state.read_register(Register::V0 as u32);
     let c = executor.state.read_register(Register::A1 as u32);
@@ -923,6 +764,7 @@ extern "C" fn execute_syscall(executor: &mut Executor, instruction: &Instruction
     };
 
     if syscall == SyscallCode::HALT && returned_exit_code == 0 {
+        println!("--------existed");
         executor.state.exited = true;
     }
 
@@ -931,68 +773,20 @@ extern "C" fn execute_syscall(executor: &mut Executor, instruction: &Instruction
     executor.state.pc = precompile_next_pc;
     executor.state.next_pc = precompile_next_pc + 4;
 
-    let inc_shard = inc_shard_if_need(executor, instruction);
-
     if executor.state.exited {
         0
     } else if syscall != SyscallCode::EXIT_UNCONSTRAINED {
         1
-    } else if inc_shard {
-        2
     } else {
         precompile_next_pc
     }
 }
 
 #[inline]
-fn record_access_timestamp(executor: &mut Executor, instruction: &Instruction) {
-    if instruction.is_alu_instruction() {
-        alu_rr_timestamp(executor, instruction);
-        alu_rw_timestamp(executor, instruction);
-    } else if instruction.is_memory_load_instruction() {
-        let (rt_reg, rs_reg) =
-            (instruction.op_a.into(), (instruction.op_b as u8).into());
-        register_timestamp(executor, rs_reg, MemoryAccessPosition::B);
-        register_timestamp(executor, rt_reg, MemoryAccessPosition::A);
-    } else if instruction.is_memory_store_instruction() {
-        let (rt_reg, rs_reg) =
-            (instruction.op_a.into(), (instruction.op_b as u8).into());
-        register_timestamp(executor, rs_reg, MemoryAccessPosition::B);
-        if instruction.opcode != Opcode::SC {
-            register_timestamp(executor,rt_reg, MemoryAccessPosition::A)
-        }
-    } else if instruction.is_branch_instruction() {
-        let (src1, src2) =
-            (instruction.op_a.into(), (instruction.op_b as u8).into());
-        if !instruction.opcode.only_one_operand() {
-            register_timestamp(executor,src2, MemoryAccessPosition::B)
-        };
-        register_timestamp(executor, src1, MemoryAccessPosition::A);
-    } else if instruction.is_jump_instruction() {
-        // if instruction.opcode == Opcode::Jump {
-        //     self.execute_jump(instruction)
-        // } else if instruction.opcode == Opcode::Jumpi {
-        //     self.execute_jumpi(instruction)
-        // } else {
-        //     self.execute_jump_direct(instruction)
-        // };
-    } else if instruction.is_mov_cond_instruction() {
-
-    } else if instruction.is_misc_instruction() {
-
-    } else if instruction.opcode == Opcode::SYSCALL {
-        
-    }
-}
-
-#[inline]
-extern "C" fn inc_shard_if_need(executor: &mut Executor, instruction: &Instruction) -> bool {
-    // record_access_timestamp(executor, instruction);
-
-    // Increment the clock.
-    // executor.state.global_clk += 1;
-    // executor.state.clk += 5;
-    // println!("-----self.state.global_clk: {}, clk: {}", executor.state.global_clk, executor.state.clk);
+extern "C" fn inc_shard_if_need(executor: &mut Executor, pc: u32, clk: u32, global_clk: u64) -> bool {
+    executor.state.pc = pc;
+    executor.state.clk = clk;
+    executor.state.global_clk = global_clk;
 
     // If the cycle limit is exceeded, return an error.
     if let Some(max_cycles) = executor.max_cycles {
@@ -1091,7 +885,6 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor, instruction: &Instructi
     }
 
     if cpu_exit || !shape_match_found {
-        println!("============executor.state.clk: {}", executor.state.clk);
         executor.state.records_clk.push(executor.state.clk);
         executor.state.current_shard += 1;
         executor.state.clk = 0;
@@ -1100,66 +893,25 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor, instruction: &Instructi
     false
 }
 
-#[inline]
-fn alu_rr_timestamp(executor: &mut Executor, instruction: &Instruction) {
-    if !instruction.imm_c {
-        let (rs1, rs2) = (
-            (instruction.op_b as u8).into(),
-            (instruction.op_c as u8).into(),
-        );
-        register_timestamp(executor, rs2, MemoryAccessPosition::C);
-        register_timestamp(executor,  rs1, MemoryAccessPosition::B);
-    } else if !instruction.imm_b && instruction.imm_c {
-        let rs1 = (instruction.op_b as u8).into();
-        register_timestamp(executor,  rs1, MemoryAccessPosition::B);
-    }
-}
-
-#[inline]
-fn alu_rw_timestamp(executor: &mut Executor, instruction: &Instruction) {
-    if instruction.opcode.is_use_lo_hi_alu() {
-        register_timestamp(executor, Register::LO, MemoryAccessPosition::A);
-        register_timestamp(executor, Register::HI, MemoryAccessPosition::HI);
-    } else {
-        let rd = instruction.op_a.into();
-        register_timestamp(executor, rd, MemoryAccessPosition::A);
-    };
-}
-
-#[inline]
-fn register_timestamp(executor: &mut Executor, register: Register, position: MemoryAccessPosition) {
-    let addr = register as u32;
-    let entry = executor.state.access_meta.registers.entry(addr);
-
-    // If it's the first time accessing this address, initialize previous values.
-    let record: &mut MemoryAccessMeta = match entry {
-        Entry::Occupied(entry) => entry.into_mut(),
-        Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-    };
-
-    record.shard = executor.state.current_shard;
-    record.timestamp = executor.state.clk + position as u32;
-}
-
-extern "C" fn execute_alu(executor: &mut Executor, instruction: &Instruction, pc: u32) {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_alu(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    // println!("{pc} {clk} {global_clk} {:?}", instruction);
     executor.execute_alu(instruction).unwrap();
 }
 
-extern "C" fn execute_branch(_executor: &mut Executor, instruction: &Instruction, pc: u32) {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_branch(_executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    // println!("{pc} {clk} {global_clk} {:?}", instruction);
 }
 
-extern "C" fn execute_jump(_executor: &mut Executor, instruction: &Instruction, pc: u32) {
-    println!("{pc} {:?}", instruction);
+extern "C" fn execute_jump(_executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    // println!("{pc} {clk} {global_clk} {:?}", instruction);
 }
 
-extern "C" fn execute_memory_store(executor: &mut Executor, instruction: &Instruction, pc: u32) {
-    println!("{pc} {:?}", instruction);
-    executor.execute_store(instruction).unwrap();
+extern "C" fn execute_memory_store(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    // println!("{pc} {clk} {global_clk} {:?}", instruction);
+    // executor.execute_store(instruction).unwrap();
 }
 
-extern "C" fn execute_memory_load(executor: &mut Executor, instruction: &Instruction, pc: u32) {
-    println!("{pc} {:?}", instruction);
-    executor.execute_load(instruction).unwrap();
+extern "C" fn execute_memory_load(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    // println!("{pc} {clk} {global_clk} {:?}", instruction);
+    // executor.execute_load(instruction).unwrap();
 }

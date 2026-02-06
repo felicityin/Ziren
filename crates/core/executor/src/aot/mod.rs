@@ -15,7 +15,7 @@ use crate::{
 use crate::{Executor, ExecutorMode};
 
 type PureAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
-type MeteredAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void, max_clk: u32);
+type MeteredAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
 
 pub struct AotCompiler {
     /// The program.
@@ -39,6 +39,20 @@ impl AotCompiler {
 }
 
 impl<'a> Executor<'a> {
+    pub fn aot_compile_pure_lib(&mut self) {
+        let aot = AotCompiler::new(self.program.clone(), self.shard_size, self.max_syscall_cycles, self.shape_check_frequency);
+        let asm_code = aot.create_pure_asm().unwrap();
+        let pure_lib = asm_to_lib(&asm_code).unwrap();
+        self.pure_lib = Some(pure_lib);
+    }
+
+    pub fn aot_compile_metered_lib(&mut self) {
+        let aot = AotCompiler::new(self.program.clone(), self.shard_size, self.max_syscall_cycles, self.shape_check_frequency);
+        let asm_code = aot.create_metered_asm().unwrap();
+        let metered_lib = asm_to_lib(&asm_code).unwrap();
+        self.metered_lib = Some(metered_lib);
+    }
+
     /// Executes the program.
     ///
     /// # Errors
@@ -54,7 +68,7 @@ impl<'a> Executor<'a> {
 
         tracing::info_span!("aot execute").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<PureAsmRunFn> =
-                self.pure_lib.as_ref().unwrap().get(b"asm_run").expect("Failed to get asm_run symbol");
+                self.pure_lib.as_ref().expect("Please complete AOT first").get(b"asm_run").expect("Failed to get asm_run symbol");
 
             asm_run(executor_ptr.cast());
         });
@@ -64,16 +78,20 @@ impl<'a> Executor<'a> {
         Ok(())
     }
 
+    pub fn aot_metered_run(&mut self) -> Result<(), ExecutionError> {
+        self.print_report = false;
+        self.executor_mode = ExecutorMode::Checkpoint;
+        while !self.aot_metered_execute()? {}
+        Ok(())
+    }
+
     /// Executes the program.
     ///
     /// # Errors
     ///
     /// This function will return an error if the program execution fails.
     ///
-    pub fn aot_metered_run(&mut self) -> Result<bool, ExecutionError> {
-        self.print_report = false;
-        self.executor_mode = ExecutorMode::Checkpoint;
-
+    pub fn aot_metered_execute(&mut self) -> Result<bool, ExecutionError> {
         // If it's the first cycle, initialize the program.
         if self.state.global_clk == 0 {
             self.initialize();
@@ -86,7 +104,7 @@ impl<'a> Executor<'a> {
         loop {
             if self.execute_metered_shard()? {
                 done = true;
-                println!("---clk: {} {}", self.state.clk, self.state.global_clk);
+                println!("---done clk: {} {}", self.state.clk, self.state.global_clk);
                 self.postprocess();
                 break;
             }
@@ -97,19 +115,19 @@ impl<'a> Executor<'a> {
                 break;
             }
         }
+        println!("self.shard_batch_size: {}", self.shard_batch_size);
 
         Ok(done)
     }
 
     fn execute_metered_shard(&mut self) -> Result<bool, ExecutionError> {
         let executor_ptr = self as *mut Executor;
-        let max_clk = self.shard_size - self.max_syscall_cycles;
 
         tracing::info_span!("aot execute").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<MeteredAsmRunFn> =
-                self.metered_lib.as_ref().unwrap().get(b"asm_run").expect("Failed to get asm_run symbol");
+                self.metered_lib.as_ref().expect("Please complete AOT first").get(b"asm_run").expect("Failed to get asm_run symbol");
 
-            asm_run(executor_ptr.cast(), max_clk);
+            asm_run(executor_ptr.cast());
         });
 
         let done = self.state.pc == 0
@@ -120,6 +138,14 @@ impl<'a> Executor<'a> {
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
+        println!("self.state.pc == 0: {}", self.state.pc == 0);
+        println!("self.state.exited: {}", self.state.exited);
+        println!("self.state.pc.wrapping_sub(self.program.pc_base): {}", self.state.pc.wrapping_sub(self.program.pc_base));
+        println!("self.program.instructions.len() * 4: {}", self.program.instructions.len() * 4);
+        println!("self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32: {}", self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32);
+        println!("------done: {done}");
         Ok(done)
     }
 }
@@ -316,4 +342,10 @@ extern "C" fn get_address_space(executor_ptr: *mut c_void, address_space: u32) -
 
     let ptr = &executor.state.memory.memory.mem[address_space as usize];
     ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
+}
+
+extern "C" fn get_global_clk(executor_ptr: *mut c_void) -> *mut u64 {
+    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
+
+    executor.state.global_clk as *mut u64
 }

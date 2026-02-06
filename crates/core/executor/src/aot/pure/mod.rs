@@ -50,6 +50,7 @@ impl AotCompiler {
         asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += &format!("    pinsrq  xmm1, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm1
+        asm += &format!("    mov {REG_NEXT_PC}, {REG_RETURN_VAL}\n");
 
         asm += "    # pop_internal_registers\n";
         asm += &Self::pop_internal_registers();
@@ -79,7 +80,7 @@ impl AotCompiler {
 
             // Check if we should suspend or not
             asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
-            asm += "    je asm_run_end\n";
+            asm += "    jae asm_run_end\n";
             asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
             i += 1;
 
@@ -96,8 +97,6 @@ impl AotCompiler {
                 let next_pc = self.program.pc(i);
                 asm += &format!("asm_execute_pc_{next_pc}:\n");
                 asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
-                asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
-                asm += "    je asm_run_end\n";
                 i += 1;
                 asm += &(Self::generate_instruction_asm(next_instruction, next_pc)?);
 
@@ -187,6 +186,23 @@ impl AotCompiler {
             }
             _ => return Err(AotError::NotSupported),
         }
+
+        let extern_handler_ptr = format!("{:p}", execute_alu as *const ());
+        let instruction_ptr = format!("{:p}", instruction as *const Instruction);
+        asm += &Self::save_xmm_regs();
+        asm += &Self::push_address_space_start();
+        asm += &Self::push_internal_registers();
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
+        asm += &format!("   mov {REG_THIRD_ARG}, {_pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
+        asm += &Self::pop_internal_registers();
+        asm += &Self::pop_address_space_start();
+        asm += &Self::load_xmm_regs();
+
         Ok(asm)
     }
 
@@ -474,6 +490,22 @@ impl AotCompiler {
     pub fn generate_branch_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
+        let extern_handler_ptr = format!("{:p}", execute_branch as *const ());
+        let instruction_ptr = format!("{:p}", instruction as *const Instruction);
+        asm += &Self::save_xmm_regs();
+        asm += &Self::push_address_space_start();
+        asm += &Self::push_internal_registers();
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
+        asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
+        asm += &Self::pop_internal_registers();
+        asm += &Self::pop_address_space_start();
+        asm += &Self::load_xmm_regs();
+
         let next_pc = pc + 4;
         let next_next_pc = next_pc.wrapping_add(instruction.op_c);
 
@@ -519,6 +551,22 @@ impl AotCompiler {
     pub fn generate_jump_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
 
+        let extern_handler_ptr = format!("{:p}", execute_jump as *const ());
+        let instruction_ptr = format!("{:p}", instruction as *const Instruction);
+        asm += &Self::save_xmm_regs();
+        asm += &Self::push_address_space_start();
+        asm += &Self::push_internal_registers();
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
+        asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
+        asm += &Self::pop_internal_registers();
+        asm += &Self::pop_address_space_start();
+        asm += &Self::load_xmm_regs();
+
         let next_pc = pc + 4;
         let return_pc = next_pc + 4;
 
@@ -560,6 +608,22 @@ impl AotCompiler {
 
     pub fn generate_memory_load_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
+
+        let extern_handler_ptr = format!("{:p}", execute_memory_load as *const ());
+        let instruction_ptr = format!("{:p}", instruction as *const Instruction);
+        asm += &Self::save_xmm_regs();
+        asm += &Self::push_address_space_start();
+        asm += &Self::push_internal_registers();
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
+        asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
+        asm += &Self::pop_internal_registers();
+        asm += &Self::pop_address_space_start();
+        asm += &Self::load_xmm_regs();
 
         let a = instruction.op_a;
         let b = instruction.op_b as u8;
@@ -718,6 +782,22 @@ impl AotCompiler {
 
     pub fn generate_memory_store_asm(instruction: &Instruction, pc: u32) -> Result<String, AotError> {
         let mut asm = String::new();
+
+        let extern_handler_ptr = format!("{:p}", execute_memory_store as *const ());
+        let instruction_ptr = format!("{:p}", instruction as *const Instruction);
+        asm += &Self::save_xmm_regs();
+        asm += &Self::push_address_space_start();
+        asm += &Self::push_internal_registers();
+        asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
+        asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
+        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
+        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
+        asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
+        asm += &format!("   call {REG_CALLER}\n");
+        asm += &Self::pop_internal_registers();
+        asm += &Self::pop_address_space_start();
+        asm += &Self::load_xmm_regs();
 
         let a = instruction.op_a;
         let b = instruction.op_b as u8;
@@ -1201,4 +1281,27 @@ extern "C" fn execute_syscall(executor: &mut Executor, pc: u32) -> u32 {
     } else {
         precompile_next_pc
     }
+}
+
+extern "C" fn execute_alu(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
+    // executor.execute_alu(instruction).unwrap();
+}
+
+extern "C" fn execute_branch(_executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
+}
+
+extern "C" fn execute_jump(_executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
+}
+
+extern "C" fn execute_memory_store(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
+    // executor.execute_store(instruction).unwrap();
+}
+
+extern "C" fn execute_memory_load(executor: &mut Executor, instruction: &Instruction, pc: u32, clk: u32, global_clk: u64) {
+    println!("{pc} {clk} {global_clk} {:?}", instruction);
+    // executor.execute_load(instruction).unwrap();
 }

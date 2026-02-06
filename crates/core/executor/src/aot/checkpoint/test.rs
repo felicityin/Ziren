@@ -17,12 +17,12 @@ mod tests {
 
     #[test]
     fn test_aot_metered_add() {
-        // // add
-        // simple_op_code_test(Opcode::ADD, 37 + 5, 37, 5);
-        // // addi
-        // simple_op_code_i_test(Opcode::ADD, 37 + 5 + 42, 37, 5, 42);
-        // // addi negative
-        // simple_op_code_i_test(Opcode::ADD, 5 - 1 + 4, 5, 0xFFFF_FFFF, 4);
+        // add
+        simple_op_code_test(Opcode::ADD, 37 + 5, 37, 5);
+        // addi
+        simple_op_code_i_test(Opcode::ADD, 37 + 5 + 42, 37, 5, 42);
+        // addi negative
+        simple_op_code_i_test(Opcode::ADD, 5 - 1 + 4, 5, 0xFFFF_FFFF, 4);
 
         let instructions = vec![
             Instruction::new(Opcode::ADD, 29, 0, 100, false, true),
@@ -38,24 +38,13 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), 300);
 
-        // println!("shard size: {}", runtime.shard_size);
-        // println!("executor.state.clk: {}", runtime.state.clk);
-        // println!("executor.state.globak_clk: {}", runtime.state.global_clk);
-        // println!("executor.state.current_shard: {}", runtime.state.current_shard);
         assert_eq!(runtime.state.clk, 15);
         assert_eq!(runtime.state.global_clk, 3);
         assert_eq!(runtime.state.current_shard, 1);
-
-        // let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        // runtime.run().unwrap();
-        // println!("-------");
-        // println!("shard size: {}", runtime.shard_size);
-        // println!("executor.state.clk: {}", runtime.state.clk);
-        // println!("executor.state.globak_clk: {}", runtime.state.global_clk);
-        // println!("executor.state.current_shard: {}", runtime.state.current_shard);
     }
 
     #[test]
@@ -137,6 +126,7 @@ mod tests {
             vec![Instruction::new(Opcode::SLL, Register::RA as u8, 40, 16, true, true)];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), 40 << 16);
     }
@@ -329,6 +319,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 24);
     }
@@ -343,6 +334,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
     }
@@ -356,6 +348,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
     }
@@ -368,6 +361,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 8);
     }
@@ -378,11 +372,13 @@ mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 0xFFFF_FFFF, false, true),
             Instruction::new(Opcode::BLTZ, 29, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
+        assert_eq!(runtime.state.pc, 16);
     }
 
     #[test]
@@ -393,6 +389,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 8);
     }
@@ -402,11 +399,13 @@ mod tests {
         let instructions = vec![
             Instruction::new(Opcode::BLEZ, Register::A0 as u8, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
-        assert_eq!(runtime.state.pc, 8);
+        assert_eq!(runtime.state.pc, 12);
     }
 
     #[test]
@@ -418,6 +417,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
     }
@@ -428,11 +428,13 @@ mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
             Instruction::new(Opcode::BGTZ, 29, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
-        assert_eq!(runtime.state.pc, 12);
+        assert_eq!(runtime.state.pc, 16);
     }
 
     #[test]
@@ -443,6 +445,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 8);
     }
@@ -452,11 +455,14 @@ mod tests {
         let instructions = vec![
             Instruction::new(Opcode::BGEZ, Register::A0 as u8, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
-        assert_eq!(runtime.state.pc, 8);
+        assert_eq!(runtime.state.pc, 16);
     }
 
     #[test]
@@ -468,6 +474,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
     }
@@ -485,6 +492,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
     }
@@ -504,6 +512,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
     }
@@ -522,6 +531,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
         assert_eq!(runtime.state.read_register(13), 8);
@@ -542,6 +552,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
         assert_eq!(runtime.state.read_register(13), 12);
@@ -556,6 +567,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
         assert_eq!(runtime.state.read_register(31), 8);
@@ -565,6 +577,7 @@ mod tests {
     fn test_aot_metered_simple_memory_program_run() {
         let program = simple_memory_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
 
         // Assert SW & LW case
@@ -610,6 +623,7 @@ mod tests {
 
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
 
         assert_eq!(runtime.register(28.into()), 0x12348765);
@@ -626,6 +640,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.word(0x10000000), 0xaabb1234);
     }
@@ -634,6 +649,7 @@ mod tests {
     fn test_aot_metered_unaligned_memory_program_run() {
         let program = unaligned_memory_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
 
         assert_eq!(runtime.word(0x10000000), 0x12345678);
@@ -777,6 +793,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(29.into()), expected);
     }
@@ -784,17 +801,28 @@ mod tests {
     #[test]
     fn test_aot_metered_hello_run() {
         let program = Program::from(test_artifacts::HELLO_WORLD_ELF).unwrap();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        let mut runtime = Executor::new(program.clone(), ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
-        assert_eq!(runtime.state.clk, 3590);
-        assert_eq!(runtime.state.global_clk, 17950);
+        assert_eq!(runtime.state.clk, 17950);
+        assert_eq!(runtime.state.global_clk, 3590);
         assert_eq!(runtime.state.current_shard, 1);
+
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.shard_size = 10000;
+        runtime.aot_compile_metered_lib();
+        runtime.aot_metered_run().unwrap();
+
+        assert_eq!(runtime.state.clk, 7995);
+        assert_eq!(runtime.state.global_clk, 3590);
+        assert_eq!(runtime.state.current_shard, 2);
     }
 
     #[test]
     fn test_aot_metered_sha2_run() {
         let program = Program::from(test_artifacts::SHA2_ELF).unwrap();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -802,6 +830,7 @@ mod tests {
     fn test_aot_metered_simple_program_run() {
         let program = simple_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -810,6 +839,7 @@ mod tests {
         let program = fibonacci_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.shard_size = 10000;
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
 
         assert_eq!(runtime.state.clk, 7815);
@@ -821,6 +851,7 @@ mod tests {
     fn test_aot_metered_max_memory_program_run() {
         let program = max_memory_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -828,6 +859,7 @@ mod tests {
     fn test_aot_metered_u256xu2048_mul() {
         let program = u256xu2048_mul_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -835,6 +867,7 @@ mod tests {
     fn test_aot_metered_ssz_withdrawals_program_run() {
         let program = ssz_withdrawals_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -842,6 +875,7 @@ mod tests {
     fn test_aot_metered_secp256r1_add_program_run() {
         let program = secp256r1_add_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -849,6 +883,7 @@ mod tests {
     fn test_aot_metered_secp256r1_double_program_run() {
         let program = secp256r1_double_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -856,6 +891,7 @@ mod tests {
     fn test_aot_metered_unconstrained_run() {
         let program = Program::from(test_artifacts::UNCONSTRAINED_ELF).unwrap();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
     }
 
@@ -879,6 +915,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
         assert_eq!(runtime.state.pc, 12);
@@ -895,6 +932,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
         assert_eq!(runtime.state.pc, 12);
@@ -908,6 +946,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::LO), expected_lo);
         assert_eq!(runtime.register(Register::HI), expected_hi);
@@ -931,6 +970,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::LO), expected_lo);
         assert_eq!(runtime.register(Register::HI), expected_hi);
@@ -943,6 +983,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
     }
@@ -954,6 +995,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
     }
