@@ -4,7 +4,6 @@ use hashbrown::HashMap;
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    events::MemoryAccessMeta,
     memory::{
         config::{MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE},
         GuestMemory, Memory,
@@ -44,7 +43,9 @@ pub struct ExecutionState {
     pub memory: GuestMemory,
 
     /// Values contain the memory value and last shard + timestamp that each memory address was accessed.
-    pub access_meta: Memory<MemoryAccessMeta>,
+    pub accessed: Memory<bool>,
+    pub access_shard: GuestMemory,
+    pub access_clk: GuestMemory,
 
     /// Max clocks for each record.
     pub records_clk: Vec<u32>,
@@ -93,7 +94,9 @@ impl ExecutionState {
             exited: false,
             next_is_delayslot: false,
             memory: GuestMemory::default(),
-            access_meta: Memory::new_preallocated(),
+            accessed: Memory::new_preallocated(),
+            access_shard: GuestMemory::default(),
+            access_clk: GuestMemory::default(),
             uninitialized_memory: Memory::new_preallocated(),
             input_stream: Vec::new(),
             input_stream_ptr: 0,
@@ -129,6 +132,40 @@ impl ExecutionState {
     #[inline(always)]
     pub fn write_memory(&mut self, ptr: u32, value: u32) {
         self.vm_write::<u32, 1>(MIPS_MEMORY_SPACE, ptr >> 2, &[value]);
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn read_register_access_meta(&self, ptr: u32) -> (u32, u32) {
+        let shard: [u32; 1] = unsafe { self.access_shard.read(MIPS_REGISTER_SPACE, ptr) };
+        let clk: [u32; 1] = unsafe { self.access_clk.read(MIPS_REGISTER_SPACE, ptr) };
+        (shard[0], clk[0])
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn write_register_access_meta(&mut self, ptr: u32, shard: u32, clk: u32) {
+        let shard: [u32; 1] = [shard];
+        let clk: [u32; 1] = [clk];
+        unsafe { self.access_shard.write(MIPS_REGISTER_SPACE, ptr, shard) };
+        unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn read_memory_access_meta(&self, ptr: u32) -> (u32, u32) {
+        let shard: [u32; 1] = unsafe { self.access_shard.read(MIPS_MEMORY_SPACE, ptr >> 2) };
+        let clk: [u32; 1] = unsafe { self.access_clk.read(MIPS_MEMORY_SPACE, ptr >> 2) };
+        (shard[0], clk[0])
+    }
+
+    /// Runtime read operation for a block of memory
+    #[inline(always)]
+    pub fn write_memory_access_meta(&mut self, ptr: u32, shard: u32, clk: u32) {
+        let shard: [u32; 1] = [shard];
+        let clk: [u32; 1] = [clk];
+        unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr >> 2, shard) };
+        unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr >> 2, clk) };
     }
 
     /// Runtime read operation for a block of memory
@@ -175,7 +212,9 @@ pub struct ForkState {
     /// The original memory which instructions operate over.
     pub memory: GuestMemory,
     /// The original values contain the memory value and last shard + timestamp that each memory address was accessed.
-    pub access_meta: Memory<MemoryAccessMeta>,
+    pub access_shard: GuestMemory,
+    pub access_clk: GuestMemory,
+    pub accessed: Memory<bool>,
     /// The original memory access record at the fork point.
     pub op_record: MemoryAccessRecord,
     /// The original execution record at the fork point.

@@ -134,6 +134,11 @@ impl<T: Copy> Registers<T> {
         }
     }
 
+    #[inline]
+    pub fn access(&mut self, addr: u32, v: T) {
+        self.registers[addr as usize] = Some(v);
+    }
+
     /// Insert a value into the registers.
     ///
     /// Assumes addr < NUM_REGISTERS.
@@ -307,6 +312,21 @@ impl<V: Copy> PagedMemory<V> {
                 Some(v) => Entry::Occupied(OccupiedEntry { entry: v }),
                 None => Entry::Vacant(VacantEntry { entry: option }),
             }
+        }
+    }
+
+    /// Gets the memory entry for the given address.
+    #[inline]
+    pub fn access(&mut self, addr: u32, v: V) {
+        let (upper, lower) = Self::indices(addr);
+        let index = self.index[upper];
+        if index == NO_PAGE {
+            let index = self.page_table.len();
+            self.index[upper] = index as u16;
+            self.page_table.push(NewPage::new());
+            self.page_table[index].0[lower] = Some(v);
+        } else {
+            self.page_table[index as usize].0[lower] = Some(v);
         }
     }
 

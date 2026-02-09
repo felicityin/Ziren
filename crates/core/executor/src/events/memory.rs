@@ -212,8 +212,8 @@ impl MemoryInitializeFinalizeEvent {
 
     /// Creates a new [``MemoryInitializeFinalizeEvent``] for a finalization.
     #[must_use]
-    pub const fn finalize(addr: u32, value: u32, meta: &MemoryAccessMeta) -> Self {
-        Self { addr, value, shard: meta.shard, timestamp: meta.timestamp }
+    pub const fn finalize(addr: u32, value: u32, shard: u32, timestamp: u32) -> Self {
+        Self { addr, value, shard, timestamp }
     }
 
     /// Creates a new [``MemoryInitializeFinalizeEvent``] for a finalization.

@@ -23,12 +23,12 @@ use crate::{
     },
     estimate_mips_event_counts, estimate_mips_lde_size,
     events::{
-        AluEvent, BranchEvent, CompAluEvent, CpuEvent, JumpEvent, MemInstrEvent, MemoryAccessMeta,
+        AluEvent, BranchEvent, CompAluEvent, CpuEvent, JumpEvent, MemInstrEvent,
         MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryLocalEvent, MemoryReadRecord,
         MemoryRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent, SyscallEvent,
     },
     hook::{HookEnv, HookRegistry},
-    memory::{Entry, Memory},
+    memory::Memory,
     pad_mips_event_counts,
     record::{ExecutionRecord, MemoryAccessRecord},
     sign_extend,
@@ -465,14 +465,10 @@ impl<'a> Executor<'a> {
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
         let value = self.state.read_memory(addr);
+        let (prev_shard, prev_clk) = self.state.read_memory_access_meta(addr);
 
-        let access_meta = self.state.access_meta.page_table.entry(addr);
-
-        // If it's the first time accessing this address, initialize previous values.
-        let record: &mut MemoryAccessMeta = match access_meta {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-        };
+        self.state.write_memory(addr, value);
+        self.state.write_memory_access_meta(addr, shard, timestamp);
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -480,15 +476,13 @@ impl<'a> Executor<'a> {
         //  2. The address is being accessed in a syscall. In this case, we need to send it. We use
         //     local_memory_access to detect this. *WARNING*: This means that we are counting
         //     on the .is_some() condition to be true only in the SyscallContext.
-        if !self.unconstrained && (record.shard != shard || local_memory_access.is_some()) {
+        if !self.unconstrained && (prev_shard != shard || local_memory_access.is_some()) {
             self.local_counts.local_mem += 1;
         }
 
-        let prev_record = *record;
-        record.shard = shard;
-        record.timestamp = timestamp;
-
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
+            self.state.accessed.page_table.access(addr, true);
+
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -503,26 +497,16 @@ impl<'a> Executor<'a> {
                 .or_insert(MemoryLocalEvent {
                     addr,
                     initial_mem_access: MemoryRecord {
-                        shard: prev_record.shard,
-                        timestamp: prev_record.timestamp,
+                        shard: prev_shard,
+                        timestamp: prev_clk,
                         value,
                     },
-                    final_mem_access: MemoryRecord {
-                        shard: record.shard,
-                        timestamp: record.timestamp,
-                        value,
-                    },
+                    final_mem_access: MemoryRecord { shard, timestamp, value },
                 });
         }
 
         // Construct the memory read record.
-        MemoryReadRecord::new(
-            value,
-            record.shard,
-            record.timestamp,
-            prev_record.shard,
-            prev_record.timestamp,
-        )
+        MemoryReadRecord::new(value, shard, timestamp, prev_shard, prev_clk)
     }
 
     /// Read a register and return its value.
@@ -531,17 +515,7 @@ impl<'a> Executor<'a> {
     pub fn rr(&mut self, register: Register, shard: u32, timestamp: u32) -> u32 {
         let addr = register as u32;
         let value = self.state.read_register(addr);
-        let entry = self.state.access_meta.registers.entry(addr);
-
-        // If it's the first time accessing this address, initialize previous values.
-        let record: &mut MemoryAccessMeta = match entry {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-        };
-
-        record.shard = shard;
-        record.timestamp = timestamp;
-
+        self.state.write_register_access_meta(addr, shard, timestamp);
         value
     }
 
@@ -557,20 +531,13 @@ impl<'a> Executor<'a> {
     ) -> MemoryReadRecord {
         let addr = register as u32;
         let value = self.state.read_register(addr);
+        let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
 
-        let entry = self.state.access_meta.registers.entry(addr);
-
-        // If it's the first time accessing this address, initialize previous values.
-        let record: &mut MemoryAccessMeta = match entry {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-        };
-
-        let prev_record = *record;
-        record.shard = shard;
-        record.timestamp = timestamp;
+        self.state.write_register_access_meta(addr, shard, timestamp);
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
+            self.state.accessed.registers.access(addr, true);
+
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -585,26 +552,16 @@ impl<'a> Executor<'a> {
                 .or_insert(MemoryLocalEvent {
                     addr,
                     initial_mem_access: MemoryRecord {
-                        shard: prev_record.shard,
-                        timestamp: prev_record.timestamp,
+                        shard: prev_shard,
+                        timestamp: prev_clk,
                         value,
                     },
-                    final_mem_access: MemoryRecord {
-                        shard: record.shard,
-                        timestamp: record.timestamp,
-                        value,
-                    },
+                    final_mem_access: MemoryRecord { shard, timestamp, value },
                 });
         }
 
         // Construct the memory read record.
-        MemoryReadRecord::new(
-            value,
-            record.shard,
-            record.timestamp,
-            prev_record.shard,
-            prev_record.timestamp,
-        )
+        MemoryReadRecord::new(value, shard, timestamp, prev_shard, prev_clk)
     }
 
     /// Write a word to memory and create an access record.
@@ -617,15 +574,10 @@ impl<'a> Executor<'a> {
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
         let prev_value = self.state.read_memory(addr);
+        let (prev_shard, prev_clk) = self.state.read_memory_access_meta(addr);
+
         self.state.write_memory(addr, value);
-
-        let entry = self.state.access_meta.page_table.entry(addr);
-
-        // If it's the first time accessing this address, initialize previous values.
-        let record: &mut MemoryAccessMeta = match entry {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-        };
+        self.state.write_memory_access_meta(addr, shard, timestamp);
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -633,15 +585,13 @@ impl<'a> Executor<'a> {
         //  2. The address is being accessed in a syscall. In this case, we need to send it. We use
         //     local_memory_access to detect this. *WARNING*: This means that we are counting
         //     on the .is_some() condition to be true only in the SyscallContext.
-        if !self.unconstrained && (record.shard != shard || local_memory_access.is_some()) {
+        if !self.unconstrained && (prev_shard != shard || local_memory_access.is_some()) {
             self.local_counts.local_mem += 1;
         }
 
-        let prev_record = *record;
-        record.shard = shard;
-        record.timestamp = timestamp;
-
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
+            self.state.accessed.page_table.access(addr, true);
+
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -656,27 +606,16 @@ impl<'a> Executor<'a> {
                 .or_insert(MemoryLocalEvent {
                     addr,
                     initial_mem_access: MemoryRecord {
-                        shard: prev_record.shard,
-                        timestamp: prev_record.timestamp,
+                        shard: prev_shard,
+                        timestamp: prev_clk,
                         value: prev_value,
                     },
-                    final_mem_access: MemoryRecord {
-                        shard: record.shard,
-                        timestamp: record.timestamp,
-                        value,
-                    },
+                    final_mem_access: MemoryRecord { shard, timestamp, value },
                 });
         }
 
         // Construct the memory write record.
-        MemoryWriteRecord::new(
-            value,
-            record.shard,
-            record.timestamp,
-            prev_value,
-            prev_record.shard,
-            prev_record.timestamp,
-        )
+        MemoryWriteRecord::new(value, shard, timestamp, prev_value, prev_shard, prev_clk)
     }
 
     /// Write a word to register and create an access record.
@@ -691,16 +630,10 @@ impl<'a> Executor<'a> {
         let addr = register as u32;
 
         let prev_value = self.state.read_register(addr);
+        let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
+
         self.state.write_register(addr, value);
-
-        // Get the memory record entry.
-        let entry = self.state.access_meta.registers.entry(addr);
-
-        // If it's the first time accessing this address, initialize previous values.
-        let record: &mut MemoryAccessMeta = match entry {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-        };
+        self.state.write_register_access_meta(addr, shard, timestamp);
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -708,15 +641,13 @@ impl<'a> Executor<'a> {
         //  2. The address is being accessed in a syscall. In this case, we need to send it. We use
         //     local_memory_access to detect this. *WARNING*: This means that we are counting
         //     on the .is_some() condition to be true only in the SyscallContext.
-        if !self.unconstrained && (record.shard != shard || local_memory_access.is_some()) {
+        if !self.unconstrained && (prev_shard != shard || local_memory_access.is_some()) {
             self.local_counts.local_mem += 1;
         }
 
-        let prev_record = *record;
-        record.shard = shard;
-        record.timestamp = timestamp;
-
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
+            self.state.accessed.registers.access(addr, true);
+
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -731,27 +662,16 @@ impl<'a> Executor<'a> {
                 .or_insert(MemoryLocalEvent {
                     addr,
                     initial_mem_access: MemoryRecord {
-                        shard: prev_record.shard,
-                        timestamp: prev_record.timestamp,
+                        shard: prev_shard,
+                        timestamp: prev_clk,
                         value: prev_value,
                     },
-                    final_mem_access: MemoryRecord {
-                        shard: record.shard,
-                        timestamp: record.timestamp,
-                        value,
-                    },
+                    final_mem_access: MemoryRecord { shard, timestamp, value },
                 });
         }
 
         // Construct the memory write record.
-        MemoryWriteRecord::new(
-            value,
-            record.shard,
-            record.timestamp,
-            prev_value,
-            prev_record.shard,
-            prev_record.timestamp,
-        )
+        MemoryWriteRecord::new(value, shard, timestamp, prev_value, prev_shard, prev_clk)
     }
 
     /// Write a word to a register and create an access record.
@@ -768,20 +688,11 @@ impl<'a> Executor<'a> {
         let addr = register as u32;
 
         let prev_value = self.state.read_register(addr);
+        let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
+
         self.state.write_register(addr, value);
-
-        // Get the memory record entry.
-        let entry = self.state.access_meta.registers.entry(addr);
-
-        // If it's the first time accessing this register, initialize previous values.
-        let record: &mut MemoryAccessMeta = match entry {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-        };
-
-        let prev_record = *record;
-        record.shard = shard;
-        record.timestamp = timestamp;
+        self.state.write_register_access_meta(addr, shard, timestamp);
+        self.state.accessed.registers.access(addr, true);
 
         if !self.unconstrained {
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
@@ -798,27 +709,16 @@ impl<'a> Executor<'a> {
                 .or_insert(MemoryLocalEvent {
                     addr,
                     initial_mem_access: MemoryRecord {
-                        shard: prev_record.shard,
-                        timestamp: prev_record.timestamp,
+                        shard: prev_shard,
+                        timestamp: prev_clk,
                         value: prev_value,
                     },
-                    final_mem_access: MemoryRecord {
-                        shard: record.shard,
-                        timestamp: record.timestamp,
-                        value,
-                    },
+                    final_mem_access: MemoryRecord { shard, timestamp, value },
                 });
         }
 
         // Construct the memory write record.
-        MemoryWriteRecord::new(
-            value,
-            record.shard,
-            record.timestamp,
-            prev_value,
-            prev_record.shard,
-            prev_record.timestamp,
-        )
+        MemoryWriteRecord::new(value, shard, timestamp, prev_value, prev_shard, prev_clk)
     }
 
     /// Write a word to a register and create an access record.
@@ -827,18 +727,8 @@ impl<'a> Executor<'a> {
     #[inline]
     pub fn rw(&mut self, register: Register, value: u32, shard: u32, timestamp: u32) {
         let addr = register as u32;
-        let access_meta = self.state.access_meta.registers.entry(addr);
-
-        // If it's the first time accessing this register, initialize previous values.
-        let record: &mut MemoryAccessMeta = match access_meta {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => entry.insert(MemoryAccessMeta::default()),
-        };
-
-        record.shard = shard;
-        record.timestamp = timestamp;
-
         self.state.write_register(addr, value);
+        self.state.write_register_access_meta(addr, shard, timestamp);
     }
 
     /// Read from memory, assuming that all addresses are aligned.
@@ -1976,13 +1866,13 @@ impl<'a> Executor<'a> {
         #[cfg(debug_assertions)]
         self.log(&instruction);
 
-        println!(
-            "{} {} {} {:?}",
-            self.state.pc,
-            self.state.clk + 5,
-            self.state.global_clk + 1,
-            instruction
-        );
+        // println!(
+        //     "{} {} {} {:?}",
+        //     self.state.pc,
+        //     self.state.clk + 5,
+        //     self.state.global_clk + 1,
+        //     instruction
+        // );
 
         // Execute the instruction.
         self.execute_operation(&instruction)?;
@@ -2080,10 +1970,10 @@ impl<'a> Executor<'a> {
         tracing::debug!("loading memory image");
         for (addr, value) in &self.program.image {
             if *addr < NUM_REGISTERS as u32 {
-                self.state.access_meta.registers.insert(*addr, MemoryAccessMeta::default());
+                self.state.accessed.registers.insert(*addr, true);
                 self.state.write_register(*addr, *value);
             } else {
-                self.state.access_meta.page_table.insert(*addr, MemoryAccessMeta::default());
+                self.state.accessed.page_table.insert(*addr, true);
                 self.state.write_memory(*addr, *value);
             }
         }
@@ -2352,10 +2242,11 @@ impl<'a> Executor<'a> {
 
             // We handle the addr = 0 case separately, as we constrain it to be 0 in the first row
             // of the memory finalize table so it must be first in the array of events.
-            let addr_0_final_event = match self.state.access_meta.registers.get(0) {
-                Some(meta) => {
+            let addr_0_final_event = match self.state.accessed.registers.get(0) {
+                Some(_) => {
                     let addr_0_value = self.state.read_register(0);
-                    MemoryInitializeFinalizeEvent::finalize(0, addr_0_value, meta)
+                    let (shard, clk) = self.state.read_register_access_meta(0);
+                    MemoryInitializeFinalizeEvent::finalize(0, addr_0_value, shard, clk)
                 }
                 None => MemoryInitializeFinalizeEvent::new(0, 0, 0, 1),
             };
@@ -2369,7 +2260,7 @@ impl<'a> Executor<'a> {
             // already know its length.
             self.report.touched_memory_addresses = 0;
             for addr in 1..NUM_REGISTERS as u32 {
-                if let Some(meta) = self.state.access_meta.registers.get(addr) {
+                if self.state.accessed.registers.get(addr).is_some() {
                     if self.print_report {
                         self.report.touched_memory_addresses += 1;
                     }
@@ -2386,11 +2277,12 @@ impl<'a> Executor<'a> {
                             .push(MemoryInitializeFinalizeEvent::initialize(addr, *initial_value));
                     }
 
+                    let (shard, clk) = self.state.read_register_access_meta(addr);
                     memory_finalize_events
-                        .push(MemoryInitializeFinalizeEvent::finalize(addr, value, meta));
+                        .push(MemoryInitializeFinalizeEvent::finalize(addr, value, shard, clk));
                 }
             }
-            for addr in self.state.access_meta.page_table.keys() {
+            for addr in self.state.accessed.page_table.keys() {
                 self.report.touched_memory_addresses += 1;
                 if addr == 0 {
                     // Handled above.
@@ -2405,10 +2297,10 @@ impl<'a> Executor<'a> {
                         .push(MemoryInitializeFinalizeEvent::initialize(addr, *initial_value));
                 }
 
-                let meta = self.state.access_meta.get(addr).unwrap();
+                let (shard, clk) = self.state.read_memory_access_meta(addr);
                 let value = self.state.read_memory(addr);
                 memory_finalize_events
-                    .push(MemoryInitializeFinalizeEvent::finalize(addr, value, meta));
+                    .push(MemoryInitializeFinalizeEvent::finalize(addr, value, shard, clk));
             }
         }
     }
