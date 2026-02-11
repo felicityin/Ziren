@@ -127,8 +127,6 @@ pub struct Executor<'a> {
     /// correctness.
     pub deferred_proof_verification: DeferredProofVerification,
 
-    // /// The state of the execution.
-    // pub state: ExecutionState,
     /// The current trace of the execution that is being collected.
     pub record: ExecutionRecord,
 

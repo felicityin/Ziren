@@ -122,8 +122,6 @@ impl AotCompiler {
 }
 
 // Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot_pure`
-// Otherwise, it may lead to insufficient memory.
-// Because each test will occupy at least 2GB of memory.
 #[cfg(test)]
 mod tests {
     use zkm_stark::ZKMCoreOpts;

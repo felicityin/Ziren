@@ -115,7 +115,8 @@ impl AotCompiler {
             asm += &format!("    test {REG_HI_64}, {REG_HI_64}\n");
             asm += &format!("    jnz .{pc}_inc_pc_clk\n");
 
-            // inc_shard_if_need()
+            // global_clk % shape_check_frequency == 0
+            // Call inc_shard_if_need()
             asm += &sync_reg_to_pc();
             asm += &sync_reg_to_clk();
             asm += &sync_reg_to_global_clk();
@@ -299,8 +300,6 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
 }
 
 // Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot_metered`
-// Otherwise, it may lead to insufficient memory.
-// Because each test will occupy at least 2GB of memory.
 #[cfg(test)]
 mod tests {
     use zkm_stark::ZKMCoreOpts;
@@ -621,14 +620,30 @@ mod tests {
             Instruction::new(Opcode::ADD, 30, 0, 1, false, true),
             Instruction::new(Opcode::BEQ, 29, 30, 8, false, false),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 33, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 24);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(30);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 12);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 0);
+        assert_eq!(clk, 0);
+        let (shard, clk) = runtime.state.read_register_access_meta(33);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 23);
     }
 
     #[test]
@@ -644,20 +659,43 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(30);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 12);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
     }
 
     #[test]
     fn test_aot_metered_bne_jump() {
         let instructions = vec![
             Instruction::new(Opcode::BNE, Register::A0 as u8, 1, 8, true, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::SW, 31, 0, 0x10000000, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(4);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_memory_access_meta(0x10000000);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 5);
     }
 
     #[test]
@@ -671,6 +709,13 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 8);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(4);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
     }
 
     #[test]
@@ -679,13 +724,23 @@ mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 0xFFFF_FFFF, false, true),
             Instruction::new(Opcode::BLTZ, 29, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
     }
 
     #[test]
@@ -699,6 +754,13 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 8);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(4);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
     }
 
     #[test]
@@ -706,13 +768,23 @@ mod tests {
         let instructions = vec![
             Instruction::new(Opcode::BLEZ, Register::A0 as u8, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(4);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     #[test]
@@ -727,6 +799,13 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     #[test]
@@ -735,13 +814,23 @@ mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
             Instruction::new(Opcode::BGTZ, 29, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
     }
 
     #[test]
@@ -755,6 +844,13 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 8);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(4);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
     }
 
     #[test]
@@ -762,14 +858,27 @@ mod tests {
         let instructions = vec![
             Instruction::new(Opcode::BGEZ, Register::A0 as u8, 0, 4, true, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 33, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(4);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(33);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
     }
 
     #[test]
@@ -784,6 +893,13 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     #[test]
@@ -795,13 +911,21 @@ mod tests {
         let instructions = vec![
             Instruction::new(Opcode::Jumpi, 0, 8, 0, false, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     #[test]
@@ -815,13 +939,23 @@ mod tests {
             Instruction::new(Opcode::ADD, 11, 11, 12, false, true),
             Instruction::new(Opcode::Jump, 0, 11, 0, false, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(11);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 7);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
     }
 
     #[test]
@@ -834,7 +968,7 @@ mod tests {
         let instructions = vec![
             Instruction::new(Opcode::Jumpi, 13, 8, 0, false, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
@@ -842,6 +976,16 @@ mod tests {
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
         assert_eq!(runtime.state.read_register(13), 8);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(13);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     #[test]
@@ -855,7 +999,7 @@ mod tests {
             Instruction::new(Opcode::ADD, 11, 11, 12, false, true),
             Instruction::new(Opcode::Jump, 13, 11, 0, false, true),
             Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 31, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 32, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
@@ -863,6 +1007,19 @@ mod tests {
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 16);
         assert_eq!(runtime.state.read_register(13), 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(11);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 7);
+        let (shard, clk) = runtime.state.read_register_access_meta(13);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
     }
 
     #[test]
@@ -870,7 +1027,7 @@ mod tests {
         let instructions = vec![
             Instruction::new(Opcode::JumpDirect, 31, 4, 0, false, true),
             Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
-            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 2, 0, 1, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
@@ -878,6 +1035,10 @@ mod tests {
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.state.pc, 12);
         assert_eq!(runtime.state.read_register(31), 8);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 3);
     }
 
     #[test]
@@ -1132,6 +1293,25 @@ mod tests {
         assert_eq!(runtime.state.clk, 7995);
         assert_eq!(runtime.state.global_clk, 3590);
         assert_eq!(runtime.state.current_shard, 2);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(3);
+        assert_eq!(shard, 2);
+        assert_eq!(clk, 7952);
+        let (shard, clk) = runtime.state.read_register_access_meta(13);
+        assert_eq!(shard, 2);
+        assert_eq!(clk, 6948);
+        let (shard, clk) = runtime.state.read_register_access_meta(23);
+        assert_eq!(shard, 2);
+        assert_eq!(clk, 6918);
+        let (shard, clk) = runtime.state.read_register_access_meta(33);
+        assert_eq!(shard, 2);
+        assert_eq!(clk, 7932);
+        let (shard, clk) = runtime.state.read_memory_access_meta(256164);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 2995);
+        let (shard, clk) = runtime.state.read_memory_access_meta(256288);
+        assert_eq!(shard, 2);
+        assert_eq!(clk, 7885);
     }
 
     #[test]

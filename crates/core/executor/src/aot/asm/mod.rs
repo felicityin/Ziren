@@ -118,6 +118,23 @@ impl AotCompiler {
         asm
     }
 
+    pub fn set_access_register_meta_control(addr: u32, pos: MemoryAccessPosition) -> String {
+        let addr = addr << 2;
+        let mut asm = String::new();
+
+        // unsafe { self.access_shard.write(MIPS_REGISTER_SPACE, ptr, shard) };
+        asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_SHARD_W}\n");
+
+        // unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
+        asm += &format!(
+            "   lea {REG_C}, [{REG_CLK} - {}]\n",
+            DEFAULT_CLK_INC + DEFAULT_CLK_INC - pos as u32
+        );
+        asm += &format!("   mov dword ptr [{REG_B} + {addr}], {REG_C_W}\n");
+
+        asm
+    }
+
     // unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr, shard) };
     pub fn set_access_memory_shard(addr: &str) -> String {
         let mut asm = String::new();
@@ -135,26 +152,6 @@ impl AotCompiler {
         asm += &format!("   lea {REG_C}, [{REG_CLK} - {DEFAULT_CLK_INC}]\n");
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_CLK}, 1\n");
         asm += &format!("   mov [{REG_A} + {addr}], {REG_C}\n");
-
-        asm
-    }
-
-    pub fn get_access_memory_meta_addr() -> String {
-        let mut asm = String::new();
-        asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_SHARD}, 1\n");
-        asm += &format!("   pextrq {REG_C}, xmm{ACCESS_MEM_CLK}, 1\n");
-        asm
-    }
-
-    pub fn set_access_memory_meta(addr: &str) -> String {
-        let mut asm = String::new();
-
-        // unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr, shard) };
-        asm += &format!("   mov [{REG_A} + {addr}], {REG_SHARD}\n");
-
-        // unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr, clk) };
-        asm += &format!("   lea {REG_A}, [{REG_CLK} - {DEFAULT_CLK_INC}]\n");
-        asm += &format!("   mov [{REG_C} + {addr}], {REG_A}\n");
 
         asm
     }

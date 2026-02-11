@@ -14,10 +14,15 @@ impl AotCompiler {
         if self.executor_mode == ExecutorMode::Checkpoint {
             asm += &Self::get_access_register_meta_addr();
             if !instruction.opcode.only_one_operand() {
-                asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
+                asm += &Self::set_access_register_meta_control(
+                    instruction.op_b,
+                    MemoryAccessPosition::B,
+                );
             }
-            asm +=
-                &Self::set_access_register_meta(instruction.op_a as u32, MemoryAccessPosition::A);
+            asm += &Self::set_access_register_meta_control(
+                instruction.op_a as u32,
+                MemoryAccessPosition::A,
+            );
         }
 
         let next_pc = pc + 4;
@@ -72,10 +77,15 @@ impl AotCompiler {
         if self.executor_mode == ExecutorMode::Checkpoint {
             asm += &Self::get_access_register_meta_addr();
             if instruction.opcode == Opcode::Jump {
-                asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
+                asm += &Self::set_access_register_meta_control(
+                    instruction.op_b,
+                    MemoryAccessPosition::B,
+                );
             }
-            asm +=
-                &Self::set_access_register_meta(instruction.op_a as u32, MemoryAccessPosition::A);
+            asm += &Self::set_access_register_meta_control(
+                instruction.op_a as u32,
+                MemoryAccessPosition::A,
+            );
         }
 
         let next_pc = pc + 4;
