@@ -14,7 +14,7 @@ impl AotCompiler {
         // pc
         let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
         let sync_reg_to_pc =
-            || format!("    mov QWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_NEXT_PC}\n");
+            || format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_NEXT_PC_W}\n");
 
         // global clk
         let global_clk_offset =
@@ -30,7 +30,7 @@ impl AotCompiler {
         // clk
         let clk_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, clk);
         let sync_reg_to_clk =
-            || format!("    mov QWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK}\n");
+            || format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK_W}\n");
 
         // shard
         let shard_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, current_shard);
@@ -1235,6 +1235,16 @@ mod tests {
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
         assert_eq!(runtime.state.pc, 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 12);
+        let (shard, clk) = runtime.state.read_register_access_meta(30);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 11);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     fn simple_op_code_i_test(opcode: Opcode, expected: u32, a: u32, b: u32, c: u32) {
@@ -1252,6 +1262,16 @@ mod tests {
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
         assert_eq!(runtime.state.pc, 12);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 7);
+        let (shard, clk) = runtime.state.read_register_access_meta(30);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 12);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     fn lo_hi_op_code_test(opcode: Opcode, expected_hi: u32, expected_lo: u32, b: u32, c: u32) {
@@ -1266,6 +1286,19 @@ mod tests {
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::LO), expected_lo);
         assert_eq!(runtime.register(Register::HI), expected_hi);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 12);
+        let (shard, clk) = runtime.state.read_register_access_meta(30);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 11);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
+        let (shard, clk) = runtime.state.read_register_access_meta(33);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 14);
     }
 
     fn m_lo_hi_op_code_test(
@@ -1290,6 +1323,19 @@ mod tests {
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::LO), expected_lo);
         assert_eq!(runtime.register(Register::HI), expected_hi);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 22);
+        let (shard, clk) = runtime.state.read_register_access_meta(30);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 21);
+        let (shard, clk) = runtime.state.read_register_access_meta(32);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 23);
+        let (shard, clk) = runtime.state.read_register_access_meta(33);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 24);
     }
 
     fn op_code_one_i_test(opcode: Opcode, expected: u32, b: u32, c: u32) {
@@ -1302,6 +1348,13 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 7);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
     }
 
     fn op_code_one_test(opcode: Opcode, expected: u32, c: u32) {
@@ -1314,5 +1367,12 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.register(Register::RA), expected);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 7);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
     }
 }
