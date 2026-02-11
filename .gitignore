@@ -11,6 +11,7 @@ asm*.s
 **/proof-with-pis.bin
 **/proof-with-io.bin
 proof-with-is-prime.bin
+*.bin
 **/program.bin
 **/stdin.bin
 

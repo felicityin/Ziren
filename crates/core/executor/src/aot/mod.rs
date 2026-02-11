@@ -1,3 +1,4 @@
+pub mod asm;
 pub mod checkpoint;
 pub mod common;
 pub mod error;
@@ -21,6 +22,9 @@ pub struct AotCompiler {
     /// The program.
     pub program: Arc<Program>,
 
+    /// The mode the executor is running in.
+    pub executor_mode: ExecutorMode,
+
     /// The maximum size of each shard.
     pub shard_size: u32,
 
@@ -35,11 +39,12 @@ impl AotCompiler {
     /// Create a new AOT instance for the given program.
     pub fn new(
         program: Arc<Program>,
+        executor_mode: ExecutorMode,
         shard_size: u32,
         max_syscall_cycles: u32,
         shape_check_frequency: u64,
     ) -> Self {
-        Self { program, shard_size, max_syscall_cycles, shape_check_frequency }
+        Self { program, executor_mode, shard_size, max_syscall_cycles, shape_check_frequency }
     }
 }
 
@@ -47,6 +52,7 @@ impl<'a> Executor<'a> {
     pub fn aot_compile_pure_lib(&mut self) {
         let aot = AotCompiler::new(
             self.program.clone(),
+            ExecutorMode::Simple,
             self.shard_size,
             self.max_syscall_cycles,
             self.shape_check_frequency,
@@ -59,6 +65,7 @@ impl<'a> Executor<'a> {
     pub fn aot_compile_metered_lib(&mut self) {
         let aot = AotCompiler::new(
             self.program.clone(),
+            ExecutorMode::Checkpoint,
             self.shard_size,
             self.max_syscall_cycles,
             self.shape_check_frequency,
@@ -260,20 +267,20 @@ impl AotCompiler {
     fn load_xmm_regs() -> String {
         let mut asm = String::new();
 
-        asm += &format!("    push {REG_MEMORY_PTR}\n");
-        asm += &format!("    pextrq {REG_MEMORY_PTR}, xmm0, 1\n");
+        asm += "    push r14\n";
+        asm += &format!("    pextrq r14, xmm{REG_ADDR_SPACE}, 1\n");
 
         for r in 0..16 {
-            asm += &format!("   mov rdi, [{REG_MEMORY_PTR} + 8*{r}]\n");
+            asm += &format!("   mov rdi, [r14 + 8*{r}]\n");
             asm += &format!("   pinsrq xmm{r}, rdi, 0\n");
         }
 
         for r in 16..17 {
-            asm += &format!("   mov rdi, [{REG_MEMORY_PTR} + 8*{r}]\n");
+            asm += &format!("   mov rdi, [r14 + 8*{r}]\n");
             asm += &format!("   pinsrq xmm{}, rdi, 1\n", r - 3);
         }
 
-        asm += &format!("    pop {REG_MEMORY_PTR}\n");
+        asm += "    pop r14\n";
 
         asm += &sync_xmm_to_gpr();
 
@@ -285,39 +292,53 @@ impl AotCompiler {
 
         asm += &sync_gpr_to_xmm();
 
-        asm += &format!("    push {REG_MEMORY_PTR}\n");
-        asm += &format!("    pextrq {REG_MEMORY_PTR}, xmm0, 1\n");
+        asm += "    push r14\n";
+        asm += &format!("    pextrq r14, xmm{REG_ADDR_SPACE}, 1\n");
 
         for r in 0..16 {
             // at each iteration we save register 2r and 2r+1 of the guest mem to xmm
-            asm += &format!("   movq [{REG_MEMORY_PTR} + 8*{r}], xmm{r}\n");
+            asm += &format!("   movq [r14 + 8*{r}], xmm{r}\n");
         }
 
         for r in 16..17 {
             // at each iteration we save register 2r and 2r+1 of the guest mem to xmm
-            asm += &format!("   pextrq [{REG_MEMORY_PTR} + 8*{r}], xmm{}, 1\n", r - 3);
+            asm += &format!("   pextrq [r14 + 8*{r}], xmm{}, 1\n", r - 3);
         }
 
-        asm += &format!("    pop {REG_MEMORY_PTR}\n");
+        asm += "    pop r14\n";
 
         asm
     }
 
     fn push_address_space_start() -> String {
         let mut asm = String::new();
-
         // SAFETY: pay attention to byte alignment.
         asm += "   pextrq rdi, xmm0, 1\n";
         asm += "   push rdi\n";
         asm += "   pextrq rdi, xmm1, 1\n";
         asm += "   push rdi\n";
-
+        asm += "   pextrq rdi, xmm2, 1\n";
+        asm += "   push rdi\n";
+        asm += "   pextrq rdi, xmm3, 1\n";
+        asm += "   push rdi\n";
+        asm += "   pextrq rdi, xmm4, 1\n";
+        asm += "   push rdi\n";
+        asm += "   pextrq rdi, xmm5, 1\n";
+        asm += "   push rdi\n";
         asm
     }
 
     fn pop_address_space_start() -> String {
         let mut asm = String::new();
         // SAFETY: pay attention to byte alignment.
+        asm += "   pop rdi\n";
+        asm += "   pinsrq xmm5, rdi, 1\n";
+        asm += "   pop rdi\n";
+        asm += "   pinsrq xmm4, rdi, 1\n";
+        asm += "   pop rdi\n";
+        asm += "   pinsrq xmm3, rdi, 1\n";
+        asm += "   pop rdi\n";
+        asm += "   pinsrq xmm2, rdi, 1\n";
         asm += "   pop rdi\n";
         asm += "   pinsrq xmm1, rdi, 1\n";
         asm += "   pop rdi\n";
@@ -388,5 +409,19 @@ extern "C" fn get_address_space(executor_ptr: *mut c_void, address_space: u32) -
     let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
 
     let ptr = &executor.state.memory.memory.mem[address_space as usize];
+    ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
+}
+
+extern "C" fn get_access_shard_space(executor_ptr: *mut c_void, address_space: u32) -> *mut u64 {
+    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
+
+    let ptr = &executor.state.access_shard.memory.mem[address_space as usize];
+    ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
+}
+
+extern "C" fn get_access_clk_space(executor_ptr: *mut c_void, address_space: u32) -> *mut u64 {
+    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
+
+    let ptr = &executor.state.access_clk.memory.mem[address_space as usize];
     ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
 }

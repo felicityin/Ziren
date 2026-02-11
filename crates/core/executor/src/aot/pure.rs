@@ -1,3 +1,126 @@
+use crate::aot::common::*;
+use crate::aot::{get_pc, set_pc, AotCompiler, AotError};
+
+impl AotCompiler {
+    pub fn create_pure_asm(&self) -> Result<String, AotError> {
+        let mut asm = String::new();
+
+        // header part
+        asm += ".intel_syntax noprefix\n";
+        asm += ".code64\n";
+        asm += ".section .text\n";
+        asm += ".global asm_run\n";
+
+        // asm_run_internal part
+        asm += "asm_run:\n";
+
+        asm += "    # push_external_registers\n";
+        asm += &Self::push_external_registers();
+
+        asm += "    # get params\n";
+        asm += &format!("    mov {REG_EXECUTOR_PTR}, {REG_FIRST_ARG}\n");
+
+        let get_pc_ptr = format!("{:p}", get_pc as *const ());
+
+        asm += "    # push_internal_registers\n";
+        asm += &Self::push_internal_registers();
+
+        asm += &self.get_address_space_start();
+
+        // Store the pointer to where `pc` is stored in the state to the register
+        asm += "    # Store the pointer to where `pc` is stored to the register\n";
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    mov {REG_NEXT_PC}, {REG_RETURN_VAL}\n");
+
+        asm += "    # pop_internal_registers\n";
+        asm += &Self::pop_internal_registers();
+
+        asm += "    # load_xmm_regs\n";
+        asm += &Self::load_xmm_regs();
+
+        asm += "    # execute\n";
+        asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
+        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_NEXT_PC}]\n");
+        asm += &format!("   add {REG_A}, {REG_C}\n");
+        asm += &format!("   jmp {REG_A}\n");
+
+        for i in 0..(self.program.pc_base / 4) {
+            asm += &format!("asm_execute_pc_{}:", i * 4);
+            asm += "\n";
+        }
+
+        let most_pc = self.program.pc_base + self.program.instructions.len() as u32 * 4;
+
+        let mut i = 0;
+        while i < self.program.instructions.len() {
+            let pc = self.program.pc(i);
+            let instruction = &self.program.instructions[i];
+            asm += &format!("asm_execute_pc_{pc}:\n");
+
+            // Check if we should suspend or not
+            asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
+            asm += "    jae asm_run_end\n";
+            asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
+            i += 1;
+
+            if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
+                // Processing the delay slot
+                // Note that the processing order here differs from that in the executor
+                // eg. The execution order of instructions in the executor is:
+                //   jump       %x0        %x31       0
+                //   sltu       %x2        %x1        1
+                // But here:
+                //   sltu       %x2        %x1        1
+                //   jump       %x0        %x31       0
+                let next_instruction = &self.program.instructions[i];
+                let next_pc = self.program.pc(i);
+                asm += &format!("asm_execute_pc_{next_pc}:\n");
+                asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
+                i += 1;
+                asm += &(self.generate_instruction_asm(next_instruction, next_pc)?);
+
+                asm += &(self.generate_instruction_asm(instruction, pc)?);
+            } else {
+                asm += &(self.generate_instruction_asm(instruction, pc)?);
+            }
+        }
+
+        let set_pc_ptr = format!("{:p}", set_pc as *const ());
+
+        asm += "asm_run_end:\n";
+        asm += "    # save_xmm_regs\n";
+        asm += &Self::save_xmm_regs();
+        asm += "    # call set_pc()\n";
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_SECOND_ARG}, {REG_NEXT_PC}\n");
+        asm += &format!("    mov {REG_CALLER}, {set_pc_ptr}\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += "    # pop_external_registers\n";
+        asm += &Self::pop_external_registers();
+        asm += &format!("    xor {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
+        asm += "    ret\n";
+
+        // map_pc_base part
+        asm += ".section .rodata\n";
+        asm += "map_pc_base:\n";
+
+        for i in 0..(self.program.pc_base / 4) {
+            asm += &format!("   .long asm_execute_pc_{} - map_pc_base\n", i * 4);
+        }
+
+        for i in 0..self.program.instructions.len() {
+            let pc = self.program.pc(i);
+            asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
+        }
+
+        std::fs::write("asm_pure_dump.s", &asm).expect("failed to write asm");
+
+        Ok(asm)
+    }
+}
+
 // Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot_pure`
 // Otherwise, it may lead to insufficient memory.
 // Because each test will occupy at least 2GB of memory.

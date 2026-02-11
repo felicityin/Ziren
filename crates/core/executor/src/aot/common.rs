@@ -36,48 +36,20 @@ pub const REG_MEMORY_PTR: &str = "r15";
 pub const REG_NEXT_PC: &str = "r14";
 pub const REG_CLK: &str = "r13";
 pub const REG_GLOBAL_CLK: &str = "r12";
-pub const REG_TMP: &str = "rbp";
-pub const REG_TMP_8L: &str = "bpl";
+pub const REG_SHARD: &str = "rbp";
+pub const REG_SHARD_W: &str = "ebp";
+
+// xmm
+pub const REG_ADDR_SPACE: &str = "0";
+pub const ACCESS_REG_SHARD: &str = "1";
+pub const ACCESS_REG_CLK: &str = "2";
+pub const ACCESS_MEM_SHARD: &str = "3";
+pub const ACCESS_MEM_CLK: &str = "4";
+pub const TMP: &str = "6";
 
 pub const DEFAULT_PC_OFFSET: i32 = 4;
 
-// pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 34] = [
-//     None,         // x0
-//     None,         // x1
-//     None,         // x2
-//     None,         // x3
-//     None,         // x4
-//     None,         // x5
-//     None,         // x6
-//     None,         // x7
-//     None,         // x8
-//     None,         // x9
-//     Some("r10d"), // x10
-//     Some("r11d"), // x11
-//     Some("r9d"),  // x12
-//     Some("r8d"),  // x13
-//     Some("ebp"),  // x14
-//     Some("r13d"), // x15
-//     None,         // x16
-//     None,         // x17
-//     None,         // x18
-//     None,         // x19
-//     None,         // x20
-//     None,         // x21
-//     None,         // x22
-//     None,         // x23
-//     None,         // x24
-//     None,         // x25
-//     None,         // x26
-//     None,         // x27
-//     None,         // x28
-//     None,         // x29
-//     None,         // x30
-//     None,         // x31
-//     None,
-//     None,
-// ];
-
+// Refer to OpenVM, perhaps for the sake of optimization.
 pub const MIPS_TO_X86_OVERRIDE_MAP: [Option<&str>; 34] = [
     None, // x0
     None, // x1
@@ -223,11 +195,11 @@ pub fn gpr_to_mips_register(x86_reg: &str, mips_reg: u8) -> String {
 pub fn address_space_start_to_gpr(address_space: u32, gpr: &str) -> String {
     if address_space == MIPS_MEMORY_SPACE {
         if REG_MEMORY_PTR != gpr {
-            return format!("    mov {gpr}, r15\n");
+            return format!("    mov {gpr}, {REG_MEMORY_PTR}\n");
         }
         return "".to_string();
     }
-    format!("   pextrq {gpr}, xmm0, 1\n")
+    format!("   pextrq {gpr}, xmm{REG_ADDR_SPACE}, 1\n")
 }
 
 #[derive(Copy, Clone)]

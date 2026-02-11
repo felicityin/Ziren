@@ -1,3 +1,303 @@
+use std::mem::offset_of;
+
+use crate::aot::common::*;
+use crate::aot::{get_pc, AotCompiler, AotError};
+use crate::{
+    estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts, ExecutionState,
+    Executor, MipsAirId,
+};
+
+impl AotCompiler {
+    pub fn create_metered_asm(&self) -> Result<String, AotError> {
+        let mut asm = String::new();
+
+        // pc
+        let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
+        let sync_reg_to_pc =
+            || format!("    mov QWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_NEXT_PC}\n");
+
+        // global clk
+        let global_clk_offset =
+            offset_of!(Executor, state) + offset_of!(ExecutionState, global_clk);
+        let sync_reg_to_global_clk = || {
+            format!(
+                "    mov QWORD PTR [{REG_EXECUTOR_PTR} + {global_clk_offset}], {REG_GLOBAL_CLK}\n"
+            )
+        };
+        let sync_global_clk_to_reg =
+            || format!("    mov {REG_GLOBAL_CLK}, [{REG_EXECUTOR_PTR} + {global_clk_offset}]\n");
+
+        // clk
+        let clk_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, clk);
+        let sync_reg_to_clk =
+            || format!("    mov QWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK}\n");
+
+        // shard
+        let shard_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, current_shard);
+        let sync_shard_to_reg =
+            || format!("    mov {REG_SHARD}, [{REG_EXECUTOR_PTR} + {shard_offset}]\n");
+
+        // header part
+        asm += ".intel_syntax noprefix\n";
+        asm += ".code64\n";
+        asm += ".section .text\n";
+        asm += ".global asm_run\n";
+
+        // asm_run_internal part
+        asm += "asm_run:\n";
+
+        asm += "    # push_external_registers\n";
+        asm += &Self::push_external_registers();
+
+        asm += "    # get params\n";
+        asm += &format!("    mov {REG_EXECUTOR_PTR}, {REG_FIRST_ARG}\n");
+
+        let get_pc_ptr = format!("{:p}", get_pc as *const ());
+
+        asm += "    # push_internal_registers\n";
+        asm += &Self::push_internal_registers();
+
+        asm += &self.get_address_space_start();
+
+        // Store the pointer to where `pc` is stored in the state to the register
+        asm += "    # Store the pointer to where `pc` is stored to the register\n";
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += &format!("    mov {REG_NEXT_PC}, {REG_RETURN_VAL}\n");
+
+        asm += "    # pop_internal_registers\n";
+        asm += &Self::pop_internal_registers();
+
+        asm += "    # load_xmm_regs\n";
+        asm += &Self::load_xmm_regs();
+
+        asm += "    # state.clk = 0\n";
+        asm += &format!("   mov {REG_CLK}, 0\n");
+
+        asm += &sync_global_clk_to_reg();
+        asm += &sync_shard_to_reg();
+
+        asm += "    # execute\n";
+        asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
+        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_NEXT_PC}]\n");
+        asm += &format!("   add {REG_A}, {REG_C}\n");
+        asm += &format!("   jmp {REG_A}\n");
+
+        for i in 0..(self.program.pc_base / 4) {
+            asm += &format!("asm_execute_pc_{}:", i * 4);
+            asm += "\n";
+        }
+
+        let inc_shard_if_need_ptr = format!("{:p}", inc_shard_if_need as *const ());
+        let most_pc = self.program.pc_base + self.program.instructions.len() as u32 * 4;
+        let most_clk = self.shard_size - self.max_syscall_cycles;
+        let shape_check_frequency = self.shape_check_frequency;
+
+        let mut i = 0;
+        while i < self.program.instructions.len() {
+            let pc = self.program.pc(i);
+            let instruction = &self.program.instructions[i];
+            asm += &format!("asm_execute_pc_{pc}:\n");
+
+            // Check if we should suspend or not
+            asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
+            asm += "    jae asm_run_end\n";
+            asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
+            asm += "    jae asm_run_end\n";
+
+            // Check global_clk % shape_check_frequency
+            asm += "    # global_clk % shape_check_frequency\n";
+            asm += &format!("    mov {REG_HI}, 0\n");
+            asm += &format!("    mov {REG_LO_64}, {REG_GLOBAL_CLK}\n");
+            asm += &format!("    mov {REG_D}, {shape_check_frequency}\n");
+            asm += &format!("    div {REG_D}\n");
+            asm += &format!("    test {REG_HI_64}, {REG_HI_64}\n");
+            asm += &format!("    jnz .{pc}_inc_pc_clk\n");
+
+            // inc_shard_if_need()
+            asm += &sync_reg_to_pc();
+            asm += &sync_reg_to_clk();
+            asm += &sync_reg_to_global_clk();
+            asm += "    # call inc_shard_if_need()\n";
+            asm += &Self::before_call();
+            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+            asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
+            asm += &format!("    call {REG_CALLER}\n");
+            asm += "    test al, al\n";
+            asm += &Self::after_call();
+            asm += "    jnz asm_run_end\n";
+
+            asm += &format!(".{pc}_inc_pc_clk:\n");
+            asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
+            asm += &format!("    add {REG_CLK}, 5\n");
+            asm += &format!("    inc {REG_GLOBAL_CLK}\n");
+            i += 1;
+
+            if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
+                // Processing the delay slot
+                // Note that the processing order here differs from that in the executor
+                // eg. The execution order of instructions in the executor is:
+                //   jump       %x0        %x31       0
+                //   sltu       %x2        %x1        1
+                // But here:
+                //   sltu       %x2        %x1        1
+                //   jump       %x0        %x31       0
+                let next_instruction = &self.program.instructions[i];
+                let next_pc = self.program.pc(i);
+                asm += &format!("asm_execute_pc_{next_pc}:\n");
+                asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
+                asm += &format!("    add {REG_CLK}, 5\n");
+                asm += &format!("    inc {REG_GLOBAL_CLK}\n");
+                i += 1;
+                asm += &(self.generate_instruction_asm(next_instruction, next_pc)?);
+
+                asm += &(self.generate_instruction_asm(instruction, pc)?);
+            } else {
+                asm += &(self.generate_instruction_asm(instruction, pc)?);
+            }
+        }
+
+        asm += "asm_run_end:\n";
+        asm += "    # save_xmm_regs\n";
+        asm += &Self::save_xmm_regs();
+        asm += &sync_reg_to_pc();
+        asm += &sync_reg_to_clk();
+        asm += &sync_reg_to_global_clk();
+        asm += "    # call inc_shard_if_need()\n";
+        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
+        asm += &format!("    call {REG_CALLER}\n");
+        asm += "    # pop_external_registers\n";
+        asm += &Self::pop_external_registers();
+        asm += "    ret\n";
+
+        // map_pc_base part
+        asm += ".section .rodata\n";
+        asm += "map_pc_base:\n";
+
+        for i in 0..(self.program.pc_base / 4) {
+            asm += &format!("   .long asm_execute_pc_{} - map_pc_base\n", i * 4);
+        }
+
+        for i in 0..self.program.instructions.len() {
+            let pc = self.program.pc(i);
+            asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
+        }
+
+        std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
+
+        Ok(asm)
+    }
+}
+
+#[inline]
+extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
+    // If the cycle limit is exceeded, return an error.
+    if let Some(max_cycles) = executor.max_cycles {
+        if executor.state.global_clk >= max_cycles {
+            panic!("Err(ExecutionError::ExceededCycleLimit(max_cycles))");
+        }
+    }
+
+    // If there's not enough cycles left for another instruction, move to the next shard.
+    let cpu_exit = executor.max_syscall_cycles + executor.state.clk >= executor.shard_size;
+
+    // Every N cycles, check if there exists at least one shape that fits.
+    //
+    // If we're close to not fitting, early stop the shard to ensure we don't OOM.
+    let mut shape_match_found = true;
+    if executor.state.global_clk.is_multiple_of(executor.shape_check_frequency) {
+        // Estimate the number of events in the trace.
+        let event_counts = estimate_mips_event_counts(
+            (executor.state.clk / 5) as u64,
+            executor.local_counts.local_mem as u64,
+            executor.local_counts.syscalls_sent as u64,
+            *executor.local_counts.event_counts,
+        );
+
+        // Check if the LDE size is too large.
+        if executor.lde_size_check {
+            let padded_event_counts =
+                pad_mips_event_counts(event_counts, executor.shape_check_frequency);
+            let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &executor.costs);
+            if padded_lde_size > executor.lde_size_threshold {
+                tracing::warn!(
+                    "stopping shard early due to lde size: {} Gib",
+                    (padded_lde_size as f64) / (1 << 9) as f64,
+                );
+                shape_match_found = false;
+            }
+        } else if let Some(maximal_shapes) = &executor.maximal_shapes {
+            // Check if we're too "close" to a maximal shape.
+
+            let distance = |threshold: usize, count: usize| {
+                if count != 0 {
+                    threshold - count
+                } else {
+                    usize::MAX
+                }
+            };
+
+            shape_match_found = false;
+
+            for shape in maximal_shapes.iter() {
+                let cpu_threshold = shape[MipsAirId::Cpu];
+                if executor.state.clk > ((1 << cpu_threshold) << 2) {
+                    continue;
+                }
+
+                let mut l_infinity = usize::MAX;
+                let mut shape_too_small = false;
+                for air in MipsAirId::core() {
+                    if air == MipsAirId::Cpu {
+                        continue;
+                    }
+
+                    let threshold = 1 << shape[air];
+                    let count = event_counts[air] as usize;
+                    if count > threshold {
+                        shape_too_small = true;
+                        break;
+                    }
+
+                    if distance(threshold, count) < l_infinity {
+                        l_infinity = distance(threshold, count);
+                    }
+                }
+
+                if shape_too_small {
+                    continue;
+                }
+
+                if l_infinity >= 32 * (executor.shape_check_frequency as usize) {
+                    shape_match_found = true;
+                    break;
+                }
+            }
+
+            if !shape_match_found {
+                executor.record.counts = Some(event_counts);
+                tracing::debug!(
+                    "stopping shard early due to no shapes fitting: \
+                    clk: {},
+                    clk_usage: {}",
+                    (executor.state.clk / 5).next_power_of_two().ilog2(),
+                    ((executor.state.clk / 5) as f64).log2(),
+                );
+            }
+        }
+    }
+
+    if cpu_exit || !shape_match_found {
+        executor.state.records_clk.push(executor.state.clk);
+        executor.state.current_shard += 1;
+        executor.state.clk = 0;
+        return true;
+    }
+    false
+}
+
 // Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot_metered`
 // Otherwise, it may lead to insufficient memory.
 // Because each test will occupy at least 2GB of memory.
@@ -45,6 +345,13 @@ mod tests {
         assert_eq!(runtime.state.clk, 15);
         assert_eq!(runtime.state.global_clk, 3);
         assert_eq!(runtime.state.current_shard, 1);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 12);
+        let (shard, clk) = runtime.state.read_register_access_meta(31);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 13);
     }
 
     #[test]
@@ -643,6 +950,16 @@ mod tests {
         runtime.aot_compile_metered_lib();
         runtime.aot_metered_run().unwrap();
         assert_eq!(runtime.word(0x10000000), 0xaabb1234);
+
+        let (shard, clk) = runtime.state.read_register_access_meta(29);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 8);
+        let (shard, clk) = runtime.state.read_register_access_meta(28);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 18);
+        let (shard, clk) = runtime.state.read_memory_access_meta(0x10000000);
+        assert_eq!(shard, 1);
+        assert_eq!(clk, 15);
     }
 
     #[test]

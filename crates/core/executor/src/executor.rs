@@ -53,6 +53,8 @@ pub const DEFAULT_PC_INC: u32 = 4;
 /// A valid pc should be divisible by 4, so we use 1 to indicate that the pc is not used.
 pub const UNUSED_PC: u32 = 1;
 
+pub const DEFAULT_CLK_INC: u32 = 5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 /// Whether to verify deferred proofs during execution.
@@ -1307,7 +1309,7 @@ impl<'a> Executor<'a> {
         self.state.next_pc = next_next_pc;
 
         // Update the clk to the next cycle.
-        self.state.clk += 5;
+        self.state.clk += DEFAULT_CLK_INC;
         Ok(())
     }
 
@@ -2112,7 +2114,7 @@ impl<'a> Executor<'a> {
         if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
             // Estimate the number of events in the trace.
             let event_counts = estimate_mips_event_counts(
-                (self.state.clk / 5) as u64,
+                (self.state.clk / DEFAULT_CLK_INC) as u64,
                 self.local_counts.local_mem as u64,
                 self.local_counts.syscalls_sent as u64,
                 *self.local_counts.event_counts,
@@ -2184,8 +2186,8 @@ impl<'a> Executor<'a> {
                         "stopping shard early due to no shapes fitting: \
                         clk: {},
                         clk_usage: {}",
-                        (self.state.clk / 5).next_power_of_two().ilog2(),
-                        ((self.state.clk / 5) as f64).log2(),
+                        (self.state.clk / DEFAULT_CLK_INC).next_power_of_two().ilog2(),
+                        ((self.state.clk / DEFAULT_CLK_INC) as f64).log2(),
                     );
                 }
             }
