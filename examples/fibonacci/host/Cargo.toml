@@ -12,6 +12,9 @@ zkm-sdk = { workspace = true }
 [build-dependencies]
 zkm-build = { workspace = true }
 
+[features]
+aot = ["zkm-sdk/aot"]
+
 [[bin]]
 name = "plonk_bn254"
 path = "bin/plonk_bn254.rs"

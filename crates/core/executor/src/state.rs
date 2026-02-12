@@ -214,7 +214,6 @@ pub struct ForkState {
     /// The original values contain the memory value and last shard + timestamp that each memory address was accessed.
     pub access_shard: GuestMemory,
     pub access_clk: GuestMemory,
-    pub accessed: Memory<bool>,
     /// The original memory access record at the fork point.
     pub op_record: MemoryAccessRecord,
     /// The original execution record at the fork point.

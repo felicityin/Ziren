@@ -186,7 +186,7 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
+        // std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
     }

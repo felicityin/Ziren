@@ -84,11 +84,13 @@ impl<'a> Executor<'a> {
     pub fn aot_pure_run(&mut self) -> Result<(), ExecutionError> {
         self.print_report = false;
         self.executor_mode = ExecutorMode::Simple;
-        self.initialize();
+        tracing::info_span!("initialize").in_scope(|| {
+            self.initialize();
+        });
 
         let executor_ptr = self as *mut Executor;
 
-        tracing::info_span!("aot execute").in_scope(|| unsafe {
+        tracing::info_span!("[aot] pure execute").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<PureAsmRunFn> = self
                 .pure_lib
                 .as_ref()
@@ -120,7 +122,9 @@ impl<'a> Executor<'a> {
     pub fn aot_metered_execute(&mut self) -> Result<bool, ExecutionError> {
         // If it's the first cycle, initialize the program.
         if self.state.global_clk == 0 {
-            self.initialize();
+            tracing::debug_span!("initialize").in_scope(|| {
+                self.initialize();
+            });
         }
 
         // Loop until we've executed `self.shard_batch_size` shards if `self.shard_batch_size` is
@@ -130,18 +134,15 @@ impl<'a> Executor<'a> {
         loop {
             if self.execute_metered_shard()? {
                 done = true;
-                println!("---done clk: {} {}", self.state.clk, self.state.global_clk);
                 self.postprocess();
                 break;
             }
 
             num_shards_executed += 1;
-            println!("num_shards_executed: {num_shards_executed}");
             if num_shards_executed >= self.shard_batch_size {
                 break;
             }
         }
-        println!("self.shard_batch_size: {}", self.shard_batch_size);
 
         Ok(done)
     }
@@ -149,7 +150,7 @@ impl<'a> Executor<'a> {
     fn execute_metered_shard(&mut self) -> Result<bool, ExecutionError> {
         let executor_ptr = self as *mut Executor;
 
-        tracing::info_span!("aot execute").in_scope(|| unsafe {
+        tracing::debug_span!("[aot] metered execute one checkpoint").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<MeteredAsmRunFn> = self
                 .metered_lib
                 .as_ref()
@@ -168,20 +169,6 @@ impl<'a> Executor<'a> {
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
-        println!("self.state.pc == 0: {}", self.state.pc == 0);
-        println!("self.state.exited: {}", self.state.exited);
-        println!(
-            "self.state.pc.wrapping_sub(self.program.pc_base): {}",
-            self.state.pc.wrapping_sub(self.program.pc_base)
-        );
-        println!("self.program.instructions.len() * 4: {}", self.program.instructions.len() * 4);
-        println!(
-            "self.state.pc.wrapping_sub(self.program.pc_base)
-                >= (self.program.instructions.len() * 4) as u32: {}",
-            self.state.pc.wrapping_sub(self.program.pc_base)
-                >= (self.program.instructions.len() * 4) as u32
-        );
-        println!("------done: {done}");
         Ok(done)
     }
 }

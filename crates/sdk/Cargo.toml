@@ -68,6 +68,7 @@ network = [
   "dep:twirp",
   "dep:ethers",
 ]
+aot = ["zkm-core-executor/aot", "zkm-core-machine/aot"]
 
 [build-dependencies]
 vergen = { version = "8", default-features = false, features = [

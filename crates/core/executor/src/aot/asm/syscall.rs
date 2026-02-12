@@ -27,8 +27,6 @@ impl AotCompiler {
         asm += &format!("   mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("   mov {REG_SECOND_ARG}, {instruction_ptr}\n");
         asm += &format!("   mov {REG_THIRD_ARG}, {pc}\n");
-        asm += &format!("   mov {REG_FOURTH_ARG}, {REG_CLK}\n");
-        asm += &format!("   mov {REG_FIFTH_ARG}, {REG_GLOBAL_CLK}\n");
         asm += &format!("   mov {REG_CALLER}, {extern_handler_ptr}\n");
         asm += &format!("   call {REG_CALLER}\n");
         asm += &format!("   pinsrq  xmm{TMP}, {REG_RETURN_VAL}, 1\n");
@@ -64,21 +62,13 @@ impl AotCompiler {
     }
 }
 
-extern "C" fn execute_syscall(
-    executor: &mut Executor,
-    instruction: &Instruction,
-    pc: u32,
-    clk: u32,
-    global_clk: u64,
-) -> u32 {
-    println!("{pc} {clk} {global_clk} {instruction:?}");
+extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instruction, pc: u32) -> u32 {
     executor.state.pc = pc;
     let syscall_id = executor.state.read_register(Register::V0 as u32);
     let c = executor.state.read_register(Register::A1 as u32);
     let b = executor.state.read_register(Register::A0 as u32);
     let syscall = SyscallCode::from_u32(syscall_id);
     log::trace!("pc: {} syscall {}, a0: {}, a1: {}", executor.state.pc, syscall, b, c);
-    println!("pc: {} syscall {}, a0: {}, a1: {}", executor.state.pc, syscall, b, c);
 
     // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
     // Other syscalls are not allowed because they can lead to non-deterministic

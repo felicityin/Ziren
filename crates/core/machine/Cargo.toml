@@ -84,6 +84,7 @@ debug = []
 bigint-rug = ["zkm-curves/bigint-rug", "zkm-core-executor/bigint-rug"]
 pre-alloc = ["zkm-core-executor/pre-alloc"]
 sys = ["dep:glob", "dep:cc", "dep:cbindgen", "dep:pathdiff"]
+aot = ["zkm-core-executor/aot"]
 
 [lib]
 bench = false

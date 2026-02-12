@@ -146,6 +146,10 @@ where
     runtime.maximal_shapes = shape_config.map(|config| {
         config.maximal_core_shapes(opts.shard_size.ilog2() as usize).into_iter().collect()
     });
+    #[cfg(feature = "aot")]
+    tracing::info_span!("[aot] compile").in_scope(|| {
+        runtime.aot_compile_metered_lib();
+    });
 
     runtime.write_vecs(&stdin.buffer);
     for proof in stdin.proofs.iter() {
@@ -170,7 +174,7 @@ where
         let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> =
             s.spawn(move || {
                 let _span = checkpoint_generator_span.enter();
-                tracing::debug_span!("checkpoint generator").in_scope(|| {
+                tracing::info_span!("checkpoint generator").in_scope(|| {
                     let mut index = 0;
                     loop {
                         // Enter the span.

@@ -8,7 +8,6 @@ use std::{
 use super::program::MAX_MEMORY;
 use enum_map::EnumMap;
 use hashbrown::HashMap;
-#[cfg(feature = "aot")]
 use libloading::Library;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -689,9 +688,10 @@ impl<'a> Executor<'a> {
 
         self.state.write_register(addr, value);
         self.state.write_register_access_meta(addr, shard, timestamp);
-        self.state.accessed.registers.access(addr, true);
 
         if !self.unconstrained {
+            self.state.accessed.registers.access(addr, true);
+
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -1863,20 +1863,11 @@ impl<'a> Executor<'a> {
         #[cfg(debug_assertions)]
         self.log(&instruction);
 
-        // println!(
-        //     "{} {} {} {:?}",
-        //     self.state.pc,
-        //     self.state.clk + 5,
-        //     self.state.global_clk + 1,
-        //     instruction
-        // );
-
         // Execute the instruction.
         self.execute_operation(&instruction)?;
 
         // Increment the clock.
         self.state.global_clk += 1;
-        // println!("-----self.state.global_clk: {}, clk: {}", self.state.global_clk, self.state.clk);
 
         // If the cycle limit is exceeded, return an error.
         if let Some(max_cycles) = self.max_cycles {
@@ -1952,7 +1943,10 @@ impl<'a> Executor<'a> {
         self.state.uninitialized_memory = uninitialized_memory;
         self.state.proof_stream = proof_stream;
 
-        let done = tracing::debug_span!("execute").in_scope(|| self.execute())?;
+        #[cfg(not(feature = "aot"))]
+        let done = tracing::info_span!("[not aot] execute").in_scope(|| self.execute())?;
+        #[cfg(feature = "aot")]
+        let done = tracing::info_span!("[aot] execute").in_scope(|| self.aot_metered_execute())?;
         if !done {
             self.records.clear();
         }
@@ -2032,8 +2026,7 @@ impl<'a> Executor<'a> {
                 break;
             }
 
-            // We restrict the execution of branch/jump and its delay slot to be in the same shard.
-            if !self.unconstrained && !self.state.next_is_delayslot && self.inc_shard_if_need() {
+            if self.shard_batch_size > 0 && self.inc_shard_if_need() {
                 num_shards_executed += 1;
                 self.bump_record();
                 if num_shards_executed >= self.shard_batch_size {
@@ -2087,6 +2080,11 @@ impl<'a> Executor<'a> {
 
     #[inline]
     pub fn inc_shard_if_need(&mut self) -> bool {
+        // We restrict the execution of branch/jump and its delay slot to be in the same shard.
+        if self.unconstrained || self.state.next_is_delayslot {
+            return false;
+        }
+
         if self.executor_mode == ExecutorMode::Trace {
             if !self.state.records_clk.is_empty()
                 && self.state.clk >= self.state.records_clk[self.state.records_clk_index as usize]
@@ -2189,7 +2187,6 @@ impl<'a> Executor<'a> {
         }
 
         if cpu_exit || !shape_match_found {
-            println!("=========executor.state.clk: {}", self.state.clk);
             self.state.records_clk.push(self.state.clk);
             self.state.current_shard += 1;
             self.state.clk = 0;
@@ -2381,13 +2378,8 @@ mod tests {
     fn test_fibonacci_program_run() {
         let program = fibonacci_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.shard_size = 10000;
         runtime.executor_mode = crate::ExecutorMode::Checkpoint;
         runtime.run().unwrap();
-        println!("shard size: {}", runtime.shard_size);
-        println!("executor.state.clk: {}", runtime.state.clk);
-        println!("executor.state.globak_clk: {}", runtime.state.global_clk);
-        println!("executor.state.current_shard: {}", runtime.state.current_shard);
     }
 
     #[test]
