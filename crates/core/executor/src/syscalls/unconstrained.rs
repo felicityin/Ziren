@@ -50,9 +50,17 @@ impl Syscall for ExitUnconstrainedSyscall {
             ctx.rt.state.pc = ctx.rt.unconstrained_state.pc;
             ctx.next_pc = ctx.rt.state.pc.wrapping_add(4);
             ctx.rt.state.memory = std::mem::take(&mut ctx.rt.unconstrained_state.memory);
-            ctx.rt.state.access_shard =
-                std::mem::take(&mut ctx.rt.unconstrained_state.access_shard);
-            ctx.rt.state.access_clk = std::mem::take(&mut ctx.rt.unconstrained_state.access_clk);
+            if ctx.rt.pure_lib.is_none() && ctx.rt.metered_lib.is_none() {
+                // Not AOT
+                ctx.rt.state.access_shard =
+                    std::mem::take(&mut ctx.rt.unconstrained_state.access_shard); // It does not work for AOT
+                ctx.rt.state.access_clk =
+                    std::mem::take(&mut ctx.rt.unconstrained_state.access_clk);
+            } else {
+                // AOT
+                ctx.rt.state.access_shard = ctx.rt.unconstrained_state.access_shard.clone();
+                ctx.rt.state.access_clk = ctx.rt.unconstrained_state.access_clk.clone();
+            }
             ctx.rt.state.accessed = std::mem::take(&mut ctx.rt.unconstrained_state.accessed);
             ctx.rt.record = std::mem::take(&mut ctx.rt.unconstrained_state.record);
             ctx.rt.memory_accesses = std::mem::take(&mut ctx.rt.unconstrained_state.op_record);

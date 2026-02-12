@@ -175,11 +175,8 @@ pub struct Executor<'a> {
     /// The maximum LDE size to allow.
     pub lde_size_threshold: u64,
 
-    #[cfg(feature = "aot")]
     /// Guest code
     pub pure_lib: Option<Library>,
-    #[cfg(feature = "aot")]
-    /// Guest code
     pub metered_lib: Option<Library>,
 }
 
