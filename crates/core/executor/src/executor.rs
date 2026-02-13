@@ -455,7 +455,10 @@ impl<'a> Executor<'a> {
         self.state.write_memory(addr, value);
         self.state.write_memory_access_meta(addr, shard, timestamp);
         if !self.unconstrained {
+            #[cfg(not(feature = "aot-access"))]
             self.state.accessed.page_table.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.access_memory(addr);
         }
 
         // We update the local memory counter in two cases:
@@ -521,7 +524,10 @@ impl<'a> Executor<'a> {
 
         self.state.write_register_access_meta(addr, shard, timestamp);
         if !self.unconstrained {
+            #[cfg(not(feature = "aot-access"))]
             self.state.accessed.registers.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.access_register(addr);
         }
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
@@ -566,7 +572,10 @@ impl<'a> Executor<'a> {
         self.state.write_memory(addr, value);
         self.state.write_memory_access_meta(addr, shard, timestamp);
         if !self.unconstrained {
+            #[cfg(not(feature = "aot-access"))]
             self.state.accessed.page_table.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.access_memory(addr);
         }
 
         // We update the local memory counter in two cases:
@@ -623,7 +632,10 @@ impl<'a> Executor<'a> {
         self.state.write_register(addr, value);
         self.state.write_register_access_meta(addr, shard, timestamp);
         if !self.unconstrained {
+            #[cfg(not(feature = "aot-access"))]
             self.state.accessed.registers.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.access_register(addr);
         }
 
         // We update the local memory counter in two cases:
@@ -683,7 +695,10 @@ impl<'a> Executor<'a> {
         self.state.write_register_access_meta(addr, shard, timestamp);
 
         if !self.unconstrained {
+            #[cfg(not(feature = "aot-access"))]
             self.state.accessed.registers.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.access_register(addr);
 
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
@@ -1953,10 +1968,16 @@ impl<'a> Executor<'a> {
         tracing::debug!("loading memory image");
         for (addr, value) in &self.program.image {
             if *addr < NUM_REGISTERS as u32 {
+                #[cfg(not(feature = "aot-access"))]
                 self.state.accessed.registers.insert(*addr, true);
+                #[cfg(feature = "aot-access")]
+                self.state.access_register(*addr);
                 self.state.write_register(*addr, *value);
             } else {
+                #[cfg(not(feature = "aot-access"))]
                 self.state.accessed.page_table.insert(*addr, true);
+                #[cfg(feature = "aot-access")]
+                self.state.access_memory(*addr);
                 self.state.write_memory(*addr, *value);
             }
         }
@@ -2097,6 +2118,7 @@ impl<'a> Executor<'a> {
         // If we're close to not fitting, early stop the shard to ensure we don't OOM.
         let mut shape_match_found = true;
         if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
+            println!("------checking shapes at clk {} global_clk {}, executor.shape_check_frequency: {}", self.state.clk, self.state.global_clk, self.shape_check_frequency);
             // Estimate the number of events in the trace.
             let event_counts = estimate_mips_event_counts(
                 (self.state.clk / DEFAULT_CLK_INC) as u64,
@@ -2179,6 +2201,7 @@ impl<'a> Executor<'a> {
         }
 
         if cpu_exit || !shape_match_found {
+            println!("------Shard {} ended with clk {} and global_clk {}", self.state.current_shard, self.state.clk, self.state.global_clk);
             self.state.records_clk.push(self.state.clk);
             self.state.current_shard += 1;
             self.state.clk = 0;
@@ -2228,14 +2251,27 @@ impl<'a> Executor<'a> {
 
             // We handle the addr = 0 case separately, as we constrain it to be 0 in the first row
             // of the memory finalize table so it must be first in the array of events.
-            let addr_0_final_event = match self.state.accessed.registers.get(0) {
-                Some(_) => {
+            #[cfg(not(feature = "aot-access"))]
+            let addr_0_final_event = {
+                if self.state.accessed.registers.get(0).is_none() {
+                    MemoryInitializeFinalizeEvent::new(0, 0, 0, 1)
+                } else {
                     let addr_0_value = self.state.read_register(0);
                     let (shard, clk) = self.state.read_register_access_meta(0);
                     MemoryInitializeFinalizeEvent::finalize(0, addr_0_value, shard, clk)
                 }
-                None => MemoryInitializeFinalizeEvent::new(0, 0, 0, 1),
             };
+            #[cfg(feature = "aot-access")]
+            let addr_0_final_event = {
+                if self.state.register_not_accessed(0) {
+                    MemoryInitializeFinalizeEvent::new(0, 0, 0, 1)
+                } else {
+                    let addr_0_value = self.state.read_register(0);
+                    let (shard, clk) = self.state.read_register_access_meta(0);
+                    MemoryInitializeFinalizeEvent::finalize(0, addr_0_value, shard, clk)
+                }
+            };
+
             memory_finalize_events.push(addr_0_final_event);
 
             let memory_initialize_events = &mut self.record.global_memory_initialize_events;
@@ -2246,6 +2282,7 @@ impl<'a> Executor<'a> {
             // already know its length.
             self.report.touched_memory_addresses = 0;
             for addr in 1..NUM_REGISTERS as u32 {
+                #[cfg(not(feature = "aot-access"))]
                 if self.state.accessed.registers.get(addr).is_some() {
                     if self.print_report {
                         self.report.touched_memory_addresses += 1;
@@ -2267,7 +2304,33 @@ impl<'a> Executor<'a> {
                     memory_finalize_events
                         .push(MemoryInitializeFinalizeEvent::finalize(addr, value, shard, clk));
                 }
+                #[cfg(feature = "aot-access")]
+                {
+                    if self.state.register_not_accessed(addr) {
+                        continue;
+                    }
+
+                    if self.print_report {
+                        self.report.touched_memory_addresses += 1;
+                    }
+
+                    // Program memory is initialized in the MemoryProgram chip and doesn't require
+                    // any events, so we only send init events for other memory
+                    // addresses.
+                    if !self.record.program.image.contains_key(&addr) {
+                        let initial_value =
+                            self.state.uninitialized_memory.registers.get(addr).unwrap_or(&0);
+                        memory_initialize_events
+                            .push(MemoryInitializeFinalizeEvent::initialize(addr, *initial_value));
+                    }
+
+                    let (shard, clk) = self.state.read_register_access_meta(addr);
+                    let value = self.state.read_register(addr);
+                    memory_finalize_events
+                        .push(MemoryInitializeFinalizeEvent::finalize(addr, value, shard, clk));
+                }
             }
+            #[cfg(not(feature = "aot-access"))]
             for addr in self.state.accessed.page_table.keys() {
                 self.report.touched_memory_addresses += 1;
                 if addr == 0 {
@@ -2287,6 +2350,30 @@ impl<'a> Executor<'a> {
                 let value = self.state.read_memory(addr);
                 memory_finalize_events
                     .push(MemoryInitializeFinalizeEvent::finalize(addr, value, shard, clk));
+            }
+            #[cfg(feature = "aot-access")]
+            {
+                for addr in 0..(MAX_MEMORY >> 2) as u32 {
+                    let addr = addr << 2;
+                    if self.state.memory_not_accessed(addr) {
+                        continue;
+                    }
+
+                    self.report.touched_memory_addresses += 1;
+
+                    // Program memory is initialized in the MemoryProgram chip and doesn't require any
+                    // events, so we only send init events for other memory addresses.
+                    if !self.record.program.image.contains_key(&addr) {
+                        let initial_value = self.state.uninitialized_memory.get(addr).unwrap_or(&0);
+                        memory_initialize_events
+                            .push(MemoryInitializeFinalizeEvent::initialize(addr, *initial_value));
+                    }
+
+                    let (shard, clk) = self.state.read_memory_access_meta(addr);
+                    let value = self.state.read_memory(addr);
+                    memory_finalize_events
+                        .push(MemoryInitializeFinalizeEvent::finalize(addr, value, shard, clk));
+                }
             }
         }
     }

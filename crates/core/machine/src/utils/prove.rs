@@ -148,6 +148,7 @@ where
     });
     #[cfg(feature = "aot")]
     tracing::info_span!("[aot] compile").in_scope(|| {
+        println!("-------runtime.shape_check_frequency: {}", runtime.shape_check_frequency);
         runtime.aot_compile_metered_lib();
     });
 

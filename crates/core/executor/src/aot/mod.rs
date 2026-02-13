@@ -137,6 +137,7 @@ impl<'a> Executor<'a> {
                 self.postprocess();
                 break;
             }
+            println!("1------Shard {} ended with clk {} and global_clk {}", self.state.current_shard, self.state.clk, self.state.global_clk);
 
             num_shards_executed += 1;
             if num_shards_executed >= self.shard_batch_size {
@@ -169,6 +170,7 @@ impl<'a> Executor<'a> {
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
+        println!("2------Shard {} ended with clk {} and global_clk {}", self.state.current_shard, self.state.clk, self.state.global_clk);
         Ok(done)
     }
 }

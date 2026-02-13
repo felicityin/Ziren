@@ -34,6 +34,10 @@ impl GuestMemory {
         self.memory.fill_zero();
     }
 
+    pub fn fill_zero(&mut self) {
+        self.memory.fill_zero();
+    }
+
     /// Returns `[pointer:BLOCK_SIZE]_{address_space}`
     ///
     /// # Safety

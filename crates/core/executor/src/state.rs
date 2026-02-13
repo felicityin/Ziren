@@ -42,8 +42,12 @@ pub struct ExecutionState {
     /// The memory which instructions operate over.
     pub memory: GuestMemory,
 
-    /// Values contain the memory value and last shard + timestamp that each memory address was accessed.
+    #[cfg(not(feature = "aot-access"))]
     pub accessed: Memory<bool>,
+    #[cfg(feature = "aot-access")]
+    pub accessed: GuestMemory,
+
+    /// Values contain the memory value and last shard + timestamp that each memory address was accessed.
     pub access_shard: GuestMemory,
     pub access_clk: GuestMemory,
 
@@ -82,6 +86,19 @@ impl ExecutionState {
     #[must_use]
     /// Create a new [`ExecutionState`].
     pub fn new(pc_start: u32, next_pc: u32) -> Self {
+        let accessed = {
+            #[cfg(not(feature = "aot-access"))]
+            {
+                Memory::new_preallocated()
+            }
+            #[cfg(feature = "aot-access")]
+            {
+                let mut accessed = GuestMemory::default();
+                accessed.fill_zero();
+                accessed
+            }
+        };
+
         Self {
             global_clk: 0,
             // Start at shard 1 since shard 0 is reserved for memory initialization.
@@ -94,7 +111,7 @@ impl ExecutionState {
             exited: false,
             next_is_delayslot: false,
             memory: GuestMemory::default(),
-            accessed: Memory::new_preallocated(),
+            accessed,
             access_shard: GuestMemory::default(),
             access_clk: GuestMemory::default(),
             uninitialized_memory: Memory::new_preallocated(),
@@ -115,7 +132,7 @@ impl ExecutionState {
         value[0]
     }
 
-    /// Runtime read operation for a block of memory
+    /// Runtime write operation for a block of memory
     #[inline(always)]
     pub fn write_register(&mut self, ptr: u32, value: u32) {
         self.vm_write::<u32, 1>(MIPS_REGISTER_SPACE, ptr, &[value]);
@@ -128,13 +145,13 @@ impl ExecutionState {
         value[0]
     }
 
-    /// Runtime read operation for a block of memory
+    /// Runtime write operation for a block of memory
     #[inline(always)]
     pub fn write_memory(&mut self, ptr: u32, value: u32) {
         self.vm_write::<u32, 1>(MIPS_MEMORY_SPACE, ptr >> 2, &[value]);
     }
 
-    /// Runtime read operation for a block of memory
+    /// Reads the shard and timestamp of the current register access.
     #[inline(always)]
     pub fn read_register_access_meta(&self, ptr: u32) -> (u32, u32) {
         let shard: [u32; 1] = unsafe { self.access_shard.read(MIPS_REGISTER_SPACE, ptr) };
@@ -142,7 +159,7 @@ impl ExecutionState {
         (shard[0], clk[0])
     }
 
-    /// Runtime read operation for a block of memory
+    /// Writes the shard and timestamp of the current register access to `access_shard` and `access_clk`.
     #[inline(always)]
     pub fn write_register_access_meta(&mut self, ptr: u32, shard: u32, clk: u32) {
         let shard: [u32; 1] = [shard];
@@ -151,7 +168,7 @@ impl ExecutionState {
         unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
     }
 
-    /// Runtime read operation for a block of memory
+    /// Reads the shard and timestamp of the current memory access.
     #[inline(always)]
     pub fn read_memory_access_meta(&self, ptr: u32) -> (u32, u32) {
         let shard: [u32; 1] = unsafe { self.access_shard.read(MIPS_MEMORY_SPACE, ptr >> 2) };
@@ -159,13 +176,43 @@ impl ExecutionState {
         (shard[0], clk[0])
     }
 
-    /// Runtime read operation for a block of memory
+    // Writes the shard and timestamp of the current memory access to `access_shard` and `access_clk`.
     #[inline(always)]
     pub fn write_memory_access_meta(&mut self, ptr: u32, shard: u32, clk: u32) {
         let shard: [u32; 1] = [shard];
         let clk: [u32; 1] = [clk];
         unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr >> 2, shard) };
         unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr >> 2, clk) };
+    }
+
+    /// Mark a register as accessed.
+    #[cfg(feature = "aot-access")]
+    #[inline(always)]
+    pub fn access_register(&mut self, ptr: u32) {
+        let accessed: [u32; 1] = [1u32];
+        unsafe { self.accessed.write(MIPS_REGISTER_SPACE, ptr, accessed) };
+    }
+
+    /// Mark a memory address as accessed.
+    #[cfg(feature = "aot-access")]
+    #[inline(always)]
+    pub fn access_memory(&mut self, ptr: u32) {
+        let accessed: [u32; 1] = [1u32];
+        unsafe { self.accessed.write(MIPS_MEMORY_SPACE, ptr >> 2, accessed) };
+    }
+
+    #[cfg(feature = "aot-access")]
+    #[inline(always)]
+    pub fn register_not_accessed(&mut self, ptr: u32) -> bool {
+        let accessed: [u32; 1] = unsafe { self.accessed.read(MIPS_REGISTER_SPACE, ptr) };
+        accessed[0] == 0
+    }
+
+    #[cfg(feature = "aot-access")]
+    #[inline(always)]
+    pub fn memory_not_accessed(&mut self, ptr: u32) -> bool {
+        let accessed: [u32; 1] = unsafe { self.accessed.read(MIPS_MEMORY_SPACE, ptr >> 2) };
+        accessed[0] == 0
     }
 
     /// Runtime read operation for a block of memory
