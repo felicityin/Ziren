@@ -27,7 +27,6 @@ use crate::{
         MemoryRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent, SyscallEvent,
     },
     hook::{HookEnv, HookRegistry},
-    memory::Memory,
     pad_mips_event_counts,
     record::{ExecutionRecord, MemoryAccessRecord},
     sign_extend,
@@ -107,14 +106,6 @@ pub struct Executor<'a> {
 
     /// The options for the runtime.
     pub opts: ZKMCoreOpts,
-
-    /// Memory addresses that were touched in this batch of shards. Used to minimize the size of
-    /// checkpoints.
-    pub memory_checkpoint: Memory<Option<MemoryRecord>>,
-
-    /// Memory addresses that were initialized in this batch of shards. Used to minimize the size of
-    /// checkpoints. The value stored is whether it had a value at the beginning of the batch.
-    pub uninitialized_memory_checkpoint: Memory<bool>,
 
     /// The memory accesses for the current cycle.
     pub memory_accesses: MemoryAccessRecord,
@@ -362,8 +353,6 @@ impl<'a> Executor<'a> {
             } else {
                 DeferredProofVerification::Enabled
             },
-            memory_checkpoint: Memory::default(),
-            uninitialized_memory_checkpoint: Memory::default(),
             local_memory_access: HashMap::new(),
             maximal_shapes: None,
             costs: costs.into_iter().map(|(k, v)| (k, v as u64)).collect(),
@@ -1938,7 +1927,6 @@ impl<'a> Executor<'a> {
         &mut self,
         emit_global_memory_events: bool,
     ) -> Result<(ExecutionState, bool), ExecutionError> {
-        self.memory_checkpoint.clear();
         self.executor_mode = ExecutorMode::Checkpoint;
         self.emit_global_memory_events = emit_global_memory_events;
 
