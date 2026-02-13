@@ -465,6 +465,9 @@ impl<'a> Executor<'a> {
 
         self.state.write_memory(addr, value);
         self.state.write_memory_access_meta(addr, shard, timestamp);
+        if !self.unconstrained {
+            self.state.accessed.page_table.access(addr, true);
+        }
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -477,8 +480,6 @@ impl<'a> Executor<'a> {
         }
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
-            self.state.accessed.page_table.access(addr, true);
-
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -530,10 +531,11 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
 
         self.state.write_register_access_meta(addr, shard, timestamp);
+        if !self.unconstrained {
+            self.state.accessed.registers.access(addr, true);
+        }
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
-            self.state.accessed.registers.access(addr, true);
-
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -574,6 +576,9 @@ impl<'a> Executor<'a> {
 
         self.state.write_memory(addr, value);
         self.state.write_memory_access_meta(addr, shard, timestamp);
+        if !self.unconstrained {
+            self.state.accessed.page_table.access(addr, true);
+        }
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -586,8 +591,6 @@ impl<'a> Executor<'a> {
         }
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
-            self.state.accessed.page_table.access(addr, true);
-
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -630,6 +633,9 @@ impl<'a> Executor<'a> {
 
         self.state.write_register(addr, value);
         self.state.write_register_access_meta(addr, shard, timestamp);
+        if !self.unconstrained {
+            self.state.accessed.registers.access(addr, true);
+        }
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -642,8 +648,6 @@ impl<'a> Executor<'a> {
         }
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
-            self.state.accessed.registers.access(addr, true);
-
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -1891,11 +1895,13 @@ impl<'a> Executor<'a> {
     /// Bump the record.
     pub fn bump_record(&mut self) {
         self.local_counts = LocalCounts::default();
+        if self.executor_mode != ExecutorMode::Trace {
+            return;
+        }
+
         // Copy all of the existing local memory accesses to the record's local_memory_access vec.
-        if self.executor_mode == ExecutorMode::Trace {
-            for (_, event) in self.local_memory_access.drain() {
-                self.record.cpu_local_memory_access.push(event);
-            }
+        for (_, event) in self.local_memory_access.drain() {
+            self.record.cpu_local_memory_access.push(event);
         }
 
         let removed_record =
@@ -1936,11 +1942,9 @@ impl<'a> Executor<'a> {
         self.executor_mode = ExecutorMode::Checkpoint;
         self.emit_global_memory_events = emit_global_memory_events;
 
-        // Clone self.state without uninitialized_memory, proof_stream in it so it's faster.
-        let uninitialized_memory = std::mem::take(&mut self.state.uninitialized_memory);
+        // Clone self.state without proof_stream in it so it's faster.
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
         let mut checkpoint = tracing::debug_span!("clone").in_scope(|| self.state.clone());
-        self.state.uninitialized_memory = uninitialized_memory;
         self.state.proof_stream = proof_stream;
 
         #[cfg(not(feature = "aot"))]

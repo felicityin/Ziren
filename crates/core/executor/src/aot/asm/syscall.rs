@@ -33,10 +33,10 @@ impl AotCompiler {
         asm += &Self::after_call();
 
         asm += &format!("   pextrq {REG_D}, xmm{TMP}, 1\n");
-        asm += &format!("   cmp {REG_D}, 0\n"); // Halt
-        asm += "   je asm_run_end\n";
         asm += &format!("   cmp {REG_D}, 1\n"); // !EXIT_UNCONSTRAINED
         asm += &format!("   je end_syscall_{pc}\n");
+        asm += &format!("   cmp {REG_D}, 0\n"); // Halt
+        asm += "   je asm_run_end\n";
 
         // EXIT_UNCONSTRAINED
         // Update the memory address space, register address space and xmm registers
