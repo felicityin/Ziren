@@ -13,6 +13,7 @@ impl AotCompiler {
 
         if self.executor_mode == ExecutorMode::Checkpoint {
             asm += &Self::get_access_register_meta_addr();
+
             if !instruction.imm_c {
                 asm += &Self::set_access_register_meta(instruction.op_c, MemoryAccessPosition::C);
             }

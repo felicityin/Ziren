@@ -185,7 +185,7 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        // std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
+        std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
     }
@@ -208,7 +208,6 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
     // If we're close to not fitting, early stop the shard to ensure we don't OOM.
     let mut shape_match_found = true;
     if executor.state.global_clk.is_multiple_of(executor.shape_check_frequency) {
-        println!("------checking shapes at global_clk {}, executor.shape_check_frequency: {}", executor.state.global_clk, executor.shape_check_frequency);
         // Estimate the number of events in the trace.
         let event_counts = estimate_mips_event_counts(
             (executor.state.clk / DEFAULT_CLK_INC) as u64,

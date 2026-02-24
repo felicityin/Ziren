@@ -94,7 +94,7 @@ impl<'a> Executor<'a> {
             let asm_run: libloading::Symbol<PureAsmRunFn> = self
                 .pure_lib
                 .as_ref()
-                .expect("Please complete AOT first")
+                .expect("Please compile AOT first")
                 .get(b"asm_run")
                 .expect("Failed to get asm_run symbol");
 
@@ -155,7 +155,7 @@ impl<'a> Executor<'a> {
             let asm_run: libloading::Symbol<MeteredAsmRunFn> = self
                 .metered_lib
                 .as_ref()
-                .expect("Please complete AOT first")
+                .expect("Please compile AOT first")
                 .get(b"asm_run")
                 .expect("Failed to get asm_run symbol");
 
@@ -170,7 +170,9 @@ impl<'a> Executor<'a> {
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
-        println!("2------Shard {} ended with clk {} and global_clk {}", self.state.current_shard, self.state.clk, self.state.global_clk);
+        println!("self.state.pc.wrapping_sub(self.program.pc_base): {}", self.state.pc.wrapping_sub(self.program.pc_base));
+        println!("(self.program.instructions.len() * 4): {}", (self.program.instructions.len() * 4));
+        println!("2------done: {done}, self.state.pc: {}, Shard {} ended with clk {} and global_clk {}", self.state.pc, self.state.current_shard, self.state.clk, self.state.global_clk);
         Ok(done)
     }
 }
@@ -302,17 +304,21 @@ impl AotCompiler {
     fn push_address_space_start() -> String {
         let mut asm = String::new();
         // SAFETY: pay attention to byte alignment.
-        asm += "   pextrq rdi, xmm0, 1\n";
+        asm += &format!("   pextrq rdi, xmm{REG_ADDR_SPACE}, 1\n");
         asm += "   push rdi\n";
-        asm += "   pextrq rdi, xmm1, 1\n";
+        asm += &format!("   pextrq rdi, xmm{ACCESS_REG_SHARD}, 1\n");
         asm += "   push rdi\n";
-        asm += "   pextrq rdi, xmm2, 1\n";
+        asm += &format!("   pextrq rdi, xmm{ACCESS_REG_CLK}, 1\n");
         asm += "   push rdi\n";
-        asm += "   pextrq rdi, xmm3, 1\n";
+        asm += &format!("   pextrq rdi, xmm{ACCESS_MEM_SHARD}, 1\n");
         asm += "   push rdi\n";
-        asm += "   pextrq rdi, xmm4, 1\n";
+        asm += &format!("   pextrq rdi, xmm{ACCESS_MEM_CLK}, 1\n");
         asm += "   push rdi\n";
-        asm += "   pextrq rdi, xmm5, 1\n";
+        asm += &format!("   pextrq rdi, xmm{REG_ACCESSED}, 1\n");
+        asm += "   push rdi\n";
+        asm += &format!("   pextrq rdi, xmm{MEM_ACCESSED}, 1\n");
+        asm += "   push rdi\n";
+        asm += &format!("   pextrq rdi, xmm7, 1\n");
         asm += "   push rdi\n";
         asm
     }
@@ -321,17 +327,21 @@ impl AotCompiler {
         let mut asm = String::new();
         // SAFETY: pay attention to byte alignment.
         asm += "   pop rdi\n";
-        asm += "   pinsrq xmm5, rdi, 1\n";
+        asm += &format!("   pinsrq xmm7, rdi, 1\n");
         asm += "   pop rdi\n";
-        asm += "   pinsrq xmm4, rdi, 1\n";
+        asm += &format!("   pinsrq xmm{MEM_ACCESSED}, rdi, 1\n");
         asm += "   pop rdi\n";
-        asm += "   pinsrq xmm3, rdi, 1\n";
+        asm += &format!("   pinsrq xmm{REG_ACCESSED}, rdi, 1\n");
         asm += "   pop rdi\n";
-        asm += "   pinsrq xmm2, rdi, 1\n";
+        asm += &format!("   pinsrq xmm{ACCESS_MEM_CLK}, rdi, 1\n");
         asm += "   pop rdi\n";
-        asm += "   pinsrq xmm1, rdi, 1\n";
+        asm += &format!("   pinsrq xmm{ACCESS_MEM_SHARD}, rdi, 1\n");
         asm += "   pop rdi\n";
-        asm += "   pinsrq xmm0, rdi, 1\n";
+        asm += &format!("   pinsrq xmm{ACCESS_REG_CLK}, rdi, 1\n");
+        asm += "   pop rdi\n";
+        asm += &format!("   pinsrq xmm{ACCESS_REG_SHARD}, rdi, 1\n");
+        asm += "   pop rdi\n";
+        asm += &format!("   pinsrq xmm{REG_ADDR_SPACE}, rdi, 1\n");
         asm
     }
 }
@@ -412,5 +422,12 @@ extern "C" fn get_access_clk_space(executor_ptr: *mut c_void, address_space: u32
     let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
 
     let ptr = &executor.state.access_clk.memory.mem[address_space as usize];
+    ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
+}
+
+extern "C" fn get_accesssed(executor_ptr: *mut c_void, address_space: u32) -> *mut u64 {
+    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
+
+    let ptr = &executor.state.accessed.memory.mem[address_space as usize];
     ptr.as_ptr() as *mut u64 // mut u64 because we want to write 8 bytes at a time
 }

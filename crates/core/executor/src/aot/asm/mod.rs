@@ -4,7 +4,7 @@ mod memory;
 mod misc;
 mod syscall;
 
-use crate::aot::common::*;
+use crate::aot::{common::*, get_accesssed};
 use crate::{
     aot::{get_access_clk_space, get_access_shard_space, get_address_space, AotCompiler, AotError},
     events::MemoryAccessPosition,
@@ -41,6 +41,7 @@ impl AotCompiler {
         let get_address_space_ptr = format!("{:p}", get_address_space as *const ());
         let get_access_shard_space_ptr = format!("{:p}", get_access_shard_space as *const ());
         let get_access_clk_space_ptr = format!("{:p}", get_access_clk_space as *const ());
+        let get_accessed_ptr = format!("{:p}", get_accesssed as *const ());
 
         let mut asm = String::new();
 
@@ -91,8 +92,23 @@ impl AotCompiler {
             asm += &format!("    mov {REG_SECOND_ARG}, 1\n");
             asm += &format!("    mov {REG_CALLER}, {get_access_clk_space_ptr}\n");
             asm += &format!("    call {REG_CALLER}\n");
-            asm += &format!("    pinsrq  xmm{ACCESS_MEM_CLK}, {REG_RETURN_VAL}, 1\n");
-            // write `eax` to the third lane of xmm4
+            asm += &format!("    pinsrq  xmm{ACCESS_MEM_CLK}, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm4
+
+            // Store the address of whether the register has been accessed in the high 64 bits of xmm5
+            asm += "    # Store the address of whether the register has been accessed in the high 64 bits of xmm5\n";
+            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+            asm += &format!("    mov {REG_SECOND_ARG}, 0\n");
+            asm += &format!("    mov {REG_CALLER}, {get_accessed_ptr}\n");
+            asm += &format!("    call {REG_CALLER}\n");
+            asm += &format!("    pinsrq  xmm{REG_ACCESSED}, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm5
+
+            // Store the address of whether the memory has been accessed in the high 64 bits of xmm6
+            asm += "    # Store the address of whether the memory has been accessed in the high 64 bits of xmm6\n";
+            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+            asm += &format!("    mov {REG_SECOND_ARG}, 1\n");
+            asm += &format!("    mov {REG_CALLER}, {get_accessed_ptr}\n");
+            asm += &format!("    call {REG_CALLER}\n");
+            asm += &format!("    pinsrq  xmm{MEM_ACCESSED}, {REG_RETURN_VAL}, 1\n"); // write `eax` to the third lane of xmm6
         }
         asm
     }
@@ -101,6 +117,7 @@ impl AotCompiler {
         let mut asm = String::new();
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_REG_SHARD}, 1\n");
         asm += &format!("   pextrq {REG_B}, xmm{ACCESS_REG_CLK}, 1\n");
+        // asm += &format!("   pextrq {REG_D}, xmm{REG_ACCESSED}, 1\n");
         asm
     }
 
@@ -114,6 +131,9 @@ impl AotCompiler {
         // unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
         asm += &format!("   lea {REG_C}, [{REG_CLK} - {}]\n", DEFAULT_CLK_INC - pos as u32);
         asm += &format!("   mov dword ptr [{REG_B} + {addr}], {REG_C_W}\n");
+
+        // self.state.set_register_accessed(addr);
+        // asm += &format!("   mov dword ptr [{REG_D} + {addr}], 1\n");
 
         asm
     }
@@ -132,26 +152,27 @@ impl AotCompiler {
         );
         asm += &format!("   mov dword ptr [{REG_B} + {addr}], {REG_C_W}\n");
 
+        // self.state.set_register_accessed(addr);
+        // asm += &format!("   mov dword ptr [{REG_D} + {addr}], 1\n");
+
         asm
     }
 
-    // unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr, shard) };
-    pub fn set_access_memory_shard(addr: &str) -> String {
+    pub fn set_access_memory_meta(addr: &str) -> String {
         let mut asm = String::new();
 
+        // unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr, shard) };
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_SHARD}, 1\n");
         asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_SHARD_W}\n");
 
-        asm
-    }
-
-    // unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr, clk) };
-    pub fn set_access_memory_clk(addr: &str) -> String {
-        let mut asm = String::new();
-
+        // unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr, clk) };
         asm += &format!("   lea {REG_C}, [{REG_CLK} - {DEFAULT_CLK_INC}]\n");
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_CLK}, 1\n");
         asm += &format!("   mov [{REG_A} + {addr}], {REG_C}\n");
+
+        // self.set_memory_accessed(addr);
+        // asm += &format!("   pextrq {REG_D}, xmm{MEM_ACCESSED}, 1\n");
+        // asm += &format!("   mov dword ptr [{REG_D} + {addr}], 1\n");
 
         asm
     }

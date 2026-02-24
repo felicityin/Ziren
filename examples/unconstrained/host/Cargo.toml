@@ -8,3 +8,6 @@ zkm-sdk = { path = "../../../crates/sdk" }
 
 [build-dependencies]
 zkm-build = { path = "../../../crates/build" }
+
+[features]
+aot = ["zkm-sdk/aot"]
