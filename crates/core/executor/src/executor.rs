@@ -454,12 +454,11 @@ impl<'a> Executor<'a> {
 
         self.state.write_memory(addr, value);
         self.state.write_memory_access_meta(addr, shard, timestamp);
-        if !self.unconstrained {
-            #[cfg(not(feature = "aot-access"))]
-            self.state.accessed.page_table.access(addr, true);
-            #[cfg(feature = "aot-access")]
-            self.state.access_memory(addr);
-        }
+
+        #[cfg(not(feature = "aot-access"))]
+        self.state.accessed.page_table.access(addr, true);
+        #[cfg(feature = "aot-access")]
+        self.state.set_memory_accessed(addr);
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -523,12 +522,11 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
 
         self.state.write_register_access_meta(addr, shard, timestamp);
-        if !self.unconstrained {
-            #[cfg(not(feature = "aot-access"))]
-            self.state.accessed.registers.access(addr, true);
-            #[cfg(feature = "aot-access")]
-            self.state.access_register(addr);
-        }
+
+        #[cfg(not(feature = "aot-access"))]
+        self.state.accessed.registers.access(addr, true);
+        #[cfg(feature = "aot-access")]
+        self.state.set_register_accessed(addr);
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
@@ -571,12 +569,11 @@ impl<'a> Executor<'a> {
 
         self.state.write_memory(addr, value);
         self.state.write_memory_access_meta(addr, shard, timestamp);
-        if !self.unconstrained {
-            #[cfg(not(feature = "aot-access"))]
-            self.state.accessed.page_table.access(addr, true);
-            #[cfg(feature = "aot-access")]
-            self.state.access_memory(addr);
-        }
+
+        #[cfg(not(feature = "aot-access"))]
+        self.state.accessed.page_table.access(addr, true);
+        #[cfg(feature = "aot-access")]
+        self.state.set_memory_accessed(addr);
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -631,12 +628,11 @@ impl<'a> Executor<'a> {
 
         self.state.write_register(addr, value);
         self.state.write_register_access_meta(addr, shard, timestamp);
-        if !self.unconstrained {
-            #[cfg(not(feature = "aot-access"))]
-            self.state.accessed.registers.access(addr, true);
-            #[cfg(feature = "aot-access")]
-            self.state.access_register(addr);
-        }
+
+        #[cfg(not(feature = "aot-access"))]
+        self.state.accessed.registers.access(addr, true);
+        #[cfg(feature = "aot-access")]
+        self.state.set_register_accessed(addr);
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -694,12 +690,12 @@ impl<'a> Executor<'a> {
         self.state.write_register(addr, value);
         self.state.write_register_access_meta(addr, shard, timestamp);
 
-        if !self.unconstrained {
-            #[cfg(not(feature = "aot-access"))]
-            self.state.accessed.registers.access(addr, true);
-            #[cfg(feature = "aot-access")]
-            self.state.access_register(addr);
+        #[cfg(not(feature = "aot-access"))]
+        self.state.accessed.registers.access(addr, true);
+        #[cfg(feature = "aot-access")]
+        self.state.set_register_accessed(addr);
 
+        if !self.unconstrained {
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
             } else {
@@ -1971,13 +1967,13 @@ impl<'a> Executor<'a> {
                 #[cfg(not(feature = "aot-access"))]
                 self.state.accessed.registers.insert(*addr, true);
                 #[cfg(feature = "aot-access")]
-                self.state.access_register(*addr);
+                self.state.set_register_accessed(*addr);
                 self.state.write_register(*addr, *value);
             } else {
                 #[cfg(not(feature = "aot-access"))]
                 self.state.accessed.page_table.insert(*addr, true);
                 #[cfg(feature = "aot-access")]
-                self.state.access_memory(*addr);
+                self.state.set_memory_accessed(*addr);
                 self.state.write_memory(*addr, *value);
             }
         }
@@ -2118,7 +2114,6 @@ impl<'a> Executor<'a> {
         // If we're close to not fitting, early stop the shard to ensure we don't OOM.
         let mut shape_match_found = true;
         if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
-            println!("------checking shapes at clk {} global_clk {}, executor.shape_check_frequency: {}", self.state.clk, self.state.global_clk, self.shape_check_frequency);
             // Estimate the number of events in the trace.
             let event_counts = estimate_mips_event_counts(
                 (self.state.clk / DEFAULT_CLK_INC) as u64,
@@ -2201,7 +2196,10 @@ impl<'a> Executor<'a> {
         }
 
         if cpu_exit || !shape_match_found {
-            println!("------Shard {} ended with clk {} and global_clk {}", self.state.current_shard, self.state.clk, self.state.global_clk);
+            println!(
+                "------Shard {} ended with clk {} and global_clk {}",
+                self.state.current_shard, self.state.clk, self.state.global_clk
+            );
             self.state.records_clk.push(self.state.clk);
             self.state.current_shard += 1;
             self.state.clk = 0;

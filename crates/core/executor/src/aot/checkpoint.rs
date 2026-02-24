@@ -3,7 +3,8 @@ use std::mem::offset_of;
 use crate::aot::common::*;
 use crate::aot::{get_pc, AotCompiler, AotError};
 use crate::{
-    DEFAULT_CLK_INC, ExecutionState, Executor, MipsAirId, estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts
+    estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts, ExecutionState,
+    Executor, MipsAirId, DEFAULT_CLK_INC,
 };
 
 impl AotCompiler {
@@ -185,7 +186,7 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        // std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
+        std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
     }
@@ -208,7 +209,6 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
     // If we're close to not fitting, early stop the shard to ensure we don't OOM.
     let mut shape_match_found = true;
     if executor.state.global_clk.is_multiple_of(executor.shape_check_frequency) {
-        println!("------checking shapes at global_clk {}, executor.shape_check_frequency: {}", executor.state.global_clk, executor.shape_check_frequency);
         // Estimate the number of events in the trace.
         let event_counts = estimate_mips_event_counts(
             (executor.state.clk / DEFAULT_CLK_INC) as u64,
@@ -291,7 +291,10 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
     }
 
     if cpu_exit || !shape_match_found {
-        println!("------Shard {} ended with clk {} and global_clk {}", executor.state.current_shard, executor.state.clk, executor.state.global_clk);
+        println!(
+            "------Shard {} ended with clk {} and global_clk {}",
+            executor.state.current_shard, executor.state.clk, executor.state.global_clk
+        );
         executor.state.records_clk.push(executor.state.clk);
         executor.state.current_shard += 1;
         executor.state.clk = 0;

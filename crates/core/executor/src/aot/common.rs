@@ -47,7 +47,10 @@ pub const ACCESS_REG_SHARD: &str = "1";
 pub const ACCESS_REG_CLK: &str = "2";
 pub const ACCESS_MEM_SHARD: &str = "3";
 pub const ACCESS_MEM_CLK: &str = "4";
-pub const TMP: &str = "6";
+pub const REG_ACCESSED: &str = "5";
+pub const MEM_ACCESSED: &str = "6";
+pub const BYTE_ALIGNMENT: &str = "7";
+pub const TMP: &str = "8";
 
 pub const DEFAULT_PC_OFFSET: i32 = 4;
 

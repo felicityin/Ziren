@@ -188,7 +188,7 @@ impl ExecutionState {
     /// Mark a register as accessed.
     #[cfg(feature = "aot-access")]
     #[inline(always)]
-    pub fn access_register(&mut self, ptr: u32) {
+    pub fn set_register_accessed(&mut self, ptr: u32) {
         let accessed: [u32; 1] = [1u32];
         unsafe { self.accessed.write(MIPS_REGISTER_SPACE, ptr, accessed) };
     }
@@ -196,7 +196,7 @@ impl ExecutionState {
     /// Mark a memory address as accessed.
     #[cfg(feature = "aot-access")]
     #[inline(always)]
-    pub fn access_memory(&mut self, ptr: u32) {
+    pub fn set_memory_accessed(&mut self, ptr: u32) {
         let accessed: [u32; 1] = [1u32];
         unsafe { self.accessed.write(MIPS_MEMORY_SPACE, ptr >> 2, accessed) };
     }
@@ -261,6 +261,10 @@ pub struct ForkState {
     /// The original values contain the memory value and last shard + timestamp that each memory address was accessed.
     pub access_shard: GuestMemory,
     pub access_clk: GuestMemory,
+    #[cfg(not(feature = "aot-access"))]
+    pub accessed: Memory<bool>,
+    #[cfg(feature = "aot-access")]
+    pub accessed: GuestMemory,
     /// The original memory access record at the fork point.
     pub op_record: MemoryAccessRecord,
     /// The original execution record at the fork point.

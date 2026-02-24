@@ -44,14 +44,12 @@ impl AotCompiler {
         if self.executor_mode == ExecutorMode::Checkpoint {
             match instruction.opcode {
                 Opcode::LW | Opcode::LL | Opcode::LWL | Opcode::LWR => {
-                    asm += &Self::set_access_memory_shard(gpr_reg_w64);
-                    asm += &Self::set_access_memory_clk(gpr_reg_w64);
+                    asm += &Self::set_access_memory_meta(gpr_reg_w64);
                 }
                 Opcode::LB | Opcode::LBU | Opcode::LH | Opcode::LHU => {
                     asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
                     asm += &format!("   and {REG_D_W}, 0xfffffffc\n");
-                    asm += &Self::set_access_memory_shard(REG_D);
-                    asm += &Self::set_access_memory_clk(REG_D);
+                    asm += &Self::set_access_memory_meta(REG_D);
                 }
                 _ => unreachable!(),
             }
@@ -229,14 +227,12 @@ impl AotCompiler {
         if self.executor_mode == ExecutorMode::Checkpoint {
             match instruction.opcode {
                 Opcode::SW | Opcode::SC | Opcode::SWL | Opcode::SWR => {
-                    asm += &Self::set_access_memory_shard(gpr_reg_w64);
-                    asm += &Self::set_access_memory_clk(gpr_reg_w64);
+                    asm += &Self::set_access_memory_meta(gpr_reg_w64);
                 }
                 Opcode::SB | Opcode::SH => {
                     asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
                     asm += &format!("   and {REG_D_W}, 0xfffffffc\n");
-                    asm += &Self::set_access_memory_shard(REG_D);
-                    asm += &Self::set_access_memory_clk(REG_D);
+                    asm += &Self::set_access_memory_meta(REG_D);
                 }
                 _ => unreachable!(),
             }
