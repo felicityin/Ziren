@@ -12,6 +12,12 @@ impl AotCompiler {
         let mut asm = String::new();
 
         if self.executor_mode == ExecutorMode::Checkpoint {
+            // self.local_counts.event_counts[instruction.opcode as usize] += 1;
+            asm += &Self::inc_events_count(vec![(instruction.opcode, 1)]);
+
+            // self.local_counts.event_counts[Opcode::ADD as usize] += 2;
+            asm += &Self::inc_events_count(vec![(Opcode::ADD, 2)]);
+
             asm += &Self::get_access_register_meta_addr();
             asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
             asm +=

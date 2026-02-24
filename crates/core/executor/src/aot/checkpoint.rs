@@ -214,7 +214,7 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
             (executor.state.clk / DEFAULT_CLK_INC) as u64,
             executor.local_counts.local_mem as u64,
             executor.local_counts.syscalls_sent as u64,
-            *executor.local_counts.event_counts,
+            executor.local_counts.event_counts.as_ref(),
         );
 
         // Check if the LDE size is too large.

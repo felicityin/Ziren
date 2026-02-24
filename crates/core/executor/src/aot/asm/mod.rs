@@ -4,12 +4,15 @@ mod memory;
 mod misc;
 mod syscall;
 
+use std::mem::offset_of;
+
 use crate::aot::{common::*, get_accesssed};
 use crate::{
     aot::{get_access_clk_space, get_access_shard_space, get_address_space, AotCompiler, AotError},
     events::MemoryAccessPosition,
     ExecutorMode, Instruction, DEFAULT_CLK_INC,
 };
+use crate::{Executor, LocalCounts, Opcode};
 
 impl AotCompiler {
     pub fn generate_instruction_asm(
@@ -174,6 +177,26 @@ impl AotCompiler {
         // self.set_memory_accessed(addr);
         asm += &format!("   pextrq {REG_A}, xmm{MEM_ACCESSED}, 1\n");
         asm += &format!("   mov dword ptr [{REG_A} + {addr}], 1\n");
+
+        asm
+    }
+
+    #[inline]
+    fn local_events_offset() -> usize {
+        offset_of!(Executor, local_counts) + offset_of!(LocalCounts, event_counts)
+    }
+
+    pub fn inc_events_count(opcods: Vec<(Opcode, u8)>) -> String {
+        let mut asm = String::new();
+
+        for (opcode, count) in opcods {
+            asm += &format!(
+                "   lea {REG_A}, [{REG_EXECUTOR_PTR} + {} + {}]\n",
+                Self::local_events_offset(),
+                opcode as usize * 8
+            );
+            asm += &format!("   add qword ptr [{REG_A}], {count}\n");
+        }
 
         asm
     }

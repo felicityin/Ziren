@@ -6,7 +6,6 @@ use std::{
 };
 
 use super::program::MAX_MEMORY;
-use enum_map::EnumMap;
 use hashbrown::HashMap;
 use libloading::Library;
 use serde::{Deserialize, Serialize};
@@ -33,7 +32,7 @@ use crate::{
     state::{ExecutionState, ForkState},
     subproof::SubproofVerifier,
     syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext},
-    ExecutionReport, Instruction, MaximalShapes, MipsAirId, Opcode, Program, Register,
+    ExecutionReport, Instruction, MaximalShapes, MipsAirId, Opcode, Program, Register, MAX_OPCODE,
     NUM_REGISTERS,
 };
 
@@ -183,15 +182,21 @@ pub enum ExecutorMode {
 }
 
 /// Information about event counts which are relevant for shape fixing.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(C)]
 pub struct LocalCounts {
     /// The event counts.
-    pub event_counts: Box<EnumMap<Opcode, u64>>,
+    pub event_counts: [u64; MAX_OPCODE + 1],
     /// The number of syscalls sent globally in the current shard.
     pub syscalls_sent: usize,
     /// The number of addresses touched in this shard.
     pub local_mem: usize,
+}
+
+impl Default for LocalCounts {
+    fn default() -> Self {
+        Self { event_counts: [0; MAX_OPCODE + 1], syscalls_sent: 0, local_mem: 0 }
+    }
 }
 
 /// Errors that the [``Executor``] can throw.
@@ -1194,38 +1199,38 @@ impl<'a> Executor<'a> {
 
         if !self.unconstrained {
             self.report.opcode_counts[instruction.opcode] += 1;
-            self.local_counts.event_counts[instruction.opcode] += 1;
+            self.local_counts.event_counts[instruction.opcode as usize] += 1;
             if instruction.is_memory_load_instruction() {
-                self.local_counts.event_counts[Opcode::ADD] += 2;
+                self.local_counts.event_counts[Opcode::ADD as usize] += 2;
             } else if instruction.is_branch_cmp_instruction() {
-                self.local_counts.event_counts[Opcode::ADD] += 1;
-                self.local_counts.event_counts[Opcode::SLT] += 2;
+                self.local_counts.event_counts[Opcode::ADD as usize] += 1;
+                self.local_counts.event_counts[Opcode::SLT as usize] += 2;
             } else if instruction.is_mov_cond_instruction() {
-                self.local_counts.event_counts[Opcode::ADD] += 1;
+                self.local_counts.event_counts[Opcode::ADD as usize] += 1;
             } else if instruction.opcode == Opcode::EXT {
-                self.local_counts.event_counts[Opcode::SLL] += 1;
-                self.local_counts.event_counts[Opcode::SRL] += 1;
+                self.local_counts.event_counts[Opcode::SLL as usize] += 1;
+                self.local_counts.event_counts[Opcode::SRL as usize] += 1;
             } else if instruction.is_cloclz_instruction() {
-                self.local_counts.event_counts[Opcode::SRL] += 1;
+                self.local_counts.event_counts[Opcode::SRL as usize] += 1;
             } else if instruction.is_maddsubu_instruction() {
-                self.local_counts.event_counts[Opcode::MULTU] += 1;
+                self.local_counts.event_counts[Opcode::MULTU as usize] += 1;
             } else if instruction.opcode == Opcode::INS {
-                self.local_counts.event_counts[Opcode::ROR] += 2;
-                self.local_counts.event_counts[Opcode::SLL] += 1;
-                self.local_counts.event_counts[Opcode::SRL] += 1;
-                self.local_counts.event_counts[Opcode::ADD] += 1;
+                self.local_counts.event_counts[Opcode::ROR as usize] += 2;
+                self.local_counts.event_counts[Opcode::SLL as usize] += 1;
+                self.local_counts.event_counts[Opcode::SRL as usize] += 1;
+                self.local_counts.event_counts[Opcode::ADD as usize] += 1;
             } else if instruction.opcode == Opcode::DIV {
-                self.local_counts.event_counts[Opcode::MULT] += 2;
-                self.local_counts.event_counts[Opcode::ADD] += 2;
-                self.local_counts.event_counts[Opcode::SLTU] += 1;
+                self.local_counts.event_counts[Opcode::MULT as usize] += 2;
+                self.local_counts.event_counts[Opcode::ADD as usize] += 2;
+                self.local_counts.event_counts[Opcode::SLTU as usize] += 1;
             } else if instruction.opcode == Opcode::DIVU {
-                self.local_counts.event_counts[Opcode::MULTU] += 2;
-                self.local_counts.event_counts[Opcode::ADD] += 2;
-                self.local_counts.event_counts[Opcode::SLTU] += 1;
+                self.local_counts.event_counts[Opcode::MULTU as usize] += 2;
+                self.local_counts.event_counts[Opcode::ADD as usize] += 2;
+                self.local_counts.event_counts[Opcode::SLTU as usize] += 1;
             } else if instruction.is_maddsub_instruction() {
-                self.local_counts.event_counts[Opcode::MULT] += 1;
+                self.local_counts.event_counts[Opcode::MULT as usize] += 1;
             } else if instruction.opcode == Opcode::JumpDirect {
-                self.local_counts.event_counts[Opcode::ADD] += 1;
+                self.local_counts.event_counts[Opcode::ADD as usize] += 1;
             }
         }
 
@@ -2119,7 +2124,7 @@ impl<'a> Executor<'a> {
                 (self.state.clk / DEFAULT_CLK_INC) as u64,
                 self.local_counts.local_mem as u64,
                 self.local_counts.syscalls_sent as u64,
-                *self.local_counts.event_counts,
+                self.local_counts.event_counts.as_ref(),
             );
 
             // Check if the LDE size is too large.
@@ -2209,6 +2214,10 @@ impl<'a> Executor<'a> {
     }
 
     pub fn postprocess(&mut self) {
+        // for (i, count) in self.local_counts.event_counts.iter().enumerate() {
+        //     println!("======self.local_counts.event_counts[{}]: {}", i, count);
+        // }
+
         // Flush remaining stdout/stderr
         for (fd, buf) in &self.io_buf {
             if !buf.is_empty() {

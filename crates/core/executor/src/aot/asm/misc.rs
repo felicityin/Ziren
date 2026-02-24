@@ -12,6 +12,12 @@ impl AotCompiler {
         let mut asm = String::new();
 
         if self.executor_mode == ExecutorMode::Checkpoint {
+            // self.local_counts.event_counts[instruction.opcode as usize] += 1;
+            asm += &Self::inc_events_count(vec![(instruction.opcode, 1)]);
+
+            // self.local_counts.event_counts[Opcode::ADD as usize] += 1;
+            asm += &Self::inc_events_count(vec![(Opcode::ADD, 1)]);
+
             asm += &Self::get_access_register_meta_addr();
             asm += &Self::set_access_register_meta(instruction.op_c, MemoryAccessPosition::C);
             asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
@@ -40,6 +46,29 @@ impl AotCompiler {
         let mut asm = String::new();
 
         if self.executor_mode == ExecutorMode::Checkpoint {
+            // self.local_counts.event_counts[instruction.opcode as usize] += 1;
+            asm += &Self::inc_events_count(vec![(instruction.opcode, 1)]);
+
+            if instruction.opcode == Opcode::EXT {
+                // self.local_counts.event_counts[Opcode::SLL as usize] += 1;
+                // self.local_counts.event_counts[Opcode::SRL as usize] += 1;
+                asm += &Self::inc_events_count(vec![(Opcode::SLL, 1), (Opcode::SRL, 1)]);
+            } else if instruction.is_maddsubu_instruction() {
+                // self.local_counts.event_counts[Opcode::MULTU as usize] += 1;
+                asm += &Self::inc_events_count(vec![(Opcode::MULTU, 1)]);
+            } else if instruction.opcode == Opcode::INS {
+                // self.local_counts.event_counts[Opcode::ROR as usize] += 2;
+                // self.local_counts.event_counts[Opcode::SLL as usize] += 1;
+                // self.local_counts.event_counts[Opcode::SRL as usize] += 1;
+                // self.local_counts.event_counts[Opcode::ADD as usize] += 1;
+                asm += &Self::inc_events_count(vec![
+                    (Opcode::ROR, 2),
+                    (Opcode::SLL, 1),
+                    (Opcode::SRL, 1),
+                    (Opcode::ADD, 1),
+                ]);
+            }
+
             asm += &Self::get_access_register_meta_addr();
             match instruction.opcode {
                 Opcode::MADDU | Opcode::MSUBU | Opcode::MADD | Opcode::MSUB => {

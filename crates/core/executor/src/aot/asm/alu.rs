@@ -12,6 +12,32 @@ impl AotCompiler {
         let mut asm = String::new();
 
         if self.executor_mode == ExecutorMode::Checkpoint {
+            // self.local_counts.event_counts[instruction.opcode as usize] += 1;
+            asm += &Self::inc_events_count(vec![(instruction.opcode, 1)]);
+
+            if instruction.is_cloclz_instruction() {
+                // self.local_counts.event_counts[Opcode::SRL as usize] += 1;
+                asm += &Self::inc_events_count(vec![(Opcode::SRL, 1)]);
+            } else if instruction.opcode == Opcode::DIV {
+                // self.local_counts.event_counts[Opcode::MULT as usize] += 2;
+                // self.local_counts.event_counts[Opcode::ADD as usize] += 2;
+                // self.local_counts.event_counts[Opcode::SLTU as usize] += 1;
+                asm += &Self::inc_events_count(vec![
+                    (Opcode::MULT, 2),
+                    (Opcode::ADD, 2),
+                    (Opcode::SLTU, 2),
+                ]);
+            } else if instruction.opcode == Opcode::DIVU {
+                // self.local_counts.event_counts[Opcode::MULTU as usize] += 2;
+                // self.local_counts.event_counts[Opcode::ADD as usize] += 2;
+                // self.local_counts.event_counts[Opcode::SLTU as usize] += 1;
+                asm += &Self::inc_events_count(vec![
+                    (Opcode::MULTU, 2),
+                    (Opcode::ADD, 2),
+                    (Opcode::SLTU, 2),
+                ]);
+            }
+
             asm += &Self::get_access_register_meta_addr();
 
             if !instruction.imm_c {

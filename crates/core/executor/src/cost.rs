@@ -97,86 +97,93 @@ pub fn estimate_mips_event_counts(
     cpu_cycles: u64,
     touched_addresses: u64,
     syscalls_sent: u64,
-    opcode_counts: EnumMap<Opcode, u64>,
+    opcode_counts: &[u64],
 ) -> EnumMap<MipsAirId, u64> {
     let mut events_counts: EnumMap<MipsAirId, u64> = EnumMap::default();
     // Compute the number of events in the cpu chip.
     events_counts[MipsAirId::Cpu] = cpu_cycles;
 
     // Compute the number of events in the add sub chip.
-    events_counts[MipsAirId::AddSub] = opcode_counts[Opcode::ADD] + opcode_counts[Opcode::SUB];
+    events_counts[MipsAirId::AddSub] =
+        opcode_counts[Opcode::ADD as usize] + opcode_counts[Opcode::SUB as usize];
 
     // Compute the number of events in the mul chip.
-    events_counts[MipsAirId::Mul] =
-        opcode_counts[Opcode::MUL] + opcode_counts[Opcode::MULT] + opcode_counts[Opcode::MULTU];
+    events_counts[MipsAirId::Mul] = opcode_counts[Opcode::MUL as usize]
+        + opcode_counts[Opcode::MULT as usize]
+        + opcode_counts[Opcode::MULTU as usize];
 
     // Compute the number of events in the bitwise chip.
-    events_counts[MipsAirId::Bitwise] = opcode_counts[Opcode::XOR]
-        + opcode_counts[Opcode::OR]
-        + opcode_counts[Opcode::AND]
-        + opcode_counts[Opcode::NOR];
+    events_counts[MipsAirId::Bitwise] = opcode_counts[Opcode::XOR as usize]
+        + opcode_counts[Opcode::OR as usize]
+        + opcode_counts[Opcode::AND as usize]
+        + opcode_counts[Opcode::NOR as usize];
 
     // Compute the number of events in the shift left chip.
-    events_counts[MipsAirId::ShiftLeft] = opcode_counts[Opcode::SLL];
+    events_counts[MipsAirId::ShiftLeft] = opcode_counts[Opcode::SLL as usize];
 
     // Compute the number of events in the shift right chip.
-    events_counts[MipsAirId::ShiftRight] =
-        opcode_counts[Opcode::SRL] + opcode_counts[Opcode::SRA] + opcode_counts[Opcode::ROR];
+    events_counts[MipsAirId::ShiftRight] = opcode_counts[Opcode::SRL as usize]
+        + opcode_counts[Opcode::SRA as usize]
+        + opcode_counts[Opcode::ROR as usize];
 
     // Compute the number of events in the divrem chip.
-    events_counts[MipsAirId::DivRem] = opcode_counts[Opcode::DIV] + opcode_counts[Opcode::DIVU];
+    events_counts[MipsAirId::DivRem] =
+        opcode_counts[Opcode::DIV as usize] + opcode_counts[Opcode::DIVU as usize];
 
     // Compute the number of events in the lt chip.
-    events_counts[MipsAirId::Lt] = opcode_counts[Opcode::SLT] + opcode_counts[Opcode::SLTU];
+    events_counts[MipsAirId::Lt] =
+        opcode_counts[Opcode::SLT as usize] + opcode_counts[Opcode::SLTU as usize];
 
     // Compute the number of events in the memory local chip.
     events_counts[MipsAirId::MemoryLocal] =
         touched_addresses.div_ceil(NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC as u64);
 
     // Compute the number of events in the branch chip.
-    events_counts[MipsAirId::Branch] = opcode_counts[Opcode::BEQ]
-        + opcode_counts[Opcode::BNE]
-        + opcode_counts[Opcode::BGTZ]
-        + opcode_counts[Opcode::BGEZ]
-        + opcode_counts[Opcode::BLTZ]
-        + opcode_counts[Opcode::BLEZ];
+    events_counts[MipsAirId::Branch] = opcode_counts[Opcode::BEQ as usize]
+        + opcode_counts[Opcode::BNE as usize]
+        + opcode_counts[Opcode::BGTZ as usize]
+        + opcode_counts[Opcode::BGEZ as usize]
+        + opcode_counts[Opcode::BLTZ as usize]
+        + opcode_counts[Opcode::BLEZ as usize];
 
     // Compute the number of events in the jump chip.
-    events_counts[MipsAirId::Jump] = opcode_counts[Opcode::Jump]
-        + opcode_counts[Opcode::Jumpi]
-        + opcode_counts[Opcode::JumpDirect];
+    events_counts[MipsAirId::Jump] = opcode_counts[Opcode::Jump as usize]
+        + opcode_counts[Opcode::Jumpi as usize]
+        + opcode_counts[Opcode::JumpDirect as usize];
 
     // Compute the number of events in the MemoryInstrs chip.
-    events_counts[MipsAirId::MemoryInstrs] = opcode_counts[Opcode::LB]
-        + opcode_counts[Opcode::LH]
-        + opcode_counts[Opcode::LW]
-        + opcode_counts[Opcode::LBU]
-        + opcode_counts[Opcode::LHU]
-        + opcode_counts[Opcode::SB]
-        + opcode_counts[Opcode::SH]
-        + opcode_counts[Opcode::SW]
-        + opcode_counts[Opcode::LWL]
-        + opcode_counts[Opcode::LWR]
-        + opcode_counts[Opcode::LL]
-        + opcode_counts[Opcode::SWL]
-        + opcode_counts[Opcode::SWR]
-        + opcode_counts[Opcode::SC];
+    events_counts[MipsAirId::MemoryInstrs] = opcode_counts[Opcode::LB as usize]
+        + opcode_counts[Opcode::LH as usize]
+        + opcode_counts[Opcode::LW as usize]
+        + opcode_counts[Opcode::LBU as usize]
+        + opcode_counts[Opcode::LHU as usize]
+        + opcode_counts[Opcode::SB as usize]
+        + opcode_counts[Opcode::SH as usize]
+        + opcode_counts[Opcode::SW as usize]
+        + opcode_counts[Opcode::LWL as usize]
+        + opcode_counts[Opcode::LWR as usize]
+        + opcode_counts[Opcode::LL as usize]
+        + opcode_counts[Opcode::SWL as usize]
+        + opcode_counts[Opcode::SWR as usize]
+        + opcode_counts[Opcode::SC as usize];
 
     // Compute the number of events in the MiscInstrs chip.
-    events_counts[MipsAirId::MiscInstrs] = opcode_counts[Opcode::INS]
-        + opcode_counts[Opcode::EXT]
-        + opcode_counts[Opcode::SEXT]
-        + opcode_counts[Opcode::MADDU]
-        + opcode_counts[Opcode::MSUBU]
-        + opcode_counts[Opcode::MADD]
-        + opcode_counts[Opcode::MSUB]
-        + opcode_counts[Opcode::TEQ];
+    events_counts[MipsAirId::MiscInstrs] = opcode_counts[Opcode::INS as usize]
+        + opcode_counts[Opcode::EXT as usize]
+        + opcode_counts[Opcode::SEXT as usize]
+        + opcode_counts[Opcode::MADDU as usize]
+        + opcode_counts[Opcode::MSUBU as usize]
+        + opcode_counts[Opcode::MADD as usize]
+        + opcode_counts[Opcode::MSUB as usize]
+        + opcode_counts[Opcode::TEQ as usize];
 
-    events_counts[MipsAirId::MovCond] =
-        opcode_counts[Opcode::WSBH] + opcode_counts[Opcode::MNE] + opcode_counts[Opcode::MEQ];
+    events_counts[MipsAirId::MovCond] = opcode_counts[Opcode::WSBH as usize]
+        + opcode_counts[Opcode::MNE as usize]
+        + opcode_counts[Opcode::MEQ as usize];
 
     // Compute the number of events in the auipc chip.
-    events_counts[MipsAirId::CloClz] = opcode_counts[Opcode::CLO] + opcode_counts[Opcode::CLZ];
+    events_counts[MipsAirId::CloClz] =
+        opcode_counts[Opcode::CLO as usize] + opcode_counts[Opcode::CLZ as usize];
 
     // Compute the number of events in the syscall core chip.
     events_counts[MipsAirId::SyscallCore] = syscalls_sent;
