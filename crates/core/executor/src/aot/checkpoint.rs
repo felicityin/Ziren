@@ -1,7 +1,7 @@
 use std::mem::offset_of;
 
 use crate::aot::common::*;
-use crate::aot::{get_pc, AotCompiler, AotError};
+use crate::aot::{AotCompiler, AotError};
 use crate::{
     estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts, ExecutionState,
     Executor, MipsAirId, DEFAULT_CLK_INC,
@@ -10,27 +10,6 @@ use crate::{
 impl AotCompiler {
     pub fn create_metered_asm(&self) -> Result<String, AotError> {
         let mut asm = String::new();
-
-        // pc
-        let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
-        let sync_reg_to_pc =
-            || format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_NEXT_PC_W}\n");
-
-        // global clk
-        let global_clk_offset =
-            offset_of!(Executor, state) + offset_of!(ExecutionState, global_clk);
-        let sync_reg_to_global_clk = || {
-            format!(
-                "    mov QWORD PTR [{REG_EXECUTOR_PTR} + {global_clk_offset}], {REG_GLOBAL_CLK}\n"
-            )
-        };
-        let sync_global_clk_to_reg =
-            || format!("    mov {REG_GLOBAL_CLK}, [{REG_EXECUTOR_PTR} + {global_clk_offset}]\n");
-
-        // clk
-        let clk_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, clk);
-        let sync_reg_to_clk =
-            || format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK_W}\n");
 
         // shard
         let shard_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, current_shard);
@@ -52,19 +31,10 @@ impl AotCompiler {
         asm += "    # get params\n";
         asm += &format!("    mov {REG_EXECUTOR_PTR}, {REG_FIRST_ARG}\n");
 
-        let get_pc_ptr = format!("{:p}", get_pc as *const ());
-
         asm += "    # push_internal_registers\n";
         asm += &Self::push_internal_registers();
 
         asm += &self.get_address_space_start();
-
-        // Store the pointer to where `pc` is stored in the state to the register
-        asm += "    # Store the pointer to where `pc` is stored to the register\n";
-        asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-        asm += &format!("    mov {REG_CALLER}, {get_pc_ptr}\n");
-        asm += &format!("    call {REG_CALLER}\n");
-        asm += &format!("    mov {REG_NEXT_PC}, {REG_RETURN_VAL}\n");
 
         asm += "    # pop_internal_registers\n";
         asm += &Self::pop_internal_registers();
@@ -75,7 +45,8 @@ impl AotCompiler {
         asm += "    # state.clk = 0\n";
         asm += &format!("   mov {REG_CLK}, 0\n");
 
-        asm += &sync_global_clk_to_reg();
+        asm += &Self::sync_global_clk_to_reg();
+        asm += &Self::sync_pc_to_reg();
         asm += &sync_shard_to_reg();
 
         asm += "    # execute\n";
@@ -90,7 +61,6 @@ impl AotCompiler {
         }
 
         let inc_shard_if_need_ptr = format!("{:p}", inc_shard_if_need as *const ());
-        let most_pc = self.program.pc_base + self.program.instructions.len() as u32 * 4;
         let most_clk = self.shard_size - self.max_syscall_cycles;
         let shape_check_frequency = self.shape_check_frequency;
 
@@ -98,13 +68,43 @@ impl AotCompiler {
         while i < self.program.instructions.len() {
             let pc = self.program.pc(i);
             let instruction = &self.program.instructions[i];
+
             asm += &format!("asm_execute_pc_{pc}:\n");
 
-            // Check if we should suspend or not
-            asm += &format!("    cmp {REG_NEXT_PC}, {most_pc}\n");
-            asm += "    jae asm_run_end\n";
+            if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
+                // Processing the delay slot.
+                // Note that the processing order here differs from that in the executor.
+                // eg. The execution order of instructions in the executor is:
+                //   jump       %x0        %x31       0
+                //   sltu       %x2        %x1        1
+                // But here:
+                //   sltu       %x2        %x1        1
+                //   jump       %x0        %x31       0
+                let next_instruction = &self.program.instructions[i + 1];
+                let next_pc = self.program.pc(i + 1);
+                asm += &format!("asm_execute_pc_{next_pc}:\n");
+                asm += &(self.generate_instruction_asm(next_instruction, next_pc, true)?); // delay slot
+
+                // Cannot be placed after jmp or branch instructions, otherwise it cannot be executed
+                asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 8);
+                asm += &format!("    add {REG_CLK}, 10\n");
+                asm += &format!("    add {REG_GLOBAL_CLK}, 2\n");
+                i += 2;
+
+                // jmp or branch instructions
+                asm += &(self.generate_instruction_asm(instruction, pc, false)?);
+            } else {
+                asm += &(self.generate_instruction_asm(instruction, pc, false)?);
+
+                asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
+                asm += &format!("    add {REG_CLK}, 5\n");
+                asm += &format!("    inc {REG_GLOBAL_CLK}\n");
+                i += 1;
+            }
+
+            // Check if we should increment shard
             asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
-            asm += "    jae asm_run_end\n";
+            asm += "    jae asm_inc_shard\n";
 
             // Check global_clk % shape_check_frequency
             asm += "    # global_clk % shape_check_frequency\n";
@@ -114,13 +114,13 @@ impl AotCompiler {
             asm += &format!("    div {REG_D}\n");
             asm += &format!("    test {REG_HI_64}, {REG_HI_64}\n");
             // {REG_HI_64} ≠ 0 means global_clk % shape_check_frequency ≠ 0, so we can continue executing.
-            asm += &format!("    jnz .{pc}_inc_pc_clk\n");
+            asm += &format!("    jnz .asm_execute_pc_{}\n", pc + 4);
 
             // global_clk % shape_check_frequency == 0
             // Call inc_shard_if_need()
-            asm += &sync_reg_to_pc();
-            asm += &sync_reg_to_clk();
-            asm += &sync_reg_to_global_clk();
+            asm += &Self::sync_reg_to_pc();
+            asm += &Self::sync_reg_to_clk();
+            asm += &Self::sync_reg_to_global_clk();
             asm += "    # call inc_shard_if_need()\n";
             asm += &Self::before_call();
             asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
@@ -129,43 +129,24 @@ impl AotCompiler {
             asm += "    test al, al\n";
             asm += &Self::after_call();
             asm += "    jnz asm_run_end\n";
-
-            asm += &format!(".{pc}_inc_pc_clk:\n");
-            asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
-            asm += &format!("    add {REG_CLK}, 5\n");
-            asm += &format!("    inc {REG_GLOBAL_CLK}\n");
-            i += 1;
-
-            if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
-                // Processing the delay slot
-                // Note that the processing order here differs from that in the executor
-                // eg. The execution order of instructions in the executor is:
-                //   jump       %x0        %x31       0
-                //   sltu       %x2        %x1        1
-                // But here:
-                //   sltu       %x2        %x1        1
-                //   jump       %x0        %x31       0
-                let next_instruction = &self.program.instructions[i];
-                let next_pc = self.program.pc(i);
-                asm += &format!("asm_execute_pc_{next_pc}:\n");
-                asm += &format!("    mov {REG_NEXT_PC}, {}\n", next_pc + 4);
-                asm += &format!("    add {REG_CLK}, 5\n");
-                asm += &format!("    inc {REG_GLOBAL_CLK}\n");
-                i += 1;
-                asm += &(self.generate_instruction_asm(next_instruction, next_pc)?);
-
-                asm += &(self.generate_instruction_asm(instruction, pc)?);
-            } else {
-                asm += &(self.generate_instruction_asm(instruction, pc)?);
-            }
         }
 
         asm += "asm_run_end:\n";
         asm += "    # save_xmm_regs\n";
         asm += &Self::save_xmm_regs();
-        asm += &sync_reg_to_pc();
-        asm += &sync_reg_to_clk();
-        asm += &sync_reg_to_global_clk();
+        asm += &Self::pop_external_registers();
+        asm += "    ret\n";
+
+        asm += "asm_halt:\n";
+        asm += &Self::pop_external_registers();
+        asm += "    ret\n";
+
+        asm += "asm_inc_shard:\n";
+        asm += "    # save_xmm_regs\n";
+        asm += &Self::save_xmm_regs();
+        asm += &Self::sync_reg_to_pc();
+        asm += &Self::sync_reg_to_clk();
+        asm += &Self::sync_reg_to_global_clk();
         asm += "    # call inc_shard_if_need()\n";
         asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
@@ -195,6 +176,9 @@ impl AotCompiler {
 
 #[inline]
 extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
+    // println!("aot inc_shard_if_need");
+    // println!("=======pc: {}" , executor.state.pc);
+
     // If the cycle limit is exceeded, return an error.
     if let Some(max_cycles) = executor.max_cycles {
         if executor.state.global_clk >= max_cycles {
@@ -213,11 +197,11 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
         // Estimate the number of events in the trace.
         let event_counts = estimate_mips_event_counts(
             (executor.state.clk / DEFAULT_CLK_INC) as u64,
-            executor.local_counts.local_mem as u64,
+            executor.local_counts.local_mem,
             executor.local_counts.syscalls_sent as u64,
             executor.local_counts.event_counts.as_ref(),
         );
-        println!("aot-------self.local_counts.syscalls_sent: {}, self.local_counts.local_mem: {}", executor.local_counts.syscalls_sent, executor.local_counts.local_mem);
+        // println!("aot-------self.local_counts.syscalls_sent: {}, self.local_counts.local_mem: {}", executor.local_counts.syscalls_sent, executor.local_counts.local_mem);
 
         // Check if the LDE size is too large.
         if executor.lde_size_check {
@@ -293,10 +277,10 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
     }
 
     if cpu_exit || !shape_match_found {
-        println!(
-            "------Shard {} ended with clk {} and global_clk {}",
-            executor.state.current_shard, executor.state.clk, executor.state.global_clk
-        );
+        // println!(
+        //     "aot ------Shard {} ended with pc {} clk {} and global_clk {}",
+        //     executor.state.current_shard, executor.state.pc, executor.state.clk, executor.state.global_clk
+        // );
         executor.state.records_clk.push(executor.state.clk);
         executor.state.current_shard += 1;
         executor.state.clk = 0;
@@ -305,7 +289,7 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
     false
 }
 
-// Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot_metered`
+// Run all tests: `RUST_TEST_THREADS=1 cargo test test_aot_metered --features aot`
 #[cfg(test)]
 mod tests {
     use zkm_stark::ZKMCoreOpts;
@@ -1299,6 +1283,7 @@ mod tests {
         assert_eq!(runtime.state.clk, 7995);
         assert_eq!(runtime.state.global_clk, 3590);
         assert_eq!(runtime.state.current_shard, 2);
+        assert_eq!(runtime.state.pc, 0);
 
         let (shard, clk) = runtime.state.read_register_access_meta(3);
         assert_eq!(shard, 2);

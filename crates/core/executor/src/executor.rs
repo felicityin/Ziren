@@ -1176,6 +1176,7 @@ impl<'a> Executor<'a> {
     /// Execute the given instruction over the current state of the runtime.
     #[allow(clippy::too_many_lines)]
     fn execute_operation(&mut self, instruction: &Instruction) -> Result<(), ExecutionError> {
+        // println!("clk: {}, ins: {:?}", self.state.clk, instruction);
         let mut pc = self.state.pc;
         let mut clk = self.state.clk;
         let mut exit_code = 0u32; // use in halt code
@@ -1326,6 +1327,10 @@ impl<'a> Executor<'a> {
         let syscall = SyscallCode::from_u32(syscall_id);
         let mut prev_a = syscall_id;
         log::trace!("pc: {:X} syscall {}, a0: {:X}, a1: {:X}", self.state.pc, syscall_id, b, c);
+        println!(
+            "0 exe pc: {}, clk: {}, global_clk: {} {}",
+            self.state.pc, self.state.clk, self.state.global_clk, syscall
+        );
 
         if self.print_report && !self.unconstrained {
             self.report.syscall_counts[syscall] += 1;
@@ -1393,6 +1398,10 @@ impl<'a> Executor<'a> {
         let hi_or_prev_a = Some(prev_a);
         let syscall_code = syscall.syscall_id();
 
+        println!(
+            "1 exe pc: {}, clk: {}, global_clk: {} {}",
+            next_pc, self.state.clk, self.state.global_clk, syscall
+        );
         Ok((hi_or_prev_a, a, b, c, clk, pc, next_pc, next_next_pc, syscall_code, exit_code))
     }
 
@@ -2039,6 +2048,16 @@ impl<'a> Executor<'a> {
             }
 
             if self.shard_batch_size > 0 && self.inc_shard_if_need() {
+                println!(
+                    "exe 1------mod: {:?}, Shard {} ended with pc {}, clk {}, and global_clk {}",
+                    self.executor_mode,
+                    self.state.current_shard,
+                    self.state.pc,
+                    self.state.clk,
+                    self.state.global_clk
+                );
+                println!("--clks: {:?}", self.state.records_clk);
+
                 num_shards_executed += 1;
                 self.bump_record();
                 if num_shards_executed >= self.shard_batch_size {
@@ -2055,6 +2074,10 @@ impl<'a> Executor<'a> {
         let public_values = self.record.public_values;
 
         if done {
+            println!(
+                "exe 2------done: {done}, self.state.pc: {}, Shard {} ended with clk {} and global_clk {}",
+                self.state.pc, self.state.current_shard, self.state.clk, self.state.global_clk
+            );
             // Push the remaining execution record with memory initialize & finalize events.
             self.bump_record();
             log::debug!("last step {}", self.state.global_clk);
@@ -2101,6 +2124,10 @@ impl<'a> Executor<'a> {
             if !self.state.records_clk.is_empty()
                 && self.state.clk >= self.state.records_clk[self.state.records_clk_index as usize]
             {
+                println!(
+                    "-----trace: shard {} ended with pc {}, clk {}, and global_clk {}",
+                    self.state.current_shard, self.state.pc, self.state.clk, self.state.global_clk
+                );
                 self.state.current_shard += 1;
                 self.state.clk = 0;
                 self.state.records_clk_index += 1;
@@ -2120,11 +2147,11 @@ impl<'a> Executor<'a> {
             // Estimate the number of events in the trace.
             let event_counts = estimate_mips_event_counts(
                 (self.state.clk / DEFAULT_CLK_INC) as u64,
-                self.local_counts.local_mem as u64,
+                self.local_counts.local_mem,
                 self.local_counts.syscalls_sent as u64,
                 self.local_counts.event_counts.as_ref(),
             );
-            println!("-------self.local_counts.syscalls_sent: {}, self.local_counts.local_mem: {}", self.local_counts.syscalls_sent, self.local_counts.local_mem);
+            // println!("-------self.local_counts.syscalls_sent: {}, self.local_counts.local_mem: {}", self.local_counts.syscalls_sent, self.local_counts.local_mem);
 
             // Check if the LDE size is too large.
             if self.lde_size_check {
@@ -2201,8 +2228,8 @@ impl<'a> Executor<'a> {
 
         if cpu_exit || !shape_match_found {
             println!(
-                "------Shard {} ended with clk {} and global_clk {}",
-                self.state.current_shard, self.state.clk, self.state.global_clk
+                "------Shard {} ended with pc {} clk {} and global_clk {}",
+                self.state.current_shard, self.state.pc, self.state.clk, self.state.global_clk
             );
             self.state.records_clk.push(self.state.clk);
             self.state.current_shard += 1;

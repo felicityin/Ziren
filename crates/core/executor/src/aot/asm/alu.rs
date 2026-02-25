@@ -8,6 +8,7 @@ impl AotCompiler {
         &self,
         instruction: &Instruction,
         _pc: u32,
+        is_delay_slot: bool,
     ) -> Result<String, AotError> {
         let mut asm = String::new();
 
@@ -41,20 +42,35 @@ impl AotCompiler {
             asm += &Self::get_access_register_meta_addr();
 
             if !instruction.imm_c {
-                asm += &Self::set_access_register_meta(instruction.op_c, MemoryAccessPosition::C);
+                asm += &Self::set_access_register_meta(
+                    instruction.op_c,
+                    MemoryAccessPosition::C,
+                    is_delay_slot,
+                );
             }
             if !instruction.imm_b {
-                asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
+                asm += &Self::set_access_register_meta(
+                    instruction.op_b,
+                    MemoryAccessPosition::B,
+                    is_delay_slot,
+                );
             }
             if instruction.opcode.is_use_lo_hi_alu() {
-                asm +=
-                    &Self::set_access_register_meta(Register::LO as u32, MemoryAccessPosition::A);
-                asm +=
-                    &Self::set_access_register_meta(Register::HI as u32, MemoryAccessPosition::HI);
+                asm += &Self::set_access_register_meta(
+                    Register::LO as u32,
+                    MemoryAccessPosition::A,
+                    is_delay_slot,
+                );
+                asm += &Self::set_access_register_meta(
+                    Register::HI as u32,
+                    MemoryAccessPosition::HI,
+                    is_delay_slot,
+                );
             } else {
                 asm += &Self::set_access_register_meta(
                     instruction.op_a as u32,
                     MemoryAccessPosition::A,
+                    is_delay_slot,
                 );
             }
         }

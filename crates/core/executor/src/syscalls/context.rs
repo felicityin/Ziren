@@ -91,7 +91,13 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
     /// Write a word to memory.
     pub fn mw(&mut self, addr: u32, value: u32) -> MemoryWriteRecord {
         self.rt.in_syscall = true;
-        let record = self.rt.mw(addr, value, self.current_shard, self.clk, Some(&mut self.local_memory_access));
+        let record = self.rt.mw(
+            addr,
+            value,
+            self.current_shard,
+            self.clk,
+            Some(&mut self.local_memory_access),
+        );
         self.rt.in_syscall = false;
         record
     }

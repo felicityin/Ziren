@@ -8,6 +8,7 @@ impl AotCompiler {
         &self,
         instruction: &Instruction,
         pc: u32,
+        is_delay_slot: bool,
     ) -> Result<String, AotError> {
         let mut asm = String::new();
 
@@ -19,9 +20,16 @@ impl AotCompiler {
             asm += &Self::inc_event_counts(vec![(Opcode::ADD, 2)]);
 
             asm += &Self::get_access_register_meta_addr();
-            asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
-            asm +=
-                &Self::set_access_register_meta(instruction.op_a as u32, MemoryAccessPosition::A);
+            asm += &Self::set_access_register_meta(
+                instruction.op_b,
+                MemoryAccessPosition::B,
+                is_delay_slot,
+            );
+            asm += &Self::set_access_register_meta(
+                instruction.op_a as u32,
+                MemoryAccessPosition::A,
+                is_delay_slot,
+            );
         }
 
         let a = instruction.op_a;
@@ -54,7 +62,7 @@ impl AotCompiler {
 
                     // self.state.write_memory(addr, value);
                     // self.state.write_memory_access_meta(addr, shard, timestamp);
-                    asm += &Self::set_access_memory_meta(gpr_reg_w64);
+                    asm += &Self::set_access_memory_meta(gpr_reg_w64, is_delay_slot);
                 }
                 Opcode::LB | Opcode::LBU | Opcode::LH | Opcode::LHU => {
                     asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
@@ -64,7 +72,7 @@ impl AotCompiler {
 
                     // self.state.write_memory(addr, value);
                     // self.state.write_memory_access_meta(addr, shard, timestamp);
-                    asm += &Self::set_access_memory_meta(REG_D);
+                    asm += &Self::set_access_memory_meta(REG_D, is_delay_slot);
                 }
                 _ => unreachable!(),
             }
@@ -206,6 +214,7 @@ impl AotCompiler {
         &self,
         instruction: &Instruction,
         pc: u32,
+        is_delay_slot: bool,
     ) -> Result<String, AotError> {
         let mut asm = String::new();
 
@@ -214,9 +223,16 @@ impl AotCompiler {
             asm += &Self::inc_event_counts(vec![(instruction.opcode, 1)]);
 
             asm += &Self::get_access_register_meta_addr();
-            asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
-            asm +=
-                &Self::set_access_register_meta(instruction.op_a as u32, MemoryAccessPosition::A);
+            asm += &Self::set_access_register_meta(
+                instruction.op_b,
+                MemoryAccessPosition::B,
+                is_delay_slot,
+            );
+            asm += &Self::set_access_register_meta(
+                instruction.op_a as u32,
+                MemoryAccessPosition::A,
+                is_delay_slot,
+            );
         }
 
         let a = instruction.op_a;
@@ -249,7 +265,7 @@ impl AotCompiler {
 
                     // self.state.write_memory(addr, value);
                     // self.state.write_memory_access_meta(addr, shard, timestamp);
-                    asm += &Self::set_access_memory_meta(gpr_reg_w64);
+                    asm += &Self::set_access_memory_meta(gpr_reg_w64, is_delay_slot);
                 }
                 Opcode::SB | Opcode::SH => {
                     asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
@@ -259,7 +275,7 @@ impl AotCompiler {
 
                     // self.state.write_memory(addr, value);
                     // self.state.write_memory_access_meta(addr, shard, timestamp);
-                    asm += &Self::set_access_memory_meta(REG_D);
+                    asm += &Self::set_access_memory_meta(REG_D, is_delay_slot);
                 }
                 _ => unreachable!(),
             }

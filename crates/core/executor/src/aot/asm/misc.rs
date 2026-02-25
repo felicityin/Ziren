@@ -8,6 +8,7 @@ impl AotCompiler {
         &self,
         instruction: &Instruction,
         _pc: u32,
+        is_delay_slot: bool,
     ) -> Result<String, AotError> {
         let mut asm = String::new();
 
@@ -19,10 +20,21 @@ impl AotCompiler {
             asm += &Self::inc_event_counts(vec![(Opcode::ADD, 1)]);
 
             asm += &Self::get_access_register_meta_addr();
-            asm += &Self::set_access_register_meta(instruction.op_c, MemoryAccessPosition::C);
-            asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
-            asm +=
-                &Self::set_access_register_meta(instruction.op_a as u32, MemoryAccessPosition::A);
+            asm += &Self::set_access_register_meta(
+                instruction.op_c,
+                MemoryAccessPosition::C,
+                is_delay_slot,
+            );
+            asm += &Self::set_access_register_meta(
+                instruction.op_b,
+                MemoryAccessPosition::B,
+                is_delay_slot,
+            );
+            asm += &Self::set_access_register_meta(
+                instruction.op_a as u32,
+                MemoryAccessPosition::A,
+                is_delay_slot,
+            );
         }
 
         let extern_handler_ptr = format!("{:p}", execute_mov_cond as *const ());
@@ -42,6 +54,7 @@ impl AotCompiler {
         &self,
         instruction: &Instruction,
         _pc: u32,
+        is_delay_slot: bool,
     ) -> Result<String, AotError> {
         let mut asm = String::new();
 
@@ -72,25 +85,37 @@ impl AotCompiler {
             asm += &Self::get_access_register_meta_addr();
             match instruction.opcode {
                 Opcode::MADDU | Opcode::MSUBU | Opcode::MADD | Opcode::MSUB => {
-                    asm +=
-                        &Self::set_access_register_meta(instruction.op_c, MemoryAccessPosition::C);
-                    asm +=
-                        &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
+                    asm += &Self::set_access_register_meta(
+                        instruction.op_c,
+                        MemoryAccessPosition::C,
+                        is_delay_slot,
+                    );
+                    asm += &Self::set_access_register_meta(
+                        instruction.op_b,
+                        MemoryAccessPosition::B,
+                        is_delay_slot,
+                    );
                     asm += &Self::set_access_register_meta(
                         Register::LO as u32,
                         MemoryAccessPosition::A,
+                        is_delay_slot,
                     );
                     asm += &Self::set_access_register_meta(
                         Register::HI as u32,
                         MemoryAccessPosition::HI,
+                        is_delay_slot,
                     );
                 }
                 Opcode::WSBH | Opcode::EXT | Opcode::SEXT | Opcode::INS | Opcode::TEQ => {
-                    asm +=
-                        &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
+                    asm += &Self::set_access_register_meta(
+                        instruction.op_b,
+                        MemoryAccessPosition::B,
+                        is_delay_slot,
+                    );
                     asm += &Self::set_access_register_meta(
                         instruction.op_a as u32,
                         MemoryAccessPosition::A,
+                        is_delay_slot,
                     );
                 }
                 _ => unreachable!(),

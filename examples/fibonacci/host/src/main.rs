@@ -32,10 +32,11 @@ fn main() {
     //
     // Note that this output is read from values committed to in the guest using
     // `zkm_zkvm::io::commit`.
-    let _ = proof.public_values.read::<u32>();
+    let n = proof.public_values.read::<u32>();
     let a = proof.public_values.read::<u32>();
     let b = proof.public_values.read::<u32>();
 
+    println!("n: {}", n);
     println!("a: {}", a);
     println!("b: {}", b);
 

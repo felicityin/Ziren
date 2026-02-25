@@ -2,13 +2,14 @@ use crate::aot::common::*;
 use crate::aot::{AotCompiler, AotError};
 use crate::events::MemoryAccessPosition;
 use crate::syscalls::{SyscallCode, SyscallContext};
-use crate::{Executor, ExecutorMode, Instruction, Register};
+use crate::{Executor, ExecutorMode, Instruction, Register, DEFAULT_CLK_INC};
 
 impl AotCompiler {
     pub fn generate_syscall_asm(
         &self,
         instruction: &Instruction,
         pc: u32,
+        is_delay_slot: bool,
     ) -> Result<String, AotError> {
         let extern_handler_ptr = format!("{:p}", execute_syscall as *const ());
         let instruction_ptr = format!("{:p}", instruction as *const Instruction);
@@ -17,10 +18,25 @@ impl AotCompiler {
 
         if self.executor_mode == ExecutorMode::Checkpoint {
             asm += &Self::get_access_register_meta_addr();
-            asm += &Self::set_access_register_meta(Register::A1 as u32, MemoryAccessPosition::C);
-            asm += &Self::set_access_register_meta(Register::A0 as u32, MemoryAccessPosition::B);
-            asm += &Self::set_access_register_meta(Register::V0 as u32, MemoryAccessPosition::A);
+            asm += &Self::set_access_register_meta(
+                Register::A1 as u32,
+                MemoryAccessPosition::C,
+                is_delay_slot,
+            );
+            asm += &Self::set_access_register_meta(
+                Register::A0 as u32,
+                MemoryAccessPosition::B,
+                is_delay_slot,
+            );
+            asm += &Self::set_access_register_meta(
+                Register::V0 as u32,
+                MemoryAccessPosition::A,
+                is_delay_slot,
+            );
         }
+
+        asm += &Self::sync_reg_to_pc();
+        asm += &Self::sync_reg_to_clk();
 
         asm += "   # syscall\n";
         asm += &Self::before_call();
@@ -32,11 +48,14 @@ impl AotCompiler {
         asm += &format!("   pinsrq  xmm{TMP}, {REG_RETURN_VAL}, 1\n");
         asm += &Self::after_call();
 
+        asm += &Self::sync_pc_to_reg();
+        asm += &Self::sync_clk_to_reg();
+
         asm += &format!("   pextrq {REG_D}, xmm{TMP}, 1\n");
         asm += &format!("   cmp {REG_D}, 1\n"); // !EXIT_UNCONSTRAINED
         asm += &format!("   je end_syscall_{pc}\n");
         asm += &format!("   cmp {REG_D}, 0\n"); // Halt
-        asm += "   je asm_run_end\n";
+        asm += "   je asm_halt\n";
 
         // EXIT_UNCONSTRAINED
         // Update the memory address space, register address space and xmm registers
@@ -69,6 +88,12 @@ extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instructio
     let b = executor.state.read_register(Register::A0 as u32);
     let syscall = SyscallCode::from_u32(syscall_id);
     log::trace!("pc: {} syscall {}, a0: {}, a1: {}", executor.state.pc, syscall, b, c);
+    // executor.state.clk -= 5;
+    // executor.state.global_clk -= 1;
+    println!(
+        "aot 0 pc: {}, clk: {}, global_clk: {}, {}",
+        executor.state.pc, executor.state.clk, executor.state.global_clk, syscall
+    );
 
     // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
     // Other syscalls are not allowed because they can lead to non-deterministic
@@ -117,7 +142,19 @@ extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instructio
     executor.state.pc = precompile_next_pc;
     executor.state.next_pc = precompile_next_pc + 4;
 
+    println!(
+        "aot 1 pc: {}, clk: {}, global_clk: {}, {}",
+        executor.state.pc, executor.state.clk, executor.state.global_clk, syscall
+    );
+
     if executor.state.exited {
+        executor.state.clk += DEFAULT_CLK_INC;
+        executor.state.global_clk += 1;
+        executor.state.pc = 0;
+        println!(
+            "aot halt pc: {}, clk: {}, global_clk: {}, {}",
+            executor.state.pc, executor.state.clk, executor.state.global_clk, syscall
+        );
         0
     } else if syscall != SyscallCode::EXIT_UNCONSTRAINED {
         1

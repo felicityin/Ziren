@@ -4,6 +4,7 @@ pub mod common;
 pub mod error;
 pub mod pure;
 
+use std::mem::offset_of;
 use std::{ffi::c_void, io::Write, process::Command, sync::Arc};
 
 use libloading::Library;
@@ -13,7 +14,7 @@ use crate::{
     aot::error::{AotError, StaticProgramError},
     ExecutionError, Program,
 };
-use crate::{Executor, ExecutorMode};
+use crate::{ExecutionState, Executor, ExecutorMode};
 
 type PureAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
 type MeteredAsmRunFn = unsafe extern "C" fn(executor_ptr: *mut c_void);
@@ -138,9 +139,10 @@ impl<'a> Executor<'a> {
                 break;
             }
             println!(
-                "1------Shard {} ended with clk {} and global_clk {}",
-                self.state.current_shard, self.state.clk, self.state.global_clk
+                "aot 1------Shard {} ended with pc {}, clk {}, and global_clk {}",
+                self.state.current_shard, self.state.pc, self.state.clk, self.state.global_clk
             );
+            println!("aot --clks: {:?}", self.state.records_clk);
 
             num_shards_executed += 1;
             if num_shards_executed >= self.shard_batch_size {
@@ -173,14 +175,14 @@ impl<'a> Executor<'a> {
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
-        println!(
-            "self.state.pc.wrapping_sub(self.program.pc_base): {}",
-            self.state.pc.wrapping_sub(self.program.pc_base)
-        );
-        println!(
-            "(self.program.instructions.len() * 4): {}",
-            (self.program.instructions.len() * 4)
-        );
+        // println!(
+        //     "self.state.pc.wrapping_sub(self.program.pc_base): {}",
+        //     self.state.pc.wrapping_sub(self.program.pc_base)
+        // );
+        // println!(
+        //     "(self.program.instructions.len() * 4): {}",
+        //     (self.program.instructions.len() * 4)
+        // );
         println!(
             "2------done: {done}, self.state.pc: {}, Shard {} ended with clk {} and global_clk {}",
             self.state.pc, self.state.current_shard, self.state.clk, self.state.global_clk
@@ -190,6 +192,44 @@ impl<'a> Executor<'a> {
 }
 
 impl AotCompiler {
+    #[inline]
+    pub fn sync_reg_to_pc() -> String {
+        let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
+        format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_NEXT_PC_W}\n")
+    }
+
+    #[inline]
+    pub fn sync_pc_to_reg() -> String {
+        let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
+        format!("    mov {REG_NEXT_PC_W}, DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}]\n")
+    }
+
+    #[inline]
+    pub fn sync_reg_to_global_clk() -> String {
+        let global_clk_offset =
+            offset_of!(Executor, state) + offset_of!(ExecutionState, global_clk);
+        format!("    mov QWORD PTR [{REG_EXECUTOR_PTR} + {global_clk_offset}], {REG_GLOBAL_CLK}\n")
+    }
+
+    #[inline]
+    pub fn sync_global_clk_to_reg() -> String {
+        let global_clk_offset =
+            offset_of!(Executor, state) + offset_of!(ExecutionState, global_clk);
+        format!("    mov {REG_GLOBAL_CLK}, [{REG_EXECUTOR_PTR} + {global_clk_offset}]\n")
+    }
+
+    #[inline]
+    pub fn sync_reg_to_clk() -> String {
+        let clk_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, clk);
+        format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}], {REG_CLK_W}\n")
+    }
+
+    #[inline]
+    pub fn sync_clk_to_reg() -> String {
+        let clk_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, clk);
+        format!("    mov {REG_CLK_W}, DWORD PTR [{REG_EXECUTOR_PTR} + {clk_offset}]\n")
+    }
+
     pub fn before_call() -> String {
         let mut asm = String::new();
         asm += &Self::save_xmm_regs();
@@ -400,20 +440,6 @@ pub(crate) fn asm_to_lib(asm_source: &str) -> Result<Library, StaticProgramError
         start.elapsed().as_millis()
     );
     Ok(lib)
-}
-
-unsafe extern "C" fn set_pc(executor_ptr: *mut c_void, next_pc: u32) {
-    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
-    executor.state.pc = next_pc;
-}
-
-extern "C" fn get_pc(executor_ptr: *mut c_void) -> *mut u64 {
-    let executor = unsafe { &mut *(executor_ptr as *mut Executor) };
-
-    // since pc is the first element of the state field and we use `repr(C)`
-    // hence `ptr` will be equal to the address of pc in state
-    let ptr = executor.state.pc as *mut u32;
-    ptr as *mut u64
 }
 
 extern "C" fn get_address_space(executor_ptr: *mut c_void, address_space: u32) -> *mut u64 {

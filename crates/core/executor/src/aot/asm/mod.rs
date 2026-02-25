@@ -19,23 +19,24 @@ impl AotCompiler {
         &self,
         instruction: &Instruction,
         pc: u32,
+        is_delay_slot: bool,
     ) -> Result<String, AotError> {
         if instruction.is_alu_instruction() {
-            return self.generate_alu_asm(instruction, pc);
+            return self.generate_alu_asm(instruction, pc, is_delay_slot);
         } else if instruction.is_branch_instruction() {
             return self.generate_branch_asm(instruction, pc);
         } else if instruction.is_jump_instruction() {
             return self.generate_jump_asm(instruction, pc);
         } else if instruction.is_memory_load_instruction() {
-            return self.generate_memory_load_asm(instruction, pc);
+            return self.generate_memory_load_asm(instruction, pc, is_delay_slot);
         } else if instruction.is_memory_store_instruction() {
-            return self.generate_memory_store_asm(instruction, pc);
+            return self.generate_memory_store_asm(instruction, pc, is_delay_slot);
         } else if instruction.is_mov_cond_instruction() {
-            return self.generate_mov_cond_asm(instruction, pc);
+            return self.generate_mov_cond_asm(instruction, pc, is_delay_slot);
         } else if instruction.is_misc_instruction() {
-            return self.generate_misc_asm(instruction, pc);
+            return self.generate_misc_asm(instruction, pc, is_delay_slot);
         } else if instruction.is_syscall_instruction() {
-            return self.generate_syscall_asm(instruction, pc);
+            return self.generate_syscall_asm(instruction, pc, is_delay_slot);
         }
         Ok(String::new())
     }
@@ -127,7 +128,11 @@ impl AotCompiler {
 
     /// self.state.write_register_access_meta(addr, shard, timestamp);
     /// self.state.set_register_accessed(addr);
-    pub fn set_access_register_meta(addr: u32, pos: MemoryAccessPosition) -> String {
+    pub fn set_access_register_meta(
+        addr: u32,
+        pos: MemoryAccessPosition,
+        is_delay_slot: bool,
+    ) -> String {
         let addr = addr << 2;
         let mut asm = String::new();
 
@@ -135,7 +140,11 @@ impl AotCompiler {
         asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_SHARD_W}\n");
 
         // unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
-        asm += &format!("   lea {REG_C}, [{REG_CLK} - {}]\n", DEFAULT_CLK_INC - pos as u32);
+        if is_delay_slot {
+            asm += &format!("   lea {REG_C}, [{REG_CLK} + {}]\n", DEFAULT_CLK_INC + pos as u32);
+        } else {
+            asm += &format!("   lea {REG_C}, [{REG_CLK} + {}]\n", pos as u32);
+        }
         asm += &format!("   mov dword ptr [{REG_B} + {addr}], {REG_C_W}\n");
 
         // self.state.set_register_accessed(addr);
@@ -164,7 +173,7 @@ impl AotCompiler {
         asm
     }
 
-    pub fn set_access_memory_meta(addr: &str) -> String {
+    pub fn set_access_memory_meta(addr: &str, is_delay_slot: bool) -> String {
         let mut asm = String::new();
 
         // unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr, shard) };
@@ -172,7 +181,12 @@ impl AotCompiler {
         asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_SHARD_W}\n");
 
         // unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr, clk) };
-        asm += &format!("   lea {REG_C}, [{REG_CLK} - {DEFAULT_CLK_INC}]\n");
+        let pos = 0;
+        if is_delay_slot {
+            asm += &format!("   lea {REG_C}, [{REG_CLK} + {}]\n", DEFAULT_CLK_INC + pos as u32);
+        } else {
+            asm += &format!("   lea {REG_C}, [{REG_CLK} + {}]\n", pos as u32);
+        }
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_CLK}, 1\n");
         asm += &format!("   mov [{REG_A} + {addr}], {REG_C}\n");
 
@@ -210,13 +224,19 @@ impl AotCompiler {
         let mut asm = String::new();
 
         // If self.unconstrained == true, skip the local memory counter increment.
-        asm += &format!("   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n", offset_of!(Executor, unconstrained));
+        asm += &format!(
+            "   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n",
+            offset_of!(Executor, unconstrained)
+        );
         asm += &format!("   movzx {REG_A_W}, byte ptr [{REG_A}]\n");
         asm += &format!("   test {REG_A_8L}, {REG_A_8L}\n");
         asm += &format!("   jnz .{pc}_skip_local_mem_inc\n");
 
         // If self.in_syscall == true, increase the local memory counter.
-        asm += &format!("   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n", offset_of!(Executor, in_syscall));
+        asm += &format!(
+            "   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n",
+            offset_of!(Executor, in_syscall)
+        );
         asm += &format!("   mov {REG_A_8L}, byte ptr [{REG_A}]\n");
         asm += &format!("   test {REG_A_8L}, {REG_A_8L}\n");
         asm += &format!("   jnz .{pc}_local_mem_inc\n");
@@ -229,7 +249,10 @@ impl AotCompiler {
 
         // self.local_counts.local_mem += 1;
         asm += &format!(".{pc}_local_mem_inc:\n");
-        asm += &format!("   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n", offset_of!(Executor, local_counts) + offset_of!(LocalCounts, local_mem));
+        asm += &format!(
+            "   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n",
+            offset_of!(Executor, local_counts) + offset_of!(LocalCounts, local_mem)
+        );
         asm += &format!("   add qword ptr [{REG_A}], 1\n");
 
         asm += &format!(".{pc}_skip_local_mem_inc:\n");
