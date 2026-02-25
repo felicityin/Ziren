@@ -93,6 +93,9 @@ pub struct Executor<'a> {
     /// stream.
     pub unconstrained: bool,
 
+    /// Whether we are currently in a syscall. This is used to determine whether to update the local memory counter when accessing memory.
+    pub in_syscall: bool,
+
     /// Whether we should write to the report.
     pub print_report: bool,
 
@@ -187,10 +190,10 @@ pub enum ExecutorMode {
 pub struct LocalCounts {
     /// The event counts.
     pub event_counts: [u64; MAX_OPCODE + 1],
+    /// The number of addresses touched in this shard.
+    pub local_mem: u64,
     /// The number of syscalls sent globally in the current shard.
     pub syscalls_sent: usize,
-    /// The number of addresses touched in this shard.
-    pub local_mem: usize,
 }
 
 impl Default for LocalCounts {
@@ -341,6 +344,7 @@ impl<'a> Executor<'a> {
             io_buf: HashMap::new(),
             trace_buf,
             unconstrained: false,
+            in_syscall: false,
             unconstrained_state: ForkState::default(),
             syscall_map,
             executor_mode: ExecutorMode::Trace,
@@ -468,10 +472,8 @@ impl<'a> Executor<'a> {
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
         //     condition record.shard != shard.
-        //  2. The address is being accessed in a syscall. In this case, we need to send it. We use
-        //     local_memory_access to detect this. *WARNING*: This means that we are counting
-        //     on the .is_some() condition to be true only in the SyscallContext.
-        if !self.unconstrained && (prev_shard != shard || local_memory_access.is_some()) {
+        //  2. The address is being accessed in a syscall. In this case, we need to send it.
+        if !self.unconstrained && (prev_shard != shard || self.in_syscall) {
             self.local_counts.local_mem += 1;
         }
 
@@ -583,10 +585,8 @@ impl<'a> Executor<'a> {
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
         //     condition record.shard != shard.
-        //  2. The address is being accessed in a syscall. In this case, we need to send it. We use
-        //     local_memory_access to detect this. *WARNING*: This means that we are counting
-        //     on the .is_some() condition to be true only in the SyscallContext.
-        if !self.unconstrained && (prev_shard != shard || local_memory_access.is_some()) {
+        //  2. The address is being accessed in a syscall. In this case, we need to send it.
+        if !self.unconstrained && (prev_shard != shard || self.in_syscall) {
             self.local_counts.local_mem += 1;
         }
 
@@ -642,10 +642,8 @@ impl<'a> Executor<'a> {
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
         //     condition record.shard != shard.
-        //  2. The address is being accessed in a syscall. In this case, we need to send it. We use
-        //     local_memory_access to detect this. *WARNING*: This means that we are counting
-        //     on the .is_some() condition to be true only in the SyscallContext.
-        if !self.unconstrained && (prev_shard != shard || local_memory_access.is_some()) {
+        //  2. The address is being accessed in a syscall. In this case, we need to send it.
+        if !self.unconstrained && (prev_shard != shard || self.in_syscall) {
             self.local_counts.local_mem += 1;
         }
 
@@ -2126,6 +2124,7 @@ impl<'a> Executor<'a> {
                 self.local_counts.syscalls_sent as u64,
                 self.local_counts.event_counts.as_ref(),
             );
+            println!("-------self.local_counts.syscalls_sent: {}, self.local_counts.local_mem: {}", self.local_counts.syscalls_sent, self.local_counts.local_mem);
 
             // Check if the LDE size is too large.
             if self.lde_size_check {

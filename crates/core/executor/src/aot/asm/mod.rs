@@ -125,6 +125,8 @@ impl AotCompiler {
         asm
     }
 
+    /// self.state.write_register_access_meta(addr, shard, timestamp);
+    /// self.state.set_register_accessed(addr);
     pub fn set_access_register_meta(addr: u32, pos: MemoryAccessPosition) -> String {
         let addr = addr << 2;
         let mut asm = String::new();
@@ -181,22 +183,56 @@ impl AotCompiler {
         asm
     }
 
-    #[inline]
-    fn local_events_offset() -> usize {
-        offset_of!(Executor, local_counts) + offset_of!(LocalCounts, event_counts)
-    }
-
-    pub fn inc_events_count(opcods: Vec<(Opcode, u8)>) -> String {
+    pub fn inc_event_counts(opcods: Vec<(Opcode, u8)>) -> String {
         let mut asm = String::new();
 
         for (opcode, count) in opcods {
             asm += &format!(
                 "   lea {REG_A}, [{REG_EXECUTOR_PTR} + {} + {}]\n",
-                Self::local_events_offset(),
+                offset_of!(Executor, local_counts) + offset_of!(LocalCounts, event_counts),
                 opcode as usize * 8
             );
             asm += &format!("   add qword ptr [{REG_A}], {count}\n");
         }
+
+        asm
+    }
+
+    /// We update the local memory counter in two cases:
+    ///  1. This is the first time the address is touched, this corresponds to the
+    ///     condition record.shard != shard.
+    ///  2. The address is being accessed in a syscall. In this case, we need to send it.
+    ///
+    /// if !self.unconstrained && (prev_shard != shard || self.in_syscall) {
+    ///    self.local_counts.local_mem += 1;
+    /// }
+    pub fn inc_local_memory_counter(pc: u32, addr: &str) -> String {
+        let mut asm = String::new();
+
+        // If self.unconstrained == true, skip the local memory counter increment.
+        asm += &format!("   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n", offset_of!(Executor, unconstrained));
+        asm += &format!("   movzx {REG_A_W}, byte ptr [{REG_A}]\n");
+        asm += &format!("   test {REG_A_8L}, {REG_A_8L}\n");
+        asm += &format!("   jnz .{pc}_skip_local_mem_inc\n");
+
+        // If self.in_syscall == true, increase the local memory counter.
+        asm += &format!("   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n", offset_of!(Executor, in_syscall));
+        asm += &format!("   mov {REG_A_8L}, byte ptr [{REG_A}]\n");
+        asm += &format!("   test {REG_A_8L}, {REG_A_8L}\n");
+        asm += &format!("   jnz .{pc}_local_mem_inc\n");
+
+        // If prev_shard == shard, skip the local memory counter increment.
+        asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_SHARD}, 1\n");
+        asm += &format!("   mov {REG_A_W}, dword ptr [{REG_A} + {addr}]\n");
+        asm += &format!("   cmp {REG_A_W}, {REG_SHARD_W}\n");
+        asm += &format!("   je .{pc}_skip_local_mem_inc\n");
+
+        // self.local_counts.local_mem += 1;
+        asm += &format!(".{pc}_local_mem_inc:\n");
+        asm += &format!("   lea {REG_A}, [{REG_EXECUTOR_PTR} + {}]\n", offset_of!(Executor, local_counts) + offset_of!(LocalCounts, local_mem));
+        asm += &format!("   add qword ptr [{REG_A}], 1\n");
+
+        asm += &format!(".{pc}_skip_local_mem_inc:\n");
 
         asm
     }

@@ -113,6 +113,7 @@ impl AotCompiler {
             asm += &format!("    mov {REG_D}, {shape_check_frequency}\n");
             asm += &format!("    div {REG_D}\n");
             asm += &format!("    test {REG_HI_64}, {REG_HI_64}\n");
+            // {REG_HI_64} ≠ 0 means global_clk % shape_check_frequency ≠ 0, so we can continue executing.
             asm += &format!("    jnz .{pc}_inc_pc_clk\n");
 
             // global_clk % shape_check_frequency == 0
@@ -216,6 +217,7 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
             executor.local_counts.syscalls_sent as u64,
             executor.local_counts.event_counts.as_ref(),
         );
+        println!("aot-------self.local_counts.syscalls_sent: {}, self.local_counts.local_mem: {}", executor.local_counts.syscalls_sent, executor.local_counts.local_mem);
 
         // Check if the LDE size is too large.
         if executor.lde_size_check {

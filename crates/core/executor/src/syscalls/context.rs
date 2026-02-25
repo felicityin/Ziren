@@ -69,8 +69,10 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
 
     /// Read a word from memory.
     pub fn mr(&mut self, addr: u32) -> (MemoryReadRecord, u32) {
+        self.rt.in_syscall = true;
         let record =
             self.rt.mr(addr, self.current_shard, self.clk, Some(&mut self.local_memory_access));
+        self.rt.in_syscall = false;
         (record, record.value)
     }
 
@@ -88,7 +90,10 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
 
     /// Write a word to memory.
     pub fn mw(&mut self, addr: u32, value: u32) -> MemoryWriteRecord {
-        self.rt.mw(addr, value, self.current_shard, self.clk, Some(&mut self.local_memory_access))
+        self.rt.in_syscall = true;
+        let record = self.rt.mw(addr, value, self.current_shard, self.clk, Some(&mut self.local_memory_access));
+        self.rt.in_syscall = false;
+        record
     }
 
     /// Write a slice of words to memory.
@@ -115,13 +120,18 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
 
     /// Write a register and record the memory access.
     pub fn rw_traced(&mut self, register: Register, value: u32) -> MemoryWriteRecord {
-        self.rt.rw_cpu_traced(
+        self.rt.in_syscall = true;
+
+        let record = self.rt.rw_cpu_traced(
             register,
             value,
             self.current_shard,
             self.clk,
             Some(&mut self.local_memory_access),
-        )
+        );
+
+        self.rt.in_syscall = false;
+        record
     }
 
     /// Postprocess the syscall.  Specifically will process the syscall's memory local events.

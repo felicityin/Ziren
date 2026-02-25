@@ -19,6 +19,7 @@ pub const REG_B_W: &str = "esi";
 
 pub const REG_A: &str = "rdi";
 pub const REG_A_W: &str = "edi";
+pub const REG_A_8L: &str = "dil";
 
 pub const REG_RETURN_VAL: &str = "rax";
 pub const REG_D: &str = "rax";

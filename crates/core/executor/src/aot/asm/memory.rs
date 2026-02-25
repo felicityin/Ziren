@@ -13,10 +13,10 @@ impl AotCompiler {
 
         if self.executor_mode == ExecutorMode::Checkpoint {
             // self.local_counts.event_counts[instruction.opcode as usize] += 1;
-            asm += &Self::inc_events_count(vec![(instruction.opcode, 1)]);
+            asm += &Self::inc_event_counts(vec![(instruction.opcode, 1)]);
 
             // self.local_counts.event_counts[Opcode::ADD as usize] += 2;
-            asm += &Self::inc_events_count(vec![(Opcode::ADD, 2)]);
+            asm += &Self::inc_event_counts(vec![(Opcode::ADD, 2)]);
 
             asm += &Self::get_access_register_meta_addr();
             asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
@@ -50,11 +50,20 @@ impl AotCompiler {
         if self.executor_mode == ExecutorMode::Checkpoint {
             match instruction.opcode {
                 Opcode::LW | Opcode::LL | Opcode::LWL | Opcode::LWR => {
+                    asm += &Self::inc_local_memory_counter(pc, gpr_reg_w64);
+
+                    // self.state.write_memory(addr, value);
+                    // self.state.write_memory_access_meta(addr, shard, timestamp);
                     asm += &Self::set_access_memory_meta(gpr_reg_w64);
                 }
                 Opcode::LB | Opcode::LBU | Opcode::LH | Opcode::LHU => {
                     asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
                     asm += &format!("   and {REG_D_W}, 0xfffffffc\n");
+
+                    asm += &Self::inc_local_memory_counter(pc, REG_D);
+
+                    // self.state.write_memory(addr, value);
+                    // self.state.write_memory_access_meta(addr, shard, timestamp);
                     asm += &Self::set_access_memory_meta(REG_D);
                 }
                 _ => unreachable!(),
@@ -201,6 +210,9 @@ impl AotCompiler {
         let mut asm = String::new();
 
         if self.executor_mode == ExecutorMode::Checkpoint {
+            // self.local_counts.event_counts[instruction.opcode as usize] += 1;
+            asm += &Self::inc_event_counts(vec![(instruction.opcode, 1)]);
+
             asm += &Self::get_access_register_meta_addr();
             asm += &Self::set_access_register_meta(instruction.op_b, MemoryAccessPosition::B);
             asm +=
@@ -233,11 +245,20 @@ impl AotCompiler {
         if self.executor_mode == ExecutorMode::Checkpoint {
             match instruction.opcode {
                 Opcode::SW | Opcode::SC | Opcode::SWL | Opcode::SWR => {
+                    asm += &Self::inc_local_memory_counter(pc, gpr_reg_w64);
+
+                    // self.state.write_memory(addr, value);
+                    // self.state.write_memory_access_meta(addr, shard, timestamp);
                     asm += &Self::set_access_memory_meta(gpr_reg_w64);
                 }
                 Opcode::SB | Opcode::SH => {
                     asm += &format!("   mov {REG_D_W}, {gpr_reg}\n");
                     asm += &format!("   and {REG_D_W}, 0xfffffffc\n");
+
+                    asm += &Self::inc_local_memory_counter(pc, REG_D);
+
+                    // self.state.write_memory(addr, value);
+                    // self.state.write_memory_access_meta(addr, shard, timestamp);
                     asm += &Self::set_access_memory_meta(REG_D);
                 }
                 _ => unreachable!(),

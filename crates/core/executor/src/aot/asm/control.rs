@@ -13,12 +13,12 @@ impl AotCompiler {
 
         if self.executor_mode == ExecutorMode::Checkpoint {
             // self.local_counts.event_counts[instruction.opcode as usize] += 1;
-            asm += &Self::inc_events_count(vec![(instruction.opcode, 1)]);
+            asm += &Self::inc_event_counts(vec![(instruction.opcode, 1)]);
 
             if instruction.is_branch_cmp_instruction() {
                 // self.local_counts.event_counts[Opcode::ADD as usize] += 1;
                 // self.local_counts.event_counts[Opcode::SLT as usize] += 2;
-                asm += &Self::inc_events_count(vec![(Opcode::ADD, 1), (Opcode::SLT, 2)]);
+                asm += &Self::inc_event_counts(vec![(Opcode::ADD, 1), (Opcode::SLT, 2)]);
             }
 
             asm += &Self::get_access_register_meta_addr();
@@ -87,11 +87,11 @@ impl AotCompiler {
 
         if self.executor_mode == ExecutorMode::Checkpoint {
             // self.local_counts.event_counts[instruction.opcode as usize] += 1;
-            asm += &Self::inc_events_count(vec![(instruction.opcode, 1)]);
+            asm += &Self::inc_event_counts(vec![(instruction.opcode, 1)]);
 
             if instruction.opcode == Opcode::JumpDirect {
                 // self.local_counts.event_counts[Opcode::ADD as usize] += 1;
-                asm += &Self::inc_events_count(vec![(Opcode::JumpDirect, 1)]);
+                asm += &Self::inc_event_counts(vec![(Opcode::JumpDirect, 1)]);
             }
 
             asm += &Self::get_access_register_meta_addr();
