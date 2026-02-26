@@ -1434,7 +1434,7 @@ dependencies = [
  "rustc_version 0.4.1",
  "subtle",
  "zeroize",
- "zkm-lib 1.2.3 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -3626,7 +3626,7 @@ dependencies = [
  "once_cell",
  "sha2 0.10.8",
  "signature",
- "zkm-lib 1.2.3 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -3874,9 +3874,9 @@ checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
 name = "memmap2"
-version = "0.9.9"
+version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "744133e4a0e0a658e1374cf3bf8e415c4052a15a111acd372764c55b4177d490"
+checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
 dependencies = [
  "libc",
 ]
@@ -4261,7 +4261,7 @@ dependencies = [
  "hex",
  "primeorder",
  "sha2 0.10.8",
- "zkm-lib 1.2.3 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -5519,6 +5519,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 
 [[package]]
+name = "reth-host"
+version = "1.1.0"
+dependencies = [
+ "bincode",
+ "zkm-sdk",
+]
+
+[[package]]
 name = "rfc6979"
 version = "0.4.0"
 source = "git+https://github.com/ziren-patches/signatures?branch=patch-ecdsa-0.16.9#da0cd8753b243e09acf82f8e58f8da0e28e7287d"
@@ -5639,7 +5647,7 @@ dependencies = [
  "spki 0.7.3",
  "subtle",
  "zeroize",
- "zkm-lib 1.2.3 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -6205,11 +6213,12 @@ dependencies = [
 
 [[package]]
 name = "serial_test"
-version = "3.2.0"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b258109f244e1d6891bf1053a55d63a5cd4f8f4c30cf9a1280989f80e7a1fa9"
+checksum = "911bd979bf1070a3f3aa7b691a3b3e9968f339ceeec89e08c280a8a22207a32f"
 dependencies = [
- "futures",
+ "futures-executor",
+ "futures-util",
  "log",
  "once_cell",
  "parking_lot",
@@ -6219,9 +6228,9 @@ dependencies = [
 
 [[package]]
 name = "serial_test_derive"
-version = "3.2.0"
+version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d69265a08751de7844521fd15003ae0a888e035773ba05695c5c759a6f89eef"
+checksum = "0a7d91949b85b0d2fb687445e448b40d322b6b3e4af6b44a29b21d9a5f33e6d9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6564,7 +6573,7 @@ dependencies = [
  "num-bigint 0.4.6",
  "rand 0.8.5",
  "rustc-hex",
- "zkm-lib 1.2.3 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -8481,15 +8490,15 @@ dependencies = [
 
 [[package]]
 name = "zkm-lib"
-version = "1.2.3"
-source = "git+https://github.com/ProjectZKM/Ziren#64c30dda3cfd3e9e08f0988519f3a7f2ced5a398"
+version = "1.2.4"
+source = "git+https://github.com/ProjectZKM/Ziren#91dd007ecddcf594707f56368b8fbbed0c3cb1fe"
 dependencies = [
  "bincode",
  "cfg-if",
  "elliptic-curve",
  "serde",
  "sha2 0.10.8",
- "zkm-primitives 1.2.3 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-primitives 1.2.4",
 ]
 
 [[package]]
@@ -8511,8 +8520,8 @@ dependencies = [
 
 [[package]]
 name = "zkm-primitives"
-version = "1.2.3"
-source = "git+https://github.com/ProjectZKM/Ziren#64c30dda3cfd3e9e08f0988519f3a7f2ced5a398"
+version = "1.2.4"
+source = "git+https://github.com/ProjectZKM/Ziren#91dd007ecddcf594707f56368b8fbbed0c3cb1fe"
 dependencies = [
  "bincode",
  "hex",

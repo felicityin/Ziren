@@ -28,6 +28,7 @@ members = [
   "poseidon2/guest",
   "poseidon2/host",
   "regex/guest",
+  "reth/host",
   "regex/host",
   "rsa/guest",
   "rsa/host",
