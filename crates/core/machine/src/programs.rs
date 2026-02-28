@@ -6,8 +6,8 @@ pub mod tests {
     use zkm_core_executor::{Instruction, Opcode, Program};
 
     use test_artifacts::{
-        FIBONACCI_ELF, HELLO_WORLD_ELF, KECCAK_SPONGE_ELF, MAX_MEMORY_ELF, PANIC_ELF,
-        SECP256R1_ADD_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF, U256XU2048_MUL_ELF,
+        FIBONACCI_ELF, FIBONACCI_INPUT_ELF, HELLO_WORLD_ELF, KECCAK_SPONGE_ELF, MAX_MEMORY_ELF,
+        PANIC_ELF, SECP256R1_ADD_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF, U256XU2048_MUL_ELF,
         UNCONSTRAINED_ELF,
     };
 
@@ -29,6 +29,11 @@ pub mod tests {
     #[must_use]
     pub fn fibonacci_program() -> Program {
         Program::from(FIBONACCI_ELF).unwrap()
+    }
+
+    #[must_use]
+    pub fn fibonacci_input_program() -> Program {
+        Program::from(FIBONACCI_INPUT_ELF).unwrap()
     }
 
     /// Get the max_memory program.

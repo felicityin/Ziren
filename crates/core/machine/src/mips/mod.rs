@@ -684,6 +684,8 @@ impl<F: PrimeField32> core::hash::Hash for MipsAir<F> {
 #[cfg(test)]
 #[allow(non_snake_case)]
 pub mod tests {
+    #[cfg(feature = "aot")]
+    use crate::programs::tests::fibonacci_input_program;
     use crate::programs::tests::other_memory_program;
     use crate::programs::tests::{
         fibonacci_program, hello_world_program, max_memory_program, sha3_chain_program,
@@ -1072,6 +1074,64 @@ pub mod tests {
         setup_logger();
         let program = max_memory_program();
         run_test::<CpuProver<_, _>>(program).unwrap();
+    }
+
+    #[cfg(feature = "aot")]
+    #[test]
+    fn test_aot_fibo_1000_run() {
+        let mut program = fibonacci_input_program();
+        let mut runtime = zkm_core_executor::Executor::new(program, ZKMCoreOpts::default());
+
+        let n = 1000u32;
+        let mut buf = Vec::new();
+        bincode::serialize_into(&mut buf, &n).expect("serialization failed");
+        runtime.write_vecs(&[buf]);
+
+        let shard_size = 2097152u32;
+        runtime.shard_size = shard_size * 4;
+        runtime.shard_batch_size = 1;
+        runtime.shape_check_frequency = 4096;
+        let shape_config = Some(crate::shape::CoreShapeConfig::<KoalaBear>::default());
+        runtime.maximal_shapes = shape_config.map(|config| {
+            config.maximal_core_shapes(shard_size.ilog2() as usize).into_iter().collect()
+        });
+        runtime.aot_compile_metered_lib();
+        runtime.aot_metered_run().unwrap();
+
+        assert_eq!(runtime.state.clk, 13015);
+        assert_eq!(runtime.state.global_clk, 10795);
+        assert_eq!(runtime.state.current_shard, 3);
+    }
+
+    #[cfg(feature = "aot")]
+    #[test]
+    fn test_aot_fibo_1200_run() {
+        let mut program = fibonacci_input_program();
+        let mut runtime = zkm_core_executor::Executor::new(program, ZKMCoreOpts::default());
+
+        let n = 1200u32;
+        let mut buf = Vec::new();
+        bincode::serialize_into(&mut buf, &n).expect("serialization failed");
+        runtime.write_vecs(&[buf]);
+
+        let shard_size = 2097152u32;
+        runtime.shard_size = shard_size * 4;
+        runtime.shard_batch_size = 1;
+        runtime.shape_check_frequency = 4096;
+        let shape_config = Some(crate::shape::CoreShapeConfig::<KoalaBear>::default());
+        runtime.maximal_shapes = shape_config.map(|config| {
+            config.maximal_core_shapes(shard_size.ilog2() as usize).into_iter().collect()
+        });
+        runtime.aot_compile_metered_lib();
+        runtime.aot_metered_run().unwrap();
+        // runtime.run().unwrap();
+
+        println!("runtime.state.clk: {}", runtime.state.clk);
+        println!("runtime.state.global_clk: {}", runtime.state.global_clk);
+        println!("runtime.state.current_shard: {}", runtime.state.current_shard);
+        // assert_eq!(runtime.state.clk, 40495);
+        // assert_eq!(runtime.state.global_clk, 12195);
+        // assert_eq!(runtime.state.current_shard, 2);
     }
 
     #[test]

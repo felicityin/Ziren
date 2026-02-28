@@ -7,6 +7,7 @@ members = [
     "panic",
     "sha-compress",
     "fibonacci",
+    "fibonacci-input",
     "common",
     "bls12381-add",
     "bls12381-decompress",

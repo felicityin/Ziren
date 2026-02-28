@@ -71,33 +71,6 @@ impl AotCompiler {
 
             asm += &format!("asm_execute_pc_{pc}:\n");
 
-            // Check if we should increment shard
-            asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
-            asm += "    jae asm_inc_shard\n";
-
-            // Check global_clk % shape_check_frequency
-            asm += "    # global_clk % shape_check_frequency\n";
-            asm += &format!("    test {REG_CLK}, {REG_CLK}\n");
-            asm += &format!("    jz .{pc}_check_shape_end\n");
-            asm += &format!("    test {REG_GLOBAL_CLK}, {shape_check_frequency_minus_1}\n");
-            asm += &format!("    jnz .{pc}_check_shape_end\n");
-
-            // global_clk % shape_check_frequency == 0
-            // Call inc_shard_if_need()
-            asm += &Self::sync_reg_to_pc();
-            asm += &Self::sync_reg_to_clk();
-            asm += &Self::sync_reg_to_global_clk();
-            asm += "    # call inc_shard_if_need()\n";
-            asm += &Self::before_call();
-            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-            asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
-            asm += &format!("    call {REG_CALLER}\n");
-            asm += "    test al, al\n";
-            asm += &Self::after_call();
-            asm += "    jnz asm_run_end\n";
-
-            asm += &format!("    .{pc}_check_shape_end:\n");
-
             if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
                 // Processing the delay slot.
                 // Note that the processing order here differs from that in the executor.
@@ -128,6 +101,31 @@ impl AotCompiler {
                 asm += &format!("    inc {REG_GLOBAL_CLK}\n");
                 i += 1;
             }
+
+            // Check if we should increment shard
+            asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
+            asm += "    jae asm_inc_shard\n";
+
+            // Check global_clk % shape_check_frequency
+            asm += "    # global_clk % shape_check_frequency\n";
+            asm += &format!("    test {REG_GLOBAL_CLK}, {shape_check_frequency_minus_1}\n");
+            asm += &format!("    jnz .{pc}_check_shape_end\n");
+
+            // global_clk % shape_check_frequency == 0
+            // Call inc_shard_if_need()
+            asm += &Self::sync_reg_to_clk();
+            asm += &Self::sync_reg_to_global_clk();
+            asm += "    # call inc_shard_if_need()\n";
+            asm += &Self::before_call();
+            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+            asm += &format!("    mov {REG_SECOND_ARG}, {REG_PC}\n");
+            asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
+            asm += &format!("    call {REG_CALLER}\n");
+            asm += "    test al, al\n";
+            asm += &Self::after_call();
+            asm += "    jnz asm_run_end\n";
+
+            asm += &format!("    .{pc}_check_shape_end:\n");
         }
 
         asm += "asm_run_end:\n";
@@ -143,11 +141,11 @@ impl AotCompiler {
         asm += "asm_inc_shard:\n";
         asm += "    # save_xmm_regs\n";
         asm += &Self::save_xmm_regs();
-        asm += &Self::sync_reg_to_pc();
         asm += &Self::sync_reg_to_clk();
         asm += &Self::sync_reg_to_global_clk();
         asm += "    # call inc_shard_if_need()\n";
         asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+        asm += &format!("    mov {REG_SECOND_ARG}, {REG_PC}\n");
         asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
         asm += "    # pop_external_registers\n";
@@ -167,6 +165,8 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
+        asm += "\n";
+
         std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
@@ -174,8 +174,9 @@ impl AotCompiler {
 }
 
 #[inline]
-extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
+extern "C" fn inc_shard_if_need(executor: &mut Executor, pc: u64) -> bool {
     println!("aot inc_shard_if_need");
+    executor.state.pc = pc as u32;
     // println!("=======pc: {}" , executor.state.pc);
 
     // If the cycle limit is exceeded, return an error.
