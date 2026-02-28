@@ -37,6 +37,7 @@ impl AotCompiler {
 
         asm += &Self::sync_reg_to_pc();
         asm += &Self::sync_reg_to_clk();
+        asm += &Self::sync_reg_to_global_clk();
 
         asm += "   # syscall\n";
         asm += &Self::before_call();
@@ -48,7 +49,7 @@ impl AotCompiler {
         asm += &format!("   pinsrq  xmm{TMP}, {REG_RETURN_VAL}, 1\n");
         asm += &Self::after_call();
 
-        asm += &Self::sync_pc_to_reg();
+        // asm += &Self::sync_pc_to_reg();
         asm += &Self::sync_clk_to_reg();
 
         asm += &format!("   pextrq {REG_D}, xmm{TMP}, 1\n");
@@ -139,12 +140,16 @@ extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instructio
 
     executor.state.write_register(Register::V0 as u32, a);
     executor.state.clk += precompile_cycles;
-    executor.state.pc = precompile_next_pc;
-    executor.state.next_pc = precompile_next_pc + 4;
+    // executor.state.pc = precompile_next_pc;
+    // executor.state.next_pc = precompile_next_pc + 4;
 
     println!(
-        "aot 1 pc: {}, clk: {}, global_clk: {}, {}",
-        executor.state.pc, executor.state.clk, executor.state.global_clk, syscall
+        "aot 1 pc: {}, clk: {}, global_clk: {}, {}, next_next_pc: {}",
+        precompile_next_pc,
+        executor.state.clk,
+        executor.state.global_clk,
+        syscall,
+        precompile_next_pc + 4,
     );
 
     if executor.state.exited {

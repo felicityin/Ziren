@@ -8,7 +8,7 @@ impl AotCompiler {
     pub fn create_pure_asm(&self) -> Result<String, AotError> {
         let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
         let sync_pc_to_reg =
-            || format!("    mov {REG_NEXT_PC_W}, DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}]\n");
+            || format!("    mov {REG_PC_W}, DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}]\n");
 
         let mut asm = String::new();
 
@@ -42,7 +42,7 @@ impl AotCompiler {
 
         asm += "    # execute\n";
         asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
-        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_NEXT_PC}]\n");
+        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_PC}]\n");
         asm += &format!("   add {REG_A}, {REG_C}\n");
         asm += &format!("   jmp {REG_A}\n");
 
@@ -73,7 +73,7 @@ impl AotCompiler {
                 asm += &(self.generate_instruction_asm(next_instruction, next_pc, true)?); // delay slot
 
                 // Cannot be placed after jmp or branch instructions, otherwise it cannot be executed
-                asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 8);
+                asm += &format!("    mov {REG_PC}, {}\n", pc + 8);
                 i += 2;
 
                 // jmp or branch instructions
@@ -81,7 +81,7 @@ impl AotCompiler {
             } else {
                 asm += &(self.generate_instruction_asm(instruction, pc, false)?);
 
-                asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
+                asm += &format!("    mov {REG_PC}, {}\n", pc + 4);
                 i += 1;
             }
         }

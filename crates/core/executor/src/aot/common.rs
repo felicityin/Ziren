@@ -34,8 +34,8 @@ pub const REG_ROR_8L: &str = "cl";
 
 pub const REG_EXECUTOR_PTR: &str = "rbx";
 pub const REG_MEMORY_PTR: &str = "r15";
-pub const REG_NEXT_PC: &str = "r14";
-pub const REG_NEXT_PC_W: &str = "r14d";
+pub const REG_PC: &str = "r14";
+pub const REG_PC_W: &str = "r14d";
 pub const REG_CLK: &str = "r13";
 pub const REG_CLK_W: &str = "r13d";
 pub const REG_GLOBAL_CLK: &str = "r12";

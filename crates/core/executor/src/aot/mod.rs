@@ -175,14 +175,17 @@ impl<'a> Executor<'a> {
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
-        // println!(
-        //     "self.state.pc.wrapping_sub(self.program.pc_base): {}",
-        //     self.state.pc.wrapping_sub(self.program.pc_base)
-        // );
-        // println!(
-        //     "(self.program.instructions.len() * 4): {}",
-        //     (self.program.instructions.len() * 4)
-        // );
+        println!(
+            "self.state.pc[{}].wrapping_sub(self.program.pc_base[{}])[{}] 
+                >= (self.program.instructions.len() * 4) as u32 [{}]: {}",
+            self.state.pc,
+            self.program.pc_base,
+            self.state.pc.wrapping_sub(self.program.pc_base),
+            self.program.instructions.len() * 4,
+            self.state.pc.wrapping_sub(self.program.pc_base)
+                >= (self.program.instructions.len() * 4) as u32
+        );
+        println!("self.state.exited: {}", self.state.exited);
         println!(
             "2------done: {done}, self.state.pc: {}, Shard {} ended with clk {} and global_clk {}",
             self.state.pc, self.state.current_shard, self.state.clk, self.state.global_clk
@@ -195,13 +198,13 @@ impl AotCompiler {
     #[inline]
     pub fn sync_reg_to_pc() -> String {
         let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
-        format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_NEXT_PC_W}\n")
+        format!("    mov DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}], {REG_PC_W}\n")
     }
 
     #[inline]
     pub fn sync_pc_to_reg() -> String {
         let pc_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, pc);
-        format!("    mov {REG_NEXT_PC_W}, DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}]\n")
+        format!("    mov {REG_PC_W}, DWORD PTR [{REG_EXECUTOR_PTR} + {pc_offset}]\n")
     }
 
     #[inline]

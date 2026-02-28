@@ -51,7 +51,7 @@ impl AotCompiler {
 
         asm += "    # execute\n";
         asm += &format!("   lea {REG_C}, [rip + map_pc_base]\n");
-        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_NEXT_PC}]\n");
+        asm += &format!("   movsxd {REG_A}, [{REG_C} + {REG_PC}]\n");
         asm += &format!("   add {REG_A}, {REG_C}\n");
         asm += &format!("   jmp {REG_A}\n");
 
@@ -62,7 +62,7 @@ impl AotCompiler {
 
         let inc_shard_if_need_ptr = format!("{:p}", inc_shard_if_need as *const ());
         let most_clk = self.shard_size - self.max_syscall_cycles;
-        let shape_check_frequency = self.shape_check_frequency;
+        let shape_check_frequency_minus_1 = self.shape_check_frequency - 1;
 
         let mut i = 0;
         while i < self.program.instructions.len() {
@@ -70,6 +70,33 @@ impl AotCompiler {
             let instruction = &self.program.instructions[i];
 
             asm += &format!("asm_execute_pc_{pc}:\n");
+
+            // Check if we should increment shard
+            asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
+            asm += "    jae asm_inc_shard\n";
+
+            // Check global_clk % shape_check_frequency
+            asm += "    # global_clk % shape_check_frequency\n";
+            asm += &format!("    test {REG_CLK}, {REG_CLK}\n");
+            asm += &format!("    jz .{pc}_check_shape_end\n");
+            asm += &format!("    test {REG_GLOBAL_CLK}, {shape_check_frequency_minus_1}\n");
+            asm += &format!("    jnz .{pc}_check_shape_end\n");
+
+            // global_clk % shape_check_frequency == 0
+            // Call inc_shard_if_need()
+            asm += &Self::sync_reg_to_pc();
+            asm += &Self::sync_reg_to_clk();
+            asm += &Self::sync_reg_to_global_clk();
+            asm += "    # call inc_shard_if_need()\n";
+            asm += &Self::before_call();
+            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
+            asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
+            asm += &format!("    call {REG_CALLER}\n");
+            asm += "    test al, al\n";
+            asm += &Self::after_call();
+            asm += "    jnz asm_run_end\n";
+
+            asm += &format!("    .{pc}_check_shape_end:\n");
 
             if instruction.is_branch_instruction() || instruction.is_jump_instruction() {
                 // Processing the delay slot.
@@ -86,7 +113,7 @@ impl AotCompiler {
                 asm += &(self.generate_instruction_asm(next_instruction, next_pc, true)?); // delay slot
 
                 // Cannot be placed after jmp or branch instructions, otherwise it cannot be executed
-                asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 8);
+                asm += &format!("    mov {REG_PC}, {}\n", pc + 8);
                 asm += &format!("    add {REG_CLK}, 10\n");
                 asm += &format!("    add {REG_GLOBAL_CLK}, 2\n");
                 i += 2;
@@ -96,39 +123,11 @@ impl AotCompiler {
             } else {
                 asm += &(self.generate_instruction_asm(instruction, pc, false)?);
 
-                asm += &format!("    mov {REG_NEXT_PC}, {}\n", pc + 4);
+                asm += &format!("    mov {REG_PC}, {}\n", pc + 4);
                 asm += &format!("    add {REG_CLK}, 5\n");
                 asm += &format!("    inc {REG_GLOBAL_CLK}\n");
                 i += 1;
             }
-
-            // Check if we should increment shard
-            asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
-            asm += "    jae asm_inc_shard\n";
-
-            // Check global_clk % shape_check_frequency
-            asm += "    # global_clk % shape_check_frequency\n";
-            asm += &format!("    mov {REG_HI}, 0\n");
-            asm += &format!("    mov {REG_LO_64}, {REG_GLOBAL_CLK}\n");
-            asm += &format!("    mov {REG_D}, {shape_check_frequency}\n");
-            asm += &format!("    div {REG_D}\n");
-            asm += &format!("    test {REG_HI_64}, {REG_HI_64}\n");
-            // {REG_HI_64} ≠ 0 means global_clk % shape_check_frequency ≠ 0, so we can continue executing.
-            asm += &format!("    jnz .asm_execute_pc_{}\n", pc + 4);
-
-            // global_clk % shape_check_frequency == 0
-            // Call inc_shard_if_need()
-            asm += &Self::sync_reg_to_pc();
-            asm += &Self::sync_reg_to_clk();
-            asm += &Self::sync_reg_to_global_clk();
-            asm += "    # call inc_shard_if_need()\n";
-            asm += &Self::before_call();
-            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-            asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
-            asm += &format!("    call {REG_CALLER}\n");
-            asm += "    test al, al\n";
-            asm += &Self::after_call();
-            asm += "    jnz asm_run_end\n";
         }
 
         asm += "asm_run_end:\n";
@@ -176,7 +175,7 @@ impl AotCompiler {
 
 #[inline]
 extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
-    // println!("aot inc_shard_if_need");
+    println!("aot inc_shard_if_need");
     // println!("=======pc: {}" , executor.state.pc);
 
     // If the cycle limit is exceeded, return an error.
@@ -279,7 +278,10 @@ extern "C" fn inc_shard_if_need(executor: &mut Executor) -> bool {
     if cpu_exit || !shape_match_found {
         // println!(
         //     "aot ------Shard {} ended with pc {} clk {} and global_clk {}",
-        //     executor.state.current_shard, executor.state.pc, executor.state.clk, executor.state.global_clk
+        //     executor.state.current_shard,
+        //     executor.state.pc,
+        //     executor.state.clk,
+        //     executor.state.global_clk
         // );
         executor.state.records_clk.push(executor.state.clk);
         executor.state.current_shard += 1;
