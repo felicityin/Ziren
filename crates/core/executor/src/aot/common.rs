@@ -41,6 +41,7 @@ pub const REG_CLK_W: &str = "r13d";
 pub const REG_GLOBAL_CLK: &str = "r12";
 pub const REG_SHARD: &str = "rbp";
 pub const REG_SHARD_W: &str = "ebp";
+pub const REG_SHARD_16: &str = "bp";
 
 // xmm
 pub const REG_ADDR_SPACE: &str = "0";

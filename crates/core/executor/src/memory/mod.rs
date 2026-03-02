@@ -30,6 +30,14 @@ pub struct GuestMemory {
 }
 
 impl GuestMemory {
+    pub fn new_u16() -> Self {
+        GuestMemory { memory: AddressMap::new_u16() }
+    }
+
+    pub fn new_u8() -> Self {
+        GuestMemory { memory: AddressMap::new_u8() }
+    }
+
     pub fn reset(&mut self) {
         self.memory.fill_zero();
     }
@@ -228,6 +236,14 @@ impl Default for AddressMap {
 }
 
 impl<M: LinearMemory> AddressMap<M> {
+    pub fn new_u16() -> Self {
+        Self::from_mem_config(&MemoryConfig::new_u16())
+    }
+
+    pub fn new_u8() -> Self {
+        Self::from_mem_config(&MemoryConfig::new_u8())
+    }
+
     pub fn from_mem_config(mem_config: &MemoryConfig) -> Self {
         Self::new(mem_config.addr_spaces.clone())
     }

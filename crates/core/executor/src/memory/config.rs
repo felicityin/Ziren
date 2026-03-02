@@ -45,6 +45,14 @@ impl MemoryCellType {
     pub fn native32() -> Self {
         Self::Native { size: size_of::<u32>() as u8 }
     }
+
+    pub fn native16() -> Self {
+        Self::Native { size: size_of::<u16>() as u8 }
+    }
+
+    pub fn native8() -> Self {
+        Self::Native { size: size_of::<u8>() as u8 }
+    }
 }
 
 /// Each address space in guest memory may be configured with a different type `T` to represent a
@@ -89,6 +97,22 @@ impl Default for MemoryConfig {
 }
 
 impl MemoryConfig {
+    pub fn new_u16() -> Self {
+        let mut addr_spaces = Self::empty_address_space_configs_u16(2);
+        const MAX_CELLS: usize = MAX_MEMORY >> 2;
+        addr_spaces[MIPS_REGISTER_SPACE as usize].num_cells = NUM_REGISTERS;
+        addr_spaces[MIPS_MEMORY_SPACE as usize].num_cells = MAX_CELLS;
+        Self::new(addr_spaces)
+    }
+
+    pub fn new_u8() -> Self {
+        let mut addr_spaces = Self::empty_address_space_configs_u8(2);
+        const MAX_CELLS: usize = MAX_MEMORY >> 2;
+        addr_spaces[MIPS_REGISTER_SPACE as usize].num_cells = NUM_REGISTERS;
+        addr_spaces[MIPS_MEMORY_SPACE as usize].num_cells = MAX_CELLS;
+        Self::new(addr_spaces)
+    }
+
     pub fn empty_address_space_configs(num_addr_spaces: usize) -> Vec<AddressSpaceHostConfig> {
         // All except address spaces 0..4 default to native 32-bit field.
         // By default only address spaces 1..=4 have non-empty cell counts.
@@ -106,6 +130,46 @@ impl MemoryConfig {
 
         addr_spaces[MIPS_MEMORY_SPACE as usize] =
             AddressSpaceHostConfig::new(0, DEFAULT_NATIVE_BLOCK_SIZE, MemoryCellType::U32);
+        addr_spaces
+    }
+
+    pub fn empty_address_space_configs_u16(num_addr_spaces: usize) -> Vec<AddressSpaceHostConfig> {
+        // All except address spaces 0..4 default to native 32-bit field.
+        // By default only address spaces 1..=4 have non-empty cell counts.
+        let mut addr_spaces = vec![
+            AddressSpaceHostConfig::new(
+                0,
+                DEFAULT_NATIVE_BLOCK_SIZE,
+                MemoryCellType::native8()
+            );
+            num_addr_spaces
+        ];
+
+        addr_spaces[MIPS_REGISTER_SPACE as usize] =
+            AddressSpaceHostConfig::new(0, DEFAULT_NATIVE_BLOCK_SIZE, MemoryCellType::U16);
+
+        addr_spaces[MIPS_MEMORY_SPACE as usize] =
+            AddressSpaceHostConfig::new(0, DEFAULT_NATIVE_BLOCK_SIZE, MemoryCellType::U16);
+        addr_spaces
+    }
+
+    pub fn empty_address_space_configs_u8(num_addr_spaces: usize) -> Vec<AddressSpaceHostConfig> {
+        // All except address spaces 0..4 default to native 32-bit field.
+        // By default only address spaces 1..=4 have non-empty cell counts.
+        let mut addr_spaces = vec![
+            AddressSpaceHostConfig::new(
+                0,
+                DEFAULT_NATIVE_BLOCK_SIZE,
+                MemoryCellType::native8()
+            );
+            num_addr_spaces
+        ];
+
+        addr_spaces[MIPS_REGISTER_SPACE as usize] =
+            AddressSpaceHostConfig::new(0, DEFAULT_NATIVE_BLOCK_SIZE, MemoryCellType::U8);
+
+        addr_spaces[MIPS_MEMORY_SPACE as usize] =
+            AddressSpaceHostConfig::new(0, DEFAULT_NATIVE_BLOCK_SIZE, MemoryCellType::U8);
         addr_spaces
     }
 }

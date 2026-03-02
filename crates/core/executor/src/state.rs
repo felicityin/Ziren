@@ -93,7 +93,7 @@ impl ExecutionState {
             }
             #[cfg(feature = "aot-access")]
             {
-                let mut accessed = GuestMemory::default();
+                let mut accessed = GuestMemory::new_u8();
                 accessed.fill_zero();
                 accessed
             }
@@ -112,7 +112,7 @@ impl ExecutionState {
             next_is_delayslot: false,
             memory: GuestMemory::default(),
             accessed,
-            access_shard: GuestMemory::default(),
+            access_shard: GuestMemory::new_u16(),
             access_clk: GuestMemory::default(),
             uninitialized_memory: Memory::new_preallocated(),
             input_stream: Vec::new(),
@@ -154,15 +154,16 @@ impl ExecutionState {
     /// Reads the shard and timestamp of the current register access.
     #[inline(always)]
     pub fn read_register_access_meta(&self, ptr: u32) -> (u32, u32) {
-        let shard: [u32; 1] = unsafe { self.access_shard.read(MIPS_REGISTER_SPACE, ptr) };
+        let shard: [u16; 1] = unsafe { self.access_shard.read(MIPS_REGISTER_SPACE, ptr) };
         let clk: [u32; 1] = unsafe { self.access_clk.read(MIPS_REGISTER_SPACE, ptr) };
-        (shard[0], clk[0])
+        (shard[0] as u32, clk[0])
     }
 
     /// Writes the shard and timestamp of the current register access to `access_shard` and `access_clk`.
     #[inline(always)]
     pub fn write_register_access_meta(&mut self, ptr: u32, shard: u32, clk: u32) {
-        let shard: [u32; 1] = [shard];
+        debug_assert!(u16::try_from(shard).is_ok(), "shard value out of range for u16");
+        let shard: [u16; 1] = [shard as u16];
         let clk: [u32; 1] = [clk];
         unsafe { self.access_shard.write(MIPS_REGISTER_SPACE, ptr, shard) };
         unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
@@ -171,15 +172,16 @@ impl ExecutionState {
     /// Reads the shard and timestamp of the current memory access.
     #[inline(always)]
     pub fn read_memory_access_meta(&self, ptr: u32) -> (u32, u32) {
-        let shard: [u32; 1] = unsafe { self.access_shard.read(MIPS_MEMORY_SPACE, ptr >> 2) };
+        let shard: [u16; 1] = unsafe { self.access_shard.read(MIPS_MEMORY_SPACE, ptr >> 2) };
         let clk: [u32; 1] = unsafe { self.access_clk.read(MIPS_MEMORY_SPACE, ptr >> 2) };
-        (shard[0], clk[0])
+        (shard[0] as u32, clk[0])
     }
 
     // Writes the shard and timestamp of the current memory access to `access_shard` and `access_clk`.
     #[inline(always)]
     pub fn write_memory_access_meta(&mut self, ptr: u32, shard: u32, clk: u32) {
-        let shard: [u32; 1] = [shard];
+        debug_assert!(u16::try_from(shard).is_ok(), "shard value out of range for u16");
+        let shard: [u16; 1] = [shard as u16];
         let clk: [u32; 1] = [clk];
         unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr >> 2, shard) };
         unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr >> 2, clk) };
@@ -189,7 +191,7 @@ impl ExecutionState {
     #[cfg(feature = "aot-access")]
     #[inline(always)]
     pub fn set_register_accessed(&mut self, ptr: u32) {
-        let accessed: [u32; 1] = [1u32];
+        let accessed: [u8; 1] = [1u8];
         unsafe { self.accessed.write(MIPS_REGISTER_SPACE, ptr, accessed) };
     }
 
@@ -197,21 +199,21 @@ impl ExecutionState {
     #[cfg(feature = "aot-access")]
     #[inline(always)]
     pub fn set_memory_accessed(&mut self, ptr: u32) {
-        let accessed: [u32; 1] = [1u32];
+        let accessed: [u8; 1] = [1u8];
         unsafe { self.accessed.write(MIPS_MEMORY_SPACE, ptr >> 2, accessed) };
     }
 
     #[cfg(feature = "aot-access")]
     #[inline(always)]
     pub fn register_not_accessed(&mut self, ptr: u32) -> bool {
-        let accessed: [u32; 1] = unsafe { self.accessed.read(MIPS_REGISTER_SPACE, ptr) };
+        let accessed: [u8; 1] = unsafe { self.accessed.read(MIPS_REGISTER_SPACE, ptr) };
         accessed[0] == 0
     }
 
     #[cfg(feature = "aot-access")]
     #[inline(always)]
     pub fn memory_not_accessed(&mut self, ptr: u32) -> bool {
-        let accessed: [u32; 1] = unsafe { self.accessed.read(MIPS_MEMORY_SPACE, ptr >> 2) };
+        let accessed: [u8; 1] = unsafe { self.accessed.read(MIPS_MEMORY_SPACE, ptr >> 2) };
         accessed[0] == 0
     }
 

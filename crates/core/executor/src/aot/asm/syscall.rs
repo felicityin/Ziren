@@ -49,7 +49,6 @@ impl AotCompiler {
         asm += &format!("   pinsrq  xmm{TMP}, {REG_RETURN_VAL}, 1\n");
         asm += &Self::after_call();
 
-        // asm += &Self::sync_pc_to_reg();
         asm += &Self::sync_clk_to_reg();
 
         asm += &format!("   pextrq {REG_D}, xmm{TMP}, 1\n");
@@ -89,12 +88,10 @@ extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instructio
     let b = executor.state.read_register(Register::A0 as u32);
     let syscall = SyscallCode::from_u32(syscall_id);
     log::trace!("pc: {} syscall {}, a0: {}, a1: {}", executor.state.pc, syscall, b, c);
-    // executor.state.clk -= 5;
-    // executor.state.global_clk -= 1;
-    println!(
-        "aot 0 pc: {}, clk: {}, global_clk: {}, {}",
-        executor.state.pc, executor.state.clk, executor.state.global_clk, syscall
-    );
+    // println!(
+    //     "aot 0 pc: {}, clk: {}, global_clk: {}, {}",
+    //     executor.state.pc, executor.state.clk, executor.state.global_clk, syscall
+    // );
 
     // `hint_slice` is allowed in unconstrained mode since it is used to write the hint.
     // Other syscalls are not allowed because they can lead to non-deterministic
@@ -140,17 +137,15 @@ extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instructio
 
     executor.state.write_register(Register::V0 as u32, a);
     executor.state.clk += precompile_cycles;
-    // executor.state.pc = precompile_next_pc;
-    // executor.state.next_pc = precompile_next_pc + 4;
 
-    println!(
-        "aot 1 pc: {}, clk: {}, global_clk: {}, {}, next_next_pc: {}",
-        precompile_next_pc,
-        executor.state.clk,
-        executor.state.global_clk,
-        syscall,
-        precompile_next_pc + 4,
-    );
+    // println!(
+    //     "aot 1 pc: {}, clk: {}, global_clk: {}, {}, next_next_pc: {}",
+    //     precompile_next_pc,
+    //     executor.state.clk,
+    //     executor.state.global_clk,
+    //     syscall,
+    //     precompile_next_pc + 4,
+    // );
 
     if executor.state.exited {
         executor.state.clk += DEFAULT_CLK_INC;

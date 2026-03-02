@@ -133,11 +133,13 @@ impl AotCompiler {
         pos: MemoryAccessPosition,
         is_delay_slot: bool,
     ) -> String {
-        let addr = addr << 2;
+        let addr_shard = addr << 1;
+        let addr_clk = addr << 2;
+        let addr_accessed = addr;
         let mut asm = String::new();
 
         // unsafe { self.access_shard.write(MIPS_REGISTER_SPACE, ptr, shard) };
-        asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_SHARD_W}\n");
+        asm += &format!("   mov word ptr [{REG_A} + {addr_shard}], {REG_SHARD_16}\n");
 
         // unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
         if is_delay_slot {
@@ -145,30 +147,32 @@ impl AotCompiler {
         } else {
             asm += &format!("   lea {REG_C}, [{REG_CLK} + {}]\n", pos as u32);
         }
-        asm += &format!("   mov dword ptr [{REG_B} + {addr}], {REG_C_W}\n");
+        asm += &format!("   mov dword ptr [{REG_B} + {addr_clk}], {REG_C_W}\n");
 
         // self.state.set_register_accessed(addr);
-        asm += &format!("   mov dword ptr [{REG_D} + {addr}], 1\n");
+        asm += &format!("   mov byte ptr [{REG_D} + {addr_accessed}], 1\n");
 
         asm
     }
 
     pub fn set_access_register_meta_control(addr: u32, pos: MemoryAccessPosition) -> String {
-        let addr = addr << 2;
+        let addr_shard = addr << 1;
+        let addr_clk = addr << 2;
+        let addr_accessed = addr;
         let mut asm = String::new();
 
         // unsafe { self.access_shard.write(MIPS_REGISTER_SPACE, ptr, shard) };
-        asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_SHARD_W}\n");
+        asm += &format!("   mov word ptr [{REG_A} + {addr_shard}], {REG_SHARD_16}\n");
 
         // unsafe { self.access_clk.write(MIPS_REGISTER_SPACE, ptr, clk) };
         asm += &format!(
             "   lea {REG_C}, [{REG_CLK} - {}]\n",
             DEFAULT_CLK_INC + DEFAULT_CLK_INC - pos as u32
         );
-        asm += &format!("   mov dword ptr [{REG_B} + {addr}], {REG_C_W}\n");
+        asm += &format!("   mov dword ptr [{REG_B} + {addr_clk}], {REG_C_W}\n");
 
         // self.state.set_register_accessed(addr);
-        asm += &format!("   mov dword ptr [{REG_D} + {addr}], 1\n");
+        asm += &format!("   mov byte ptr [{REG_D} + {addr_accessed}], 1\n");
 
         asm
     }
@@ -178,7 +182,9 @@ impl AotCompiler {
 
         // unsafe { self.access_shard.write(MIPS_MEMORY_SPACE, ptr, shard) };
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_SHARD}, 1\n");
-        asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_SHARD_W}\n");
+        asm += &format!("   mov {REG_C}, {addr}\n");
+        asm += &format!("   shr {REG_C}, 1\n");
+        asm += &format!("   mov word ptr [{REG_A} + {REG_C}], {REG_SHARD_16}\n");
 
         // unsafe { self.access_clk.write(MIPS_MEMORY_SPACE, ptr, clk) };
         let pos = 0;
@@ -192,7 +198,9 @@ impl AotCompiler {
 
         // self.set_memory_accessed(addr);
         asm += &format!("   pextrq {REG_A}, xmm{MEM_ACCESSED}, 1\n");
-        asm += &format!("   mov dword ptr [{REG_A} + {addr}], 1\n");
+        asm += &format!("   mov {REG_C}, {addr}\n");
+        asm += &format!("   shr {REG_C}, 2\n");
+        asm += &format!("   mov byte ptr [{REG_A} + {REG_C}], 1\n");
 
         asm
     }
@@ -243,7 +251,9 @@ impl AotCompiler {
 
         // If prev_shard == shard, skip the local memory counter increment.
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_SHARD}, 1\n");
-        asm += &format!("   mov {REG_A_W}, dword ptr [{REG_A} + {addr}]\n");
+        asm += &format!("   mov {REG_C}, {addr}\n");
+        asm += &format!("   shr {REG_C}, 1\n");
+        asm += &format!("   movzx {REG_A_W}, word ptr [{REG_A} + {REG_C}]\n");
         asm += &format!("   cmp {REG_A_W}, {REG_SHARD_W}\n");
         asm += &format!("   je .{pc}_skip_local_mem_inc\n");
 
