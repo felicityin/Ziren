@@ -1955,13 +1955,53 @@ impl<'a> Executor<'a> {
 
         // Clone self.state without proof_stream in it so it's faster.
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
-        let mut checkpoint = tracing::debug_span!("clone").in_scope(|| self.state.clone());
+        let mut checkpoint = tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone());
         self.state.proof_stream = proof_stream;
 
         #[cfg(not(feature = "aot"))]
         let done = tracing::info_span!("[not aot] execute").in_scope(|| self.execute())?;
         #[cfg(feature = "aot")]
-        let done = tracing::info_span!("[aot] execute").in_scope(|| self.aot_metered_execute())?;
+        let done = {
+            enum ExecEngine {
+                Interpreter,
+                Aot,
+            }
+
+            let entered_unconstrained_before =
+                self.state.syscall_counts.contains_key(&SyscallCode::ENTER_UNCONSTRAINED);
+            let engine = if entered_unconstrained_before {
+                ExecEngine::Interpreter
+            } else {
+                ExecEngine::Aot
+            };
+
+            let mut done = match engine {
+                ExecEngine::Interpreter => {
+                    tracing::info_span!("[not aot] execute").in_scope(|| self.execute())?
+                }
+                ExecEngine::Aot => {
+                    tracing::info_span!("[aot] execute").in_scope(|| self.aot_metered_execute())?
+                }
+            };
+
+            let entered_unconstrained_after =
+                self.state.syscall_counts.contains_key(&SyscallCode::ENTER_UNCONSTRAINED);
+            let needs_unconstrained_fallback = matches!(engine, ExecEngine::Aot)
+                && !entered_unconstrained_before
+                && entered_unconstrained_after;
+            if needs_unconstrained_fallback {
+                // If this shard crossed into unconstrained execution, recompute the shard boundary
+                // with the interpreter to keep checkpoint semantics identical to trace replay.
+                self.state = checkpoint.clone();
+                self.local_counts = LocalCounts::default();
+                self.record = ExecutionRecord::new(self.program.clone());
+                self.records.clear();
+                done = tracing::info_span!("[not aot] execute (unconstrained fallback)")
+                    .in_scope(|| self.execute())?;
+            }
+
+            done
+        };
         if !done {
             self.records.clear();
         }
@@ -2137,7 +2177,7 @@ impl<'a> Executor<'a> {
         }
 
         // If there's not enough cycles left for another instruction, move to the next shard.
-        let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
+        let cpu_exit = self.state.clk + self.max_syscall_cycles >= self.shard_size;
 
         // Every N cycles, check if there exists at least one shape that fits.
         //

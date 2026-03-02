@@ -951,21 +951,21 @@ mod tests {
         runtime.aot_pure_run().unwrap();
     }
 
-    // #[test]
-    // fn test_aot_pure_u256xu2048_mul() {
-    //     let program = u256xu2048_mul_program();
-    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-    //     runtime.aot_compile_pure_lib();
-    //     runtime.aot_pure_run().unwrap();
-    // }
+    #[test]
+    fn test_aot_pure_u256xu2048_mul() {
+        let program = u256xu2048_mul_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_pure_lib();
+        runtime.aot_pure_run().unwrap();
+    }
 
-    // #[test]
-    // fn test_aot_pure_ssz_withdrawals_program_run() {
-    //     let program = ssz_withdrawals_program();
-    //     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-    //     runtime.aot_compile_pure_lib();
-    //     runtime.aot_pure_run().unwrap();
-    // }
+    #[test]
+    fn test_aot_pure_ssz_withdrawals_program_run() {
+        let program = ssz_withdrawals_program();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.aot_compile_pure_lib();
+        runtime.aot_pure_run().unwrap();
+    }
 
     #[test]
     fn test_aot_pure_secp256r1_add_program_run() {

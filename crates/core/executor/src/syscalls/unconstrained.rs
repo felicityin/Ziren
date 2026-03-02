@@ -16,11 +16,13 @@ impl Syscall for EnterUnconstrainedSyscall {
             panic!("Unconstrained block is already active.");
         }
         ctx.rt.unconstrained = true;
+        let memory = tracing::info_span!("Unconstrained mode: copy memory")
+            .in_scope(|| ctx.rt.state.memory.clone());
         ctx.rt.unconstrained_state = ForkState {
             global_clk: ctx.rt.state.global_clk,
             clk: ctx.rt.state.clk,
             pc: ctx.rt.state.pc,
-            memory: ctx.rt.state.memory.clone(),
+            memory,
             access_shard: std::mem::take(&mut ctx.rt.state.access_shard),
             access_clk: std::mem::take(&mut ctx.rt.state.access_clk),
             accessed: std::mem::take(&mut ctx.rt.state.accessed),
@@ -50,7 +52,7 @@ impl Syscall for ExitUnconstrainedSyscall {
             ctx.rt.state.pc = ctx.rt.unconstrained_state.pc;
             ctx.next_pc = ctx.rt.state.pc.wrapping_add(4);
             ctx.rt.state.memory = std::mem::take(&mut ctx.rt.unconstrained_state.memory);
-            #[cfg(not(feature = "aot"))]
+            #[cfg(not(feature = "aot-access"))]
             {
                 ctx.rt.state.access_shard =
                     std::mem::take(&mut ctx.rt.unconstrained_state.access_shard); // It does not work for AOT
@@ -58,11 +60,13 @@ impl Syscall for ExitUnconstrainedSyscall {
                     std::mem::take(&mut ctx.rt.unconstrained_state.access_clk);
                 ctx.rt.state.accessed = std::mem::take(&mut ctx.rt.unconstrained_state.accessed);
             }
-            #[cfg(feature = "aot")]
+            #[cfg(feature = "aot-access")]
             {
-                ctx.rt.state.access_shard = ctx.rt.unconstrained_state.access_shard.clone();
-                ctx.rt.state.access_clk = ctx.rt.unconstrained_state.access_clk.clone();
-                ctx.rt.state.accessed = ctx.rt.unconstrained_state.accessed.clone();
+                tracing::info_span!("Unconstrained mode: copy accessing meta").in_scope(|| {
+                    ctx.rt.state.access_shard = ctx.rt.unconstrained_state.access_shard.clone();
+                    ctx.rt.state.access_clk = ctx.rt.unconstrained_state.access_clk.clone();
+                    ctx.rt.state.accessed = ctx.rt.unconstrained_state.accessed.clone();
+                });
             }
             ctx.rt.record = std::mem::take(&mut ctx.rt.unconstrained_state.record);
             ctx.rt.memory_accesses = std::mem::take(&mut ctx.rt.unconstrained_state.op_record);
