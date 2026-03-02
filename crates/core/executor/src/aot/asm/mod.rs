@@ -194,7 +194,7 @@ impl AotCompiler {
             asm += &format!("   lea {REG_C}, [{REG_CLK} + {}]\n", pos as u32);
         }
         asm += &format!("   pextrq {REG_A}, xmm{ACCESS_MEM_CLK}, 1\n");
-        asm += &format!("   mov [{REG_A} + {addr}], {REG_C}\n");
+        asm += &format!("   mov dword ptr [{REG_A} + {addr}], {REG_C_W}\n");
 
         // self.set_memory_accessed(addr);
         asm += &format!("   pextrq {REG_A}, xmm{MEM_ACCESSED}, 1\n");

@@ -16,6 +16,9 @@ impl AotCompiler {
         let sync_shard_to_reg =
             || format!("    mov {REG_SHARD}, [{REG_EXECUTOR_PTR} + {shard_offset}]\n");
 
+        // unconstrained
+        let unconstrained_offset = offset_of!(Executor, unconstrained);
+
         // header part
         asm += ".intel_syntax noprefix\n";
         asm += ".code64\n";
@@ -103,13 +106,24 @@ impl AotCompiler {
             }
 
             // Check if we should increment shard
+
+            // Check if !self.unconstrained
+            asm += &format!(
+                "    mov {REG_D_8L}, byte ptr [{REG_EXECUTOR_PTR} + {unconstrained_offset}]\n"
+            );
+            asm += &format!("    test {REG_D_8L}, {REG_D_8L}\n");
+            asm += &format!("    jnz .{pc}_check_shard_end\n"); // self.unconstrained == true
+
+            // Check if self.state.clk + self.max_syscall_cycles >= self.shard_size;
             asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
             asm += "    jae asm_inc_shard\n";
 
-            // Check global_clk % shape_check_frequency
+            // Check if global_clk % shape_check_frequency == 0
             asm += "    # global_clk % shape_check_frequency\n";
             asm += &format!("    test {REG_GLOBAL_CLK}, {shape_check_frequency_minus_1}\n");
             asm += "    jz asm_inc_shard\n";
+
+            asm += &format!("    .{pc}_check_shard_end:");
         }
 
         asm += "asm_run_end:\n";
@@ -155,8 +169,6 @@ impl AotCompiler {
             asm += &format!("   .long asm_execute_pc_{pc} - map_pc_base\n");
         }
 
-        asm += "\n";
-
         std::fs::write("asm_metered_dump.s", &asm).expect("failed to write asm");
 
         Ok(asm)
@@ -166,7 +178,8 @@ impl AotCompiler {
 #[inline]
 extern "C" fn inc_shard_if_need(executor: &mut Executor, pc: u64) -> bool {
     executor.state.pc = pc as u32;
-    // println!("aot inc_shard_if_need pc: {}, clk: {}", executor.state.pc, executor.state.clk);
+    executor.state.next_pc = executor.state.pc.wrapping_add(4);
+    executor.state.next_is_delayslot = false;
 
     // If the cycle limit is exceeded, return an error.
     if let Some(max_cycles) = executor.max_cycles {

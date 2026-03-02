@@ -151,10 +151,6 @@ extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instructio
         executor.state.clk += DEFAULT_CLK_INC;
         executor.state.global_clk += 1;
         executor.state.pc = 0;
-        println!(
-            "aot halt pc: {}, clk: {}, global_clk: {}, {}",
-            executor.state.pc, executor.state.clk, executor.state.global_clk, syscall
-        );
         0
     } else if syscall != SyscallCode::EXIT_UNCONSTRAINED {
         1

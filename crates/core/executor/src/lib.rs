@@ -1,4 +1,5 @@
 mod air;
+#[cfg(feature = "aot")]
 mod aot;
 mod context;
 mod cost;
@@ -23,6 +24,7 @@ pub mod syscalls;
 mod utils;
 
 pub use air::*;
+#[cfg(feature = "aot")]
 pub use aot::*;
 pub use context::*;
 pub use cost::*;

@@ -59,12 +59,12 @@ libc = "0.2.175"
 test-artifacts = { path = "../../test-artifacts" }
 
 [features]
-default = ["aot-access"]
+default = []
 bigint-rug = ["zkm-curves/bigint-rug"]
 pre-alloc = []
 # use basic memory instead of mmap:
 basic-memory = []
 # Disable bounds checking in memory operations for performance
 unprotected = []
-aot = []
+aot = ["aot-access"]
 aot-access = []

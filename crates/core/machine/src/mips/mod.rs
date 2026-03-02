@@ -1129,9 +1129,6 @@ pub mod tests {
         println!("runtime.state.clk: {}", runtime.state.clk);
         println!("runtime.state.global_clk: {}", runtime.state.global_clk);
         println!("runtime.state.current_shard: {}", runtime.state.current_shard);
-        // assert_eq!(runtime.state.clk, 40495);
-        // assert_eq!(runtime.state.global_clk, 12195);
-        // assert_eq!(runtime.state.current_shard, 2);
     }
 
     #[test]

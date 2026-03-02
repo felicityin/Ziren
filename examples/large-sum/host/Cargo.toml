@@ -16,3 +16,6 @@ zkm-build = { workspace = true }
 [[bin]]
 name = "large-sum-host"
 path = "src/main.rs"
+
+[features]
+aot = ["zkm-sdk/aot"]
