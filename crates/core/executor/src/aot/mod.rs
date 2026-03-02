@@ -138,11 +138,11 @@ impl<'a> Executor<'a> {
                 self.postprocess();
                 break;
             }
-            println!(
-                "aot 1------Shard {} ended with pc {}, clk {}, and global_clk {}",
-                self.state.current_shard, self.state.pc, self.state.clk, self.state.global_clk
-            );
-            println!("aot --clks: {:?}", self.state.records_clk);
+            // println!(
+            //     "aot 1------Shard {} ended with pc {}, clk {}, and global_clk {}",
+            //     self.state.current_shard, self.state.pc, self.state.clk, self.state.global_clk
+            // );
+            // println!("aot --clks: {:?}", self.state.records_clk);
 
             num_shards_executed += 1;
             if num_shards_executed >= self.shard_batch_size {
@@ -156,7 +156,7 @@ impl<'a> Executor<'a> {
     fn execute_metered_shard(&mut self) -> Result<bool, ExecutionError> {
         let executor_ptr = self as *mut Executor;
 
-        tracing::debug_span!("[aot] metered execute one checkpoint").in_scope(|| unsafe {
+        tracing::debug_span!("[aot] metered execute one shard").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<MeteredAsmRunFn> = self
                 .metered_lib
                 .as_ref()
@@ -175,21 +175,21 @@ impl<'a> Executor<'a> {
             log::error!("program ended in unconstrained mode at clk {}", self.state.global_clk);
             return Err(ExecutionError::EndInUnconstrained());
         }
-        println!(
-            "self.state.pc[{}].wrapping_sub(self.program.pc_base[{}])[{}] 
-                >= (self.program.instructions.len() * 4) as u32 [{}]: {}",
-            self.state.pc,
-            self.program.pc_base,
-            self.state.pc.wrapping_sub(self.program.pc_base),
-            self.program.instructions.len() * 4,
-            self.state.pc.wrapping_sub(self.program.pc_base)
-                >= (self.program.instructions.len() * 4) as u32
-        );
-        println!("self.state.exited: {}", self.state.exited);
-        println!(
-            "2------done: {done}, self.state.pc: {}, Shard {} ended with clk {} and global_clk {}",
-            self.state.pc, self.state.current_shard, self.state.clk, self.state.global_clk
-        );
+        // println!(
+        //     "self.state.pc[{}].wrapping_sub(self.program.pc_base[{}])[{}]
+        //         >= (self.program.instructions.len() * 4) as u32 [{}]: {}",
+        //     self.state.pc,
+        //     self.program.pc_base,
+        //     self.state.pc.wrapping_sub(self.program.pc_base),
+        //     self.program.instructions.len() * 4,
+        //     self.state.pc.wrapping_sub(self.program.pc_base)
+        //         >= (self.program.instructions.len() * 4) as u32
+        // );
+        // println!("self.state.exited: {}", self.state.exited);
+        // println!(
+        //     "2------done: {done}, self.state.pc: {}, Shard {} ended with clk {} and global_clk {}",
+        //     self.state.pc, self.state.current_shard, self.state.clk, self.state.global_clk
+        // );
         Ok(done)
     }
 }

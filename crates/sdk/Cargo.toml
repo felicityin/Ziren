@@ -69,6 +69,8 @@ network = [
   "dep:ethers",
 ]
 aot = ["zkm-core-executor/aot", "zkm-core-machine/aot"]
+aot-pure-run = ["zkm-prover/aot-pure-run"]
+aot-metered-run = ["zkm-prover/aot-metered-run"]
 
 [build-dependencies]
 vergen = { version = "8", default-features = false, features = [

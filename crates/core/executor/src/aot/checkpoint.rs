@@ -109,48 +109,38 @@ impl AotCompiler {
             // Check global_clk % shape_check_frequency
             asm += "    # global_clk % shape_check_frequency\n";
             asm += &format!("    test {REG_GLOBAL_CLK}, {shape_check_frequency_minus_1}\n");
-            asm += &format!("    jnz .{pc}_check_shape_end\n");
-
-            // global_clk % shape_check_frequency == 0
-            // Call inc_shard_if_need()
-            asm += &Self::sync_reg_to_clk();
-            asm += &Self::sync_reg_to_global_clk();
-            asm += "    # call inc_shard_if_need()\n";
-            asm += &Self::before_call();
-            asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
-            asm += &format!("    mov {REG_SECOND_ARG}, {REG_PC}\n");
-            asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
-            asm += &format!("    call {REG_CALLER}\n");
-            asm += "    test al, al\n";
-            asm += &Self::after_call();
-            asm += "    jnz asm_run_end\n";
-
-            asm += &format!("    .{pc}_check_shape_end:\n");
+            asm += "    jz asm_inc_shard\n";
         }
 
         asm += "asm_run_end:\n";
         asm += "    # save_xmm_regs\n";
         asm += &Self::save_xmm_regs();
+        asm += &Self::sync_reg_to_pc();
+        asm += &Self::sync_reg_to_clk();
+        asm += &Self::sync_reg_to_global_clk();
         asm += &Self::pop_external_registers();
         asm += "    ret\n";
 
-        asm += "asm_halt:\n";
+        asm += "asm_end:\n";
         asm += &Self::pop_external_registers();
         asm += "    ret\n";
 
         asm += "asm_inc_shard:\n";
-        asm += "    # save_xmm_regs\n";
-        asm += &Self::save_xmm_regs();
         asm += &Self::sync_reg_to_clk();
         asm += &Self::sync_reg_to_global_clk();
         asm += "    # call inc_shard_if_need()\n";
+        asm += &Self::before_call();
         asm += &format!("    mov {REG_FIRST_ARG}, {REG_EXECUTOR_PTR}\n");
         asm += &format!("    mov {REG_SECOND_ARG}, {REG_PC}\n");
         asm += &format!("    mov {REG_CALLER}, {inc_shard_if_need_ptr}\n");
         asm += &format!("    call {REG_CALLER}\n");
-        asm += "    # pop_external_registers\n";
-        asm += &Self::pop_external_registers();
-        asm += "    ret\n";
+        asm += "    test al, al\n";
+        asm += &Self::after_call();
+        asm += "    jnz asm_end\n"; // inc_shard_if_need() return true
+        asm += &format!("    lea {REG_C}, [rip + map_pc_base]\n");
+        asm += &format!("    movsxd {REG_A}, [{REG_C} + {REG_PC}]\n");
+        asm += &format!("    add {REG_A}, {REG_C}\n");
+        asm += &format!("    jmp {REG_A}\n");
 
         // map_pc_base part
         asm += ".section .rodata\n";
@@ -175,9 +165,8 @@ impl AotCompiler {
 
 #[inline]
 extern "C" fn inc_shard_if_need(executor: &mut Executor, pc: u64) -> bool {
-    println!("aot inc_shard_if_need");
     executor.state.pc = pc as u32;
-    // println!("=======pc: {}" , executor.state.pc);
+    // println!("aot inc_shard_if_need pc: {}, clk: {}", executor.state.pc, executor.state.clk);
 
     // If the cycle limit is exceeded, return an error.
     if let Some(max_cycles) = executor.max_cycles {

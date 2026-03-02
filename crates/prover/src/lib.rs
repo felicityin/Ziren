@@ -323,7 +323,18 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         for (proof, vkey) in stdin.proofs.iter() {
             runtime.write_proof(proof.clone(), vkey.clone());
         }
+        #[cfg(not(any(feature = "aot-pure-run", feature = "aot-metered-run")))]
         runtime.run_fast()?;
+        #[cfg(feature = "aot-pure-run")]
+        {
+            runtime.aot_compile_pure_lib();
+            runtime.aot_pure_run()?;
+        }
+        #[cfg(feature = "aot-metered-run")]
+        {
+            runtime.aot_compile_metered_lib();
+            runtime.aot_metered_run()?;
+        }
         Ok((ZKMPublicValues::from(&runtime.state.public_values_stream), runtime.report))
     }
 

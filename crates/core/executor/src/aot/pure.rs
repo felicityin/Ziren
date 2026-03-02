@@ -95,7 +95,7 @@ impl AotCompiler {
         asm += &format!("    xor {REG_RETURN_VAL}, {REG_RETURN_VAL}\n");
         asm += "    ret\n";
 
-        asm += "asm_halt:\n";
+        asm += "asm_end:\n";
         asm += &Self::pop_external_registers();
         asm += "    ret\n";
 

@@ -1,4 +1,4 @@
-use zkm_sdk::{include_elf, utils, ProverClient, ZKMProofWithPublicValues, ZKMStdin};
+use zkm_sdk::{utils, ProverClient, ZKMStdin};
 
 pub const RETH_ELF: &[u8] = include_bytes!("../../guest/reth");
 pub const RETH_STDIN: &[u8] = include_bytes!("../../guest/24438200-stdin.bin");

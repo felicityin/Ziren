@@ -1079,7 +1079,7 @@ pub mod tests {
     #[cfg(feature = "aot")]
     #[test]
     fn test_aot_fibo_1000_run() {
-        let mut program = fibonacci_input_program();
+        let program = fibonacci_input_program();
         let mut runtime = zkm_core_executor::Executor::new(program, ZKMCoreOpts::default());
 
         let n = 1000u32;
@@ -1106,7 +1106,7 @@ pub mod tests {
     #[cfg(feature = "aot")]
     #[test]
     fn test_aot_fibo_1200_run() {
-        let mut program = fibonacci_input_program();
+        let program = fibonacci_input_program();
         let mut runtime = zkm_core_executor::Executor::new(program, ZKMCoreOpts::default());
 
         let n = 1200u32;
