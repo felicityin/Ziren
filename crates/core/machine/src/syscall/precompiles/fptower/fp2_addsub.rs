@@ -128,7 +128,7 @@ impl<F: PrimeField32, P: FpOpField> MachineAir<F> for Fp2AddSubAssignChip<P> {
 
             cols.is_real = F::ONE;
             cols.is_add = F::from_bool(event.op == FieldOperation::Add);
-            cols.shard = F::from_canonical_u32(event.shard);
+            cols.shard = F::from_canonical_u16(event.shard);
             cols.clk = F::from_canonical_u32(event.clk);
             cols.x_ptr = F::from_canonical_u32(event.x_ptr);
             cols.y_ptr = F::from_canonical_u32(event.y_ptr);

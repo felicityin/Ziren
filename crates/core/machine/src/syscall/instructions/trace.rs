@@ -88,7 +88,7 @@ impl SyscallInstrsChip {
         cols.is_real = F::ONE;
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
-        cols.shard = F::from_canonical_u32(event.shard);
+        cols.shard = F::from_canonical_u16(event.shard);
         cols.clk = F::from_canonical_u32(event.clk);
 
         cols.op_a_value = event.a_record.value.into();

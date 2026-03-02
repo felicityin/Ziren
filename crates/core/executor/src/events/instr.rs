@@ -48,7 +48,7 @@ impl AluEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CompAluEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
 
@@ -114,7 +114,7 @@ impl CompAluEvent {
 #[repr(C)]
 pub struct MemInstrEvent {
     /// The shard.
-    pub shard: u32,
+    pub shard: u16,
     /// The clk.
     pub clk: u32,
     /// The program counter.
@@ -139,7 +139,7 @@ impl MemInstrEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        shard: u32,
+        shard: u16,
         clk: u32,
         pc: u32,
         next_pc: u32,
@@ -239,7 +239,7 @@ impl JumpEvent {
 #[repr(C)]
 pub struct MiscEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The program counter.
@@ -265,7 +265,7 @@ impl MiscEvent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         clk: u32,
-        shard: u32,
+        shard: u16,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,

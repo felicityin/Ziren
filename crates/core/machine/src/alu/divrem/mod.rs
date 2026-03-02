@@ -243,7 +243,7 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                     cols.op_hi_access
                         .populate(MemoryRecordEnum::Write(event.hi_record), &mut blu_events);
                     output.add_byte_lookup_events(blu_events);
-                    cols.shard = F::from_canonical_u32(event.shard);
+                    cols.shard = F::from_canonical_u16(event.shard);
                     cols.clk = F::from_canonical_u32(event.clk);
                 }
             }

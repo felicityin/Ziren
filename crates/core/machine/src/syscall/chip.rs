@@ -111,7 +111,15 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
         let events = events
             .iter()
             .map(|event| GlobalLookupEvent {
-                message: [event.shard, event.clk, event.syscall_id, event.arg1, event.arg2, 0, 0],
+                message: [
+                    event.shard as u32,
+                    event.clk,
+                    event.syscall_id,
+                    event.arg1,
+                    event.arg2,
+                    0,
+                    0,
+                ],
                 is_receive: self.shard_kind == SyscallShardKind::Precompile,
                 kind: LookupKind::Syscall as u8,
             })
@@ -144,7 +152,7 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
             let mut row = [F::ZERO; NUM_SYSCALL_COLS];
             let cols: &mut SyscallCols<F> = row.as_mut_slice().borrow_mut();
 
-            cols.shard = F::from_canonical_u32(syscall_event.shard);
+            cols.shard = F::from_canonical_u16(syscall_event.shard);
             cols.clk = F::from_canonical_u32(syscall_event.clk);
             cols.syscall_id = F::from_canonical_u32(syscall_event.syscall_id);
             cols.arg1 = F::from_canonical_u32(syscall_event.arg1);

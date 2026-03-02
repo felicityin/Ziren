@@ -91,7 +91,7 @@ impl MemoryInstructionsChip {
         cols: &mut MemoryInstructionsColumns<F>,
         blu: &mut HashMap<ByteLookupEvent, usize>,
     ) {
-        cols.shard = F::from_canonical_u32(event.shard);
+        cols.shard = F::from_canonical_u16(event.shard);
         assert!(cols.shard != F::ZERO);
         cols.clk = F::from_canonical_u32(event.clk);
         cols.pc = F::from_canonical_u32(event.pc);

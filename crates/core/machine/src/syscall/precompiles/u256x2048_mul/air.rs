@@ -122,7 +122,7 @@ impl<F: PrimeField32> MachineAir<F> for U256x2048MulChip {
 
                         // Assign basic values to the columns.
                         cols.is_real = F::ONE;
-                        cols.shard = F::from_canonical_u32(event.shard);
+                        cols.shard = F::from_canonical_u16(event.shard);
                         cols.clk = F::from_canonical_u32(event.clk);
                         cols.a_ptr = F::from_canonical_u32(event.a_ptr);
                         cols.b_ptr = F::from_canonical_u32(event.b_ptr);

@@ -8,7 +8,7 @@ use crate::events::memory::{MemoryLocalEvent, MemoryReadRecord, MemoryWriteRecor
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct U256xU2048MulEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The channel number.
     pub clk: u32,
     /// The pointer to the a value.

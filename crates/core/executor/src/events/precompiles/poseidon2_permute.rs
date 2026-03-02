@@ -10,7 +10,7 @@ pub(crate) const STATE_SIZE: usize = 16;
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Poseidon2PermuteEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The pre_state as a list of u32 words.

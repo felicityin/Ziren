@@ -25,7 +25,7 @@ use crate::{
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct EllipticCurveAddEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The pointer to the first point.
@@ -50,7 +50,7 @@ pub struct EllipticCurveAddEvent {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct EllipticCurveDoubleEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The pointer to the point.
@@ -69,7 +69,7 @@ pub struct EllipticCurveDoubleEvent {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct EllipticCurveDecompressEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The pointer to the point.

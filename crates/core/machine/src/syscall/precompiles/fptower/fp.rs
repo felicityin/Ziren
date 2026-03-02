@@ -122,7 +122,7 @@ impl<F: PrimeField32, P: FpOpField> MachineAir<F> for FpOpChip<P> {
             cols.is_sub = F::from_canonical_u8((event.op == FieldOperation::Sub) as u8);
             cols.is_mul = F::from_canonical_u8((event.op == FieldOperation::Mul) as u8);
             cols.is_real = F::ONE;
-            cols.shard = F::from_canonical_u32(event.shard);
+            cols.shard = F::from_canonical_u16(event.shard);
             cols.clk = F::from_canonical_u32(event.clk);
             cols.x_ptr = F::from_canonical_u32(event.x_ptr);
             cols.y_ptr = F::from_canonical_u32(event.y_ptr);

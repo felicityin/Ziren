@@ -112,7 +112,7 @@ impl BooleanCircuitGarbleChip {
         {
             let mut row = [F::ZERO; NUM_BOOLEAN_CIRCUIT_GARBLE_COLS];
             let cols: &mut BooleanCircuitGarbleCols<F> = row.as_mut_slice().borrow_mut();
-            cols.shard = F::from_canonical_u32(event.shard);
+            cols.shard = F::from_canonical_u16(event.shard);
             cols.clk = F::from_canonical_u32(event.clk);
             cols.is_real = F::ONE;
             cols.is_gate = F::ZERO;
@@ -141,7 +141,7 @@ impl BooleanCircuitGarbleChip {
         for gate_id in 0..gates_num {
             let mut row = [F::ZERO; NUM_BOOLEAN_CIRCUIT_GARBLE_COLS];
             let cols: &mut BooleanCircuitGarbleCols<F> = row.as_mut_slice().borrow_mut();
-            cols.shard = F::from_canonical_u32(event.shard);
+            cols.shard = F::from_canonical_u16(event.shard);
             cols.clk = F::from_canonical_u32(event.clk);
             cols.is_real = F::ONE;
             cols.is_gate = F::ONE;

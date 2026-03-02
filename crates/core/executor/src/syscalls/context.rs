@@ -15,7 +15,7 @@ use super::SyscallCode;
 #[allow(dead_code)]
 pub struct SyscallContext<'a, 'b: 'a> {
     /// The current shard.
-    pub current_shard: u32,
+    pub current_shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The next program counter.
@@ -63,7 +63,7 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
 
     /// Get the current shard.
     #[must_use]
-    pub fn current_shard(&self) -> u32 {
+    pub fn current_shard(&self) -> u16 {
         self.rt.state.current_shard
     }
 

@@ -11,7 +11,7 @@ pub const NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC: usize = 4;
 #[repr(C)]
 pub struct MemoryRecord {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The timestamp.
     pub timestamp: u32,
     /// The value.
@@ -22,7 +22,7 @@ pub struct MemoryRecord {
 #[repr(C)]
 pub struct MemoryAccessMeta {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The timestamp.
     pub timestamp: u32,
 }
@@ -59,11 +59,11 @@ pub struct MemoryReadRecord {
     /// The value.
     pub value: u32,
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The timestamp.
     pub timestamp: u32,
     /// The previous shard number.
-    pub prev_shard: u32,
+    pub prev_shard: u16,
     /// The previous timestamp.
     pub prev_timestamp: u32,
 }
@@ -79,13 +79,13 @@ pub struct MemoryWriteRecord {
     /// The value.
     pub value: u32,
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The timestamp.
     pub timestamp: u32,
     /// The previous value.
     pub prev_value: u32,
     /// The previous shard number.
-    pub prev_shard: u32,
+    pub prev_shard: u16,
     /// The previous timestamp.
     pub prev_timestamp: u32,
 }
@@ -161,9 +161,9 @@ impl MemoryReadRecord {
     #[must_use]
     pub const fn new(
         value: u32,
-        shard: u32,
+        shard: u16,
         timestamp: u32,
-        prev_shard: u32,
+        prev_shard: u16,
         prev_timestamp: u32,
     ) -> Self {
         debug_assert!(
@@ -178,10 +178,10 @@ impl MemoryWriteRecord {
     #[must_use]
     pub const fn new(
         value: u32,
-        shard: u32,
+        shard: u16,
         timestamp: u32,
         prev_value: u32,
-        prev_shard: u32,
+        prev_shard: u16,
         prev_timestamp: u32,
     ) -> Self {
         debug_assert!(
@@ -212,7 +212,7 @@ impl MemoryInitializeFinalizeEvent {
     /// Creates a new [``MemoryInitializeFinalizeEvent``] for a finalization.
     #[must_use]
     pub const fn finalize(addr: u32, value: u32, meta: &MemoryAccessMeta) -> Self {
-        Self { addr, value, shard: meta.shard, timestamp: meta.timestamp }
+        Self { addr, value, shard: meta.shard as u32, timestamp: meta.timestamp }
     }
 
     /// Creates a new [``MemoryInitializeFinalizeEvent``] for a finalization.

@@ -13,7 +13,7 @@ pub struct SyscallEvent {
     /// The next program counter.
     pub next_pc: u32,
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The `op_a` memory write record.

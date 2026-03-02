@@ -68,7 +68,7 @@ impl<F: PrimeField32> EdDecompressCols<F> {
     ) -> Result<(), CurveError> {
         let mut new_byte_lookup_events = Vec::new();
         self.is_real = F::from_bool(true);
-        self.shard = F::from_canonical_u32(event.shard);
+        self.shard = F::from_canonical_u16(event.shard);
         self.clk = F::from_canonical_u32(event.clk);
         self.ptr = F::from_canonical_u32(event.ptr);
         self.sign = F::from_bool(event.sign);

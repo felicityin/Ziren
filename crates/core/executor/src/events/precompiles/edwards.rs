@@ -12,7 +12,7 @@ use crate::events::{
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct EdDecompressEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The pointer to the point.

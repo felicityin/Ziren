@@ -91,7 +91,7 @@ impl MiscInstrsChip {
         cols.op_b_value = event.b.into();
         cols.op_c_value = event.c.into();
         cols.prev_a_value = event.prev_a.into();
-        cols.shard = F::from_canonical_u32(event.shard);
+        cols.shard = F::from_canonical_u16(event.shard);
         cols.clk = F::from_canonical_u32(event.clk);
 
         cols.is_sext = F::from_bool(matches!(event.opcode, Opcode::SEXT));

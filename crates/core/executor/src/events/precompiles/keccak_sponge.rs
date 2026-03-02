@@ -14,7 +14,7 @@ pub(crate) const KECCAK_GENERAL_RATE_U32S: usize = 36;
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct KeccakSpongeEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The input as a list of u32 words.

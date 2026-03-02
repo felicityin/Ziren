@@ -25,7 +25,7 @@ pub struct ExecutionState {
     pub next_pc: u32,
 
     /// The shard clock keeps track of how many shards have been executed.
-    pub current_shard: u32,
+    pub current_shard: u16,
 
     /// if exit
     pub exited: bool,

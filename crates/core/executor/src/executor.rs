@@ -407,7 +407,7 @@ impl<'a> Executor<'a> {
     /// Get the current shard.
     #[must_use]
     #[inline]
-    pub fn shard(&self) -> u32 {
+    pub fn shard(&self) -> u16 {
         self.state.current_shard
     }
 
@@ -415,7 +415,7 @@ impl<'a> Executor<'a> {
     pub fn mr(
         &mut self,
         addr: u32,
-        shard: u32,
+        shard: u16,
         timestamp: u32,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
@@ -483,7 +483,7 @@ impl<'a> Executor<'a> {
     /// Read a register and return its value.
     ///
     /// Assumes that the executor mode IS NOT [`ExecutorMode::Trace`]
-    pub fn rr(&mut self, register: Register, shard: u32, timestamp: u32) -> u32 {
+    pub fn rr(&mut self, register: Register, shard: u16, timestamp: u32) -> u32 {
         let addr = register as u32;
         let value = self.state.read_register(addr);
         let entry = self.state.access_meta.registers.entry(addr);
@@ -506,7 +506,7 @@ impl<'a> Executor<'a> {
     pub fn rr_traced(
         &mut self,
         register: Register,
-        shard: u32,
+        shard: u16,
         timestamp: u32,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
@@ -567,7 +567,7 @@ impl<'a> Executor<'a> {
         &mut self,
         addr: u32,
         value: u32,
-        shard: u32,
+        shard: u16,
         timestamp: u32,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
@@ -639,7 +639,7 @@ impl<'a> Executor<'a> {
         &mut self,
         register: Register,
         value: u32,
-        shard: u32,
+        shard: u16,
         timestamp: u32,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
@@ -716,7 +716,7 @@ impl<'a> Executor<'a> {
         &mut self,
         register: Register,
         value: u32,
-        shard: u32,
+        shard: u16,
         timestamp: u32,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
@@ -735,7 +735,7 @@ impl<'a> Executor<'a> {
         };
 
         let prev_record = *record;
-        record.shard = shard;
+        record.shard = shard as u16;
         record.timestamp = timestamp;
 
         if !self.unconstrained {
@@ -780,7 +780,7 @@ impl<'a> Executor<'a> {
     ///
     /// Assumes that the executor mode IS NOT [`ExecutorMode::Trace`].
     #[inline]
-    pub fn rw(&mut self, register: Register, value: u32, shard: u32, timestamp: u32) {
+    pub fn rw(&mut self, register: Register, value: u32, shard: u16, timestamp: u32) {
         let addr = register as u32;
         let access_meta = self.state.access_meta.registers.entry(addr);
 
@@ -2006,7 +2006,7 @@ impl<'a> Executor<'a> {
         // Clone self.state without memory, uninitialized_memory, proof_stream in it so it's faster.
         let uninitialized_memory = std::mem::take(&mut self.state.uninitialized_memory);
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
-        let checkpoint = tracing::debug_span!("clone").in_scope(|| self.state.clone());
+        let mut checkpoint = tracing::debug_span!("clone").in_scope(|| self.state.clone());
         self.state.uninitialized_memory = uninitialized_memory;
         self.state.proof_stream = proof_stream;
 
@@ -2090,14 +2090,13 @@ impl<'a> Executor<'a> {
             }
 
             // We restrict the execution of branch/jump and its delay slot to be in the same shard.
-            if !self.unconstrained && !self.state.next_is_delayslot
-                && self.inc_shard_if_need() {
-                    num_shards_executed += 1;
-                    self.bump_record();
-                    if num_shards_executed >= self.shard_batch_size {
-                        break;
-                    }
+            if !self.unconstrained && !self.state.next_is_delayslot && self.inc_shard_if_need() {
+                num_shards_executed += 1;
+                self.bump_record();
+                if num_shards_executed >= self.shard_batch_size {
+                    break;
                 }
+            }
         }
 
         // Get the final public values.
@@ -2124,7 +2123,7 @@ impl<'a> Executor<'a> {
             record.public_values = public_values;
             record.public_values.committed_value_digest = public_values.committed_value_digest;
             record.public_values.deferred_proofs_digest = public_values.deferred_proofs_digest;
-            record.public_values.execution_shard = start_shard + i as u32;
+            record.public_values.execution_shard = start_shard as u32 + i as u32;
             if record.cpu_events.is_empty() {
                 record.public_values.start_pc = last_next_pc;
                 record.public_values.next_pc = last_next_pc;

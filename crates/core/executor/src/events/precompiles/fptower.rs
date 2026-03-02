@@ -22,7 +22,7 @@ pub enum FieldOperation {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct FpOpEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The pointer to the x operand.
@@ -49,7 +49,7 @@ pub struct FpOpEvent {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Fp2AddSubEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The operation to perform.
@@ -74,7 +74,7 @@ pub struct Fp2AddSubEvent {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Fp2MulEvent {
     /// The shard number.
-    pub shard: u32,
+    pub shard: u16,
     /// The clock cycle.
     pub clk: u32,
     /// The pointer to the x operand.
