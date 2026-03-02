@@ -2003,11 +2003,9 @@ impl<'a> Executor<'a> {
         self.executor_mode = ExecutorMode::Checkpoint;
         self.emit_global_memory_events = emit_global_memory_events;
 
-        // Clone self.state without memory, uninitialized_memory, proof_stream in it so it's faster.
-        let uninitialized_memory = std::mem::take(&mut self.state.uninitialized_memory);
+        // Clone self.state without proof_stream in it so it's faster.
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
         let mut checkpoint = tracing::debug_span!("clone").in_scope(|| self.state.clone());
-        self.state.uninitialized_memory = uninitialized_memory;
         self.state.proof_stream = proof_stream;
 
         let done = tracing::debug_span!("execute").in_scope(|| self.execute())?;
