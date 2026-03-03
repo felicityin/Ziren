@@ -3010,7 +3010,7 @@ mod tests {
         ];
         let program = Program::new(instructions, 0, 0);
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.aot_pure_run().unwrap();
+        runtime.run().unwrap();
         assert_eq!(runtime.state.pc, 12);
         assert_eq!(runtime.state.read_register(31), 8);
     }

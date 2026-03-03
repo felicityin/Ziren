@@ -14,7 +14,7 @@ impl AotCompiler {
         // shard
         let shard_offset = offset_of!(Executor, state) + offset_of!(ExecutionState, current_shard);
         let sync_shard_to_reg =
-            || format!("    mov {REG_SHARD}, [{REG_EXECUTOR_PTR} + {shard_offset}]\n");
+            || format!("    mov {REG_SHARD_W}, dword ptr [{REG_EXECUTOR_PTR} + {shard_offset}]\n");
 
         // unconstrained
         let unconstrained_offset = offset_of!(Executor, unconstrained);
