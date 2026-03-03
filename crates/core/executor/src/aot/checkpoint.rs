@@ -1387,6 +1387,88 @@ mod tests {
         runtime.aot_metered_run().unwrap();
     }
 
+    #[test]
+    fn test_aot_metered_local_mem_counter_matches_interpreter() {
+        // In a single shard, the first touch of an address counts once and repeated touches
+        // in the same shard do not increment the counter again.
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 0x1000, false, true),
+            Instruction::new(Opcode::ADD, 1, 0, 123, false, true),
+            Instruction::new(Opcode::SW, 1, 29, 0, false, true),
+            Instruction::new(Opcode::LW, 2, 29, 0, false, true),
+            Instruction::new(Opcode::LW, 4, 29, 0, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+
+        let mut interpreter = Executor::new(program.clone(), ZKMCoreOpts::default());
+        interpreter.max_syscall_cycles = 0;
+        interpreter.shard_size = 100;
+        interpreter.run().unwrap();
+
+        let mut aot = Executor::new(program, ZKMCoreOpts::default());
+        aot.max_syscall_cycles = 0;
+        aot.shard_size = 100;
+        aot.aot_compile_metered_lib();
+        aot.aot_metered_run().unwrap();
+
+        assert_eq!(interpreter.local_counts.local_mem, 1);
+        assert_eq!(aot.local_counts.local_mem, interpreter.local_counts.local_mem);
+        assert_eq!(aot.register(4.into()), interpreter.register(4.into()));
+    }
+
+    #[test]
+    fn test_aot_metered_event_counts_div_match_interpreter() {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 100, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, 7, false, true),
+            Instruction::new(Opcode::DIV, Register::RA as u8, 29, 30, false, false),
+            Instruction::new(Opcode::DIVU, Register::RA as u8, 29, 30, false, false),
+        ];
+        let program = Program::new(instructions, 0, 0);
+
+        let mut interpreter = Executor::new(program.clone(), ZKMCoreOpts::default());
+        interpreter.shard_size = 100;
+        interpreter.max_syscall_cycles = 0;
+        interpreter.run().unwrap();
+
+        let mut aot = Executor::new(program, ZKMCoreOpts::default());
+        aot.shard_size = 100;
+        aot.max_syscall_cycles = 0;
+        aot.aot_compile_metered_lib();
+        aot.aot_metered_run().unwrap();
+
+        assert_eq!(interpreter.local_counts.event_counts, aot.local_counts.event_counts);
+        assert_eq!(interpreter.local_counts.event_counts[Opcode::ADD as usize], 6);
+        assert_eq!(interpreter.local_counts.event_counts[Opcode::DIV as usize], 1);
+        assert_eq!(interpreter.local_counts.event_counts[Opcode::DIVU as usize], 1);
+        assert_eq!(interpreter.local_counts.event_counts[Opcode::SLTU as usize], 2);
+    }
+
+    #[test]
+    fn test_aot_metered_event_counts_jumpdirect_match_interpreter() {
+        let instructions = vec![
+            Instruction::new(Opcode::JumpDirect, Register::RA as u8, 4, 0, false, true),
+            Instruction::new(Opcode::ADD, 1, 0, 1, false, true),
+            Instruction::new(Opcode::ADD, 2, 0, 1, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+
+        let mut interpreter = Executor::new(program.clone(), ZKMCoreOpts::default());
+        interpreter.shard_size = 100;
+        interpreter.max_syscall_cycles = 0;
+        interpreter.run().unwrap();
+
+        let mut aot = Executor::new(program, ZKMCoreOpts::default());
+        aot.shard_size = 100;
+        aot.max_syscall_cycles = 0;
+        aot.aot_compile_metered_lib();
+        aot.aot_metered_run().unwrap();
+
+        assert_eq!(interpreter.local_counts.event_counts, aot.local_counts.event_counts);
+        assert_eq!(interpreter.local_counts.event_counts[Opcode::JumpDirect as usize], 1);
+        assert_eq!(interpreter.local_counts.event_counts[Opcode::ADD as usize], 3);
+    }
+
     // Since it panics within the assembly code, it will cause a fatal runtime error.
     // #[test]
     // #[should_panic]

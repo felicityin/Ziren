@@ -91,7 +91,7 @@ impl AotCompiler {
 
             if instruction.opcode == Opcode::JumpDirect {
                 // self.local_counts.event_counts[Opcode::ADD as usize] += 1;
-                asm += &Self::inc_event_counts(vec![(Opcode::JumpDirect, 1)]);
+                asm += &Self::inc_event_counts(vec![(Opcode::ADD, 1)]);
             }
 
             asm += &Self::get_access_register_meta_addr();

@@ -26,7 +26,7 @@ impl AotCompiler {
                 asm += &Self::inc_event_counts(vec![
                     (Opcode::MULT, 2),
                     (Opcode::ADD, 2),
-                    (Opcode::SLTU, 2),
+                    (Opcode::SLTU, 1),
                 ]);
             } else if instruction.opcode == Opcode::DIVU {
                 // self.local_counts.event_counts[Opcode::MULTU as usize] += 2;
@@ -35,7 +35,7 @@ impl AotCompiler {
                 asm += &Self::inc_event_counts(vec![
                     (Opcode::MULTU, 2),
                     (Opcode::ADD, 2),
-                    (Opcode::SLTU, 2),
+                    (Opcode::SLTU, 1),
                 ]);
             }
 
