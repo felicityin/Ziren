@@ -135,7 +135,6 @@ impl<'a> Executor<'a> {
         loop {
             if self.execute_metered_shard()? {
                 done = true;
-                self.postprocess();
                 break;
             }
             // println!(
