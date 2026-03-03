@@ -118,10 +118,10 @@ impl AotCompiler {
             asm += &format!("    cmp {REG_CLK}, {most_clk}\n");
             asm += "    jae asm_inc_shard\n";
 
-            // Check if global_clk % shape_check_frequency == 0
-            asm += "    # global_clk % shape_check_frequency\n";
-            asm += &format!("    test {REG_GLOBAL_CLK}, {shape_check_frequency_minus_1}\n");
-            asm += "    jz asm_inc_shard\n";
+            // // Check if global_clk % shape_check_frequency == 0
+            // asm += "    # global_clk % shape_check_frequency\n";
+            // asm += &format!("    test {REG_GLOBAL_CLK}, {shape_check_frequency_minus_1}\n");
+            // asm += "    jz asm_inc_shard\n";
 
             asm += &format!("    .{pc}_check_shard_end:");
         }
