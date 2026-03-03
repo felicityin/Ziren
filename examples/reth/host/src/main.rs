@@ -1,7 +1,7 @@
 use zkm_sdk::{utils, ProverClient, ZKMStdin};
 
 pub const RETH_ELF: &[u8] = include_bytes!("../../guest/reth");
-pub const RETH_STDIN: &[u8] = include_bytes!("../../guest/24438200-stdin.bin");
+pub const RETH_STDIN: &[u8] = include_bytes!("../../guest/stdin-24438200");
 
 fn main() {
     // Setup a tracer for logging.
@@ -12,5 +12,5 @@ fn main() {
     let client = ProverClient::new();
     client.execute(RETH_ELF, stdin).run().unwrap();
 
-    println!("successfully!")
+    println!("successfully!");
 }
