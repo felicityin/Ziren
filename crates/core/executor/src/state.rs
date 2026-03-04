@@ -84,6 +84,60 @@ pub struct ExecutionState {
 
 impl ExecutionState {
     #[must_use]
+    pub fn clone_parallel(&self) -> Self {
+        std::thread::scope(|scope| {
+            let memory_handle = scope.spawn(|| self.memory.clone());
+            let accessed_handle = scope.spawn(|| self.accessed.clone());
+            let access_shard_handle = scope.spawn(|| self.access_shard.clone());
+            let access_clk_handle = scope.spawn(|| self.access_clk.clone());
+            let records_clk_handle = scope.spawn(|| self.records_clk.clone());
+            let uninitialized_memory_handle = scope.spawn(|| self.uninitialized_memory.clone());
+            let input_stream_handle = scope.spawn(|| self.input_stream.clone());
+            let proof_stream_handle = scope.spawn(|| self.proof_stream.clone());
+            let public_values_stream_handle = scope.spawn(|| self.public_values_stream.clone());
+            let syscall_counts_handle = scope.spawn(|| self.syscall_counts.clone());
+
+            Self {
+                pc: self.pc,
+                next_pc: self.next_pc,
+                current_shard: self.current_shard,
+                clk: self.clk,
+                global_clk: self.global_clk,
+                exited: self.exited,
+                next_is_delayslot: self.next_is_delayslot,
+                memory: memory_handle.join().expect("parallel clone memory panicked"),
+                accessed: accessed_handle.join().expect("parallel clone accessed panicked"),
+                access_shard: access_shard_handle
+                    .join()
+                    .expect("parallel clone access_shard panicked"),
+                access_clk: access_clk_handle.join().expect("parallel clone access_clk panicked"),
+                records_clk: records_clk_handle
+                    .join()
+                    .expect("parallel clone records_clk panicked"),
+                records_clk_index: self.records_clk_index,
+                uninitialized_memory: uninitialized_memory_handle
+                    .join()
+                    .expect("parallel clone uninitialized_memory panicked"),
+                input_stream: input_stream_handle
+                    .join()
+                    .expect("parallel clone input_stream panicked"),
+                input_stream_ptr: self.input_stream_ptr,
+                proof_stream: proof_stream_handle
+                    .join()
+                    .expect("parallel clone proof_stream panicked"),
+                proof_stream_ptr: self.proof_stream_ptr,
+                public_values_stream: public_values_stream_handle
+                    .join()
+                    .expect("parallel clone public_values_stream panicked"),
+                public_values_stream_ptr: self.public_values_stream_ptr,
+                syscall_counts: syscall_counts_handle
+                    .join()
+                    .expect("parallel clone syscall_counts panicked"),
+            }
+        })
+    }
+
+    #[must_use]
     /// Create a new [`ExecutionState`].
     pub fn new(pc_start: u32, next_pc: u32) -> Self {
         let accessed = {

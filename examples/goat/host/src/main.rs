@@ -3,7 +3,7 @@ use zkm_sdk::{utils, ProverClient, ZKMStdin};
 pub const GOAT_ELF: &[u8] = include_bytes!("../../guest/goat");
 pub const GOAT_STDIN: &[u8] = include_bytes!("../../guest/stdin");
 
-dfn main() {
+fn main() {
     // Setup a tracer for logging.
     utils::setup_logger();
 

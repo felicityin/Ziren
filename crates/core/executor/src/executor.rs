@@ -1957,7 +1957,7 @@ impl<'a> Executor<'a> {
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
         let records_clk = std::mem::take(&mut self.state.records_clk);
         let mut checkpoint =
-            tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone());
+            tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone_parallel());
         self.state.proof_stream = proof_stream;
         self.state.records_clk = records_clk;
 
