@@ -1953,11 +1953,13 @@ impl<'a> Executor<'a> {
         self.executor_mode = ExecutorMode::Checkpoint;
         self.emit_global_memory_events = emit_global_memory_events;
 
-        // Clone self.state without proof_stream in it so it's faster.
+        // Clone self.state without large streams that are not needed in the returned checkpoint.
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
+        let records_clk = std::mem::take(&mut self.state.records_clk);
         let mut checkpoint =
             tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone());
         self.state.proof_stream = proof_stream;
+        self.state.records_clk = records_clk;
 
         #[cfg(not(feature = "aot"))]
         let done = tracing::info_span!("[not aot] execute").in_scope(|| self.execute())?;
@@ -1993,7 +1995,7 @@ impl<'a> Executor<'a> {
             if needs_unconstrained_fallback {
                 // If this shard crossed into unconstrained execution, recompute the shard boundary
                 // with the interpreter to keep checkpoint semantics identical to trace replay.
-                self.state = checkpoint.clone();
+                self.state.clone_from(&checkpoint);
                 self.local_counts = LocalCounts::default();
                 self.record = ExecutionRecord::new(self.program.clone());
                 self.records.clear();
