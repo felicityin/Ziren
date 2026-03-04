@@ -462,12 +462,15 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_memory_access_meta(addr);
 
         self.state.write_memory(addr, value);
-        self.state.write_memory_access_meta(addr, shard, timestamp);
 
-        #[cfg(not(feature = "aot-access"))]
-        self.state.accessed.page_table.access(addr, true);
-        #[cfg(feature = "aot-access")]
-        self.state.set_memory_accessed(addr);
+        if !self.unconstrained {
+            self.state.write_memory_access_meta(addr, shard, timestamp);
+
+            #[cfg(not(feature = "aot-access"))]
+            self.state.accessed.page_table.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.set_memory_accessed(addr);
+        }
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -510,7 +513,9 @@ impl<'a> Executor<'a> {
     pub fn rr(&mut self, register: Register, shard: u32, timestamp: u32) -> u32 {
         let addr = register as u32;
         let value = self.state.read_register(addr);
-        self.state.write_register_access_meta(addr, shard, timestamp);
+        if !self.unconstrained {
+            self.state.write_register_access_meta(addr, shard, timestamp);
+        }
         value
     }
 
@@ -528,12 +533,14 @@ impl<'a> Executor<'a> {
         let value = self.state.read_register(addr);
         let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
 
-        self.state.write_register_access_meta(addr, shard, timestamp);
+        if !self.unconstrained {
+            self.state.write_register_access_meta(addr, shard, timestamp);
 
-        #[cfg(not(feature = "aot-access"))]
-        self.state.accessed.registers.access(addr, true);
-        #[cfg(feature = "aot-access")]
-        self.state.set_register_accessed(addr);
+            #[cfg(not(feature = "aot-access"))]
+            self.state.accessed.registers.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.set_register_accessed(addr);
+        }
 
         if !self.unconstrained && self.executor_mode == ExecutorMode::Trace {
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
@@ -575,17 +582,18 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_memory_access_meta(addr);
 
         self.state.write_memory(addr, value);
-        self.state.write_memory_access_meta(addr, shard, timestamp);
-
-        #[cfg(not(feature = "aot-access"))]
-        self.state.accessed.page_table.access(addr, true);
-        #[cfg(feature = "aot-access")]
-        self.state.set_memory_accessed(addr);
 
         // If we're in unconstrained mode, we don't want to modify state, so we'll save the
         // original state if it's the first time modifying it.
         if self.unconstrained {
             self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        } else {
+            self.state.write_memory_access_meta(addr, shard, timestamp);
+
+            #[cfg(not(feature = "aot-access"))]
+            self.state.accessed.page_table.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.set_memory_accessed(addr);
         }
 
         // We update the local memory counter in two cases:
@@ -638,17 +646,18 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
 
         self.state.write_register(addr, value);
-        self.state.write_register_access_meta(addr, shard, timestamp);
-
-        #[cfg(not(feature = "aot-access"))]
-        self.state.accessed.registers.access(addr, true);
-        #[cfg(feature = "aot-access")]
-        self.state.set_register_accessed(addr);
 
         // If we're in unconstrained mode, we don't want to modify state, so we'll save the
         // original state if it's the first time modifying it.
         if self.unconstrained {
             self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        } else {
+            self.state.write_register_access_meta(addr, shard, timestamp);
+
+            #[cfg(not(feature = "aot-access"))]
+            self.state.accessed.registers.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.set_register_accessed(addr);
         }
 
         // We update the local memory counter in two cases:
@@ -703,17 +712,18 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
 
         self.state.write_register(addr, value);
-        self.state.write_register_access_meta(addr, shard, timestamp);
-
-        #[cfg(not(feature = "aot-access"))]
-        self.state.accessed.registers.access(addr, true);
-        #[cfg(feature = "aot-access")]
-        self.state.set_register_accessed(addr);
 
         // If we're in unconstrained mode, we don't want to modify state, so we'll save the
         // original state if it's the first time modifying it.
         if self.unconstrained {
             self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        } else {
+            self.state.write_register_access_meta(addr, shard, timestamp);
+
+            #[cfg(not(feature = "aot-access"))]
+            self.state.accessed.registers.access(addr, true);
+            #[cfg(feature = "aot-access")]
+            self.state.set_register_accessed(addr);
         }
 
         if !self.unconstrained {
@@ -755,10 +765,11 @@ impl<'a> Executor<'a> {
         if self.unconstrained {
             let prev_value = self.state.read_register(addr);
             self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        } else {
+            self.state.write_register_access_meta(addr, shard, timestamp);
         }
 
         self.state.write_register(addr, value);
-        self.state.write_register_access_meta(addr, shard, timestamp);
     }
 
     /// Read from memory, assuming that all addresses are aligned.

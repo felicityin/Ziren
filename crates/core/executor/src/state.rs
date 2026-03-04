@@ -312,13 +312,13 @@ pub struct ForkState {
     // pub memory: GuestMemory,
     /// All memory changes since the fork point.
     pub memory_diff: HashMap<u32, u32>,
-    /// The original values contain the memory value and last shard + timestamp that each memory address was accessed.
-    pub access_shard: GuestMemory,
-    pub access_clk: GuestMemory,
-    #[cfg(not(feature = "aot-access"))]
-    pub accessed: Memory<bool>,
-    #[cfg(feature = "aot-access")]
-    pub accessed: GuestMemory,
+    // /// The original values contain the memory value and last shard + timestamp that each memory address was accessed.
+    // pub access_shard: GuestMemory,
+    // pub access_clk: GuestMemory,
+    // #[cfg(not(feature = "aot-access"))]
+    // pub accessed: Memory<bool>,
+    // #[cfg(feature = "aot-access")]
+    // pub accessed: GuestMemory,
     /// The original memory access record at the fork point.
     pub op_record: MemoryAccessRecord,
     /// The original execution record at the fork point.

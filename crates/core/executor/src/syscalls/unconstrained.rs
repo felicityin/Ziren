@@ -22,13 +22,13 @@ impl Syscall for EnterUnconstrainedSyscall {
         }
         ctx.rt.unconstrained = true;
 
-        #[cfg(not(feature = "aot-access"))]
-        let (access_shard, access_clk, accessed) = (
-            // std::mem::take(&mut ctx.rt.state.memory),
-            std::mem::take(&mut ctx.rt.state.access_shard),
-            std::mem::take(&mut ctx.rt.state.access_clk),
-            std::mem::take(&mut ctx.rt.state.accessed),
-        );
+        // #[cfg(not(feature = "aot-access"))]
+        // let (access_shard, access_clk, accessed) = (
+        //     // std::mem::take(&mut ctx.rt.state.memory),
+        //     std::mem::take(&mut ctx.rt.state.access_shard),
+        //     std::mem::take(&mut ctx.rt.state.access_clk),
+        //     std::mem::take(&mut ctx.rt.state.accessed),
+        // );
 
         #[cfg(feature = "aot-access")]
         let (memory, access_shard, access_clk, accessed) =
@@ -49,9 +49,9 @@ impl Syscall for EnterUnconstrainedSyscall {
             pc: ctx.rt.state.pc,
             // memory,
             memory_diff: HashMap::default(),
-            access_shard,
-            access_clk,
-            accessed,
+            // access_shard,
+            // access_clk,
+            // accessed,
             record: std::mem::take(&mut ctx.rt.record),
             op_record: std::mem::take(&mut ctx.rt.memory_accesses),
             executor_mode: ctx.rt.executor_mode,
@@ -88,11 +88,11 @@ impl Syscall for ExitUnconstrainedSyscall {
                     }
                 }
 
-                ctx.rt.state.access_shard =
-                    std::mem::take(&mut ctx.rt.unconstrained_state.access_shard); // It does not work for AOT
-                ctx.rt.state.access_clk =
-                    std::mem::take(&mut ctx.rt.unconstrained_state.access_clk);
-                ctx.rt.state.accessed = std::mem::take(&mut ctx.rt.unconstrained_state.accessed);
+                // ctx.rt.state.access_shard =
+                //     std::mem::take(&mut ctx.rt.unconstrained_state.access_shard); // It does not work for AOT
+                // ctx.rt.state.access_clk =
+                //     std::mem::take(&mut ctx.rt.unconstrained_state.access_clk);
+                // ctx.rt.state.accessed = std::mem::take(&mut ctx.rt.unconstrained_state.accessed);
             }
             #[cfg(feature = "aot-access")]
             {
