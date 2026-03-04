@@ -155,7 +155,7 @@ impl<'a> Executor<'a> {
     fn execute_metered_shard(&mut self) -> Result<bool, ExecutionError> {
         let executor_ptr = self as *mut Executor;
 
-        tracing::debug_span!("[aot] metered execute one shard").in_scope(|| unsafe {
+        tracing::debug_span!("[aot] metered execute shard").in_scope(|| unsafe {
             let asm_run: libloading::Symbol<MeteredAsmRunFn> = self
                 .metered_lib
                 .as_ref()

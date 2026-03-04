@@ -1955,7 +1955,8 @@ impl<'a> Executor<'a> {
 
         // Clone self.state without proof_stream in it so it's faster.
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
-        let mut checkpoint = tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone());
+        let mut checkpoint =
+            tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone());
         self.state.proof_stream = proof_stream;
 
         #[cfg(not(feature = "aot"))]

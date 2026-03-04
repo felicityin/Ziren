@@ -152,7 +152,9 @@ extern "C" fn execute_syscall(executor: &mut Executor, _instruction: &Instructio
         executor.state.global_clk += 1;
         executor.state.pc = 0;
         0
-    } else if syscall != SyscallCode::EXIT_UNCONSTRAINED {
+    } else if syscall != SyscallCode::EXIT_UNCONSTRAINED
+        && syscall != SyscallCode::ENTER_UNCONSTRAINED
+    {
         1
     } else {
         precompile_next_pc
