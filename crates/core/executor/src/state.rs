@@ -4,13 +4,9 @@ use hashbrown::HashMap;
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    memory::{
-        config::{MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE},
-        GuestMemory, Memory,
-    },
-    record::{ExecutionRecord, MemoryAccessRecord},
-    syscalls::SyscallCode,
-    ExecutorMode, ZKMReduceProof,
+    ExecutorMode, ZKMReduceProof, memory::{
+        GuestMemory, Memory, config::{MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE}
+    }, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode
 };
 
 /// Holds data describing the current state of a program's execution.
@@ -313,7 +309,9 @@ pub struct ForkState {
     /// The original `pc` value at the fork point.
     pub pc: u32,
     /// The original memory which instructions operate over.
-    pub memory: GuestMemory,
+    // pub memory: GuestMemory,
+    /// All memory changes since the fork point.
+    pub memory_diff: HashMap<u32, u32>,
     /// The original values contain the memory value and last shard + timestamp that each memory address was accessed.
     pub access_shard: GuestMemory,
     pub access_clk: GuestMemory,

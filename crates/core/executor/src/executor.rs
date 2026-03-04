@@ -582,6 +582,12 @@ impl<'a> Executor<'a> {
         #[cfg(feature = "aot-access")]
         self.state.set_memory_accessed(addr);
 
+        // If we're in unconstrained mode, we don't want to modify state, so we'll save the
+        // original state if it's the first time modifying it.
+        if self.unconstrained {
+            self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        }
+
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
         //     condition record.shard != shard.
@@ -638,6 +644,12 @@ impl<'a> Executor<'a> {
         self.state.accessed.registers.access(addr, true);
         #[cfg(feature = "aot-access")]
         self.state.set_register_accessed(addr);
+
+        // If we're in unconstrained mode, we don't want to modify state, so we'll save the
+        // original state if it's the first time modifying it.
+        if self.unconstrained {
+            self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        }
 
         // We update the local memory counter in two cases:
         //  1. This is the first time the address is touched, this corresponds to the
@@ -698,6 +710,12 @@ impl<'a> Executor<'a> {
         #[cfg(feature = "aot-access")]
         self.state.set_register_accessed(addr);
 
+        // If we're in unconstrained mode, we don't want to modify state, so we'll save the
+        // original state if it's the first time modifying it.
+        if self.unconstrained {
+            self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        }
+
         if !self.unconstrained {
             let local_memory_access = if let Some(local_memory_access) = local_memory_access {
                 local_memory_access
@@ -731,6 +749,14 @@ impl<'a> Executor<'a> {
     #[inline]
     pub fn rw(&mut self, register: Register, value: u32, shard: u32, timestamp: u32) {
         let addr = register as u32;
+
+        // If we're in unconstrained mode, we don't want to modify state, so we'll save the
+        // original state if it's the first time modifying it.
+        if self.unconstrained {
+            let prev_value = self.state.read_register(addr);
+            self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+        }
+
         self.state.write_register(addr, value);
         self.state.write_register_access_meta(addr, shard, timestamp);
     }

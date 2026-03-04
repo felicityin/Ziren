@@ -1,6 +1,9 @@
+use hashbrown::HashMap;
+
 #[cfg(feature = "aot-access")]
 use crate::memory::GuestMemory;
 use crate::{state::ForkState, ExecutionError, ExecutorMode};
+use crate::NUM_REGISTERS;
 
 use super::{Syscall, SyscallCode, SyscallContext};
 
@@ -19,33 +22,33 @@ impl Syscall for EnterUnconstrainedSyscall {
         }
         ctx.rt.unconstrained = true;
 
-        let memory = tracing::info_span!("Unconstrained mode: copy memory")
-            .in_scope(|| ctx.rt.state.memory.clone());
-
         #[cfg(not(feature = "aot-access"))]
         let (access_shard, access_clk, accessed) = (
+            // std::mem::take(&mut ctx.rt.state.memory),
             std::mem::take(&mut ctx.rt.state.access_shard),
             std::mem::take(&mut ctx.rt.state.access_clk),
             std::mem::take(&mut ctx.rt.state.accessed),
         );
 
         #[cfg(feature = "aot-access")]
-        let (access_shard, access_clk, accessed) =
+        let (memory, access_shard, access_clk, accessed) =
             tracing::info_span!("Unconstrained mode: swap accessed meta").in_scope(|| {
+                let memory = ctx.rt.state.memory.clone();
                 let mut access_shard = GuestMemory::new_u16();
                 let mut access_clk = GuestMemory::default();
                 let mut accessed = GuestMemory::new_u8();
                 std::mem::swap(&mut ctx.rt.state.access_shard, &mut access_shard);
                 std::mem::swap(&mut ctx.rt.state.access_clk, &mut access_clk);
                 std::mem::swap(&mut ctx.rt.state.accessed, &mut accessed);
-                (access_shard, access_clk, accessed)
+                (memory, access_shard, access_clk, accessed)
             });
 
         ctx.rt.unconstrained_state = ForkState {
             global_clk: ctx.rt.state.global_clk,
             clk: ctx.rt.state.clk,
             pc: ctx.rt.state.pc,
-            memory,
+            // memory,
+            memory_diff: HashMap::default(),
             access_shard,
             access_clk,
             accessed,
@@ -74,9 +77,17 @@ impl Syscall for ExitUnconstrainedSyscall {
             ctx.rt.state.clk = ctx.rt.unconstrained_state.clk;
             ctx.rt.state.pc = ctx.rt.unconstrained_state.pc;
             ctx.next_pc = ctx.rt.state.pc.wrapping_add(4);
-            ctx.rt.state.memory = std::mem::take(&mut ctx.rt.unconstrained_state.memory);
+            // ctx.rt.state.memory = std::mem::take(&mut ctx.rt.unconstrained_state.memory);
             #[cfg(not(feature = "aot-access"))]
             {
+                for (addr, value) in ctx.rt.unconstrained_state.memory_diff.drain() {
+                    if addr < NUM_REGISTERS as u32 {
+                        ctx.rt.state.write_register(addr, value);
+                    } else {
+                        ctx.rt.state.write_memory(addr, value);
+                    }
+                }
+
                 ctx.rt.state.access_shard =
                     std::mem::take(&mut ctx.rt.unconstrained_state.access_shard); // It does not work for AOT
                 ctx.rt.state.access_clk =
