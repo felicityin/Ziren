@@ -2,8 +2,8 @@ use hashbrown::HashMap;
 
 #[cfg(feature = "aot-access")]
 use crate::memory::GuestMemory;
-use crate::{state::ForkState, ExecutionError, ExecutorMode};
 use crate::NUM_REGISTERS;
+use crate::{state::ForkState, ExecutionError, ExecutorMode};
 
 use super::{Syscall, SyscallCode, SyscallContext};
 

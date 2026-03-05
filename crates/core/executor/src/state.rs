@@ -4,9 +4,13 @@ use hashbrown::HashMap;
 use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
 
 use crate::{
-    ExecutorMode, ZKMReduceProof, memory::{
-        GuestMemory, Memory, config::{MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE}
-    }, record::{ExecutionRecord, MemoryAccessRecord}, syscalls::SyscallCode
+    memory::{
+        config::{MIPS_MEMORY_SPACE, MIPS_REGISTER_SPACE},
+        GuestMemory, Memory,
+    },
+    record::{ExecutionRecord, MemoryAccessRecord},
+    syscalls::SyscallCode,
+    ExecutorMode, ZKMReduceProof,
 };
 
 /// Holds data describing the current state of a program's execution.
@@ -148,6 +152,9 @@ impl ExecutionState {
                 accessed
             }
         };
+
+        let mut access_shard = GuestMemory::new_u16();
+        access_shard.fill_zero();
 
         Self {
             global_clk: 0,

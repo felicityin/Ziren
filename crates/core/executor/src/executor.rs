@@ -26,6 +26,7 @@ use crate::{
         MemoryRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent, SyscallEvent,
     },
     hook::{HookEnv, HookRegistry},
+    memory::Memory,
     pad_mips_event_counts,
     record::{ExecutionRecord, MemoryAccessRecord},
     sign_extend,
@@ -108,6 +109,14 @@ pub struct Executor<'a> {
 
     /// The options for the runtime.
     pub opts: ZKMCoreOpts,
+
+    /// Memory addresses that were touched in this batch of shards. Used to minimize the size of
+    /// checkpoints.
+    pub memory_checkpoint: Memory<MemoryRecord>,
+
+    /// Memory addresses that were initialized in this batch of shards. Used to minimize the size of
+    /// checkpoints. The value stored is whether it had a value at the beginning of the batch.
+    pub uninitialized_memory_checkpoint: Memory<bool>,
 
     /// The memory accesses for the current cycle.
     pub memory_accesses: MemoryAccessRecord,
@@ -356,6 +365,8 @@ impl<'a> Executor<'a> {
             subproof_verifier: context.subproof_verifier,
             hook_registry,
             opts,
+            memory_checkpoint: Memory::default(),
+            uninitialized_memory_checkpoint: Memory::default(),
             max_cycles: context.max_cycles,
             deferred_proof_verification: if context.skip_deferred_proof_verification {
                 DeferredProofVerification::Disabled
@@ -419,14 +430,37 @@ impl<'a> Executor<'a> {
     /// Careful call it directly.
     #[must_use]
     pub fn register(&mut self, register: Register) -> u32 {
-        self.state.read_register(register as u32)
+        let value = self.state.read_register(register as u32);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            let addr = register as u32;
+            let (shard, timestamp) = self.state.read_register_access_meta(addr);
+            self.memory_checkpoint.registers.entry(addr).or_insert_with(|| MemoryRecord {
+                shard,
+                timestamp,
+                value,
+            });
+        }
+
+        value
     }
 
     /// Get the current value of a word.
     #[must_use]
     #[inline]
     pub fn word(&mut self, addr: u32) -> u32 {
-        self.state.read_memory(addr)
+        let value = self.state.read_memory(addr);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            let (shard, timestamp) = self.state.read_memory_access_meta(addr);
+            self.memory_checkpoint.page_table.entry(addr).or_insert_with(|| MemoryRecord {
+                shard,
+                timestamp,
+                value,
+            });
+        }
+
+        value
     }
 
     /// Get the current value of a byte.
@@ -462,6 +496,14 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_memory_access_meta(addr);
 
         self.state.write_memory(addr, value);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            self.memory_checkpoint.page_table.entry(addr).or_insert_with(|| MemoryRecord {
+                shard: prev_shard,
+                timestamp: prev_clk,
+                value,
+            });
+        }
 
         if !self.unconstrained {
             self.state.write_memory_access_meta(addr, shard, timestamp);
@@ -513,9 +555,20 @@ impl<'a> Executor<'a> {
     pub fn rr(&mut self, register: Register, shard: u32, timestamp: u32) -> u32 {
         let addr = register as u32;
         let value = self.state.read_register(addr);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            let (shard, timestamp) = self.state.read_register_access_meta(addr);
+            self.memory_checkpoint.registers.entry(addr).or_insert_with(|| MemoryRecord {
+                shard,
+                timestamp,
+                value,
+            });
+        }
+
         if !self.unconstrained {
             self.state.write_register_access_meta(addr, shard, timestamp);
         }
+
         value
     }
 
@@ -532,6 +585,14 @@ impl<'a> Executor<'a> {
         let addr = register as u32;
         let value = self.state.read_register(addr);
         let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            self.memory_checkpoint.registers.entry(addr).or_insert_with(|| MemoryRecord {
+                shard: prev_shard,
+                timestamp: prev_clk,
+                value,
+            });
+        }
 
         if !self.unconstrained {
             self.state.write_register_access_meta(addr, shard, timestamp);
@@ -582,6 +643,14 @@ impl<'a> Executor<'a> {
         let (prev_shard, prev_clk) = self.state.read_memory_access_meta(addr);
 
         self.state.write_memory(addr, value);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            self.memory_checkpoint.page_table.entry(addr).or_insert_with(|| MemoryRecord {
+                shard: prev_shard,
+                timestamp: prev_clk,
+                value: prev_value,
+            });
+        }
 
         // If we're in unconstrained mode, we don't want to modify state, so we'll save the
         // original state if it's the first time modifying it.
@@ -641,11 +710,18 @@ impl<'a> Executor<'a> {
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
         let addr = register as u32;
-
         let prev_value = self.state.read_register(addr);
         let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
 
         self.state.write_register(addr, value);
+
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            self.memory_checkpoint.registers.entry(addr).or_insert_with(|| MemoryRecord {
+                shard: prev_shard,
+                timestamp: prev_clk,
+                value: prev_value,
+            });
+        }
 
         // If we're in unconstrained mode, we don't want to modify state, so we'll save the
         // original state if it's the first time modifying it.
@@ -713,6 +789,14 @@ impl<'a> Executor<'a> {
 
         self.state.write_register(addr, value);
 
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
+            self.memory_checkpoint.registers.entry(addr).or_insert_with(|| MemoryRecord {
+                shard: prev_shard,
+                timestamp: prev_clk,
+                value: prev_value,
+            });
+        }
+
         // If we're in unconstrained mode, we don't want to modify state, so we'll save the
         // original state if it's the first time modifying it.
         if self.unconstrained {
@@ -760,12 +844,24 @@ impl<'a> Executor<'a> {
     pub fn rw(&mut self, register: Register, value: u32, shard: u32, timestamp: u32) {
         let addr = register as u32;
 
-        // If we're in unconstrained mode, we don't want to modify state, so we'll save the
-        // original state if it's the first time modifying it.
-        if self.unconstrained {
+        if self.executor_mode == ExecutorMode::Checkpoint || self.unconstrained {
             let prev_value = self.state.read_register(addr);
-            self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
-        } else {
+            let (prev_shard, prev_clk) = self.state.read_register_access_meta(addr);
+            self.memory_checkpoint.registers.entry(addr).or_insert_with(|| MemoryRecord {
+                shard: prev_shard,
+                timestamp: prev_clk,
+                value: prev_value,
+            });
+
+            // If we're in unconstrained mode, we don't want to modify state, so we'll save the
+            // original state if it's the first time modifying it.
+            if self.unconstrained {
+                let prev_value = self.state.read_register(addr);
+                self.unconstrained_state.memory_diff.entry(addr).or_insert(prev_value);
+            }
+        }
+
+        if !self.unconstrained {
             self.state.write_register_access_meta(addr, shard, timestamp);
         }
 
@@ -1991,12 +2087,20 @@ impl<'a> Executor<'a> {
         self.emit_global_memory_events = emit_global_memory_events;
 
         // Clone self.state without large streams that are not needed in the returned checkpoint.
+        let memory = std::mem::take(&mut self.state.memory);
+        let shard = std::mem::take(&mut self.state.access_shard);
+        let clk = std::mem::take(&mut self.state.access_clk);
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
         let records_clk = std::mem::take(&mut self.state.records_clk);
+        // let mut checkpoint =
+        //     tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone_parallel());
         let mut checkpoint =
-            tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone_parallel());
+            tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone());
+        self.state.memory = memory;
+        self.state.access_shard = shard;
+        self.state.access_clk = clk;
         self.state.proof_stream = proof_stream;
-        self.state.records_clk = records_clk;
+        // self.state.records_clk = records_clk;
 
         #[cfg(not(feature = "aot"))]
         let done = tracing::info_span!("[not aot] execute").in_scope(|| self.execute())?;
@@ -2042,10 +2146,58 @@ impl<'a> Executor<'a> {
 
             done
         };
+
+        // Create a checkpoint using `memory_checkpoint`. Just include all memory if `done` since we
+        // need it all for MemoryFinalize.
+        tracing::info_span!("create memory checkpoint").in_scope(|| {
+            let memory_checkpoint = std::mem::take(&mut self.memory_checkpoint);
+            // let uninitialized_memory_checkpoint =
+            //     std::mem::take(&mut self.uninitialized_memory_checkpoint);
+            if done && !self.emit_global_memory_events {
+                // If it's the last shard, and we're not emitting memory events, we need to include
+                // all memory so that memory events can be emitted from the checkpoint. But we need
+                // to first reset any modified memory to as it was before the execution.
+                checkpoint.memory.clone_from(&self.state.memory);
+                memory_checkpoint.into_iter().for_each(
+                    |(addr, MemoryRecord { value, timestamp, shard })| {
+                        if addr < NUM_REGISTERS as u32 {
+                            checkpoint.write_register(addr, value);
+                            checkpoint.write_register_access_meta(addr, shard, timestamp);
+                        } else {
+                            checkpoint.write_memory(addr, value);
+                            checkpoint.write_memory_access_meta(addr, shard, timestamp);
+                        }
+                    },
+                );
+                // checkpoint.uninitialized_memory = self.state.uninitialized_memory.clone();
+                // // Remove memory that was written to in this batch.
+                // for (addr, is_old) in uninitialized_memory_checkpoint {
+                //     if !is_old {
+                //         checkpoint.uninitialized_memory.remove(addr);
+                //     }
+                // }
+            } else {
+                for (addr, MemoryRecord { value, timestamp, shard }) in memory_checkpoint {
+                    if addr < NUM_REGISTERS as u32 {
+                        checkpoint.write_register(addr, value);
+                        checkpoint.write_register_access_meta(addr, shard, timestamp);
+                    } else {
+                        checkpoint.write_memory(addr, value);
+                        checkpoint.write_memory_access_meta(addr, shard, timestamp);
+                    }
+                }
+                // checkpoint.uninitialized_memory = uninitialized_memory_checkpoint
+                //     .into_iter()
+                //     .filter(|&(_, has_value)| has_value)
+                //     .map(|(addr, _)| (addr, *self.state.uninitialized_memory.get(addr).unwrap()))
+                //     .collect();
+            }
+        });
+
         if !done {
             self.records.clear();
         }
-        checkpoint.records_clk = std::mem::take(&mut self.state.records_clk);
+        checkpoint.records_clk = records_clk;
         Ok((checkpoint, done))
     }
 
