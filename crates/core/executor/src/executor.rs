@@ -14,27 +14,14 @@ use zkm_curves::CurveError;
 use zkm_stark::ZKMCoreOpts;
 
 use crate::{
-    context::ZKMContext,
-    dependencies::{
+    ExecutionReport, Instruction, MAX_OPCODE, MaximalShapes, MipsAirId, NUM_REGISTERS, Opcode, Program, Register, context::ZKMContext, dependencies::{
         emit_branch_dependencies, emit_cloclz_dependencies, emit_divrem_dependencies,
         emit_jump_dependencies, emit_memory_dependencies, emit_misc_dependencies,
-    },
-    estimate_mips_event_counts, estimate_mips_lde_size,
-    events::{
+    }, estimate_mips_event_counts, estimate_mips_lde_size, events::{
         AluEvent, BranchEvent, CompAluEvent, CpuEvent, JumpEvent, MemInstrEvent,
         MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryLocalEvent, MemoryReadRecord,
         MemoryRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent, SyscallEvent,
-    },
-    hook::{HookEnv, HookRegistry},
-    memory::Memory,
-    pad_mips_event_counts,
-    record::{ExecutionRecord, MemoryAccessRecord},
-    sign_extend,
-    state::{ExecutionState, ForkState},
-    subproof::SubproofVerifier,
-    syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext},
-    ExecutionReport, Instruction, MaximalShapes, MipsAirId, Opcode, Program, Register, MAX_OPCODE,
-    NUM_REGISTERS,
+    }, hook::{HookEnv, HookRegistry}, memory::{GuestMemory, Memory}, pad_mips_event_counts, record::{ExecutionRecord, MemoryAccessRecord}, sign_extend, state::{ExecutionState, ForkState}, subproof::SubproofVerifier, syscalls::{Syscall, SyscallCode, SyscallContext, default_syscall_map}
 };
 
 /// The maximum number of instructions in a program.
@@ -2086,21 +2073,36 @@ impl<'a> Executor<'a> {
         self.executor_mode = ExecutorMode::Checkpoint;
         self.emit_global_memory_events = emit_global_memory_events;
 
-        // Clone self.state without large streams that are not needed in the returned checkpoint.
-        let memory = std::mem::take(&mut self.state.memory);
-        let shard = std::mem::take(&mut self.state.access_shard);
-        let clk = std::mem::take(&mut self.state.access_clk);
+        // Clone self.state
         let proof_stream = std::mem::take(&mut self.state.proof_stream);
-        let records_clk = std::mem::take(&mut self.state.records_clk);
-        // let mut checkpoint =
-        //     tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone_parallel());
+        let assessed = std::mem::take(&mut self.state.accessed);
         let mut checkpoint =
-            tracing::info_span!("clone checkpoint").in_scope(|| self.state.clone());
-        self.state.memory = memory;
-        self.state.access_shard = shard;
-        self.state.access_clk = clk;
+            tracing::info_span!("clone checkpoint").in_scope(|| ExecutionState {
+                pc: self.state.pc,
+                next_pc: self.state.next_pc,
+                current_shard: self.state.current_shard,
+                clk: self.state.clk,
+                global_clk: self.state.global_clk,
+                exited: self.state.exited,
+                next_is_delayslot: self.state.next_is_delayslot,
+                memory: GuestMemory::default(),
+                access_shard: GuestMemory::new_u16(),
+                access_clk: GuestMemory::default(),
+                accessed: Memory::new_preallocated(),
+                // uninitialized_memory: Memory::new_preallocated(),
+                uninitialized_memory: self.state.uninitialized_memory.clone(),
+                input_stream: self.state.input_stream.clone(),
+                input_stream_ptr: self.state.input_stream_ptr,
+                proof_stream: vec![],
+                proof_stream_ptr: self.state.proof_stream_ptr,
+                public_values_stream: self.state.public_values_stream.clone(),
+                public_values_stream_ptr: self.state.public_values_stream_ptr,
+                syscall_counts: self.state.syscall_counts.clone(),
+                records_clk: vec![],
+                records_clk_index: 0,
+            });
         self.state.proof_stream = proof_stream;
-        // self.state.records_clk = records_clk;
+        self.state.accessed = assessed;
 
         #[cfg(not(feature = "aot"))]
         let done = tracing::info_span!("[not aot] execute").in_scope(|| self.execute())?;
@@ -2158,12 +2160,18 @@ impl<'a> Executor<'a> {
                 // all memory so that memory events can be emitted from the checkpoint. But we need
                 // to first reset any modified memory to as it was before the execution.
                 checkpoint.memory.clone_from(&self.state.memory);
+                checkpoint.access_shard.clone_from(&self.state.access_shard);
+                checkpoint.access_clk.clone_from(&self.state.access_clk);
+                checkpoint.accessed.clone_from(&self.state.accessed);
+
                 memory_checkpoint.into_iter().for_each(
                     |(addr, MemoryRecord { value, timestamp, shard })| {
                         if addr < NUM_REGISTERS as u32 {
+                            checkpoint.accessed.registers.insert(addr, true);
                             checkpoint.write_register(addr, value);
                             checkpoint.write_register_access_meta(addr, shard, timestamp);
                         } else {
+                            checkpoint.accessed.page_table.insert(addr, true);
                             checkpoint.write_memory(addr, value);
                             checkpoint.write_memory_access_meta(addr, shard, timestamp);
                         }
@@ -2179,9 +2187,11 @@ impl<'a> Executor<'a> {
             } else {
                 for (addr, MemoryRecord { value, timestamp, shard }) in memory_checkpoint {
                     if addr < NUM_REGISTERS as u32 {
+                        checkpoint.accessed.registers.insert(addr, true);
                         checkpoint.write_register(addr, value);
                         checkpoint.write_register_access_meta(addr, shard, timestamp);
                     } else {
+                        checkpoint.accessed.page_table.insert(addr, true);
                         checkpoint.write_memory(addr, value);
                         checkpoint.write_memory_access_meta(addr, shard, timestamp);
                     }
@@ -2197,7 +2207,7 @@ impl<'a> Executor<'a> {
         if !done {
             self.records.clear();
         }
-        checkpoint.records_clk = records_clk;
+        checkpoint.records_clk = std::mem::take(&mut self.state.records_clk);
         Ok((checkpoint, done))
     }
 
