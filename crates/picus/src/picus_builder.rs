@@ -160,6 +160,61 @@ impl ExtractionPhase {
     }
 }
 
+fn default_bitwise_byte_module_name(opcode: u64) -> Option<&'static str> {
+    match opcode {
+        x if x == ByteOpcode::AND as u64 => Some("byte_and_mod"),
+        x if x == ByteOpcode::OR as u64 => Some("byte_or_mod"),
+        x if x == ByteOpcode::XOR as u64 => Some("byte_xor_mod"),
+        x if x == ByteOpcode::NOR as u64 => Some("byte_nor_mod"),
+        _ => None,
+    }
+}
+
+fn decompose_byte_expr(module: &mut PicusModule, expr: PicusExpr) -> Vec<PicusExpr> {
+    let bits = (0..8).map(|_| fresh_picus_expr()).collect::<Vec<_>>();
+    for bit in &bits {
+        module.constraints.push(PicusConstraint::new_bit(bit.clone()));
+    }
+
+    let recomposed = bits.iter().enumerate().fold(PicusExpr::Const(0), |acc, (i, bit)| {
+        acc + bit.clone() * (1u64 << i)
+    });
+    module.constraints.push(PicusConstraint::new_equality(expr, recomposed));
+    bits
+}
+
+fn default_bitwise_output_bit_expr(opcode: u64, lhs: PicusExpr, rhs: PicusExpr) -> PicusExpr {
+    match opcode {
+        x if x == ByteOpcode::AND as u64 => lhs * rhs,
+        x if x == ByteOpcode::OR as u64 => lhs.clone() + rhs.clone() - lhs * rhs,
+        x if x == ByteOpcode::XOR as u64 => lhs.clone() + rhs.clone() - (lhs * rhs) * 2,
+        x if x == ByteOpcode::NOR as u64 => PicusExpr::Const(1) - lhs.clone() - rhs.clone() + lhs * rhs,
+        _ => panic!("unexpected bitwise opcode {opcode}"),
+    }
+}
+
+fn build_default_bitwise_byte_module(module_name: String, opcode: u64) -> PicusModule {
+    let mut module = PicusModule::build_empty(module_name, 2, 1);
+
+    let lhs = module.inputs[0].clone();
+    let rhs = module.inputs[1].clone();
+    let out = module.outputs[0].clone();
+
+    let lhs_bits = decompose_byte_expr(&mut module, lhs);
+    let rhs_bits = decompose_byte_expr(&mut module, rhs);
+    let out_bits = decompose_byte_expr(&mut module, out.clone());
+
+    for ((out_bit, lhs_bit), rhs_bit) in out_bits.into_iter().zip(lhs_bits).zip(rhs_bits) {
+        module.constraints.push(PicusConstraint::new_equality(
+            out_bit,
+            default_bitwise_output_bit_expr(opcode, lhs_bit, rhs_bit),
+        ));
+    }
+
+    module.assume_deterministic.push(out);
+    module
+}
+
 /// `AirBuilder` implementation that lowers one chip/phase view into a Picus module.
 #[derive(Clone)]
 pub struct PicusBuilder<'chips, A: MachineAir<Felt>> {
@@ -524,20 +579,12 @@ impl<'chips, A: MachineAir<Felt>> PicusBuilder<'chips, A> {
         }
     }
 
-    fn is_default_bitwise_byte_opcode(opcode: u64) -> bool {
-        matches!(
-            opcode,
-            x if x == ByteOpcode::AND as u64
-                || x == ByteOpcode::OR as u64
-                || x == ByteOpcode::XOR as u64
-                || x == ByteOpcode::NOR as u64
-        )
-    }
-
-    fn add_default_bitwise_byte_call(&mut self, values: &[PicusExpr]) {
-        let byte_mod_name = "byte_interaction_mod".to_string();
+    fn add_default_bitwise_byte_call(&mut self, opcode: u64, values: &[PicusExpr]) {
+        let byte_mod_name = default_bitwise_byte_module_name(opcode)
+            .unwrap_or_else(|| panic!("unexpected bitwise opcode {opcode}"))
+            .to_string();
         if !self.aux_modules.contains_key(&byte_mod_name) {
-            let byte_mod = PicusModule::build_empty(byte_mod_name.clone(), 2, 1);
+            let byte_mod = build_default_bitwise_byte_module(byte_mod_name.clone(), opcode);
             self.aux_modules.insert(byte_mod_name.clone(), byte_mod);
         }
         assert!(values.len() == 5);
@@ -657,10 +704,10 @@ impl<'chips, A: MachineAir<Felt>> PicusBuilder<'chips, A> {
                             bit_const,
                         ]);
                     }
-                } else if Self::is_default_bitwise_byte_opcode(v)
+                } else if default_bitwise_byte_module_name(v).is_some()
                     && !self.try_add_and_127_optimization(values)
                 {
-                    self.add_default_bitwise_byte_call(values);
+                    self.add_default_bitwise_byte_call(v, values);
                 }
             }
             // TODO: It might be fine if the first argument isn't a constant. We need to multiply the values
@@ -1233,5 +1280,36 @@ impl<'chips, A: MachineAir<Felt>> AirBuilder for PicusBuilder<'chips, A> {
 
     fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
         self.picus_module.constraints.push(PicusConstraint::Eq(Box::new(x.into())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_default_bitwise_byte_module, default_bitwise_byte_module_name,
+    };
+    use crate::pcl::initialize_fresh_var_ctr;
+    use zkm_core_executor::ByteOpcode;
+
+    #[test]
+    fn default_bitwise_modules_are_opcode_specific() {
+        assert_eq!(default_bitwise_byte_module_name(ByteOpcode::AND as u64), Some("byte_and_mod"));
+        assert_eq!(default_bitwise_byte_module_name(ByteOpcode::OR as u64), Some("byte_or_mod"));
+        assert_eq!(default_bitwise_byte_module_name(ByteOpcode::XOR as u64), Some("byte_xor_mod"));
+        assert_eq!(default_bitwise_byte_module_name(ByteOpcode::NOR as u64), Some("byte_nor_mod"));
+    }
+
+    #[test]
+    fn default_bitwise_module_constrains_the_output() {
+        initialize_fresh_var_ctr(100);
+        let module = build_default_bitwise_byte_module(
+            "byte_xor_mod".to_string(),
+            ByteOpcode::XOR as u64,
+        );
+
+        assert_eq!(module.inputs.len(), 2);
+        assert_eq!(module.outputs.len(), 1);
+        assert_eq!(module.constraints.len(), 35);
+        assert_eq!(module.assume_deterministic, vec![module.outputs[0].clone()]);
     }
 }
