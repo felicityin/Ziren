@@ -728,19 +728,26 @@ impl<'chips, A: MachineAir<Felt>> PicusBuilder<'chips, A> {
         // We assume the opcode is deterministic
         self.picus_module.assume_deterministic.push(values[6].clone());
         // values[23] is op_a_immutable and values[24] is is_rw_a.
-        // Require concrete booleans so I/O direction is unambiguous.
-        let op_a_immutable = match values[23] {
-            PicusExpr::Const(0) => false,
-            PicusExpr::Const(1) => true,
-            PicusExpr::Const(v) => panic!("Expected op_a_immutable to be 0 or 1, got {v}"),
-            _ => panic!("Expected op_a_immutable to be constant (0/1), got symbolic expression"),
+        // Require concrete booleans so I/O direction is unambiguous. During a
+        // shifted AIR pass the selectors on row 1 are fresh, unspecialized
+        // variables, so these can be symbolic; port direction is irrelevant
+        // there because `capture_interface` is off and port pushes are no-ops.
+        let decode_bool = |name: &str, expr: &PicusExpr| -> bool {
+            match *expr {
+                PicusExpr::Const(0) => false,
+                PicusExpr::Const(1) => true,
+                PicusExpr::Const(v) => panic!("Expected {name} to be 0 or 1, got {v}"),
+                _ => {
+                    assert!(
+                        !self.capture_interface,
+                        "Expected {name} to be constant (0/1), got symbolic expression"
+                    );
+                    false
+                }
+            }
         };
-        let is_rw_a = match values[24] {
-            PicusExpr::Const(0) => false,
-            PicusExpr::Const(1) => true,
-            PicusExpr::Const(v) => panic!("Expected is_rw_a to be 0 or 1, got {v}"),
-            _ => panic!("Expected is_rw_a to be constant (0/1), got symbolic expression"),
-        };
+        let op_a_immutable = decode_bool("op_a_immutable", &values[23]);
+        let is_rw_a = decode_bool("is_rw_a", &values[24]);
         // Always expose `next_next_pc` as an output; it is often zero but still part of the
         // instruction interface.
         let next_next_pc_out = fresh_picus_expr();
@@ -993,24 +1000,33 @@ impl<'chips, A: MachineAir<Felt>> MessageBuilder<AirLookup<PicusExpr>> for Picus
                 if self.submodule_mode == SubmoduleMode::Ignore {
                     return;
                 }
+                // Shifted AIR passes leave row-1 selectors unspecialized, so the
+                // opcode expression can stay symbolic here. Route those to the
+                // symbolic-task fallback instead of panicking.
                 let opcode_spec = match specialized_values[6].clone() {
                     PicusExpr::Const(v) => {
                         assert!(v < Opcode::UNIMPL as u64);
-                        spec_for(Opcode::try_from(v as u8).unwrap())
+                        Some(spec_for(Opcode::try_from(v as u8).unwrap()))
                     }
-                    _ => panic!(
-                        "Expected opcode val to be a constant after specialization: Got: {}",
-                        specialized_values[6]
-                    ),
+                    _ => {
+                        tracing::error!(
+                            "Expected opcode val to be a constant after specialization: Got: {}",
+                            specialized_values[6]
+                        );
+                        None
+                    }
                 };
-                let target_chip = self.get_chip(opcode_spec.chip);
-                let main_vars = self.get_main_vars_for_call(&specialized_values);
-                if let Some(vars) = main_vars {
+                let main_vars = opcode_spec
+                    .as_ref()
+                    .and_then(|_| self.get_main_vars_for_call(&specialized_values));
+
+                if let (Some(spec), Some(vars)) = (opcode_spec.as_ref(), main_vars) {
+                    let target_chip = self.get_chip(spec.chip);
                     self.concrete_pending_tasks.push(ConcretePendingTask {
                         chip_name: target_chip.name(),
                         main_vars: vars,
                         multiplicity: specialized_multiplicity,
-                        selector: opcode_spec.selector.to_string(),
+                        selector: spec.selector.to_string(),
                         capture_interface: self.capture_interface,
                     });
                 } else {

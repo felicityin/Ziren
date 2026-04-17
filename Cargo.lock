@@ -7930,6 +7930,7 @@ dependencies = [
  "p3-field",
  "p3-koala-bear",
  "p3-matrix",
+ "tracing",
  "zkm-core-executor",
  "zkm-core-machine",
  "zkm-stark",
