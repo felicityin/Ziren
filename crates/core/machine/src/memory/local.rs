@@ -12,10 +12,10 @@ use p3_maybe_rayon::prelude::{
 };
 use zkm_core_executor::events::{GlobalLookupEvent, MemoryLocalEvent};
 use zkm_core_executor::{ExecutionRecord, Program};
-use zkm_derive::AlignedBorrow;
+use zkm_derive::{AlignedBorrow, PicusAnnotations};
 use zkm_stark::{
     air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
-    LookupKind, Word,
+    LookupKind, PicusInfo, Word,
 };
 
 use crate::{
@@ -54,7 +54,7 @@ pub struct SingleMemoryLocal<T: Copy> {
     pub is_real: T,
 }
 
-#[derive(AlignedBorrow, Clone, Copy)]
+#[derive(AlignedBorrow, Clone, Copy, PicusAnnotations)]
 #[repr(C)]
 pub struct MemoryLocalCols<T: Copy> {
     memory_local_entries: [SingleMemoryLocal<T>; NUM_LOCAL_MEMORY_ENTRIES_PER_ROW],
@@ -92,6 +92,10 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
 
     fn name(&self) -> String {
         "MemoryLocal".to_string()
+    }
+
+    fn picus_info(&self) -> PicusInfo {
+        MemoryLocalCols::<u8>::picus_info()
     }
 
     fn generate_dependencies(

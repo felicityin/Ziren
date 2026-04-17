@@ -1,11 +1,13 @@
+use std::mem::size_of;
+
 use crate::memory::{MemoryReadCols, MemoryWriteCols};
 use crate::operations::{IsEqualWordOperation, XorOperation};
-use zkm_derive::AlignedBorrow;
-use zkm_stark::Word;
+use zkm_derive::{AlignedBorrow, PicusAnnotations};
+use zkm_stark::{PicusInfo, Word};
 
 /// BooleanCircuitGarbleCols is the column layout for the Boolean Circuit Garble.
 /// The number of rows equal to the number of gates
-#[derive(AlignedBorrow)]
+#[derive(AlignedBorrow, PicusAnnotations)]
 #[repr(C)]
 pub struct BooleanCircuitGarbleCols<T> {
     pub shard: T,
@@ -13,9 +15,13 @@ pub struct BooleanCircuitGarbleCols<T> {
     pub is_real: T,
     pub input_address: T,
     pub output_address: T,
+    #[picus(selector)]
     pub is_first_row: T, // The first row contains gates_num and delta
+    #[picus(selector)]
     pub is_gate: T,
+    #[picus(selector)]
     pub is_first_gate: T,
+    #[picus(selector)]
     pub is_last_gate: T,
     pub not_last_gate: T, // from first gate -> (last - 1)-th gate
     pub gate_type: [T; 2],

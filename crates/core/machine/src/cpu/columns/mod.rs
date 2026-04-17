@@ -3,8 +3,8 @@ pub use instruction::*;
 
 use p3_util::indices_arr;
 use std::mem::{size_of, transmute};
-use zkm_derive::AlignedBorrow;
-use zkm_stark::Word;
+use zkm_derive::{AlignedBorrow, PicusAnnotations};
+use zkm_stark::{PicusInfo, Word};
 
 use crate::memory::{MemoryCols, MemoryReadCols, MemoryReadWriteCols};
 
@@ -13,7 +13,7 @@ pub const NUM_CPU_COLS: usize = size_of::<CpuCols<u8>>();
 pub const CPU_COL_MAP: CpuCols<usize> = make_col_map();
 
 /// The column layout for the CPU.
-#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
+#[derive(AlignedBorrow, Default, Debug, Clone, Copy, PicusAnnotations)]
 #[repr(C)]
 pub struct CpuCols<T: Copy> {
     /// The current shard.
@@ -47,15 +47,19 @@ pub struct CpuCols<T: Copy> {
     pub num_extra_cycles: T,
 
     /// Whether the instruction will read and write a register.
+    #[picus(selector)]
     pub is_rw_a: T,
 
     /// Whether the instruction chip will check memory access.
+    #[picus(selector)]
     pub is_check_memory: T,
 
     /// Whether this is a halt instruction.
+    #[picus(selector)]
     pub is_halt: T,
 
     /// Whether this is a sequential instruction (not branch or jump or halt).
+    #[picus(selector)]
     pub is_sequential: T,
 
     /// Operand values, either from registers or immediate values.

@@ -176,9 +176,10 @@ fn decompose_byte_expr(module: &mut PicusModule, expr: PicusExpr) -> Vec<PicusEx
         module.constraints.push(PicusConstraint::new_bit(bit.clone()));
     }
 
-    let recomposed = bits.iter().enumerate().fold(PicusExpr::Const(0), |acc, (i, bit)| {
-        acc + bit.clone() * (1u64 << i)
-    });
+    let recomposed = bits
+        .iter()
+        .enumerate()
+        .fold(PicusExpr::Const(0), |acc, (i, bit)| acc + bit.clone() * (1u64 << i));
     module.constraints.push(PicusConstraint::new_equality(expr, recomposed));
     bits
 }
@@ -188,7 +189,9 @@ fn default_bitwise_output_bit_expr(opcode: u64, lhs: PicusExpr, rhs: PicusExpr) 
         x if x == ByteOpcode::AND as u64 => lhs * rhs,
         x if x == ByteOpcode::OR as u64 => lhs.clone() + rhs.clone() - lhs * rhs,
         x if x == ByteOpcode::XOR as u64 => lhs.clone() + rhs.clone() - (lhs * rhs) * 2,
-        x if x == ByteOpcode::NOR as u64 => PicusExpr::Const(1) - lhs.clone() - rhs.clone() + lhs * rhs,
+        x if x == ByteOpcode::NOR as u64 => {
+            PicusExpr::Const(1) - lhs.clone() - rhs.clone() + lhs * rhs
+        }
         _ => panic!("unexpected bitwise opcode {opcode}"),
     }
 }
@@ -1285,9 +1288,7 @@ impl<'chips, A: MachineAir<Felt>> AirBuilder for PicusBuilder<'chips, A> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_default_bitwise_byte_module, default_bitwise_byte_module_name,
-    };
+    use super::{build_default_bitwise_byte_module, default_bitwise_byte_module_name};
     use crate::pcl::initialize_fresh_var_ctr;
     use zkm_core_executor::ByteOpcode;
 
@@ -1302,10 +1303,8 @@ mod tests {
     #[test]
     fn default_bitwise_module_constrains_the_output() {
         initialize_fresh_var_ctr(100);
-        let module = build_default_bitwise_byte_module(
-            "byte_xor_mod".to_string(),
-            ByteOpcode::XOR as u64,
-        );
+        let module =
+            build_default_bitwise_byte_module("byte_xor_mod".to_string(), ByteOpcode::XOR as u64);
 
         assert_eq!(module.inputs.len(), 2);
         assert_eq!(module.outputs.len(), 1);
