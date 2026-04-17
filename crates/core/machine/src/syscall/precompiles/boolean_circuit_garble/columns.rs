@@ -27,13 +27,15 @@ pub struct BooleanCircuitGarbleCols<T> {
     pub gate_type: [T; 2],
     pub gate_id: T,
     pub gates_num: T,
-    pub delta: [Word<T>; 4],                      // [u8; 16]
+    #[picus(transition_input, transition_output)]
+    pub delta: [Word<T>; 4], // [u8; 16]
     pub gates_input_mem: [MemoryReadCols<T>; 17], // gate_type, h0, h1, label_b, expected_ciphertext
     pub result_mem: MemoryWriteCols<T>,
     pub aux1: [XorOperation<T>; 4],                   // h1 ^ h0
     pub aux2: [XorOperation<T>; 4],                   // h1 ^ h0 ^ label_b
     pub aux3: [XorOperation<T>; 4],                   // h1 ^ h0 ^ label_b ^ delta
     pub is_equal_words: [IsEqualWordOperation<T>; 4], // computed ciphertext == expected_ciphertext
+    #[picus(transition_input, transition_output)]
     pub checks: [T; 4], // check result for each pair of is_equal_words
 }
 

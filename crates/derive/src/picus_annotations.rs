@@ -76,9 +76,13 @@ fn parse_picus_attr(attr: &syn::Attribute) -> syn::Result<Option<PicusArgs>> {
     Ok(Some(out))
 }
 
-// ---------- type substitution: replace *type* params with `u8` ----------
-fn type_params_set(gens: &Generics) -> HashSet<syn::Ident> {
-    gens.type_params().map(|tp| tp.ident.clone()).collect()
+// ---------- type substitution: replace the *first* type param with `u8` ----------
+fn first_type_param_ident(gens: &Generics) -> Option<syn::Ident> {
+    gens.type_params().next().map(|tp| tp.ident.clone())
+}
+
+fn value_type_param_set(gens: &Generics) -> HashSet<syn::Ident> {
+    first_type_param_ident(gens).into_iter().collect()
 }
 
 // column values are determined by computing the offset of the ColStruct when instantiated
@@ -122,10 +126,23 @@ fn ty_sub_u8(mut ty: Type, type_params: &HashSet<syn::Ident>) -> Type {
     }
 }
 
-// Build Self<u8, u8, ...> actual type args; keep lifetimes/consts as-is.
+// Build Self<u8, P, ...> actual type args; keep lifetimes/consts as-is.
+//
+// Convention: the first type parameter represents the column value type, and should be replaced
+// with `u8` to compute byte offsets/widths. Any additional type parameters are kept generic (e.g.
+// curve parameters), so structs like `FooCols<T, P>` will generate impls for `FooCols<u8, P>`.
 fn concrete_type_args(gens: &Generics) -> proc_macro2::TokenStream {
+    let mut replaced_first_type = false;
     let args = gens.params.iter().map(|p| match p {
-        syn::GenericParam::Type(_) => quote!(u8),
+        syn::GenericParam::Type(tp) => {
+            if replaced_first_type {
+                let id = &tp.ident;
+                quote!(#id)
+            } else {
+                replaced_first_type = true;
+                quote!(u8)
+            }
+        }
         syn::GenericParam::Lifetime(lt) => {
             let lt = &lt.lifetime;
             quote!(#lt)
@@ -138,21 +155,24 @@ fn concrete_type_args(gens: &Generics) -> proc_macro2::TokenStream {
     quote!(<#(#args),*>)
 }
 
-// impl generics = lifetimes + consts only (type params fixed to u8)
-fn impl_generics_without_type_params(gens: &Generics) -> proc_macro2::TokenStream {
-    let lifetimes = gens.lifetimes().map(|d| d.lifetime.clone());
-    let consts = gens.const_params().map(|c| {
-        let id = &c.ident;
-        let ty = &c.ty;
-        quote!(const #id: #ty)
-    });
+// impl generics = all generics except the value type (first type param).
+fn impl_generics_without_value_type_param(gens: &Generics) -> proc_macro2::TokenStream {
+    let mut skipped_first_type = false;
     let mut parts: Vec<proc_macro2::TokenStream> = Vec::new();
-    for lt in lifetimes {
-        parts.push(quote!(#lt));
+    for p in gens.params.iter() {
+        match p {
+            syn::GenericParam::Type(tp) => {
+                if skipped_first_type {
+                    parts.push(quote!(#tp));
+                } else {
+                    skipped_first_type = true;
+                }
+            }
+            syn::GenericParam::Lifetime(lt) => parts.push(quote!(#lt)),
+            syn::GenericParam::Const(c) => parts.push(quote!(#c)),
+        }
     }
-    for c in consts {
-        parts.push(c);
-    }
+
     if parts.is_empty() {
         quote!()
     } else {
@@ -182,8 +202,8 @@ pub fn picus_annotations_derive(input: TokenStream) -> TokenStream {
         }
     };
 
-    let type_params = type_params_set(&gens);
-    let impl_gens = impl_generics_without_type_params(&gens);
+    let type_params = value_type_param_set(&gens);
+    let impl_gens = impl_generics_without_value_type_param(&gens);
     let self_args = concrete_type_args(&gens);
     let self_conc = quote!(#ident #self_args);
 
@@ -210,7 +230,7 @@ pub fn picus_annotations_derive(input: TokenStream) -> TokenStream {
             }
         }
 
-        // Field type with all *type* params → u8
+        // Field type with the value-type param → u8
         let conc_ty: Type = ty_sub_u8(field.ty.clone(), &type_params);
 
         // Add name to id map
