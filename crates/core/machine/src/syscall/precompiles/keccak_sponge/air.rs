@@ -64,10 +64,6 @@ where
         transition_not_final_builder.assert_eq(local.is_real, next.is_real);
         transition_not_final_builder.assert_eq(local.input_len, next.input_len);
         transition_not_final_builder.assert_eq(local.output_address, next.output_address);
-        // The final row must be nonreal because NUM_ROUNDS is not a power of 2. This constraint
-        // ensures that the table does not end abruptly.
-        builder.when_last_row().assert_zero(local.is_real);
-
         // Xor
         for i in 0..KECCAK_GENERAL_RATE_U32S {
             XorOperation::<AB::F>::eval(
