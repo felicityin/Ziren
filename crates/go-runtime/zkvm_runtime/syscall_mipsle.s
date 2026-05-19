@@ -38,6 +38,13 @@ TEXT ·SyscallCommit(SB), $0-8
 	SYSCALL
 	RET
 
+TEXT ·SyscallCommitDeferredProofs(SB), $0-8
+	MOVW index+0(FP), R4
+	MOVW word+4(FP), R5
+	MOVW $0x1A, R2
+	SYSCALL
+	RET
+
 TEXT ·SyscallExit(SB), $0-4
 	MOVW code+0(FP), R4    // a0 = code
 	MOVW $0, R2         // v0 = syscall 0
@@ -62,7 +69,14 @@ TEXT ·SyscallKeccakSponge(SB), $0-8
 	SYSCALL
 	RET
 
-// secp256k1 elliptic curve precompiles
+TEXT ·SyscallVerifyZKMProof(SB), $0-8
+	MOVW $0x1B, R2
+	MOVW vkDigest+0(FP), R4
+	MOVW pvDigest+4(FP), R5
+	SYSCALL
+	RET
+
+	// secp256k1 elliptic curve precompiles
 
 TEXT ·SyscallSecp256k1Add(SB), $0-8
 	MOVW $0x0101000A, R2   // v0 = SECP256K1_ADD
