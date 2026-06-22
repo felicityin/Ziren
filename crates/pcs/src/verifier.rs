@@ -97,13 +97,17 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
         }
 
         // Verify that the permutation width matches the expected value for the chip.
-        if opening.permutation.local.len() != chip.permutation_width() * <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION {
+        if opening.permutation.local.len()
+            != chip.permutation_width() * <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION
+        {
             return Err(OpeningShapeError::PermutationWidthMismatch(
                 chip.permutation_width(),
                 opening.permutation.local.len(),
             ));
         }
-        if opening.permutation.next.len() != chip.permutation_width() * <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION {
+        if opening.permutation.next.len()
+            != chip.permutation_width() * <SC::Challenge as BasedVectorSpace<Val<SC>>>::DIMENSION
+        {
             return Err(OpeningShapeError::PermutationWidthMismatch(
                 chip.permutation_width(),
                 opening.permutation.next.len(),
@@ -191,7 +195,11 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
                     let mut result = SC::Challenge::ZERO;
                     for (i, &val) in chunk.iter().enumerate() {
                         let basis = SC::Challenge::from_basis_coefficients_fn(|j| {
-                            if j == i { Val::<SC>::ONE } else { Val::<SC>::ZERO }
+                            if j == i {
+                                Val::<SC>::ONE
+                            } else {
+                                Val::<SC>::ZERO
+                            }
                         });
                         result += basis * val;
                     }
@@ -265,7 +273,11 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
                 let mut val = SC::Challenge::ZERO;
                 for (e_i, &c) in ch.iter().enumerate() {
                     let basis = SC::Challenge::from_basis_coefficients_fn(|j| {
-                        if j == e_i { Val::<SC>::ONE } else { Val::<SC>::ZERO }
+                        if j == e_i {
+                            Val::<SC>::ONE
+                        } else {
+                            Val::<SC>::ZERO
+                        }
                     });
                     val += basis * c;
                 }

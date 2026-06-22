@@ -14,7 +14,6 @@
 //! here must mirror the WHIR copy and vice versa until the WHIR copy
 //! is deleted.
 
-
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -69,11 +68,8 @@ fn build_weight_table(
     let z_row_rev: Vec<InnerChallenge> = z_row.iter().rev().copied().collect();
     let row_eq_full: Vec<InnerChallenge> =
         crate::zerocheck_prover::eq_mle_table::<InnerChallenge>(&z_row_rev);
-    let eq_per_chip: Vec<&[InnerChallenge]> = packing
-        .chip_infos
-        .iter()
-        .map(|_info| row_eq_full.as_slice())
-        .collect();
+    let eq_per_chip: Vec<&[InnerChallenge]> =
+        packing.chip_infos.iter().map(|_info| row_eq_full.as_slice()).collect();
 
     let mut k: usize = 0;
     for (c_idx, info) in packing.chip_infos.iter().enumerate() {
@@ -97,8 +93,11 @@ fn build_weight_table(
                  chip_infos.len={}, offsets.len={}, total_values={}.  Prover/verifier \
                  disagree on chip column count.  Likely cause: trace.width < chip.width() \
                  in emit_jagged_pcs_bytes; pad to chip.width().",
-                info.name, off + h_c,
-                packing.chip_infos.len(), packing.offsets.len(), packing.total_values,
+                info.name,
+                off + h_c,
+                packing.chip_infos.len(),
+                packing.offsets.len(),
+                packing.total_values,
             );
             let zc = z_col_lagrange[k];
             for row in 0..h_c {
@@ -115,7 +114,10 @@ fn build_weight_table(
 /// `interpolate_3point_evals_at_012` (recursion `univariate.rs`) so the
 /// host prover's Fiat-Shamir challenges align with the in-circuit
 /// `verify_sumcheck`, which observes *coefficients* (not evals).
-fn observe_round_poly_coeffs<C: p3_challenger::FieldChallenger<InnerVal>>(challenger: &mut C, evals: [InnerChallenge; 3]) {
+fn observe_round_poly_coeffs<C: p3_challenger::FieldChallenger<InnerVal>>(
+    challenger: &mut C,
+    evals: [InnerChallenge; 3],
+) {
     let [p0, p1, p2] = evals;
     let two_inv = InnerChallenge::from_u8(2).inverse();
     let c0 = p0;
@@ -145,10 +147,7 @@ fn par_fold_table_first_msb(table: &[InnerChallenge], r: InnerChallenge) -> Vec<
     out
 }
 
-fn par_fold_table_first_base_msb(
-    q_base: &[InnerVal],
-    r: InnerChallenge,
-) -> Vec<InnerChallenge> {
+fn par_fold_table_first_base_msb(q_base: &[InnerVal], r: InnerChallenge) -> Vec<InnerChallenge> {
     let half = q_base.len() / 2;
     let mut out: Vec<InnerChallenge> = vec![InnerChallenge::ZERO; half];
     out.par_iter_mut().enumerate().for_each(|(i, dst)| {
@@ -179,10 +178,7 @@ fn jagged_round_evals_msb(
             let p2 = q2 * w2;
             [p0, p1, p2]
         })
-        .reduce(
-            || [zero, zero, zero],
-            |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
-        )
+        .reduce(|| [zero, zero, zero], |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
 }
 
 fn jagged_round_evals_base_msb(
@@ -205,10 +201,7 @@ fn jagged_round_evals_base_msb(
             let p2 = w2 * q2;
             [p0, p1, p2]
         })
-        .reduce(
-            || [zero, zero, zero],
-            |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
-        )
+        .reduce(|| [zero, zero, zero], |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
 }
 
 fn par_fold_table_first(table: &[InnerChallenge], r: InnerChallenge) -> Vec<InnerChallenge> {
@@ -246,10 +239,7 @@ fn jagged_round_evals(
             let p2 = q2 * w2;
             [p0, p1, p2]
         })
-        .reduce(
-            || [zero, zero, zero],
-            |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
-        )
+        .reduce(|| [zero, zero, zero], |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
 }
 
 fn jagged_round_evals_base(
@@ -272,16 +262,10 @@ fn jagged_round_evals_base(
             let p2 = w2 * q2;
             [p0, p1, p2]
         })
-        .reduce(
-            || [zero, zero, zero],
-            |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]],
-        )
+        .reduce(|| [zero, zero, zero], |a, b| [a[0] + b[0], a[1] + b[1], a[2] + b[2]])
 }
 
-fn par_fold_table_first_base(
-    q_base: &[InnerVal],
-    r: InnerChallenge,
-) -> Vec<InnerChallenge> {
+fn par_fold_table_first_base(q_base: &[InnerVal], r: InnerChallenge) -> Vec<InnerChallenge> {
     let half = q_base.len() / 2;
     // Allocator opt + strength reduction.
     // FLAKE FIX: see round.rs note about KoalaBear u32 serde.
@@ -375,21 +359,14 @@ where
 
     // Pass 2: streaming fold — produces q_table_round_0 + w_table
     // (each half-size EF) without any $N$-sized intermediate.
-    let (q_table_round_0, mut w_table) = round0_fold_streaming::<F>(
-        chip_traces,
-        packing,
-        &eq_per_chip,
-        gamma,
-        total_padded,
-        r_0,
-    );
+    let (q_table_round_0, mut w_table) =
+        round0_fold_streaming::<F>(chip_traces, packing, &eq_per_chip, gamma, total_padded, r_0);
 
     // eq tables can drop now — subsequent rounds operate on the EF
     // fold tables only.
     drop(eq_per_chip);
 
-    let mut rounds: Vec<JaggedReductionRound<InnerChallenge>> =
-        Vec::with_capacity(n);
+    let mut rounds: Vec<JaggedReductionRound<InnerChallenge>> = Vec::with_capacity(n);
     let mut eval_point: Vec<InnerChallenge> = Vec::with_capacity(n);
     eval_point.push(r_0);
     rounds.push(JaggedReductionRound { evals });
@@ -780,7 +757,6 @@ pub fn verify_jagged_reduction<C: p3_challenger::FieldChallenger<InnerVal>>(
     Some((z_star, proof.q_at_z, w_at_z))
 }
 
-
 // ZIREN_PHASE1_ACCEPTANCE_GATE
 //
 // PHASE-1 (jagged/zerocheck SP1 re-alignment) acceptance gate.
@@ -812,8 +788,8 @@ mod phase1_acceptance_gate {
     use p3_challenger::FieldChallenger;
     use p3_field::PrimeCharacteristicRing;
     use p3_matrix::dense::RowMajorMatrix;
-    use rand::{Rng, SeedableRng};
     use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
 
     fn challenger() -> InnerChallenger {
         let perm: crate::kb31_poseidon2::InnerPerm = zkm_primitives::poseidon2_init();
@@ -958,10 +934,10 @@ mod phase1_acceptance_gate {
     #[test]
     fn gate_weight_table_matches_branching_program() {
         let cases: &[&[(usize, usize)]] = &[
-            &[(4, 2), (4, 2)],          // equal heights
-            &[(4, 1), (3, 1), (2, 1)],  // mixed
-            &[(5, 2), (4, 3), (2, 1)],  // mixed, multi-col
-            &[(6, 1), (5, 1), (4, 1)],  // mixed
+            &[(4, 2), (4, 2)],         // equal heights
+            &[(4, 1), (3, 1), (2, 1)], // mixed
+            &[(5, 2), (4, 3), (2, 1)], // mixed, multi-col
+            &[(6, 1), (5, 1), (4, 1)], // mixed
         ];
         let mut all_ok = true;
         for (ci, chips) in cases.iter().enumerate() {
@@ -1058,7 +1034,8 @@ mod phase1_acceptance_gate {
         // Build raw traces + raw_y (= opened_values main.local) and band_y (= host claim).
         let mut raw_claims_flat: Vec<InnerChallenge> = Vec::new();
         let mut band_claims_flat: Vec<InnerChallenge> = Vec::new();
-        let mut per_chip: Vec<(usize, usize, Vec<InnerChallenge>, Vec<InnerChallenge>)> = Vec::new();
+        let mut per_chip: Vec<(usize, usize, Vec<InnerChallenge>, Vec<InnerChallenge>)> =
+            Vec::new();
         for &(lr, lb, w) in chips {
             let raw_h = 1usize << lr;
             let trace: Vec<Vec<InnerVal>> =
@@ -1084,9 +1061,11 @@ mod phase1_acceptance_gate {
         // (A) BASELINE — raw claims with NO embed factor: must MISMATCH.
         let raw_eval = s4b_evaluate_mle(&raw_claims_flat, &z_col);
         let baseline_fail = raw_eval != claimed_sum;
-        eprintln!("[S4b] BASELINE (no embed): assert {} (raw_eval==claimed_sum? {})",
+        eprintln!(
+            "[S4b] BASELINE (no embed): assert {} (raw_eval==claimed_sum? {})",
             if baseline_fail { "FAILS (as expected)" } else { "PASSES (unexpected!)" },
-            raw_eval == claimed_sum);
+            raw_eval == claimed_sum
+        );
 
         // (B) Apply candidate per-chip SCALAR embed_factors to the raw claims.
         // candA = Π leading coords [max-log_band, max-log_raw) of (1 - z_row[k]).
@@ -1097,34 +1076,60 @@ mod phase1_acceptance_gate {
             for (lr, lb, y_raw, _yb) in per_chip.iter() {
                 let mut f = InnerChallenge::ONE;
                 match cand {
-                    "A" => for j in (max_log_row - lb)..(max_log_row - lr) { f *= InnerChallenge::ONE - z_row[j]; },
-                    "B" => for k in *lr..*lb { f *= InnerChallenge::ONE - z_row[k]; },
-                    "C" => { let mut d = InnerChallenge::ONE;
-                             for j in (max_log_row - lb)..(max_log_row - lr) { d *= InnerChallenge::ONE - z_row[j]; }
-                             f = d.inverse(); },
+                    "A" => {
+                        for j in (max_log_row - lb)..(max_log_row - lr) {
+                            f *= InnerChallenge::ONE - z_row[j];
+                        }
+                    }
+                    "B" => {
+                        for k in *lr..*lb {
+                            f *= InnerChallenge::ONE - z_row[k];
+                        }
+                    }
+                    "C" => {
+                        let mut d = InnerChallenge::ONE;
+                        for j in (max_log_row - lb)..(max_log_row - lr) {
+                            d *= InnerChallenge::ONE - z_row[j];
+                        }
+                        f = d.inverse();
+                    }
                     _ => unreachable!(),
                 }
-                for v in y_raw.iter() { lifted.push(*v * f); }
+                for v in y_raw.iter() {
+                    lifted.push(*v * f);
+                }
             }
             lifted.resize(padded, InnerChallenge::ZERO);
             let lifted_eval = s4b_evaluate_mle(&lifted, &z_col);
-            eprintln!("[S4b] candidate {cand}: assert {} (lifted_eval==claimed_sum? {})",
+            eprintln!(
+                "[S4b] candidate {cand}: assert {} (lifted_eval==claimed_sum? {})",
                 if lifted_eval == claimed_sum { "PASSES" } else { "FAILS" },
-                lifted_eval == claimed_sum);
+                lifted_eval == claimed_sum
+            );
         }
 
         // (C) PROVE the band claims (the genuine value) DO satisfy the assert.
         let band_eval = s4b_evaluate_mle(&band_claims_flat, &z_col);
-        eprintln!("[S4b] CONTROL (band claims direct): assert {} (band_eval==claimed_sum? {})",
+        eprintln!(
+            "[S4b] CONTROL (band claims direct): assert {} (band_eval==claimed_sum? {})",
             if band_eval == claimed_sum { "PASSES" } else { "FAILS" },
-            band_eval == claimed_sum);
+            band_eval == claimed_sum
+        );
 
         // (D) Per-chip per-column ratio band_y/raw_y — show it is NOT column-uniform
         // (so no per-chip scalar exists), only for chips with band>raw and w>1.
         for (lr, lb, y_raw, y_band) in per_chip.iter() {
             if lb > lr && y_raw.len() > 1 {
-                let ratios: Vec<InnerChallenge> = y_raw.iter().zip(y_band.iter())
-                    .map(|(r, b)| if *r != InnerChallenge::ZERO { *b * r.inverse() } else { InnerChallenge::ZERO })
+                let ratios: Vec<InnerChallenge> = y_raw
+                    .iter()
+                    .zip(y_band.iter())
+                    .map(|(r, b)| {
+                        if *r != InnerChallenge::ZERO {
+                            *b * r.inverse()
+                        } else {
+                            InnerChallenge::ZERO
+                        }
+                    })
                     .collect();
                 let uniform = ratios.windows(2).all(|w| w[0] == w[1]);
                 eprintln!("[S4b] chip log_raw={lr} log_band={lb} w={}: per-col band/raw ratios uniform? {} ratios={:?}",
@@ -1166,7 +1171,11 @@ mod phase1_acceptance_gate {
                 // the RAW width placed in the LOW rows, zeros in the high rows.
                 let mut dense = vec![InnerVal::ZERO; h_band];
                 for r in 0..h_raw {
-                    let pos = if lr == 0 { 0 } else { ((r as u32).reverse_bits() >> (32 - lr as u32)) as usize };
+                    let pos = if lr == 0 {
+                        0
+                    } else {
+                        ((r as u32).reverse_bits() >> (32 - lr as u32)) as usize
+                    };
                     dense[pos] = trace_cols[col][r];
                 }
                 // Weight ALL band rows with eq_c[row] (the high zero rows add 0):
@@ -1208,7 +1217,10 @@ mod phase1_acceptance_gate {
         // (1) per-column: low-placement band_y == raw_y EXACTLY.
         assert_eq!(raw_flat, band_new_flat, "low-placement band_y must equal raw_y per column");
         // (2) the current bitrev_lb commit genuinely differs (the bug being fixed).
-        assert_ne!(raw_flat, band_old_flat, "current bitrev_lb band_y must differ from raw_y (the 4b bug)");
+        assert_ne!(
+            raw_flat, band_old_flat,
+            "current bitrev_lb band_y must differ from raw_y (the 4b bug)"
+        );
 
         // (3) recursion-level: claimed_sum(new) == evaluate_mle_ext(raw_claims, z_col),
         // i.e. the in-circuit step-4 assert holds with RAW column_claims and NO embed_factor.
@@ -1229,5 +1241,4 @@ mod phase1_acceptance_gate {
         );
         eprintln!("[S5] low-placement commit PROVEN: band_y==raw_y per column; recursion step-4 assert holds with NO embed_factor; offsets/total stay band-keyed.");
     }
-
 }

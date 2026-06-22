@@ -139,7 +139,13 @@ fn eval_state<AB: ZKMAirBuilder>(
     pv: &PublicValues<Word<AB::PublicVar>, AB::PublicVar>,
 ) {
     // Initial endpoint — sent here, received by the first real Cpu row.
-    builder.send_state(pv.shard, pv.initial_timestamp, pv.start_pc, pv.start_next_pc, AB::Expr::ONE);
+    builder.send_state(
+        pv.shard,
+        pv.initial_timestamp,
+        pv.start_pc,
+        pv.start_next_pc,
+        AB::Expr::ONE,
+    );
     // Final endpoint — received here, sent by the last (halting) Cpu row.
     builder.receive_state(pv.shard, pv.last_timestamp, pv.next_pc, pv.next_next_pc, AB::Expr::ONE);
 }
@@ -158,10 +164,8 @@ fn eval_global_sum<AB: ZKMAirBuilder>(
     pv: &PublicValues<Word<AB::PublicVar>, AB::PublicVar>,
 ) {
     let initial = SepticDigest::<AB::Expr>::zero().0;
-    let send_values: Vec<AB::Expr> = once(AB::Expr::ZERO)
-        .chain(initial.x.0)
-        .chain(initial.y.0)
-        .collect();
+    let send_values: Vec<AB::Expr> =
+        once(AB::Expr::ZERO).chain(initial.x.0).chain(initial.y.0).collect();
     builder.send(
         AirLookup::new(send_values, AB::Expr::ONE, LookupKind::GlobalAccumulation),
         LookupScope::Local,

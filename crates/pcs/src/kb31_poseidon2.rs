@@ -2,10 +2,13 @@
 
 use crate::{Com, StarkGenericConfig, ZeroCommitment};
 use p3_challenger::DuplexChallenger;
+use p3_commit::BatchOpening;
 use p3_commit::ExtensionMmcs;
 use p3_dft::Radix2DitParallel;
-use p3_field::{extension::{BinomialExtensionField, QuinticTrinomialExtensionField}, Field, PrimeCharacteristicRing};
-use p3_commit::BatchOpening;
+use p3_field::{
+    extension::{BinomialExtensionField, QuinticTrinomialExtensionField},
+    Field, PrimeCharacteristicRing,
+};
 use p3_fri::{CommitPhaseProofStep, FriParameters, FriProof, QueryProof, TwoAdicFriPcs};
 use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
 use p3_merkle_tree::MerkleTreeMmcs;
@@ -117,7 +120,15 @@ pub fn zkm_fri_config() -> FriParameters<InnerChallengeMmcs> {
         Ok(value) => value.parse().unwrap(),
         Err(_) => 84,
     };
-    FriParameters { log_blowup: 1, log_final_poly_len: 0, max_log_arity: 1, num_queries, commit_proof_of_work_bits: 0, query_proof_of_work_bits: 16, mmcs: challenge_mmcs }
+    FriParameters {
+        log_blowup: 1,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries,
+        commit_proof_of_work_bits: 0,
+        query_proof_of_work_bits: 16,
+        mmcs: challenge_mmcs,
+    }
 }
 
 /// The FRI config for inner recursion.
@@ -132,7 +143,15 @@ pub fn inner_fri_config() -> FriParameters<InnerChallengeMmcs> {
         Ok(value) => value.parse().unwrap(),
         Err(_) => 84,
     };
-    FriParameters { log_blowup: 1, log_final_poly_len: 0, max_log_arity: 1, num_queries, commit_proof_of_work_bits: 0, query_proof_of_work_bits: 16, mmcs: challenge_mmcs }
+    FriParameters {
+        log_blowup: 1,
+        log_final_poly_len: 0,
+        max_log_arity: 1,
+        num_queries,
+        commit_proof_of_work_bits: 0,
+        query_proof_of_work_bits: 16,
+        mmcs: challenge_mmcs,
+    }
 }
 
 /// The recursion config used for recursive reduce circuit.
@@ -412,7 +431,15 @@ pub mod koala_bear_poseidon2 {
             Ok(value) => value.parse().unwrap(),
             Err(_) => 84,
         };
-        FriParameters { log_blowup: 1, log_final_poly_len: 0, max_log_arity: 1, num_queries, commit_proof_of_work_bits: 0, query_proof_of_work_bits: 16, mmcs: challenge_mmcs }
+        FriParameters {
+            log_blowup: 1,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 16,
+            mmcs: challenge_mmcs,
+        }
     }
 
     #[must_use]
@@ -426,7 +453,15 @@ pub mod koala_bear_poseidon2 {
             Ok(value) => value.parse().unwrap(),
             Err(_) => 42,
         };
-        FriParameters { log_blowup: 2, log_final_poly_len: 0, max_log_arity: 1, num_queries, commit_proof_of_work_bits: 0, query_proof_of_work_bits: 16, mmcs: challenge_mmcs }
+        FriParameters {
+            log_blowup: 2,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 16,
+            mmcs: challenge_mmcs,
+        }
     }
 
     #[must_use]
@@ -440,7 +475,15 @@ pub mod koala_bear_poseidon2 {
             Ok(value) => value.parse().unwrap(),
             Err(_) => 28,
         };
-        FriParameters { log_blowup: 3, log_final_poly_len: 0, max_log_arity: 1, num_queries, commit_proof_of_work_bits: 0, query_proof_of_work_bits: 16, mmcs: challenge_mmcs }
+        FriParameters {
+            log_blowup: 3,
+            log_final_poly_len: 0,
+            max_log_arity: 1,
+            num_queries,
+            commit_proof_of_work_bits: 0,
+            query_proof_of_work_bits: 16,
+            mmcs: challenge_mmcs,
+        }
     }
 
     enum KoalaBearPoseidon2Type {
@@ -580,5 +623,4 @@ pub mod koala_bear_poseidon2 {
             crate::jagged_pcs::basefold_commit_digest_felts(commit)
         }
     }
-
 }

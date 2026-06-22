@@ -7,8 +7,8 @@ use p3_field::{BasedVectorSpace, ExtensionField, PrimeCharacteristicRing, PrimeF
 use p3_matrix::dense::RowMajorMatrix;
 
 use super::main_trace_loader::{EagerHostLoader, MainTraceLoader};
-use super::shard_proof::{BasefoldShardProof, FoldOrientation};
 use super::row_gkr::top_level::prove_shard_logup_gkr_rows;
+use super::shard_proof::{BasefoldShardProof, FoldOrientation};
 use super::zerocheck_prover::prove_shard_zerocheck;
 use crate::air::MachineAir;
 use crate::folder::VerifierConstraintFolder;
@@ -55,7 +55,11 @@ fn maybe_auto_precompute_basefold<SC, A>(
 ) -> (
     Vec<RowMajorMatrix<Val<SC>>>,
     [Val<SC>; 8],
-    Option<crate::jagged_pcs::jagged::PrecomputedJaggedCommitGeneric<<SC as crate::BasefoldRing>::BfMmcs>>,
+    Option<
+        crate::jagged_pcs::jagged::PrecomputedJaggedCommitGeneric<
+            <SC as crate::BasefoldRing>::BfMmcs,
+        >,
+    >,
 )
 where
     SC: StarkGenericConfig + crate::BasefoldRing,
@@ -64,8 +68,8 @@ where
     Challenge<SC>: ExtensionField<Val<SC>> + 'static,
     SC::Challenger: 'static,
 {
-    use core::any::TypeId;
     use crate::{BasefoldRing, InnerChallenge, InnerVal};
+    use core::any::TypeId;
 
     // Host path already supplied a precompute, or this config does not prove
     // via BaseFold (`use_basefold() == false`, e.g. the OuterSC wrap on FRI):
@@ -121,8 +125,7 @@ where
             if !on {
                 return None;
             }
-            let hook =
-                crate::jagged_pcs::jagged::get_gpu_jagged_precompute_commit_hook()?;
+            let hook = crate::jagged_pcs::jagged::get_gpu_jagged_precompute_commit_hook()?;
             hook(&named_inner, p)
         });
         match device_precompute {
@@ -266,8 +269,7 @@ where
         "chips and main_trace_loader must be parallel arrays",
     );
 
-    let main_traces: Vec<RowMajorMatrix<Val<SC>>> =
-        main_trace_loader.materialize_all();
+    let main_traces: Vec<RowMajorMatrix<Val<SC>>> = main_trace_loader.materialize_all();
 
     // Option B auto-precompute (GPU pipeline path). The host CPU prover
     // supplies `Some(precomputed)` from `commit_basefold_path` / `open()`;
@@ -352,9 +354,8 @@ where
     } else {
         (prospective_total.next_power_of_two()).trailing_zeros() as usize
     };
-    let handle_path_guaranteed = commit_dense_on
-        && jagged_on
-        && prospective_log_dense >= gpu_min_log_dense;
+    let handle_path_guaranteed =
+        commit_dense_on && jagged_on && prospective_log_dense >= gpu_min_log_dense;
     let skip_device_d2h = !eager_kill && handle_path_guaranteed;
     let commit_traces: Vec<RowMajorMatrix<Val<SC>>> = chips
         .iter()
@@ -473,11 +474,7 @@ where
     let main_traces: &[RowMajorMatrix<Val<SC>>] = &main_traces;
 
     let n_chips = chips.len();
-    let _shard_span = tracing::info_span!(
-        "prove_shard_to_basefold",
-        chips = n_chips
-    )
-    .entered();
+    let _shard_span = tracing::info_span!("prove_shard_to_basefold", chips = n_chips).entered();
 
     // Stage 1 — transcript prologue. Chip metadata observe (count +
     // per-chip log-height + name length + name bytes) binds post-
@@ -522,10 +519,7 @@ where
             // path (host parity); fall back to the legacy h=1/log_h=0
             // for genuinely unexercised chips with no provider entry.
             let h = if trace.width == 0 {
-                _device_traces
-                    .and_then(|p| p.chip_height(&chip.name()))
-                    .unwrap_or(0)
-                    .max(1)
+                _device_traces.and_then(|p| p.chip_height(&chip.name())).unwrap_or(0).max(1)
             } else {
                 trace.height().max(1)
             };
@@ -680,10 +674,8 @@ where
         } else {
             let mut out: Vec<Vec<Challenge<SC>>> = Vec::with_capacity(chips.len());
             let mut ok = true;
-            for ((chip, ctrace), ptrace) in chips
-                .iter()
-                .zip(commit_traces.iter())
-                .zip(preprocessed_traces.iter())
+            for ((chip, ctrace), ptrace) in
+                chips.iter().zip(commit_traces.iter()).zip(preprocessed_traces.iter())
             {
                 let name = MachineAir::<Val<SC>>::name(*chip);
                 // A device-resident chip now carries an EMPTY commit
@@ -693,9 +685,7 @@ where
                 // (evals.len() == prep_width + main_width).  A genuinely
                 // unexercised chip (no provider entry) stays empty.
                 let (w, h) = if ctrace.width == 0 {
-                    let dev_h = _device_traces
-                        .and_then(|p| p.chip_height(&name))
-                        .unwrap_or(0);
+                    let dev_h = _device_traces.and_then(|p| p.chip_height(&name)).unwrap_or(0);
                     let dev_w = trace_at_z
                         .get(&name)
                         .map(|evals| evals.len().saturating_sub(ptrace.width))
@@ -797,12 +787,10 @@ where
                             } else {
                                 ((row as u32).reverse_bits() >> (32 - log_h2)) as usize
                             };
-                            acc += eq_c[row]
-                                * Challenge::<SC>::from(cells[src * w + col]);
+                            acc += eq_c[row] * Challenge::<SC>::from(cells[src * w + col]);
                         }
                         assert_eq!(
-                            acc,
-                            pre[col],
+                            acc, pre[col],
                             "#33 S0 xcheck FAILED chip={} col={col} \
                              (legacy step-3 recompute vs zerocheck residual)",
                             name,
@@ -897,65 +885,59 @@ where
         name_sorted.sort_by(|a, b| {
             MachineAir::<Val<SC>>::name(**a).cmp(&MachineAir::<Val<SC>>::name(**b))
         });
-        let chip_opened: Vec<crate::types::ChipOpenedValues<Val<SC>, Challenge<SC>>> =
-            name_sorted
-                .iter()
-                .map(|chip| {
-                    let name = MachineAir::<Val<SC>>::name(**chip);
-                    let prep_width = MachineAir::<Val<SC>>::preprocessed_width(**chip);
-                    let evals: Vec<Challenge<SC>> =
-                        trace_at_z.get(&name).cloned().unwrap_or_default();
-                    let split = prep_width.min(evals.len());
-                    let (prep_local, main_local) = evals.split_at(split);
-                    let log_degree = *chip_log_heights.get(&name).unwrap_or(&0) as usize;
-                    // big-endian bit decomposition of the
-                    // REAL height (the VirtualGeq threshold) carried via the
-                    // unused `quotient` slot for the recursion `full_geq`
-                    // degree.  bit_len = max_log_row_count + 1 (matches the
-                    // verifier's `proof_point_extended`, zerocheck.rs:497).
-                    let height = *chip_heights.get(&name).unwrap_or(&1);
-                    let bit_len = max_log_row_count + 1;
-                    let degree_bits: Vec<Challenge<SC>> = (0..bit_len)
-                        .map(|i| {
-                            // BIG-ENDIAN (MSB at index 0): SP1
-                            // Point::from_usize is big-endian (point.rs:93)
-                            // and the verifier shape asserts (zerocheck.rs:512)
-                            // require degree[0]=MSB.  z_extended front-inserts
-                            // the extra high coord (zerocheck.rs:504).
-                            let shift = bit_len - 1 - i;
-                            let bit = if shift < usize::BITS as usize {
-                                (height >> shift) & 1
-                            } else {
-                                0
-                            };
-                            if bit == 1 {
-                                Challenge::<SC>::ONE
-                            } else {
-                                Challenge::<SC>::ZERO
-                            }
-                        })
-                        .collect();
-                    crate::types::ChipOpenedValues {
-                        preprocessed: crate::types::AirOpenedValues {
-                            local: prep_local.to_vec(),
-                            next: Vec::new(),
-                        },
-                        main: crate::types::AirOpenedValues {
-                            local: main_local.to_vec(),
-                            next: Vec::new(),
-                        },
-                        permutation: crate::types::AirOpenedValues {
-                            local: Vec::new(),
-                            next: Vec::new(),
-                        },
-                        quotient: vec![degree_bits],
-                        global_cumulative_sum:
-                            crate::septic_digest::SepticDigest::<Val<SC>>::zero(),
-                        local_cumulative_sum: Challenge::<SC>::ZERO,
-                        log_degree,
-                    }
-                })
-                .collect();
+        let chip_opened: Vec<crate::types::ChipOpenedValues<Val<SC>, Challenge<SC>>> = name_sorted
+            .iter()
+            .map(|chip| {
+                let name = MachineAir::<Val<SC>>::name(**chip);
+                let prep_width = MachineAir::<Val<SC>>::preprocessed_width(**chip);
+                let evals: Vec<Challenge<SC>> = trace_at_z.get(&name).cloned().unwrap_or_default();
+                let split = prep_width.min(evals.len());
+                let (prep_local, main_local) = evals.split_at(split);
+                let log_degree = *chip_log_heights.get(&name).unwrap_or(&0) as usize;
+                // big-endian bit decomposition of the
+                // REAL height (the VirtualGeq threshold) carried via the
+                // unused `quotient` slot for the recursion `full_geq`
+                // degree.  bit_len = max_log_row_count + 1 (matches the
+                // verifier's `proof_point_extended`, zerocheck.rs:497).
+                let height = *chip_heights.get(&name).unwrap_or(&1);
+                let bit_len = max_log_row_count + 1;
+                let degree_bits: Vec<Challenge<SC>> = (0..bit_len)
+                    .map(|i| {
+                        // BIG-ENDIAN (MSB at index 0): SP1
+                        // Point::from_usize is big-endian (point.rs:93)
+                        // and the verifier shape asserts (zerocheck.rs:512)
+                        // require degree[0]=MSB.  z_extended front-inserts
+                        // the extra high coord (zerocheck.rs:504).
+                        let shift = bit_len - 1 - i;
+                        let bit =
+                            if shift < usize::BITS as usize { (height >> shift) & 1 } else { 0 };
+                        if bit == 1 {
+                            Challenge::<SC>::ONE
+                        } else {
+                            Challenge::<SC>::ZERO
+                        }
+                    })
+                    .collect();
+                crate::types::ChipOpenedValues {
+                    preprocessed: crate::types::AirOpenedValues {
+                        local: prep_local.to_vec(),
+                        next: Vec::new(),
+                    },
+                    main: crate::types::AirOpenedValues {
+                        local: main_local.to_vec(),
+                        next: Vec::new(),
+                    },
+                    permutation: crate::types::AirOpenedValues {
+                        local: Vec::new(),
+                        next: Vec::new(),
+                    },
+                    quotient: vec![degree_bits],
+                    global_cumulative_sum: crate::septic_digest::SepticDigest::<Val<SC>>::zero(),
+                    local_cumulative_sum: Challenge::<SC>::ZERO,
+                    log_degree,
+                }
+            })
+            .collect();
         ShardOpenedValues { chips: chip_opened }
     };
 
@@ -994,15 +976,10 @@ where
                     *chip, tail14,
                 )
             } else {
-                crate::shard_level::zerocheck_prover::chip_global_cumulative_sum(
-                    *chip, main_trace,
-                )
+                crate::shard_level::zerocheck_prover::chip_global_cumulative_sum(*chip, main_trace)
             };
             let local = Challenge::<SC>::ZERO;
-            (
-                name,
-                crate::shard_level::shard_proof::ChipCumulativeSums { local, global },
-            )
+            (name, crate::shard_level::shard_proof::ChipCumulativeSums { local, global })
         })
         .collect();
 
@@ -1015,18 +992,18 @@ where
     // paths, where the lift derives the same values from the witnessed
     // packing).  PURE DATA: nothing branches on these (Stage 4 wires
     // the verifier checks).
-    let (row_counts, padding_column_counts): (Vec<Vec<usize>>, Vec<usize>) =
-        match &evaluation_proof {
-            crate::shard_level::shard_proof::EvaluationProof::Bundle(bundle) => {
-                let (rc, pcc) = crate::jagged::derive_row_and_padding_counts(
-                    &bundle.packing.column_counts,
-                    &bundle.packing.offsets,
-                    bundle.packing.total_values,
-                );
-                (vec![rc], vec![pcc])
-            }
-            _ => (Vec::new(), Vec::new()),
-        };
+    let (row_counts, padding_column_counts): (Vec<Vec<usize>>, Vec<usize>) = match &evaluation_proof
+    {
+        crate::shard_level::shard_proof::EvaluationProof::Bundle(bundle) => {
+            let (rc, pcc) = crate::jagged::derive_row_and_padding_counts(
+                &bundle.packing.column_counts,
+                &bundle.packing.offsets,
+                bundle.packing.total_values,
+            );
+            (vec![rc], vec![pcc])
+        }
+        _ => (Vec::new(), Vec::new()),
+    };
 
     let proof = BasefoldShardProof {
         public_values,
@@ -1088,13 +1065,12 @@ where
     Challenge<SC>: ExtensionField<Val<SC>> + 'static,
     SC::Challenger: 'static,
 {
-    use core::any::{Any, TypeId};
     use crate::jagged_pcs::jagged::{
-        prove_jagged_basefold_with_precomputed_provider,
-        prove_jagged_basefold_with_y_per_chip,
+        prove_jagged_basefold_with_precomputed_provider, prove_jagged_basefold_with_y_per_chip,
     };
     use crate::shard_level::shard_proof::EvaluationProof;
     use crate::{BasefoldRing, InnerChallenge, InnerVal};
+    use core::any::{Any, TypeId};
 
     // BaseFold-over-BN254 wrap port: dispatch via `BasefoldRing`. Configs
     // that don't prove via BaseFold (OuterSC wrap on FRI) emit `Empty`. The
@@ -1125,13 +1101,9 @@ where
                 let mut v = core::mem::ManuallyDrop::new(values_cloned);
                 (v.as_mut_ptr(), v.len(), v.capacity())
             };
-            let values: Vec<InnerVal> = unsafe {
-                Vec::from_raw_parts(ptr as *mut InnerVal, len, cap)
-            };
-            (
-                name,
-                RowMajorMatrix::new(values, trace_width),
-            )
+            let values: Vec<InnerVal> =
+                unsafe { Vec::from_raw_parts(ptr as *mut InnerVal, len, cap) };
+            (name, RowMajorMatrix::new(values, trace_width))
         })
         .collect();
 
@@ -1149,9 +1121,7 @@ where
         .map(|(chip, trace)| {
             let main_height = if trace.width == 0 {
                 _device_traces
-                    .and_then(|p| {
-                        p.chip_height(&MachineAir::<Val<SC>>::name(*chip))
-                    })
+                    .and_then(|p| p.chip_height(&MachineAir::<Val<SC>>::name(*chip)))
                     .unwrap_or(1)
             } else {
                 trace.values.len() / trace.width
@@ -1189,26 +1159,22 @@ where
     // (OuterValMmcs) via a hook registered by recursion-core (zkm-pcs
     // cannot name those types). The hook rmp-serializes a
     // JaggedBasefoldBundleGeneric<OuterValMmcs> -> EvaluationProof::Bytes.
-    if TypeId::of::<SC::Challenger>()
-        != TypeId::of::<crate::jagged_pcs::JaggedChallenger>()
-    {
+    if TypeId::of::<SC::Challenger>() != TypeId::of::<crate::jagged_pcs::JaggedChallenger>() {
         let precomputed = precomputed_commit.expect(
             "emit_jagged_pcs_bytes: outer BaseFold path requires a precomputed \
              commit (commit_basefold_path sets it under the same use_basefold gate)",
         );
-        let hook = crate::shard_level::sumcheck_poly::get_outer_jagged_open_hook()
-            .expect(
-                "emit_jagged_pcs_bytes: outer ring (non-JaggedChallenger) BaseFold \
+        let hook = crate::shard_level::sumcheck_poly::get_outer_jagged_open_hook().expect(
+            "emit_jagged_pcs_bytes: outer ring (non-JaggedChallenger) BaseFold \
                  open requires the outer jagged-open hook \
                  (recursion-core::register_outer_jagged_hooks)",
-            );
+        );
         let precomputed_box: Box<dyn Any + Send + Sync> = Box::new(precomputed);
         // SAFETY: chip_traces/r_row_per_chip/z_row are over InnerVal/InnerChallenge
         // == OuterVal/OuterChallenge (KoalaBear / KoalaBear^4); the hook downcasts
         // the challenger to &mut OuterChallenger under the TypeId guard above.
         let challenger_any: &mut dyn Any = challenger;
-        let bytes =
-            hook(&chip_traces, &r_row_per_chip, z_row, precomputed_box, challenger_any);
+        let bytes = hook(&chip_traces, &r_row_per_chip, z_row, precomputed_box, challenger_any);
         return EvaluationProof::Bytes(bytes);
     }
 
@@ -1269,9 +1235,7 @@ where
     // (no CUDA context) and must not dispatch to the wrong GPU.
     let provider_present_jagged = _device_traces.is_some();
     if provider_present_jagged {
-        if let Some(hook) =
-            crate::shard_level::sumcheck_poly::get_gpu_jagged_pcs_device_hook()
-        {
+        if let Some(hook) = crate::shard_level::sumcheck_poly::get_gpu_jagged_pcs_device_hook() {
             let chip_names: Vec<alloc::string::String> =
                 chip_traces.iter().map(|(name, _)| name.clone()).collect();
             // Pass the already-materialized host `chip_traces` so the
@@ -1281,12 +1245,13 @@ where
             // lookup-by-name resolves to a height-mismatched trace).
             //
             // SAFETY: `InnerVal == KoalaBear` under the TypeId gate.
-            let host_chip_traces_kb: &[(alloc::string::String,
-                RowMajorMatrix<p3_koala_bear::KoalaBear>)] = unsafe {
+            let host_chip_traces_kb: &[(
+                alloc::string::String,
+                RowMajorMatrix<p3_koala_bear::KoalaBear>,
+            )] = unsafe {
                 core::mem::transmute::<
                     &[(alloc::string::String, RowMajorMatrix<InnerVal>)],
-                    &[(alloc::string::String,
-                       RowMajorMatrix<p3_koala_bear::KoalaBear>)],
+                    &[(alloc::string::String, RowMajorMatrix<p3_koala_bear::KoalaBear>)],
                 >(chip_traces.as_slice())
             };
             return EvaluationProof::Bytes(hook(
@@ -1302,9 +1267,7 @@ where
 
     // Whole-pipeline GPU orchestrator: when registered, owns commit,
     // y-evals, sumcheck reduction, BaseFold open.
-    if let Some(hook) =
-        crate::shard_level::sumcheck_poly::get_gpu_jagged_orchestration_hook()
-    {
+    if let Some(hook) = crate::shard_level::sumcheck_poly::get_gpu_jagged_orchestration_hook() {
         return EvaluationProof::Bytes(hook(&chip_traces, &r_row_per_chip, z_row, lb_challenger));
     }
 
@@ -1320,4 +1283,205 @@ where
     EvaluationProof::Bundle(bundle)
 }
 
+#[cfg(test)]
+mod perf_tests {
+    use std::time::Instant;
 
+    use hashbrown::HashMap;
+    use p3_air::{Air, BaseAir};
+    use p3_field::{Field, PrimeCharacteristicRing};
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_uni_stark::SymbolicAirBuilder;
+
+    use crate::air::{MachineAir, MachineProgram};
+    use crate::jagged_pcs::jagged::precompute_jagged_basefold_commit_generic;
+    use crate::lookup::LookupBuilder;
+    use crate::record::MachineRecord;
+    use crate::septic_digest::SepticDigest;
+    use crate::{BasefoldRing, Challenge, Chip, InnerVal, StarkGenericConfig};
+
+    use super::emit_jagged_pcs_bytes;
+
+    type SC = crate::koala_bear_poseidon2::KoalaBearPoseidon2;
+    type EF = Challenge<SC>;
+
+    #[derive(Clone)]
+    struct PerfAir {
+        name: String,
+        width: usize,
+    }
+
+    #[derive(Clone, Default)]
+    struct PerfRecord;
+
+    #[derive(Clone, Default)]
+    struct PerfProgram;
+
+    impl<F: Field> BaseAir<F> for PerfAir {
+        fn width(&self) -> usize {
+            self.width
+        }
+    }
+
+    impl<F: Field> Air<LookupBuilder<F>> for PerfAir {
+        fn eval(&self, _builder: &mut LookupBuilder<F>) {}
+    }
+
+    impl<F: Field> Air<SymbolicAirBuilder<F>> for PerfAir {
+        fn eval(&self, _builder: &mut SymbolicAirBuilder<F>) {}
+    }
+
+    impl MachineAir<InnerVal> for PerfAir {
+        type Record = PerfRecord;
+        type Program = PerfProgram;
+        type Error = core::convert::Infallible;
+
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        fn generate_trace(
+            &self,
+            _input: &Self::Record,
+            _output: &mut Self::Record,
+        ) -> Result<RowMajorMatrix<InnerVal>, Self::Error> {
+            unreachable!("perf test builds traces directly")
+        }
+
+        fn included(&self, _shard: &Self::Record) -> bool {
+            true
+        }
+    }
+
+    impl MachineRecord for PerfRecord {
+        type Config = ();
+
+        fn stats(&self) -> HashMap<String, usize> {
+            HashMap::new()
+        }
+
+        fn append(&mut self, _other: &mut Self) {}
+
+        fn public_values<F: PrimeCharacteristicRing>(&self) -> Vec<F> {
+            Vec::new()
+        }
+    }
+
+    impl MachineProgram<InnerVal> for PerfProgram {
+        fn pc_start(&self) -> InnerVal {
+            InnerVal::ZERO
+        }
+
+        fn initial_global_cumulative_sum(&self) -> SepticDigest<InnerVal> {
+            SepticDigest::zero()
+        }
+    }
+
+    fn env_usize(name: &str, default: usize) -> usize {
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    }
+
+    fn env_bool(name: &str, default: bool) -> bool {
+        std::env::var(name)
+            .ok()
+            .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+            .unwrap_or(default)
+    }
+
+    fn trace(rows: usize, width: usize, salt: usize) -> RowMajorMatrix<InnerVal> {
+        let values =
+            (0..rows * width).map(|i| InnerVal::from_usize((i + salt * 17) % 251)).collect();
+        RowMajorMatrix::new(values, width)
+    }
+
+    fn eval_point(log_rows: usize) -> Vec<EF> {
+        (0..log_rows).map(|i| EF::from(InnerVal::from_usize(i + 3))).collect()
+    }
+
+    fn pre_y(chips: usize, width: usize) -> Vec<Vec<EF>> {
+        (0..chips)
+            .map(|chip| {
+                (0..width).map(|col| EF::from(InnerVal::from_usize(11 + chip * 13 + col))).collect()
+            })
+            .collect()
+    }
+
+    /// Manual microbench for shard-level jagged-PCS emission.
+    ///
+    /// Defaults exercise the Option-B path used by the shard prover: commit is
+    /// precomputed outside the timed section, and `pre_y_per_chip` is supplied
+    /// to skip the host step-3 opening recompute.
+    ///
+    /// Example:
+    /// `ZIREN_JAGGED_PCS_PERF_LOG_ROWS=20 ZIREN_JAGGED_PCS_PERF_ITERS=3 \
+    ///  cargo test -p zkm-pcs emit_jagged_pcs_bytes_perf --release -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual jagged-PCS perf test; prints timing instead of asserting"]
+    fn emit_jagged_pcs_bytes_perf() {
+        std::env::set_var("ZIREN_GPU_DEVICE_HOOKS", "0");
+        std::env::set_var("ZIREN_GPU_JAGGED_PCS", "0");
+        std::env::set_var("ZIREN_GPU_JAGGED_ORCHESTRATION", "0");
+
+        let log_rows = env_usize("ZIREN_JAGGED_PCS_PERF_LOG_ROWS", 20);
+        let rows = 1usize << log_rows;
+        let width = env_usize("ZIREN_JAGGED_PCS_PERF_WIDTH", 8);
+        let chips_n = env_usize("ZIREN_JAGGED_PCS_PERF_CHIPS", 1);
+        let iters = env_usize("ZIREN_JAGGED_PCS_PERF_ITERS", 3);
+        let use_precomputed = env_bool("ZIREN_JAGGED_PCS_PERF_PRECOMPUTED", true);
+        let use_pre_y = env_bool("ZIREN_JAGGED_PCS_PERF_PRE_Y", true);
+
+        let chips_owned: Vec<Chip<InnerVal, PerfAir>> = (0..chips_n)
+            .map(|i| Chip::new(PerfAir { name: format!("JaggedPerfChip{i}"), width }))
+            .collect();
+        let chips: Vec<&Chip<InnerVal, PerfAir>> = chips_owned.iter().collect();
+        let main_traces: Vec<RowMajorMatrix<InnerVal>> =
+            (0..chips_n).map(|i| trace(rows, width, i)).collect();
+        let point = eval_point(log_rows);
+        let pre_y_template = use_pre_y.then(|| pre_y(chips_n, width));
+
+        let named_traces: Vec<(String, RowMajorMatrix<InnerVal>)> = chips
+            .iter()
+            .zip(main_traces.iter())
+            .map(|(chip, trace)| (chip.name().to_string(), trace.clone()))
+            .collect();
+
+        let mut total = 0u128;
+        let mut proof_kind = "empty";
+        for _ in 0..iters {
+            let precomputed = use_precomputed.then(|| {
+                precompute_jagged_basefold_commit_generic::<<SC as BasefoldRing>::BfMmcs>(
+                    &named_traces,
+                    <SC as BasefoldRing>::bf_mmcs(),
+                    <SC as BasefoldRing>::fri_config(),
+                )
+            });
+
+            let mut challenger = SC::default().challenger();
+            let pre_y_iter = pre_y_template.clone();
+            let start = Instant::now();
+            let proof = emit_jagged_pcs_bytes::<SC, PerfAir>(
+                &chips,
+                &main_traces,
+                &point,
+                &mut challenger,
+                None,
+                precomputed,
+                pre_y_iter,
+            );
+            total += start.elapsed().as_micros();
+            proof_kind = match &proof {
+                crate::shard_level::shard_proof::EvaluationProof::Empty => "empty",
+                crate::shard_level::shard_proof::EvaluationProof::Bytes(_) => "bytes",
+                crate::shard_level::shard_proof::EvaluationProof::Bundle(_) => "bundle",
+            };
+            std::hint::black_box(proof);
+        }
+
+        println!(
+            "ZIREN_EMIT_JAGGED_PCS_BYTES_PERF rows={rows} log_rows={log_rows} chips={chips_n}
+             width={width} precomputed={use_precomputed} pre_y={use_pre_y} proof={proof_kind}
+             iters={iters} avg_ms={}",
+            total / (iters as u128 * 1000)
+        );
+    }
+}

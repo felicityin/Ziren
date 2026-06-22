@@ -80,11 +80,7 @@ use crate::zerocheck_prover::eq_mle_table;
 fn eval_at_env_cached() -> bool {
     use std::sync::OnceLock;
     static CACHED: OnceLock<bool> = OnceLock::new();
-    *CACHED.get_or_init(|| {
-        std::env::var("ZIREN_GPU_EVAL_AT")
-            .map(|v| v == "1")
-            .unwrap_or(false)
-    })
+    *CACHED.get_or_init(|| std::env::var("ZIREN_GPU_EVAL_AT").map(|v| v == "1").unwrap_or(false))
 }
 
 pub fn evaluate_trace_columns_at_point_or_device<F, EF>(
@@ -99,21 +95,15 @@ where
     // Env read is process-cached — `std::env::var` takes a libc
     // environ Mutex that contends under multi-worker concurrency.
     if eval_at_env_cached() {
-        if let Some(gpu_hook) =
-            crate::shard_level::sumcheck_poly::get_gpu_eval_at_hook()
-        {
+        if let Some(gpu_hook) = crate::shard_level::sumcheck_poly::get_gpu_eval_at_hook() {
             use core::any::TypeId;
             type Kb = p3_koala_bear::KoalaBear;
             type Ef4 = p3_field::extension::BinomialExtensionField<Kb, 4>;
-            if TypeId::of::<F>() == TypeId::of::<Kb>()
-                && TypeId::of::<EF>() == TypeId::of::<Ef4>()
+            if TypeId::of::<F>() == TypeId::of::<Kb>() && TypeId::of::<EF>() == TypeId::of::<Ef4>()
             {
                 // SAFETY: TypeId equality guarantees F == Kb and EF == Ef4.
                 unsafe fn slice_cast<A, B>(s: &[A]) -> &[B] {
-                    core::slice::from_raw_parts(
-                        s.as_ptr().cast::<B>(),
-                        s.len(),
-                    )
+                    core::slice::from_raw_parts(s.as_ptr().cast::<B>(), s.len())
                 }
                 unsafe {
                     let result_ef4: Vec<Ef4> = gpu_hook(
@@ -124,8 +114,7 @@ where
                     // SAFETY: EF == Ef4 — Vec layout identical.
                     let len = result_ef4.len();
                     let cap = result_ef4.capacity();
-                    let ptr = core::mem::ManuallyDrop::new(result_ef4)
-                        .as_mut_ptr() as *mut EF;
+                    let ptr = core::mem::ManuallyDrop::new(result_ef4).as_mut_ptr() as *mut EF;
                     return Vec::from_raw_parts(ptr, len, cap);
                 }
             }
@@ -241,8 +230,7 @@ where
     EF: ExtensionField<F>,
 {
     let none = || (0..names.len()).map(|_| None).collect::<Vec<_>>();
-    let Some(hook) =
-        crate::shard_level::sumcheck_poly::get_gpu_eval_at_batch_provider_hook()
+    let Some(hook) = crate::shard_level::sumcheck_poly::get_gpu_eval_at_batch_provider_hook()
     else {
         return none();
     };
@@ -255,10 +243,8 @@ where
     // SAFETY: TypeId equality guarantees EF == Ef4; Vec<EF> and Vec<Ef4> have
     // identical layout, so the slice-of-Vec reinterpret is sound.
     unsafe {
-        let eps: &[Vec<Ef4>] = core::slice::from_raw_parts(
-            eval_points.as_ptr().cast::<Vec<Ef4>>(),
-            eval_points.len(),
-        );
+        let eps: &[Vec<Ef4>] =
+            core::slice::from_raw_parts(eval_points.as_ptr().cast::<Vec<Ef4>>(), eval_points.len());
         let res: Vec<Option<Vec<Ef4>>> = hook(names, eps, device_traces);
         // Reinterpret Vec<Option<Vec<Ef4>>> -> Vec<Option<Vec<EF>>> (same layout).
         let len = res.len();
@@ -305,10 +291,7 @@ where
     // For `height == domain` (the old pow2 case) this is byte-identical:
     // every eq-table entry is consumed, no rows are padded.
     let domain = 1usize << eval_point.len();
-    debug_assert!(
-        height <= domain,
-        "trace height ({height}) must be <= 2^|eval_point| ({domain})"
-    );
+    debug_assert!(height <= domain, "trace height ({height}) must be <= 2^|eval_point| ({domain})");
     let eq = eq_mle_table::<EF>(eval_point);
     debug_assert_eq!(eq.len(), domain);
 
@@ -331,7 +314,6 @@ where
         .collect()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,7 +321,6 @@ mod tests {
 
     type F = p3_koala_bear::KoalaBear;
     type EF = p3_field::extension::BinomialExtensionField<F, 4>;
-
 
     /// Numerical test: evaluating a trace at a multilinear point
     /// against a hand-computed reference.
@@ -396,7 +377,6 @@ mod tests {
         // 20 + (-80) + (-90) + 240 = 90.
         assert_eq!(evals[0], EF::from(F::from_u64(90)));
     }
-
 
     /// Edge case: single-row trace (height=1) at empty point
     /// returns the single row's values directly (each column's

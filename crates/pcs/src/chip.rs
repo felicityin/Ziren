@@ -78,13 +78,15 @@ where
             nb_byte_sends + nb_byte_receives
         );
 
-        let mut max_constraint_degree =
-            get_max_constraint_degree(&air, AirLayout {
+        let mut max_constraint_degree = get_max_constraint_degree(
+            &air,
+            AirLayout {
                 preprocessed_width: air.preprocessed_width(),
                 main_width: air.width(),
                 num_public_values: PROOF_MAX_NUM_PVS,
                 ..Default::default()
-            });
+            },
+        );
 
         if !sends.is_empty() || !receives.is_empty() {
             max_constraint_degree = max_constraint_degree.max(3);

@@ -47,10 +47,7 @@ impl<'a, F: Clone + Send + Sync> MainTraceLoader<F> for EagerHostLoader<'a, F> {
     }
 
     fn materialize_all(&self) -> Vec<RowMajorMatrix<F>> {
-        self.traces
-            .iter()
-            .map(|t| RowMajorMatrix::new(t.values.clone(), t.width))
-            .collect()
+        self.traces.iter().map(|t| RowMajorMatrix::new(t.values.clone(), t.width)).collect()
     }
 }
 
@@ -73,11 +70,7 @@ where
     /// `pull(i)` MUST return the host trace for chip `i`; behaviour
     /// for `i >= n_chips` is unspecified.
     pub fn new(n_chips: usize, pull: Pull) -> Self {
-        Self {
-            n_chips,
-            pull,
-            _marker: core::marker::PhantomData,
-        }
+        Self { n_chips, pull, _marker: core::marker::PhantomData }
     }
 }
 
@@ -98,9 +91,6 @@ where
     /// for setting the right CUDA device context per worker.
     fn materialize_all(&self) -> Vec<RowMajorMatrix<F>> {
         use p3_maybe_rayon::prelude::*;
-        (0..self.n_chips)
-            .into_par_iter()
-            .map(|i| (self.pull)(i))
-            .collect()
+        (0..self.n_chips).into_par_iter().map(|i| (self.pull)(i)).collect()
     }
 }

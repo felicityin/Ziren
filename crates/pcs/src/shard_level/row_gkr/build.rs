@@ -63,9 +63,11 @@ where
     // shapes: N=1 has no terminal (rejected here); N=2 uses the
     // F→EF-promoted FirstLayer as the terminal; N≥3 finds the
     // terminal at layers[len-2].
-    assert!(num_row_variables >= 2,
+    assert!(
+        num_row_variables >= 2,
         "build_gkr_circuit requires num_row_variables >= 2 (got {num_row_variables}); \
-         num_row_variables=1 produces no terminal EF layer for output extraction");
+         num_row_variables=1 produces no terminal EF layer for output extraction"
+    );
 
     // `layers` carries `LayerState<F, EF>` so the GPU dispatch path
     // can install `LayerState::Device` entries on the way down. The
@@ -232,8 +234,7 @@ where
     // `view` by value to the init hook which returns immediately with
     // a `u64` handle.
     let layer_as_lb: &super::layer::LogUpGkrCpuLayer<JaggedChallenge, JaggedChallenge> = unsafe {
-        &*(&first_ef_layer
-            as *const super::layer::LogUpGkrCpuLayer<EF, EF>
+        &*(&first_ef_layer as *const super::layer::LogUpGkrCpuLayer<EF, EF>
             as *const super::layer::LogUpGkrCpuLayer<JaggedChallenge, JaggedChallenge>)
     };
 
@@ -352,8 +353,7 @@ where
     // identical layout to `LogUpGkrCpuLayer<EF, EF>`.  Reinterpret via
     // `transmute_copy` and `forget` to move ownership safely.
     let terminal_ef: super::layer::LogUpGkrCpuLayer<EF, EF> = unsafe {
-        let out: super::layer::LogUpGkrCpuLayer<EF, EF> =
-            core::mem::transmute_copy(&terminal_lb);
+        let out: super::layer::LogUpGkrCpuLayer<EF, EF> = core::mem::transmute_copy(&terminal_lb);
         core::mem::forget(terminal_lb);
         out
     };

@@ -15,8 +15,8 @@ use super::basefold_constraint_folder::{
 use super::shard_proof::{BasefoldShardProof, FoldOrientation};
 use super::types::{LogupGkrProof, PartialSumcheckProof};
 use crate::air::MachineAir;
-use crate::types::{AirOpenedValues, ChipOpenedValues, ShardOpenedValues};
 use crate::lookup::LookupKind;
+use crate::types::{AirOpenedValues, ChipOpenedValues, ShardOpenedValues};
 use crate::{Challenge, Chip, StarkGenericConfig, StarkVerifyingKey, Val};
 
 /// Errors emitted by the host-side shard-level BaseFold verifier.
@@ -123,8 +123,7 @@ impl BasefoldShardVerifier {
     ) -> Result<(), BasefoldVerifyError>
     where
         SC: StarkGenericConfig,
-        A: MachineAir<Val<SC>>
-            + for<'b> Air<BasefoldConstraintFolder<'b, Val<SC>, Challenge<SC>>>,
+        A: MachineAir<Val<SC>> + for<'b> Air<BasefoldConstraintFolder<'b, Val<SC>, Challenge<SC>>>,
         Val<SC>: PrimeField,
         Challenge<SC>: ExtensionField<Val<SC>> + BasedVectorSpace<Val<SC>>,
     {
@@ -184,11 +183,7 @@ impl BasefoldShardVerifier {
             // prover's `trace.height()` derivation via
             // `proof.chip_log_heights[name]`. Default 0 if absent
             // (matches legacy proof bytes where the map is empty).
-            let log_h = proof
-                .chip_log_heights
-                .get(name.as_str())
-                .copied()
-                .unwrap_or(0);
+            let log_h = proof.chip_log_heights.get(name.as_str()).copied().unwrap_or(0);
             challenger.observe(Val::<SC>::from_u64(log_h as u64));
 
             // Name length + name bytes (unchanged).
@@ -325,13 +320,11 @@ where
     Challenge<SC>: ExtensionField<Val<SC>> + BasedVectorSpace<Val<SC>> + Copy + 'static,
     SC::Challenger: 'static,
 {
-    use core::any::{Any, TypeId};
-    use crate::jagged_pcs::jagged::{
-        verify_jagged_basefold_no_observe, JaggedBasefoldBundle,
-    };
     use crate::jagged::JaggedChipInfo;
+    use crate::jagged_pcs::jagged::{verify_jagged_basefold_no_observe, JaggedBasefoldBundle};
     use crate::shard_level::shard_proof::EvaluationProof;
     use crate::{InnerChallenge, InnerVal};
+    use core::any::{Any, TypeId};
 
     // Type gate (same as prover-side emit_jagged_pcs_bytes).
     // BaseFold-over-BN254 wrap port: this verifier-side gate is kept as a
@@ -355,22 +348,19 @@ where
     // JaggedChallenger). Verify via the recursion-core-registered hook over
     // OuterValMmcs / OuterChallenger (zkm-pcs cannot name those types); the
     // prover emitted the bundle as EvaluationProof::Bytes.
-    if TypeId::of::<SC::Challenger>()
-        != TypeId::of::<crate::jagged_pcs::JaggedChallenger>()
-    {
+    if TypeId::of::<SC::Challenger>() != TypeId::of::<crate::jagged_pcs::JaggedChallenger>() {
         use p3_air::BaseAir;
         let bytes = match evaluation_proof {
             EvaluationProof::Empty => return Ok(()),
             EvaluationProof::Bytes(b) => b,
             EvaluationProof::Bundle(_) => {
                 return Err(BasefoldVerifyError::JaggedPcs(
-                    "outer ring expects a serialized (Bytes) BaseFold bundle, got Bundle"
-                        .into(),
+                    "outer ring expects a serialized (Bytes) BaseFold bundle, got Bundle".into(),
                 ));
             }
         };
-        let hook = crate::shard_level::sumcheck_poly::get_outer_jagged_verify_hook()
-            .ok_or_else(|| {
+        let hook =
+            crate::shard_level::sumcheck_poly::get_outer_jagged_verify_hook().ok_or_else(|| {
                 BasefoldVerifyError::JaggedPcs(
                     "outer jagged-verify hook not registered \
                      (recursion-core::register_outer_jagged_hooks)"
@@ -461,13 +451,9 @@ where
                 continue;
             }
             let h = if col_idx + 1 < bundle.packing.offsets.len() {
-                bundle.packing.offsets[col_idx + 1]
-                    .saturating_sub(bundle.packing.offsets[col_idx])
+                bundle.packing.offsets[col_idx + 1].saturating_sub(bundle.packing.offsets[col_idx])
             } else if col_idx < bundle.packing.offsets.len() {
-                bundle
-                    .packing
-                    .total_values
-                    .saturating_sub(bundle.packing.offsets[col_idx])
+                bundle.packing.total_values.saturating_sub(bundle.packing.offsets[col_idx])
             } else {
                 0
             };
@@ -481,11 +467,7 @@ where
     let r_row_per_chip: Vec<Vec<InnerChallenge>> = chip_infos
         .iter()
         .map(|info| {
-            let log_h = info
-                .row_count
-                .max(1)
-                .next_power_of_two()
-                .trailing_zeros() as usize;
+            let log_h = info.row_count.max(1).next_power_of_two().trailing_zeros() as usize;
             let slice: &[Challenge<SC>] = if shared_eval_point.len() >= log_h {
                 &shared_eval_point[shared_eval_point.len() - log_h..]
             } else {
@@ -526,7 +508,13 @@ where
     // Use the `_no_observe` variant so the verifier doesn't observe
     // the same digest a second time (which would desync the
     // transcript vs the prover).
-    if !verify_jagged_basefold_no_observe(&chip_infos, &r_row_per_chip, &z_row_inner, &bundle, lb_challenger) {
+    if !verify_jagged_basefold_no_observe(
+        &chip_infos,
+        &r_row_per_chip,
+        &z_row_inner,
+        &bundle,
+        lb_challenger,
+    ) {
         return Err(BasefoldVerifyError::JaggedPcs(
             "verify_jagged_basefold_no_observe rejected the bundle".into(),
         ));
@@ -558,9 +546,7 @@ fn full_geq_host<EF: Field + Copy>(threshold: &[EF], eval_point: &[EF]) -> EF {
         .iter()
         .rev()
         .zip(eval_point.iter().rev())
-        .fold(one, |acc, (x, y)| {
-            ((one - *y) * (one - *x) + *y * *x) * acc + *y * (one - *x)
-        })
+        .fold(one, |acc, (x, y)| ((one - *y) * (one - *x) + *y * *x) * acc + *y * (one - *x))
 }
 
 /// Produce the per-chip `degree` point used by [`full_geq_host`].
@@ -599,10 +585,7 @@ where
     use crate::septic_digest::SepticDigest;
     use crate::septic_extension::SepticExtension;
 
-    let preprocessed_local = evaluation
-        .preprocessed_trace_evaluations
-        .clone()
-        .unwrap_or_default();
+    let preprocessed_local = evaluation.preprocessed_trace_evaluations.clone().unwrap_or_default();
     let main_local = evaluation.main_trace_evaluations.clone();
     ChipOpenedValues {
         preprocessed: AirOpenedValues { local: preprocessed_local, next: vec![] },
@@ -656,8 +639,7 @@ fn verify_zerocheck_host<SC, A>(
 ) -> Result<(), BasefoldVerifyError>
 where
     SC: StarkGenericConfig,
-    A: MachineAir<Val<SC>>
-        + for<'b> Air<BasefoldConstraintFolder<'b, Val<SC>, Challenge<SC>>>,
+    A: MachineAir<Val<SC>> + for<'b> Air<BasefoldConstraintFolder<'b, Val<SC>, Challenge<SC>>>,
     Val<SC>: PrimeField,
     Challenge<SC>: ExtensionField<Val<SC>> + BasedVectorSpace<Val<SC>> + Copy,
 {
@@ -665,8 +647,7 @@ where
     // `gkr_batch_open` + `lambda` drive the claimed_sum binding (G2-b) below;
     // `alpha` drives the constraint-RLC half (G2-a), deferred to the re-point.
     let _alpha: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
-    let gkr_batch_open: Challenge<SC> =
-        challenger.sample_algebra_element::<Challenge<SC>>();
+    let gkr_batch_open: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
     let lambda: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
 
     // ── constraint-RLC BINDING (HARD CHECK) ───────
@@ -700,8 +681,7 @@ where
     );
     if rlc_eval != zerocheck_proof.point_and_eval.1 {
         return Err(BasefoldVerifyError::Zerocheck(
-            "zerocheck rlc_eval != point_and_eval.1 (item-12 constraint-RLC binding)"
-                .to_string(),
+            "zerocheck rlc_eval != point_and_eval.1 (item-12 constraint-RLC binding)".to_string(),
         ));
     }
 
@@ -872,8 +852,7 @@ fn recompute_zerocheck_rlc_eval_host<SC, A>(
 ) -> Challenge<SC>
 where
     SC: StarkGenericConfig,
-    A: MachineAir<Val<SC>>
-        + for<'b> Air<BasefoldConstraintFolder<'b, Val<SC>, Challenge<SC>>>,
+    A: MachineAir<Val<SC>> + for<'b> Air<BasefoldConstraintFolder<'b, Val<SC>, Challenge<SC>>>,
     Val<SC>: PrimeField,
     Challenge<SC>: ExtensionField<Val<SC>> + BasedVectorSpace<Val<SC>> + Copy,
 {
@@ -912,14 +891,10 @@ where
     let n_chips = chips.len();
     let mut per_chip_lines: Vec<String> = Vec::with_capacity(n_chips);
 
-    for (idx, (chip, opening)) in chips.iter().zip(opened_values.chips.iter()).enumerate()
-    {
+    for (idx, (chip, opening)) in chips.iter().zip(opened_values.chips.iter()).enumerate() {
         // degree = quotient[0] (circuit opening.degree), real-height bits.
-        let degree: &[Challenge<SC>] = opening
-            .quotient
-            .first()
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
+        let degree: &[Challenge<SC>] =
+            opening.quotient.first().map(|v| v.as_slice()).unwrap_or(&[]);
 
         // (4e) geq + padded-row adjustment.  full_geq over (degree, z_ext);
         // when degree.len() != z_extended.len() (e.g. placeholder lift) the
@@ -958,8 +933,7 @@ where
             .fold(Challenge::<SC>::ZERO, |acc, (o, p)| acc + o * p);
 
         // (4h) fold: rlc = rlc·λ + eq·(constraint_eval + openings_batch).
-        rlc_eval = rlc_eval * lambda
-            + zerocheck_eq_val * (constraint_eval + openings_batch);
+        rlc_eval = rlc_eval * lambda + zerocheck_eq_val * (constraint_eval + openings_batch);
 
         per_chip_lines.push(format!(
             "  [S8J-CHIP {idx} {name}] deg_dim={dd}/z_ext={ze} geq={geq:?} pra={pra:?} C={ce:?} ce_net={cen:?} batch={ob:?} (main={mw},prep={pw})",
@@ -996,7 +970,6 @@ where
     rlc_eval
 }
 
-
 // ─────────────────────────────────────────────────────────────
 // LogUp-GKR stage: host-side verification helpers
 // ─────────────────────────────────────────────────────────────
@@ -1010,9 +983,7 @@ where
 fn eq_eval_host<EF: Field + Copy>(a: &[EF], b: &[EF]) -> EF {
     debug_assert_eq!(a.len(), b.len(), "eq_eval_host: dimension mismatch");
     let one = EF::ONE;
-    a.iter()
-        .zip(b.iter())
-        .fold(one, |acc, (ai, bi)| acc * ((one - *ai) * (one - *bi) + *ai * *bi))
+    a.iter().zip(b.iter()).fold(one, |acc, (ai, bi)| acc * ((one - *ai) * (one - *bi) + *ai * *bi))
 }
 
 /// Host-side MLE evaluation at an arbitrary extension-field point.
@@ -1043,10 +1014,7 @@ fn evaluate_mle_host<EF: Field + Copy>(mle_evals: &[EF], point: &[EF]) -> EF {
         }
         weights = next;
     }
-    mle_evals
-        .iter()
-        .zip(weights.iter())
-        .fold(EF::ZERO, |acc, (v, w)| acc + *v * *w)
+    mle_evals.iter().zip(weights.iter()).fold(EF::ZERO, |acc, (v, w)| acc + *v * *w)
 }
 
 /// Evaluate a degree-`d` polynomial (stored as `d+1` coefficients
@@ -1215,8 +1183,6 @@ where
     Val<SC>: PrimeField,
     Challenge<SC>: ExtensionField<Val<SC>> + BasedVectorSpace<Val<SC>> + Copy,
 {
-    
-
     // Note: we derive log_num_interactions from the output MLE length
     // rather than taking chip_metadata as an extra parameter, since
     // the proof itself encodes the dimension.
@@ -1257,9 +1223,8 @@ where
     // (1) Sample the LogUp permutation challenges (alpha + beta_seed),
     // matching the prover (row_gkr/top_level.rs:62-78).
     let alpha: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
-    let beta_seed: Vec<Challenge<SC>> = (0..beta_seed_dim)
-        .map(|_| challenger.sample_algebra_element::<Challenge<SC>>())
-        .collect();
+    let beta_seed: Vec<Challenge<SC>> =
+        (0..beta_seed_dim).map(|_| challenger.sample_algebra_element::<Challenge<SC>>()).collect();
     // betas[0] = argument_index (kind) weight, betas[1..] = per-value weights —
     // the partial-lagrange table over {0,1}^beta_seed_dim (eq_mle_table),
     // identical to the prover's leaf-denominator construction.
@@ -1356,8 +1321,7 @@ where
     //   - observe (n0, n1, d0, d1)
     //   - sample line challenge, extend eval_point, update n/d
     for (i, round_proof) in proof.round_proofs.iter().enumerate() {
-        let lambda: Challenge<SC> =
-            challenger.sample_algebra_element::<Challenge<SC>>();
+        let lambda: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
 
         // Expected claimed sum.
         let expected_claim = lambda * numerator_eval + denominator_eval;
@@ -1418,8 +1382,7 @@ where
 
         // Update eval_point: sumcheck-reduced point + line challenge.
         eval_point = sumcheck_point.clone();
-        let line: Challenge<SC> =
-            challenger.sample_algebra_element::<Challenge<SC>>();
+        let line: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
         eval_point.push(line);
 
         // Update n/d evals via linear interpolation at `line`.
@@ -1486,12 +1449,7 @@ mod tests {
         type EF = p3_field::extension::BinomialExtensionField<KoalaBear, 4>;
 
         let threshold = vec![EF::ZERO; 4];
-        let eval_point = vec![
-            EF::from_u32(3),
-            EF::from_u32(7),
-            EF::from_u32(11),
-            EF::from_u32(13),
-        ];
+        let eval_point = vec![EF::from_u32(3), EF::from_u32(7), EF::from_u32(11), EF::from_u32(13)];
         let result = full_geq_host(&threshold, &eval_point);
         assert_eq!(result, EF::ONE);
     }

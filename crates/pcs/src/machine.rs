@@ -290,8 +290,12 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> StarkMachine<SC, A> {
                             let last_row =
                                 &main_trace.values[main_trace_size - 14..main_trace_size];
                             SepticDigest(SepticCurve {
-                                x: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|i| last_row[i]),
-                                y: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|i| last_row[i + 7]),
+                                x: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|i| {
+                                    last_row[i]
+                                }),
+                                y: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|i| {
+                                    last_row[i + 7]
+                                }),
                             })
                         };
                         (trace, (global_sum, local_sum))
@@ -456,15 +460,26 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>> + Air<SymbolicAirBuilder<Val
         let pcs = self.config.pcs();
         if std::env::var("ZIREN_SETUP_HEIGHTS").is_ok() {
             for (name, _, trace) in named_preprocessed_traces.iter() {
-                eprintln!("[SETUP-H] {} h={} log={}", name, trace.height(), trace.height().next_power_of_two().trailing_zeros());
+                eprintln!(
+                    "[SETUP-H] {} h={} log={}",
+                    name,
+                    trace.height(),
+                    trace.height().next_power_of_two().trailing_zeros()
+                );
             }
         }
         let (chip_information, domains_and_traces): (Vec<_>, Vec<_>) = named_preprocessed_traces
             .iter()
             .map(|(name, _, trace)| {
                 let domain = pcs.natural_domain_for_degree(trace.height());
-                let ser_domain = SerializableDomain::new(domain.first_point(), domain.size().trailing_zeros() as usize);
-                ((name.to_owned(), ser_domain, (trace.width(), trace.height())), (domain, trace.to_owned()))
+                let ser_domain = SerializableDomain::new(
+                    domain.first_point(),
+                    domain.size().trailing_zeros() as usize,
+                );
+                (
+                    (name.to_owned(), ser_domain, (trace.width(), trace.height())),
+                    (domain, trace.to_owned()),
+                )
             })
             .unzip();
 
@@ -613,8 +628,14 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>> + Air<SymbolicAirBuilder<Val
             .iter()
             .map(|(name, _, trace)| {
                 let domain = pcs.natural_domain_for_degree(trace.height());
-                let ser_domain = SerializableDomain::new(domain.first_point(), domain.size().trailing_zeros() as usize);
-                ((name.to_owned(), ser_domain, (trace.width(), trace.height())), (domain, trace.to_owned()))
+                let ser_domain = SerializableDomain::new(
+                    domain.first_point(),
+                    domain.size().trailing_zeros() as usize,
+                );
+                (
+                    (name.to_owned(), ser_domain, (trace.width(), trace.height())),
+                    (domain, trace.to_owned()),
+                )
             })
             .unzip();
 
@@ -782,7 +803,8 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>> + Air<SymbolicAirBuilder<Val
                     let chips =
                         self.shard_chips_ordered(&shard_proof.chip_ordering).collect::<Vec<_>>();
                     let mut shard_challenger = base_challenger.clone();
-                    shard_challenger.observe_slice(&shard_proof.public_values[0..self.num_pv_elts()]);
+                    shard_challenger
+                        .observe_slice(&shard_proof.public_values[0..self.num_pv_elts()]);
                     Verifier::verify_shard(
                         &self.config,
                         vk,

@@ -60,11 +60,7 @@ pub trait SumcheckPoly<K: Field>: SumcheckPolyBase + ComponentPoly<K> + Sized {
     where
         Self: Sized,
     {
-        polys
-            .iter()
-            .zip(claims.iter())
-            .map(|(p, c)| p.sum_as_poly_in_last_variable(*c))
-            .collect()
+        polys.iter().zip(claims.iter()).map(|(p, c)| p.sum_as_poly_in_last_variable(*c)).collect()
     }
 }
 
@@ -223,16 +219,13 @@ where
         alpha = challenger.sample_algebra_element::<EF>();
         point.insert(0, alpha);
 
-        polys_cursor =
-            polys_cursor.into_iter().map(|poly| poly.fix_last_variable(alpha)).collect();
+        polys_cursor = polys_cursor.into_iter().map(|poly| poly.fix_last_variable(alpha)).collect();
     }
 
     // Final eval at the terminal alpha.
     let alpha_last = *point.first().unwrap();
-    let evals: Vec<EF> = uni_polys
-        .iter()
-        .map(|poly| poly_eval(&poly.coefficients, alpha_last))
-        .collect();
+    let evals: Vec<EF> =
+        uni_polys.iter().map(|poly| poly_eval(&poly.coefficients, alpha_last)).collect();
 
     let component_poly_evals: Vec<Vec<EF>> =
         polys_cursor.iter().map(|poly| poly.get_component_poly_evals()).collect();
@@ -323,11 +316,7 @@ type Kb = p3_koala_bear::KoalaBear;
 ///            -> Vec<Ef4>` returning one Ef4 per column.  Receives
 /// row-major host data; the implementation is responsible for any
 /// device upload/download.
-pub type GpuEvalAtFn = fn(
-    trace: &[Kb],
-    width: usize,
-    eval_point: &[Ef4],
-) -> Vec<Ef4>;
+pub type GpuEvalAtFn = fn(trace: &[Kb], width: usize, eval_point: &[Ef4]) -> Vec<Ef4>;
 
 gpu_hook_accessors!(GPU_EVAL_AT_HOOK: GpuEvalAtFn
     => register_gpu_eval_at_hook, get_gpu_eval_at_hook);
@@ -418,11 +407,12 @@ gpu_hook_accessors!(GPU_ZEROCHECK_FOLD_DEVICE_HOOK: GpuZerocheckFoldDeviceFn
 // cells (column-major, KoalaBear, height = provider main height) + prep width,
 // so it can build a combined [main ++ prep] device buffer that folds as one.
 // Empty slice / np==0 => main-only (the np==0 device-fold path, unchanged).
-pub type GpuZerocheckPrepareCellsFn = fn(
-    &(dyn core::any::Any + Send + Sync),
-    &[p3_koala_bear::KoalaBear],
-    usize,
-) -> Option<std::sync::Arc<dyn core::any::Any + Send + Sync>>;
+pub type GpuZerocheckPrepareCellsFn =
+    fn(
+        &(dyn core::any::Any + Send + Sync),
+        &[p3_koala_bear::KoalaBear],
+        usize,
+    ) -> Option<std::sync::Arc<dyn core::any::Any + Send + Sync>>;
 
 gpu_hook_accessors!(GPU_ZEROCHECK_PREPARE_CELLS_HOOK: GpuZerocheckPrepareCellsFn
     => register_gpu_zerocheck_prepare_cells_hook, get_gpu_zerocheck_prepare_cells_hook);
@@ -439,12 +429,8 @@ gpu_hook_accessors!(GPU_ZEROCHECK_EXTRACT_FINAL_HOOK: GpuZerocheckExtractFinalFn
 
 // Registration slot for round-0 alpha binding hook. No in-tree
 // caller today; provided so ziren-gpu's startup registration compiles.
-pub type GpuFixRoundZeroFn = fn(
-    alpha: Ef4,
-    lambda: Ef4,
-    eq_row: &[Ef4],
-    eq_interaction: &[Ef4],
-) -> Option<Vec<Ef4>>;
+pub type GpuFixRoundZeroFn =
+    fn(alpha: Ef4, lambda: Ef4, eq_row: &[Ef4], eq_interaction: &[Ef4]) -> Option<Vec<Ef4>>;
 
 gpu_hook_accessors!(GPU_FIX_ROUND_ZERO_HOOK: GpuFixRoundZeroFn
     => register_gpu_fix_round_zero_hook, get_gpu_fix_round_zero_hook);
@@ -706,8 +692,8 @@ mod jagged_orchestration_hook {
 }
 
 pub use jagged_orchestration_hook::{
-    GpuJaggedOrchestrationFn, get_gpu_jagged_orchestration_hook,
-    register_gpu_jagged_orchestration_hook,
+    get_gpu_jagged_orchestration_hook, register_gpu_jagged_orchestration_hook,
+    GpuJaggedOrchestrationFn,
 };
 
 // Device-trace variant of the jagged-PCS orchestration hook: takes
@@ -754,8 +740,7 @@ mod jagged_pcs_device_hook {
 }
 
 pub use jagged_pcs_device_hook::{
-    GpuJaggedPcsDeviceFn, get_gpu_jagged_pcs_device_hook,
-    register_gpu_jagged_pcs_device_hook,
+    get_gpu_jagged_pcs_device_hook, register_gpu_jagged_pcs_device_hook, GpuJaggedPcsDeviceFn,
 };
 
 // Stateful device-resident per-layer LogUp-GKR sumcheck. Layer
@@ -990,9 +975,7 @@ std::thread_local! {
 #[must_use]
 pub fn logup_device_eq_enabled() -> bool {
     static FLAG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FLAG.get_or_init(|| {
-        std::env::var("ZIREN_GPU_LOGUP_DEVICE_EQ").as_deref() != Ok("0")
-    })
+    *FLAG.get_or_init(|| std::env::var("ZIREN_GPU_LOGUP_DEVICE_EQ").as_deref() != Ok("0"))
 }
 
 /// Host stashes the row_point (LSB-first coords) for the GPU hook
@@ -1178,8 +1161,7 @@ mod tests {
     /// `rlc_univariate_polynomials` with one poly is identity.
     #[test]
     fn rlc_one_poly_is_identity() {
-        let p =
-            UnivariatePolynomial { coefficients: vec![EF::from_u32(3), EF::from_u32(5)] };
+        let p = UnivariatePolynomial { coefficients: vec![EF::from_u32(3), EF::from_u32(5)] };
         let r = rlc_univariate_polynomials(&[p.clone()], EF::from_u32(99));
         assert_eq!(r.coefficients, p.coefficients);
     }

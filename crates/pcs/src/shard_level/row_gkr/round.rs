@@ -40,7 +40,9 @@ use crate::shard_level::types::{LogupGkrRoundProof, PartialSumcheckProof, Univar
 /// Returns `(n0_flat, d0_flat, n1_flat, d1_flat)` with the numerator
 /// flats lifted to `EF` so they can participate in the sumcheck
 /// arithmetic on equal footing.
-pub fn flatten_layer<NumF, EF>(layer: &LogUpGkrCpuLayer<NumF, EF>) -> (Vec<EF>, Vec<EF>, Vec<EF>, Vec<EF>)
+pub fn flatten_layer<NumF, EF>(
+    layer: &LogUpGkrCpuLayer<NumF, EF>,
+) -> (Vec<EF>, Vec<EF>, Vec<EF>, Vec<EF>)
 where
     NumF: Field + Into<EF> + Copy + Sync,
     EF: ExtensionField<NumF> + Send + Sync,
@@ -54,8 +56,7 @@ where
     // padding in [total_chip_cols, cols)), so we allocate uninit and
     // skip the initial fill — the previous par_init was dead work
     // (~4 × total × 16 B of redundant memory traffic per call).
-    let total_chip_cols: usize =
-        layer.numerator_0.iter().map(|c| c.num_interactions).sum();
+    let total_chip_cols: usize = layer.numerator_0.iter().map(|c| c.num_interactions).sum();
     let alloc_uninit = || -> Vec<EF> {
         let mut v: Vec<EF> = Vec::with_capacity(total);
         // SAFETY: every slot is written by the scatter below before any
@@ -108,9 +109,11 @@ where
                 let d1_real = row < d1_chip.num_real_rows;
                 for col in 0..chip_cols {
                     let flat_col = chip_off + col;
-                    n0_row[flat_col] = if n0_real { (*n0_chip.get(row, col)).into() } else { EF::ZERO };
+                    n0_row[flat_col] =
+                        if n0_real { (*n0_chip.get(row, col)).into() } else { EF::ZERO };
                     d0_row[flat_col] = if d0_real { *d0_chip.get(row, col) } else { EF::ONE };
-                    n1_row[flat_col] = if n1_real { (*n1_chip.get(row, col)).into() } else { EF::ZERO };
+                    n1_row[flat_col] =
+                        if n1_real { (*n1_chip.get(row, col)).into() } else { EF::ZERO };
                     d1_row[flat_col] = if d1_real { *d1_chip.get(row, col) } else { EF::ONE };
                 }
             }
@@ -221,7 +224,9 @@ fn round_poly_evaluations<EF: Field + Send + Sync>(
     //     for free.  Saves the entire `contrib(e0, n00, d00, n10, d10)`
     //     call per pair — 5 EF muls — for a ~25% reduction in the
     //     per-pair contrib cost.
-    use p3_maybe_rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+    use p3_maybe_rayon::prelude::{
+        IndexedParallelIterator, IntoParallelIterator, ParallelIterator,
+    };
     // Use a moderate chunk size so each rayon task has enough work to
     // amortize dispatch overhead, but small enough that the 5 input
     // streams (per-pair: 5 × 2 EFs = 160 bytes) stay hot in L2.
@@ -468,8 +473,8 @@ fn from_strided_post_fix<EF: Field + Copy>(
 /// Hand-computable 1-chip 4-row 1-col synthetic case run once via
 /// OnceLock for diffing the SP1 vs Ziren conventions.
 fn synthetic_diff_test_step7z() {
-    use p3_field::PrimeCharacteristicRing as _;
     use p3_field::BasedVectorSpace as _;
+    use p3_field::PrimeCharacteristicRing as _;
     type ProdF = p3_koala_bear::KoalaBear;
     type ProdEF = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
 
@@ -483,12 +488,8 @@ fn synthetic_diff_test_step7z() {
 
     // Synthetic case: 1 chip, chip_rows=4, cols=1.
     // num_row_variables = 2, num_interaction_variables = 0.
-    let n0_vals: [ProdF; 4] = [
-        ProdF::new(1), ProdF::new(2), ProdF::new(3), ProdF::new(4),
-    ];
-    let n1_vals: [ProdF; 4] = [
-        ProdF::new(10), ProdF::new(20), ProdF::new(30), ProdF::new(40),
-    ];
+    let n0_vals: [ProdF; 4] = [ProdF::new(1), ProdF::new(2), ProdF::new(3), ProdF::new(4)];
+    let n1_vals: [ProdF; 4] = [ProdF::new(10), ProdF::new(20), ProdF::new(30), ProdF::new(40)];
     // d0/d1 in ProdEF, simple base-only values.
     let mk_ef = |x: u32| -> ProdEF {
         let arr: [ProdF; 4] = [ProdF::new(x), ProdF::ZERO, ProdF::ZERO, ProdF::ZERO];
@@ -536,7 +537,12 @@ fn synthetic_diff_test_step7z() {
 
     // Host evals.
     let host_evals = round_poly_evaluations_chip_structured(
-        &chip_state, &eq_int, &eq_row, pad_eq_int_sum, lambda, claim,
+        &chip_state,
+        &eq_int,
+        &eq_row,
+        pad_eq_int_sum,
+        lambda,
+        claim,
     );
     let host_coeffs = poly_coefficients_from_evals(host_evals);
 
@@ -620,7 +626,10 @@ fn synthetic_diff_test_step7z() {
 
     tracing::warn!(
         "first_roundz SYNTHETIC SP1_COEFFS=[{:?}, {:?}, {:?}, {:?}]",
-        sp1_coeffs[0], sp1_coeffs[1], sp1_coeffs[2], sp1_coeffs[3],
+        sp1_coeffs[0],
+        sp1_coeffs[1],
+        sp1_coeffs[2],
+        sp1_coeffs[3],
     );
     tracing::warn!(
         "first_roundz SYNTHETIC:          host_coeffs=[{:?}, {:?}, {:?}, {:?}]          sp1_div_q=[{:?}, {:?}, {:?}]          host_evals=[{:?}, {:?}, {:?}, {:?}]          gpu_partials=[sz={:?}, sh={:?}, eq={:?}]          eval_zero_sp1={:?} eval_half_sp1={:?} eval_one_sp1={:?}          post_fix.len()={} eq_row.len()={} eq_int.len()={}          alpha={:?} c0={:?} c1={:?}",
@@ -657,7 +666,9 @@ fn lagrange_interp_4<EF: Field>(pts: [EF; 4], vals: [EF; 4]) -> [EF; 4] {
         let mut num: Vec<EF> = vec![EF::ONE];
         let mut denom = EF::ONE;
         for j in 0..4 {
-            if j == i { continue; }
+            if j == i {
+                continue;
+            }
             let mut next: Vec<EF> = vec![EF::ZERO; num.len() + 1];
             for k in 0..num.len() {
                 next[k] -= num[k] * pts[j];
@@ -699,17 +710,10 @@ fn marshal_thread_pool() -> &'static std::sync::Arc<rayon::ThreadPool> {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&n| n >= 1)
             .unwrap_or_else(|| {
-                let num_cpus = std::thread::available_parallelism()
-                    .map(|n| n.get())
-                    .unwrap_or(8);
+                let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(8);
                 let num_gpus = std::env::var("ZKM_GPU_DEVICES")
                     .ok()
-                    .map(|s| {
-                        s.split(',')
-                            .filter(|t| !t.trim().is_empty())
-                            .count()
-                            .max(1)
-                    })
+                    .map(|s| s.split(',').filter(|t| !t.trim().is_empty()).count().max(1))
                     .unwrap_or(1);
                 (num_cpus / num_gpus).max(4)
             });
@@ -718,7 +722,7 @@ fn marshal_thread_pool() -> &'static std::sync::Arc<rayon::ThreadPool> {
                 .num_threads(threads)
                 .thread_name(|i| format!("gpu-marshal-{i}"))
                 .build()
-                .expect("build marshal thread pool")
+                .expect("build marshal thread pool"),
         )
     })
 }
@@ -752,9 +756,7 @@ where
 
     static GATE_CACHED: OnceLock<bool> = OnceLock::new();
     let enabled = *GATE_CACHED.get_or_init(|| {
-        std::env::var("ZIREN_GPU_FUSED_FIRST_ROUND")
-            .map(|v| v == "1")
-            .unwrap_or(false)
+        std::env::var("ZIREN_GPU_FUSED_FIRST_ROUND").map(|v| v == "1").unwrap_or(false)
     });
     if !enabled {
         return None;
@@ -762,9 +764,7 @@ where
 
     type ProdF = p3_koala_bear::KoalaBear;
     type ProdEF = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
-    if TypeId::of::<F>() != TypeId::of::<ProdF>()
-        || TypeId::of::<EF>() != TypeId::of::<ProdEF>()
-    {
+    if TypeId::of::<F>() != TypeId::of::<ProdF>() || TypeId::of::<EF>() != TypeId::of::<ProdEF>() {
         return None;
     }
 
@@ -843,7 +843,10 @@ where
         }
         let target_rows = (1usize << n0_table.num_row_variables).max(1);
         let chip_cells = target_rows * cols;
-        if chip_cells % 2 != 0 { quadrant_mismatch = true; break; }
+        if chip_cells % 2 != 0 {
+            quadrant_mismatch = true;
+            break;
+        }
         chip_pair_counts.push(chip_cells / 2);
         chip_cell_counts.push(chip_cells);
     }
@@ -905,99 +908,163 @@ where
         let den_zero_addr = den_zero_ptr as usize;
         let den_one_addr = den_one_ptr as usize;
         marshal_thread_pool().install(|| {
-        (0..n_chips).into_par_iter().filter(|&c| !is_padding_chip[c]).for_each(|c| {
-            let n0_table = &first_layer.numerator_0[c];
-            let n1_table = &first_layer.numerator_1[c];
-            let d0_table = &first_layer.denominator_0[c];
-            let d1_table = &first_layer.denominator_1[c];
-            let cols = n0_table.num_interactions;
-            let target_rows = (1usize << n0_table.num_row_variables).max(1);
-            let row_half = target_rows / 2;
-            let chip_off = chip_offsets_in_section[c];
-            let num_zero_slice = unsafe {
-                core::slice::from_raw_parts_mut(
-                    (num_zero_addr as *mut p3_koala_bear::KoalaBear).add(chip_off),
-                    chip_cell_counts[c],
-                )
-            };
-            let num_one_slice = unsafe {
-                core::slice::from_raw_parts_mut(
-                    (num_one_addr as *mut p3_koala_bear::KoalaBear).add(chip_off),
-                    chip_cell_counts[c],
-                )
-            };
-            let den_zero_slice = unsafe {
-                core::slice::from_raw_parts_mut(
-                    (den_zero_addr as *mut ProdEF).add(chip_off),
-                    chip_cell_counts[c],
-                )
-            };
-            let den_one_slice = unsafe {
-                core::slice::from_raw_parts_mut(
-                    (den_one_addr as *mut ProdEF).add(chip_off),
-                    chip_cell_counts[c],
-                )
-            };
-            let n0_real = n0_table.num_real_rows;
-            let n1_real = n1_table.num_real_rows;
-            let d0_real = d0_table.num_real_rows;
-            let d1_real = d1_table.num_real_rows;
-            // Per-chip column-major interleave: pos 2k = row k, pos 2k+1 = row k+row_half
-            let mut idx = 0usize;
-            for col in 0..cols {
-                if row_half == 0 {
-                    // Edge case chip_rows = 1
-                    num_zero_slice[idx] = if 0 < n0_real {
-                        unsafe { core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(&n0_table.cells[col]) }
-                    } else { p3_koala_bear::KoalaBear::ZERO };
-                    num_one_slice[idx] = if 0 < n1_real {
-                        unsafe { core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(&n1_table.cells[col]) }
-                    } else { p3_koala_bear::KoalaBear::ZERO };
-                    den_zero_slice[idx] = if 0 < d0_real {
-                        unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d0_table.cells[col]) }
-                    } else { ProdEF::ONE };
-                    den_one_slice[idx] = if 0 < d1_real {
-                        unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d1_table.cells[col]) }
-                    } else { ProdEF::ONE };
-                    idx += 1;
-                    continue;
+            (0..n_chips).into_par_iter().filter(|&c| !is_padding_chip[c]).for_each(|c| {
+                let n0_table = &first_layer.numerator_0[c];
+                let n1_table = &first_layer.numerator_1[c];
+                let d0_table = &first_layer.denominator_0[c];
+                let d1_table = &first_layer.denominator_1[c];
+                let cols = n0_table.num_interactions;
+                let target_rows = (1usize << n0_table.num_row_variables).max(1);
+                let row_half = target_rows / 2;
+                let chip_off = chip_offsets_in_section[c];
+                let num_zero_slice = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        (num_zero_addr as *mut p3_koala_bear::KoalaBear).add(chip_off),
+                        chip_cell_counts[c],
+                    )
+                };
+                let num_one_slice = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        (num_one_addr as *mut p3_koala_bear::KoalaBear).add(chip_off),
+                        chip_cell_counts[c],
+                    )
+                };
+                let den_zero_slice = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        (den_zero_addr as *mut ProdEF).add(chip_off),
+                        chip_cell_counts[c],
+                    )
+                };
+                let den_one_slice = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        (den_one_addr as *mut ProdEF).add(chip_off),
+                        chip_cell_counts[c],
+                    )
+                };
+                let n0_real = n0_table.num_real_rows;
+                let n1_real = n1_table.num_real_rows;
+                let d0_real = d0_table.num_real_rows;
+                let d1_real = d1_table.num_real_rows;
+                // Per-chip column-major interleave: pos 2k = row k, pos 2k+1 = row k+row_half
+                let mut idx = 0usize;
+                for col in 0..cols {
+                    if row_half == 0 {
+                        // Edge case chip_rows = 1
+                        num_zero_slice[idx] = if 0 < n0_real {
+                            unsafe {
+                                core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(
+                                    &n0_table.cells[col],
+                                )
+                            }
+                        } else {
+                            p3_koala_bear::KoalaBear::ZERO
+                        };
+                        num_one_slice[idx] = if 0 < n1_real {
+                            unsafe {
+                                core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(
+                                    &n1_table.cells[col],
+                                )
+                            }
+                        } else {
+                            p3_koala_bear::KoalaBear::ZERO
+                        };
+                        den_zero_slice[idx] = if 0 < d0_real {
+                            unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d0_table.cells[col]) }
+                        } else {
+                            ProdEF::ONE
+                        };
+                        den_one_slice[idx] = if 0 < d1_real {
+                            unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d1_table.cells[col]) }
+                        } else {
+                            ProdEF::ONE
+                        };
+                        idx += 1;
+                        continue;
+                    }
+                    for k in 0..row_half {
+                        let r_lo = k;
+                        let r_hi = k + row_half;
+                        // n0 interleave
+                        num_zero_slice[idx] = if r_lo < n0_real {
+                            unsafe {
+                                core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(
+                                    &n0_table.cells[r_lo * cols + col],
+                                )
+                            }
+                        } else {
+                            p3_koala_bear::KoalaBear::ZERO
+                        };
+                        num_zero_slice[idx + 1] = if r_hi < n0_real {
+                            unsafe {
+                                core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(
+                                    &n0_table.cells[r_hi * cols + col],
+                                )
+                            }
+                        } else {
+                            p3_koala_bear::KoalaBear::ZERO
+                        };
+                        // n1 interleave
+                        num_one_slice[idx] = if r_lo < n1_real {
+                            unsafe {
+                                core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(
+                                    &n1_table.cells[r_lo * cols + col],
+                                )
+                            }
+                        } else {
+                            p3_koala_bear::KoalaBear::ZERO
+                        };
+                        num_one_slice[idx + 1] = if r_hi < n1_real {
+                            unsafe {
+                                core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(
+                                    &n1_table.cells[r_hi * cols + col],
+                                )
+                            }
+                        } else {
+                            p3_koala_bear::KoalaBear::ZERO
+                        };
+                        // d0 interleave
+                        den_zero_slice[idx] = if r_lo < d0_real {
+                            unsafe {
+                                core::mem::transmute_copy::<EF, ProdEF>(
+                                    &d0_table.cells[r_lo * cols + col],
+                                )
+                            }
+                        } else {
+                            ProdEF::ONE
+                        };
+                        den_zero_slice[idx + 1] = if r_hi < d0_real {
+                            unsafe {
+                                core::mem::transmute_copy::<EF, ProdEF>(
+                                    &d0_table.cells[r_hi * cols + col],
+                                )
+                            }
+                        } else {
+                            ProdEF::ONE
+                        };
+                        // d1 interleave
+                        den_one_slice[idx] = if r_lo < d1_real {
+                            unsafe {
+                                core::mem::transmute_copy::<EF, ProdEF>(
+                                    &d1_table.cells[r_lo * cols + col],
+                                )
+                            }
+                        } else {
+                            ProdEF::ONE
+                        };
+                        den_one_slice[idx + 1] = if r_hi < d1_real {
+                            unsafe {
+                                core::mem::transmute_copy::<EF, ProdEF>(
+                                    &d1_table.cells[r_hi * cols + col],
+                                )
+                            }
+                        } else {
+                            ProdEF::ONE
+                        };
+                        idx += 2;
+                    }
                 }
-                for k in 0..row_half {
-                    let r_lo = k;
-                    let r_hi = k + row_half;
-                    // n0 interleave
-                    num_zero_slice[idx] = if r_lo < n0_real {
-                        unsafe { core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(&n0_table.cells[r_lo * cols + col]) }
-                    } else { p3_koala_bear::KoalaBear::ZERO };
-                    num_zero_slice[idx + 1] = if r_hi < n0_real {
-                        unsafe { core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(&n0_table.cells[r_hi * cols + col]) }
-                    } else { p3_koala_bear::KoalaBear::ZERO };
-                    // n1 interleave
-                    num_one_slice[idx] = if r_lo < n1_real {
-                        unsafe { core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(&n1_table.cells[r_lo * cols + col]) }
-                    } else { p3_koala_bear::KoalaBear::ZERO };
-                    num_one_slice[idx + 1] = if r_hi < n1_real {
-                        unsafe { core::mem::transmute_copy::<F, p3_koala_bear::KoalaBear>(&n1_table.cells[r_hi * cols + col]) }
-                    } else { p3_koala_bear::KoalaBear::ZERO };
-                    // d0 interleave
-                    den_zero_slice[idx] = if r_lo < d0_real {
-                        unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d0_table.cells[r_lo * cols + col]) }
-                    } else { ProdEF::ONE };
-                    den_zero_slice[idx + 1] = if r_hi < d0_real {
-                        unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d0_table.cells[r_hi * cols + col]) }
-                    } else { ProdEF::ONE };
-                    // d1 interleave
-                    den_one_slice[idx] = if r_lo < d1_real {
-                        unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d1_table.cells[r_lo * cols + col]) }
-                    } else { ProdEF::ONE };
-                    den_one_slice[idx + 1] = if r_hi < d1_real {
-                        unsafe { core::mem::transmute_copy::<EF, ProdEF>(&d1_table.cells[r_hi * cols + col]) }
-                    } else { ProdEF::ONE };
-                    idx += 2;
-                }
-            }
-        });
-        });  // marshal_thread_pool().install
+            });
+        }); // marshal_thread_pool().install
     }
     // ROI probe: per-shard marshal elapsed.
     let _marshal_elapsed_us = _marshal_start.elapsed().as_micros();
@@ -1031,9 +1098,7 @@ where
     // SHARED across all cols (same MSB-binding for the layer).
     let layer_chip_rows = 1usize << first_layer.num_row_variables;
     let pairs_per_col = layer_chip_rows / 2;
-    let total_cols: usize = (0..n_chips)
-        .map(|c| first_layer.numerator_0[c].num_interactions)
-        .sum();
+    let total_cols: usize = (0..n_chips).map(|c| first_layer.numerator_0[c].num_interactions).sum();
     // Skip padding chips from col_index.  start_indices still
     // sized at total_cols+1 to allow indexing by global col id, but
     // pad-chip entries get a sentinel (won't be referenced).
@@ -1081,15 +1146,27 @@ where
     {
         static DUMP_PROBE: OnceLock<()> = OnceLock::new();
         DUMP_PROBE.get_or_init(|| {
-            let fingerprint = if denominator_concat.is_empty() { format!("empty") } else { format!("{:?}", denominator_concat[0]) };
-            tracing::warn!("Diag-FINGERPRINT host marshal: numerator_concat.len={} fp={}", numerator_concat.len(), fingerprint);
+            let fingerprint = if denominator_concat.is_empty() {
+                format!("empty")
+            } else {
+                format!("{:?}", denominator_concat[0])
+            };
+            tracing::warn!(
+                "Diag-FINGERPRINT host marshal: numerator_concat.len={} fp={}",
+                numerator_concat.len(),
+                fingerprint
+            );
             let n_bytes = unsafe {
-                std::slice::from_raw_parts(numerator_concat.as_ptr() as *const u8,
-                    numerator_concat.len() * std::mem::size_of::<p3_koala_bear::KoalaBear>())
+                std::slice::from_raw_parts(
+                    numerator_concat.as_ptr() as *const u8,
+                    numerator_concat.len() * std::mem::size_of::<p3_koala_bear::KoalaBear>(),
+                )
             };
             let d_bytes = unsafe {
-                std::slice::from_raw_parts(denominator_concat.as_ptr() as *const u8,
-                    denominator_concat.len() * std::mem::size_of::<ProdEF>())
+                std::slice::from_raw_parts(
+                    denominator_concat.as_ptr() as *const u8,
+                    denominator_concat.len() * std::mem::size_of::<ProdEF>(),
+                )
             };
             let _ = std::fs::write("/tmp/c2_validate/host_num.bin", n_bytes);
             let _ = std::fs::write("/tmp/c2_validate/host_den.bin", d_bytes);
@@ -1159,7 +1236,6 @@ where
         ProdEF::default()
     };
     let lambda_ef: ProdEF = unsafe { core::mem::transmute_copy::<EF, ProdEF>(&_lambda) };
-
 
     // Device-variant attempt.  When env flag is set
     // AND TLS handle present, try the device-resident dispatch first.
@@ -1271,17 +1347,19 @@ where
         }
     };
 
-    let result = device_result.or_else(|| hook(
-        &numerator_concat,
-        &denominator_concat,
-        &col_index,
-        &start_indices,
-        &eq_row_chip_offsets_v,
-        eq_row_real,
-        eq_int_real,
-        lambda_ef,
-        alpha_ef,
-    ));
+    let result = device_result.or_else(|| {
+        hook(
+            &numerator_concat,
+            &denominator_concat,
+            &col_index,
+            &start_indices,
+            &eq_row_chip_offsets_v,
+            eq_row_real,
+            eq_int_real,
+            lambda_ef,
+            alpha_ef,
+        )
+    });
 
     let (gpu_partials, post_fix) = match result {
         Some(t) => t,
@@ -1303,13 +1381,19 @@ where
     // Cast partials EF -> ProdEF.
     let mut sum_zero_ef: EF = if let Some(v) = gpu_partials.get(0) {
         unsafe { core::mem::transmute_copy::<ProdEF, EF>(v) }
-    } else { return None; };
+    } else {
+        return None;
+    };
     let mut sum_half_ef: EF = if let Some(v) = gpu_partials.get(1) {
         unsafe { core::mem::transmute_copy::<ProdEF, EF>(v) }
-    } else { return None; };
+    } else {
+        return None;
+    };
     let mut eq_sum_ef: EF = if let Some(v) = gpu_partials.get(2) {
         unsafe { core::mem::transmute_copy::<ProdEF, EF>(v) }
-    } else { return None; };
+    } else {
+        return None;
+    };
 
     // Add back analytic contributions from skipped padding chips.
     // Per padding chip c: contribution to sum_zero = chip_eq_int_sum_c * sum_eq_lo,
@@ -1374,8 +1458,7 @@ where
     eval_half_sp1 *= eight_inv;
 
     let b_const = (one - alpha_as_ef)
-        * (one - alpha_as_ef.double()).try_inverse()
-            .expect("1-2alpha has inverse in EF");
+        * (one - alpha_as_ef.double()).try_inverse().expect("1-2alpha has inverse in EF");
     let eval_one_sp1 = claimed_sum - eval_zero_sp1;
 
     // Interpolate at points [0, 1, 1/2, b_const] -> values
@@ -1394,8 +1477,8 @@ where
     // gpu_cached_first_poly.
     let mut post_fix_chip_state: Option<Box<ChipLayerState<EF>>> = None;
     {
-        use p3_field::PrimeCharacteristicRing as _;
         use p3_field::BasedVectorSpace as _;
+        use p3_field::PrimeCharacteristicRing as _;
         use p3_field::PrimeField32 as _;
         let extract_u32 = |v: &ProdEF| -> u32 {
             let basis: &[ProdF] = v.as_basis_coefficients_slice();
@@ -1458,7 +1541,6 @@ where
     let poly = UnivariatePolynomial::new(sp1_coeffs.to_vec());
     Some((poly, post_fix_chip_state))
 }
-
 
 fn build_chip_state<NumF, EF>(layer: &LogUpGkrCpuLayer<NumF, EF>) -> ChipLayerState<EF>
 where
@@ -1623,49 +1705,57 @@ fn round_poly_evaluations_chip_structured<EF: Field + Send + Sync>(
     // when registered + env on + EF == Ef4 production type, route to
     // GPU. Returns [p(0), p(1), p(2), p(3)] same shape as the host
     // fallback.
-    if std::env::var("ZIREN_GPU_CHIP_SUMCHECK")
-        .map(|v| v == "1")
-        .unwrap_or(false)
-    {
+    if std::env::var("ZIREN_GPU_CHIP_SUMCHECK").map(|v| v == "1").unwrap_or(false) {
         if let Some(gpu_hook) =
             crate::shard_level::sumcheck_poly::get_gpu_chip_structured_sumcheck_hook()
         {
             use core::any::TypeId;
-            type Ef4 = p3_field::extension::BinomialExtensionField<
-                p3_koala_bear::KoalaBear, 4>;
+            type Ef4 = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
             if TypeId::of::<EF>() == TypeId::of::<Ef4>() {
                 // SAFETY: TypeId equality at runtime guarantees EF == Ef4.
                 unsafe fn slice_cast<A, B>(s: &[A]) -> &[B] {
                     core::slice::from_raw_parts(s.as_ptr().cast::<B>(), s.len())
                 }
-                let n0_views: Vec<&[Ef4]> = state.n0.iter()
+                let n0_views: Vec<&[Ef4]> = state
+                    .n0
+                    .iter()
                     .map(|v| unsafe { slice_cast::<EF, Ef4>(v.as_slice()) })
                     .collect();
-                let d0_views: Vec<&[Ef4]> = state.d0.iter()
+                let d0_views: Vec<&[Ef4]> = state
+                    .d0
+                    .iter()
                     .map(|v| unsafe { slice_cast::<EF, Ef4>(v.as_slice()) })
                     .collect();
-                let n1_views: Vec<&[Ef4]> = state.n1.iter()
+                let n1_views: Vec<&[Ef4]> = state
+                    .n1
+                    .iter()
                     .map(|v| unsafe { slice_cast::<EF, Ef4>(v.as_slice()) })
                     .collect();
-                let d1_views: Vec<&[Ef4]> = state.d1.iter()
+                let d1_views: Vec<&[Ef4]> = state
+                    .d1
+                    .iter()
                     .map(|v| unsafe { slice_cast::<EF, Ef4>(v.as_slice()) })
                     .collect();
                 let eq_int_v: &[Ef4] = unsafe { slice_cast::<EF, Ef4>(eq_int) };
                 let eq_row_v: &[Ef4] = unsafe { slice_cast::<EF, Ef4>(eq_row) };
-                let pad_eq_int_v: Ef4 = unsafe {
-                    core::mem::transmute_copy::<EF, Ef4>(&pad_eq_int_sum)
-                };
-                let lambda_v: Ef4 =
-                    unsafe { core::mem::transmute_copy::<EF, Ef4>(&lambda) };
-                let claim_v: Ef4 = unsafe {
-                    core::mem::transmute_copy::<EF, Ef4>(&current_claim)
-                };
+                let pad_eq_int_v: Ef4 =
+                    unsafe { core::mem::transmute_copy::<EF, Ef4>(&pad_eq_int_sum) };
+                let lambda_v: Ef4 = unsafe { core::mem::transmute_copy::<EF, Ef4>(&lambda) };
+                let claim_v: Ef4 = unsafe { core::mem::transmute_copy::<EF, Ef4>(&current_claim) };
                 let evals_ef4 = gpu_hook(
-                    &n0_views, &d0_views, &n1_views, &d1_views,
-                    &state.chip_offsets, &state.chip_cols, &state.num_real_rows,
+                    &n0_views,
+                    &d0_views,
+                    &n1_views,
+                    &d1_views,
+                    &state.chip_offsets,
+                    &state.chip_cols,
+                    &state.num_real_rows,
                     state.chip_rows,
-                    eq_int_v, eq_row_v,
-                    pad_eq_int_v, lambda_v, claim_v,
+                    eq_int_v,
+                    eq_row_v,
+                    pad_eq_int_v,
+                    lambda_v,
+                    claim_v,
                 );
                 let evals: [EF; 4] = unsafe {
                     [
@@ -1920,25 +2010,23 @@ fn fold_chip_state_row<EF: Field + Send + Sync>(state: &mut ChipLayerState<EF>, 
             // writes.
             let mut out: Vec<EF> = vec![EF::ZERO; row_half * cols];
             // r ∈ [0, upper_real): both halves real.
-            out.par_chunks_exact_mut(cols)
-                .enumerate()
-                .for_each(|(r, dst)| {
-                    let lo_base = r * cols;
-                    if r < upper_real {
-                        let hi_base = (r + row_half) * cols;
-                        for col in 0..cols {
-                            let lo = table[lo_base + col];
-                            let hi = table[hi_base + col];
-                            dst[col] = lo + alpha * (hi - lo);
-                        }
-                    } else {
-                        // (real, pad): hi value = pad constant.
-                        for col in 0..cols {
-                            let lo = table[lo_base + col];
-                            dst[col] = lo + alpha * (pad - lo);
-                        }
+            out.par_chunks_exact_mut(cols).enumerate().for_each(|(r, dst)| {
+                let lo_base = r * cols;
+                if r < upper_real {
+                    let hi_base = (r + row_half) * cols;
+                    for col in 0..cols {
+                        let lo = table[lo_base + col];
+                        let hi = table[hi_base + col];
+                        dst[col] = lo + alpha * (hi - lo);
                     }
-                });
+                } else {
+                    // (real, pad): hi value = pad constant.
+                    for col in 0..cols {
+                        let lo = table[lo_base + col];
+                        dst[col] = lo + alpha * (pad - lo);
+                    }
+                }
+            });
             *table = out;
             debug_assert_eq!(new_real, row_half);
             return;
@@ -1949,15 +2037,13 @@ fn fold_chip_state_row<EF: Field + Send + Sync>(state: &mut ChipLayerState<EF>, 
         // are pad-pad and analytically equal pad.  Materialise only
         // the real prefix.
         let mut out: Vec<EF> = vec![EF::ZERO; new_real * cols];
-        out.par_chunks_exact_mut(cols)
-            .enumerate()
-            .for_each(|(r, dst)| {
-                let lo_base = r * cols;
-                for col in 0..cols {
-                    let lo = table[lo_base + col];
-                    dst[col] = lo + alpha * (pad - lo);
-                }
-            });
+        out.par_chunks_exact_mut(cols).enumerate().for_each(|(r, dst)| {
+            let lo_base = r * cols;
+            for col in 0..cols {
+                let lo = table[lo_base + col];
+                dst[col] = lo + alpha * (pad - lo);
+            }
+        });
         *table = out;
         debug_assert_eq!(new_real, old_real);
     }
@@ -2037,14 +2123,13 @@ fn build_eq_table<EF: Field + Send + Sync>(coords: &[EF]) -> Vec<EF> {
         let old_len = weights.len();
         let mut next: Vec<EF> = vec![EF::ZERO; old_len * 2];
         let (lo, hi) = next.split_at_mut(old_len);
-        lo.par_iter_mut()
-            .zip(hi.par_iter_mut())
-            .zip(weights.par_iter())
-            .for_each(|((lo_j, hi_j), &w_j)| {
+        lo.par_iter_mut().zip(hi.par_iter_mut()).zip(weights.par_iter()).for_each(
+            |((lo_j, hi_j), &w_j)| {
                 let prod = w_j * r;
                 *lo_j = w_j - prod;
                 *hi_j = prod;
-            });
+            },
+        );
         weights = next;
     }
     weights
@@ -2271,13 +2356,9 @@ impl<EF: Field + Send + Sync> LogupRoundPolynomial<EF> {
             PolynomialLayer<EF>,
             Option<UnivariatePolynomial<EF>>,
         ) = match gpu_result {
-            Some((poly, Some(post_fix_state))) => (
-                PolynomialLayer::GpuPrefolded {
-                    cached_round_poly: poly,
-                    post_fix_state,
-                },
-                None,
-            ),
+            Some((poly, Some(post_fix_state))) => {
+                (PolynomialLayer::GpuPrefolded { cached_round_poly: poly, post_fix_state }, None)
+            }
             Some((poly, None)) => (PolynomialLayer::Chip(chip_state), Some(poly)),
             None => (PolynomialLayer::Chip(chip_state), None),
         };
@@ -2416,19 +2497,24 @@ impl<EF: Field + Send + Sync> SumcheckPoly<EF> for LogupRoundPolynomial<EF> {
                 // alpha, not a kernel-internal random.  See
                 // try_first_round_on_gpu's alpha plumbing for the
                 // contract.
-                let chip = std::mem::replace(post_fix_state.as_mut(),
+                let chip = std::mem::replace(
+                    post_fix_state.as_mut(),
                     ChipLayerState {
-                        n0: Vec::new(), d0: Vec::new(),
-                        n1: Vec::new(), d1: Vec::new(),
-                        chip_offsets: Vec::new(), chip_cols: Vec::new(),
-                        num_real_rows: Vec::new(), chip_rows: 1,
-                    });
+                        n0: Vec::new(),
+                        d0: Vec::new(),
+                        n1: Vec::new(),
+                        d1: Vec::new(),
+                        chip_offsets: Vec::new(),
+                        chip_cols: Vec::new(),
+                        num_real_rows: Vec::new(),
+                        chip_rows: 1,
+                    },
+                );
                 // Don't fold by alpha — GPU already did the round-0
                 // binding when it produced post_fix_state.  Just
                 // install the post-fix chip state.
                 self.state = PolynomialLayer::Chip(chip);
-                self.remaining_row_vars =
-                    self.remaining_row_vars.saturating_sub(1);
+                self.remaining_row_vars = self.remaining_row_vars.saturating_sub(1);
                 if let PolynomialLayer::Chip(s) = &self.state {
                     if s.chip_rows == 1 && self.remaining_row_vars == 0 {
                         self.transition_to_packed();
@@ -2453,8 +2539,7 @@ impl<EF: Field + Send + Sync> SumcheckPoly<EF> for LogupRoundPolynomial<EF> {
                 // sum_as_poly_in_last_variable will be the next round
                 // in this chip-sumcheck instance.
                 self.last_chip_alpha = Some(alpha);
-                self.chip_sumcheck_round =
-                    self.chip_sumcheck_round.saturating_add(1);
+                self.chip_sumcheck_round = self.chip_sumcheck_round.saturating_add(1);
                 if state.chip_rows == 1 && self.remaining_row_vars == 0 {
                     // Don't transition yet if there are still row
                     // variables left.  But chip_rows == 1 with
@@ -2498,8 +2583,7 @@ impl<EF: Field + Send + Sync> SumcheckPoly<EF> for LogupRoundPolynomial<EF> {
                             d1_o[i] = lo_d1 + alpha * (hi_d1 - lo_d1);
                         }
                     });
-                self.state =
-                    PolynomialLayer::Packed { n0: n0_n, d0: d0_n, n1: n1_n, d1: d1_n };
+                self.state = PolynomialLayer::Packed { n0: n0_n, d0: d0_n, n1: n1_n, d1: d1_n };
                 self.remaining_int_vars -= 1;
             }
         }
@@ -2562,12 +2646,11 @@ impl<EF: Field + Send + Sync> SumcheckPoly<EF> for LogupRoundPolynomial<EF> {
                 // round_idx + alpha_prev so the device hook keeps a
                 // cross-round layer cache and applies the fold kernel
                 // in place. Falls through to host on None.
-                let try_device = std::env::var("ZIREN_GPU_CHIP_SUMCHECK")
-                    .map(|v| v == "1")
-                    .unwrap_or(false)
-                    && std::env::var("ZIREN_GPU_CHIP_SUMCHECK_SP1_DEVICE")
-                        .map(|v| v == "1")
-                        .unwrap_or(false);
+                let try_device =
+                    std::env::var("ZIREN_GPU_CHIP_SUMCHECK").map(|v| v == "1").unwrap_or(false)
+                        && std::env::var("ZIREN_GPU_CHIP_SUMCHECK_SP1_DEVICE")
+                            .map(|v| v == "1")
+                            .unwrap_or(false);
                 if try_device {
                     if let Some(dev_hook) =
                         crate::shard_level::sumcheck_poly::get_gpu_chip_structured_sumcheck_device_hook()
@@ -2656,16 +2739,15 @@ impl<EF: Field + Send + Sync> SumcheckPoly<EF> for LogupRoundPolynomial<EF> {
                 // same concrete type at runtime.  Generic-EF callers
                 // (test code, non-production paths) always take the
                 // host fallback.
-                if std::env::var("ZIREN_GPU_SUMCHECK")
-                    .map(|v| v == "1")
-                    .unwrap_or(false)
-                {
+                if std::env::var("ZIREN_GPU_SUMCHECK").map(|v| v == "1").unwrap_or(false) {
                     if let Some(gpu_hook) =
                         crate::shard_level::sumcheck_poly::get_gpu_sumcheck_hook()
                     {
                         use core::any::TypeId;
                         type Ef4 = p3_field::extension::BinomialExtensionField<
-                            p3_koala_bear::KoalaBear, 4>;
+                            p3_koala_bear::KoalaBear,
+                            4,
+                        >;
                         if TypeId::of::<EF>() == TypeId::of::<Ef4>() {
                             // SAFETY: TypeId equality guarantees EF == Ef4
                             // at runtime.  Slice reinterpretation via
@@ -2673,10 +2755,7 @@ impl<EF: Field + Send + Sync> SumcheckPoly<EF> for LogupRoundPolynomial<EF> {
                             // compile-time size-check that
                             // mem::transmute requires for generic types.
                             unsafe fn slice_cast<A, B>(s: &[A]) -> &[B] {
-                                core::slice::from_raw_parts(
-                                    s.as_ptr().cast::<B>(),
-                                    s.len(),
-                                )
+                                core::slice::from_raw_parts(s.as_ptr().cast::<B>(), s.len())
                             }
                             unsafe {
                                 let evals_ef4: [Ef4; 4] = gpu_hook(
@@ -2712,7 +2791,7 @@ impl<EF: Field + Send + Sync> SumcheckPoly<EF> for LogupRoundPolynomial<EF> {
                     self.lambda,
                     claim_v,
                 )
-            },
+            }
             PolynomialLayer::GpuPrefolded { .. } => {
                 // Unreachable: the early-return at the top of this
                 // function consumes GpuPrefolded.  Keep this arm for
@@ -2824,8 +2903,7 @@ where
     let mut lazy_v3_attempted = false;
     if env_logup_device_on && v3_threshold_ok {
         use core::any::TypeId;
-        type Ef4Lazy =
-            p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
+        type Ef4Lazy = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
         if let LayerState::Device { circuit_id, .. } = state {
             if TypeId::of::<EF>() == TypeId::of::<Ef4Lazy>()
                 && TypeId::of::<Challenger>() == TypeId::of::<crate::InnerChallenger>()
@@ -2837,10 +2915,9 @@ where
                 // first layer) return `false` and fall through to the host pull.
                 // On success the V3 hook adopts the device buffers directly —
                 // no device→host→device round-trip.
-                let published =
-                    crate::jagged_pcs::get_gpu_v3_fetch_publish_hook()
-                        .map(|h| h(*circuit_id, total_vars_state))
-                        .unwrap_or(false);
+                let published = crate::jagged_pcs::get_gpu_v3_fetch_publish_hook()
+                    .map(|h| h(*circuit_id, total_vars_state))
+                    .unwrap_or(false);
                 if published {
                     if let Some(gpu_hook_v3) =
                         crate::shard_level::sumcheck_poly::get_gpu_logup_round_hook_v3()
@@ -2874,15 +2951,15 @@ where
     // eligible).  Feeds the V3 first-layer marshalling + V2/V1/host fallback.
     let pulled_owner: Option<GkrCircuitLayer<F, EF>> = match state {
         LayerState::Host(_) => None,
-        LayerState::Device { circuit_id, handle, .. } => Some(
-            super::top_level::pull_device_layer_to_host::<F, EF>(*circuit_id, *handle),
-        ),
+        LayerState::Device { circuit_id, handle, .. } => {
+            Some(super::top_level::pull_device_layer_to_host::<F, EF>(*circuit_id, *handle))
+        }
     };
     let circuit: &GkrCircuitLayer<F, EF> = match state {
         LayerState::Host(layer) => layer,
-        LayerState::Device { .. } => pulled_owner
-            .as_ref()
-            .expect("Device variant always populates pulled_owner above"),
+        LayerState::Device { .. } => {
+            pulled_owner.as_ref().expect("Device variant always populates pulled_owner above")
+        }
     };
 
     // C-full H2 — device-resident per-layer LogUp-GKR sumcheck.
@@ -2915,8 +2992,7 @@ where
         .unwrap_or(true)
     {
         use core::any::TypeId;
-        type Ef4 = p3_field::extension::BinomialExtensionField<
-            p3_koala_bear::KoalaBear, 4>;
+        type Ef4 = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
 
         // (threshold scaffold): scaffold
         // for the "per-layer size threshold" fix path proposed by the
@@ -2945,16 +3021,10 @@ where
             })
         };
         let total_vars_for_threshold: usize = match circuit {
-            GkrCircuitLayer::Layer(l) => {
-                l.num_row_variables + l.num_interaction_variables
-            }
-            GkrCircuitLayer::FirstLayer(l) => {
-                l.num_row_variables + l.num_interaction_variables
-            }
+            GkrCircuitLayer::Layer(l) => l.num_row_variables + l.num_interaction_variables,
+            GkrCircuitLayer::FirstLayer(l) => l.num_row_variables + l.num_interaction_variables,
         };
-        if v3_threshold_vars > 0
-            && total_vars_for_threshold < v3_threshold_vars
-        {
+        if v3_threshold_vars > 0 && total_vars_for_threshold < v3_threshold_vars {
             // Skip GPU dispatch — too small to amortize per-call
             // overhead.  Fall through to the host trait driver below.
             // No fired_once log here: per-call diagnostics would be too
@@ -2962,82 +3032,79 @@ where
             // try_logup_round_gpu_v3 captures "did we even reach the
             // hook" via its log presence.
         } else {
-
-        // V2 dispatch: V2 dispatch (preferred when challenger is
-        // InnerChallenger).  V2 takes &mut InnerChallenger directly —
-        // the eventual fused round-finalize kernel will use device-
-        // resident DuplexChallenger state to eliminate per-round
-        // host roundtrips.  V2 falls through to V1 below if it
-        // declines or the registered V2 impl chooses not to handle
-        // this layer.
-        if TypeId::of::<EF>() == TypeId::of::<Ef4>()
-            && TypeId::of::<Challenger>() == TypeId::of::<crate::InnerChallenger>()
-        {
-            // step 1: V3 dispatch (preferred over V2 when registered).
-            // V3 hook accepts an opaque device-layer handle (Option<...>); first
-            // call passes None and the hook marshals from `*_flat` host vecs,
-            // subsequent calls within the same shard pass the stashed handle
-            // from the prior layer's output so flatten_layer is skipped.
-            // Handle threading is via TLS (per project_368_369 design) — this
-            // dispatch site stays signature-compatible with V2.
-            if let (false, Some(gpu_hook_v3)) = (
-                lazy_v3_attempted,
-                crate::shard_level::sumcheck_poly::get_gpu_logup_round_hook_v3(),
-            ) {
-                if let Some(proof) = try_logup_round_gpu_v3::<F, EF, _>(
-                    dims,
-                    Some(circuit),
-                    eval_point,
-                    numerator_eval,
-                    denominator_eval,
-                    lambda,
-                    challenger,
-                    gpu_hook_v3,
-                ) {
-                    return proof;
-                }
-                // V3 declined → fall through to V2 (and then V1/host).
-            }
-
-            if let Some(gpu_hook_v2) =
-                crate::shard_level::sumcheck_poly::get_gpu_logup_round_hook_v2()
+            // V2 dispatch: V2 dispatch (preferred when challenger is
+            // InnerChallenger).  V2 takes &mut InnerChallenger directly —
+            // the eventual fused round-finalize kernel will use device-
+            // resident DuplexChallenger state to eliminate per-round
+            // host roundtrips.  V2 falls through to V1 below if it
+            // declines or the registered V2 impl chooses not to handle
+            // this layer.
+            if TypeId::of::<EF>() == TypeId::of::<Ef4>()
+                && TypeId::of::<Challenger>() == TypeId::of::<crate::InnerChallenger>()
             {
-                if let Some(proof) = try_logup_round_gpu_v2::<F, EF, _>(
-                    circuit,
-                    eval_point,
-                    numerator_eval,
-                    denominator_eval,
-                    lambda,
-                    challenger,
-                    gpu_hook_v2,
+                // step 1: V3 dispatch (preferred over V2 when registered).
+                // V3 hook accepts an opaque device-layer handle (Option<...>); first
+                // call passes None and the hook marshals from `*_flat` host vecs,
+                // subsequent calls within the same shard pass the stashed handle
+                // from the prior layer's output so flatten_layer is skipped.
+                // Handle threading is via TLS (per project_368_369 design) — this
+                // dispatch site stays signature-compatible with V2.
+                if let (false, Some(gpu_hook_v3)) = (
+                    lazy_v3_attempted,
+                    crate::shard_level::sumcheck_poly::get_gpu_logup_round_hook_v3(),
                 ) {
-                    return proof;
+                    if let Some(proof) = try_logup_round_gpu_v3::<F, EF, _>(
+                        dims,
+                        Some(circuit),
+                        eval_point,
+                        numerator_eval,
+                        denominator_eval,
+                        lambda,
+                        challenger,
+                        gpu_hook_v3,
+                    ) {
+                        return proof;
+                    }
+                    // V3 declined → fall through to V2 (and then V1/host).
                 }
-                // V2 declined → fall through to V1 (and then host).
-            }
-        }
 
-        if let Some(gpu_hook) =
-            crate::shard_level::sumcheck_poly::get_gpu_logup_round_hook()
-        {
-            if TypeId::of::<EF>() == TypeId::of::<Ef4>() {
-                if let Some(proof) = try_logup_round_gpu::<F, EF, _>(
-                    circuit,
-                    eval_point,
-                    numerator_eval,
-                    denominator_eval,
-                    lambda,
-                    challenger,
-                    gpu_hook,
-                ) {
-                    return proof;
+                if let Some(gpu_hook_v2) =
+                    crate::shard_level::sumcheck_poly::get_gpu_logup_round_hook_v2()
+                {
+                    if let Some(proof) = try_logup_round_gpu_v2::<F, EF, _>(
+                        circuit,
+                        eval_point,
+                        numerator_eval,
+                        denominator_eval,
+                        lambda,
+                        challenger,
+                        gpu_hook_v2,
+                    ) {
+                        return proof;
+                    }
+                    // V2 declined → fall through to V1 (and then host).
                 }
-                // GPU hook returned None — fall through to host.  The
-                // hook is responsible for its own logging on the
-                // decline path; we don't double-log here to avoid log
-                // spam on the (intentional) MIN_DEVICE_HALF cutoff.
             }
-        }
+
+            if let Some(gpu_hook) = crate::shard_level::sumcheck_poly::get_gpu_logup_round_hook() {
+                if TypeId::of::<EF>() == TypeId::of::<Ef4>() {
+                    if let Some(proof) = try_logup_round_gpu::<F, EF, _>(
+                        circuit,
+                        eval_point,
+                        numerator_eval,
+                        denominator_eval,
+                        lambda,
+                        challenger,
+                        gpu_hook,
+                    ) {
+                        return proof;
+                    }
+                    // GPU hook returned None — fall through to host.  The
+                    // hook is responsible for its own logging on the
+                    // decline path; we don't double-log here to avoid log
+                    // spam on the (intentional) MIN_DEVICE_HALF cutoff.
+                }
+            }
         } // end of `else` arm for v3_threshold_vars guard (threshold guard)
     }
 
@@ -3075,13 +3142,7 @@ where
     let numerator_1 = evals[2];
     let denominator_1 = evals[3];
 
-    LogupGkrRoundProof {
-        numerator_0,
-        numerator_1,
-        denominator_0,
-        denominator_1,
-        sumcheck_proof,
-    }
+    LogupGkrRoundProof { numerator_0, numerator_1, denominator_0, denominator_1, sumcheck_proof }
 }
 
 /// C-full H2 — try the device-resident GPU hook for one full GKR layer's
@@ -3140,8 +3201,7 @@ where
     EF: ExtensionField<F> + BasedVectorSpace<F>,
     Challenger: FieldChallenger<F> + 'static,
 {
-    type Ef4 = p3_field::extension::BinomialExtensionField<
-        p3_koala_bear::KoalaBear, 4>;
+    type Ef4 = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
 
     // Verified by the caller, but `cast_to_ef4` below relies on this so
     // we re-assert defensively.
@@ -3180,9 +3240,7 @@ where
     // ─── Build host-side flatten + eq, mirrors LogupRoundPolynomial::new ───
     let (num_row_variables, num_interaction_variables) = match circuit {
         GkrCircuitLayer::Layer(l) => (l.num_row_variables, l.num_interaction_variables),
-        GkrCircuitLayer::FirstLayer(l) => {
-            (l.num_row_variables, l.num_interaction_variables)
-        }
+        GkrCircuitLayer::FirstLayer(l) => (l.num_row_variables, l.num_interaction_variables),
     };
     let total_vars = num_row_variables + num_interaction_variables;
     if total_vars == 0 {
@@ -3204,14 +3262,13 @@ where
     // interaction vars) is still uploaded.  `row_point` is
     // already LSB-first == `partialLagrangeNaiveEf`-native, so the
     // device table is byte-identical (NO reversal).
-    let eq_row: Vec<EF> =
-        if crate::shard_level::sumcheck_poly::logup_device_eq_enabled() {
-            let pt_ef4 = cast_vec_ef_to_ef4::<EF>(row_point.to_vec());
-            crate::shard_level::sumcheck_poly::publish_logup_device_eq_row_point(pt_ef4);
-            Vec::new()
-        } else {
-            build_eq_table(row_point)
-        };
+    let eq_row: Vec<EF> = if crate::shard_level::sumcheck_poly::logup_device_eq_enabled() {
+        let pt_ef4 = cast_vec_ef_to_ef4::<EF>(row_point.to_vec());
+        crate::shard_level::sumcheck_poly::publish_logup_device_eq_row_point(pt_ef4);
+        Vec::new()
+    } else {
+        build_eq_table(row_point)
+    };
 
     let initial_claim = lambda * numerator_eval + denominator_eval;
 
@@ -3317,8 +3374,7 @@ where
     EF: ExtensionField<F> + BasedVectorSpace<F>,
     Challenger: FieldChallenger<F> + 'static,
 {
-    type Ef4 = p3_field::extension::BinomialExtensionField<
-        p3_koala_bear::KoalaBear, 4>;
+    type Ef4 = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
 
     debug_assert_eq!(
         core::any::TypeId::of::<EF>(),
@@ -3351,9 +3407,7 @@ where
     // ─── Build inputs (mirror try_logup_round_gpu) ───
     let (num_row_variables, num_interaction_variables) = match circuit {
         GkrCircuitLayer::Layer(l) => (l.num_row_variables, l.num_interaction_variables),
-        GkrCircuitLayer::FirstLayer(l) => {
-            (l.num_row_variables, l.num_interaction_variables)
-        }
+        GkrCircuitLayer::FirstLayer(l) => (l.num_row_variables, l.num_interaction_variables),
     };
     let total_vars = num_row_variables + num_interaction_variables;
     if total_vars == 0 {
@@ -3375,22 +3429,20 @@ where
     // interaction vars) is still uploaded.  `row_point` is
     // already LSB-first == `partialLagrangeNaiveEf`-native, so the
     // device table is byte-identical (NO reversal).
-    let eq_row: Vec<EF> =
-        if crate::shard_level::sumcheck_poly::logup_device_eq_enabled() {
-            let pt_ef4 = cast_vec_ef_to_ef4::<EF>(row_point.to_vec());
-            crate::shard_level::sumcheck_poly::publish_logup_device_eq_row_point(pt_ef4);
-            Vec::new()
-        } else {
-            build_eq_table(row_point)
-        };
+    let eq_row: Vec<EF> = if crate::shard_level::sumcheck_poly::logup_device_eq_enabled() {
+        let pt_ef4 = cast_vec_ef_to_ef4::<EF>(row_point.to_vec());
+        crate::shard_level::sumcheck_poly::publish_logup_device_eq_row_point(pt_ef4);
+        Vec::new()
+    } else {
+        build_eq_table(row_point)
+    };
 
     let initial_claim = lambda * numerator_eval + denominator_eval;
 
     // SAFETY: TypeId equality checked above guarantees Challenger ==
     // InnerChallenger at runtime, so this transmute is well-defined.
-    let inner_challenger: &mut crate::InnerChallenger = unsafe {
-        &mut *(challenger as *mut Challenger as *mut crate::InnerChallenger)
-    };
+    let inner_challenger: &mut crate::InnerChallenger =
+        unsafe { &mut *(challenger as *mut Challenger as *mut crate::InnerChallenger) };
 
     // Transcript-safety: snapshot for a sound fallback (see
     // snapshot_inner_challenger docs).
@@ -3467,8 +3519,7 @@ where
     EF: ExtensionField<F> + BasedVectorSpace<F>,
     Challenger: FieldChallenger<F> + 'static,
 {
-    type Ef4 = p3_field::extension::BinomialExtensionField<
-        p3_koala_bear::KoalaBear, 4>;
+    type Ef4 = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
 
     debug_assert_eq!(
         core::any::TypeId::of::<EF>(),
@@ -3526,20 +3577,15 @@ where
     // a shard whose populator declined (e.g. CUDA error).
     let scope_layer: Option<crate::shard_level::sumcheck_poly::DeviceLayerHandle> = {
         use core::any::TypeId;
-        type Ef4Local = p3_field::extension::BinomialExtensionField<
-            p3_koala_bear::KoalaBear, 4>;
+        type Ef4Local = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
         if TypeId::of::<F>() == TypeId::of::<p3_koala_bear::KoalaBear>()
             && TypeId::of::<EF>() == TypeId::of::<Ef4Local>()
         {
-            crate::shard_level::row_gkr::device_circuit::with_production_scope_mut(
-                |scope| {
-                    scope.next_layer().and_then(|layer| {
-                        layer
-                            .as_handle()
-                            .map(|h| h.to_sumcheck_handle())
-                    })
-                },
-            )
+            crate::shard_level::row_gkr::device_circuit::with_production_scope_mut(|scope| {
+                scope
+                    .next_layer()
+                    .and_then(|layer| layer.as_handle().map(|h| h.to_sumcheck_handle()))
+            })
             .flatten()
         } else {
             None
@@ -3556,9 +3602,8 @@ where
     //      pre-materialized layer for this round.
     //   2. legacy TLS handle (`take_logup_v3_next_handle`) — the
     //      pre- path; still fires when the scope is empty.
-    let input_handle = scope_layer.or_else(
-        crate::shard_level::sumcheck_poly::take_logup_v3_next_handle,
-    );
+    let input_handle =
+        scope_layer.or_else(crate::shard_level::sumcheck_poly::take_logup_v3_next_handle);
     let handle_present = input_handle.is_some();
 
     // Build host fallback inputs only when no device handle is available.
@@ -3593,22 +3638,20 @@ where
     // interaction vars) is still uploaded.  `row_point` is
     // already LSB-first == `partialLagrangeNaiveEf`-native, so the
     // device table is byte-identical (NO reversal).
-    let eq_row: Vec<EF> =
-        if crate::shard_level::sumcheck_poly::logup_device_eq_enabled() {
-            let pt_ef4 = cast_vec_ef_to_ef4::<EF>(row_point.to_vec());
-            crate::shard_level::sumcheck_poly::publish_logup_device_eq_row_point(pt_ef4);
-            Vec::new()
-        } else {
-            build_eq_table(row_point)
-        };
+    let eq_row: Vec<EF> = if crate::shard_level::sumcheck_poly::logup_device_eq_enabled() {
+        let pt_ef4 = cast_vec_ef_to_ef4::<EF>(row_point.to_vec());
+        crate::shard_level::sumcheck_poly::publish_logup_device_eq_row_point(pt_ef4);
+        Vec::new()
+    } else {
+        build_eq_table(row_point)
+    };
 
     let initial_claim = lambda * numerator_eval + denominator_eval;
 
     // SAFETY: TypeId equality checked above guarantees Challenger ==
     // InnerChallenger at runtime, so this transmute is well-defined.
-    let inner_challenger: &mut crate::InnerChallenger = unsafe {
-        &mut *(challenger as *mut Challenger as *mut crate::InnerChallenger)
-    };
+    let inner_challenger: &mut crate::InnerChallenger =
+        unsafe { &mut *(challenger as *mut Challenger as *mut crate::InnerChallenger) };
 
     // Transcript-safety: snapshot for a sound fallback (see
     // snapshot_inner_challenger docs).
@@ -3704,20 +3747,10 @@ mod tests {
     #[test]
     fn poly_coefficients_roundtrip_recovers_evaluations() {
         // Pick a random-ish degree-3 poly.
-        let coeffs: [EF; 4] = [
-            EF::from_u32(3),
-            EF::from_u32(5),
-            EF::from_u32(7),
-            EF::from_u32(11),
-        ];
+        let coeffs: [EF; 4] = [EF::from_u32(3), EF::from_u32(5), EF::from_u32(7), EF::from_u32(11)];
         let f = |x: EF| poly_eval(&coeffs, x);
 
-        let evals = [
-            f(EF::ZERO),
-            f(EF::ONE),
-            f(EF::from_u32(2)),
-            f(EF::from_u32(3)),
-        ];
+        let evals = [f(EF::ZERO), f(EF::ONE), f(EF::from_u32(2)), f(EF::from_u32(3))];
 
         let recovered = poly_coefficients_from_evals(evals);
         for (i, (c, r)) in coeffs.iter().zip(recovered.iter()).enumerate() {
@@ -3858,7 +3891,14 @@ mod tests {
         // exploited by the 3-point trick where p(0) is recovered as
         // current_claim - p(1)).
         let evals = round_poly_evaluations(
-            &eq_int, &eq_row, &n0, &d0, &n1, &d1, EF::ONE, EF::from_u32(174),
+            &eq_int,
+            &eq_row,
+            &n0,
+            &d0,
+            &n1,
+            &d1,
+            EF::ONE,
+            EF::from_u32(174),
         );
         assert_eq!(evals[0], EF::from_u32(174));
         assert_eq!(evals[1], EF::ZERO);
@@ -3919,14 +3959,8 @@ mod tests {
         let d_eval = (one - point[0]) * EF::from_u32(85) + point[0] * EF::from_u32(133);
 
         let mut ch = test_challenger();
-        let proof = prove_gkr_round::<KoalaBear, EF, _>(
-            &state,
-            &point,
-            n_eval,
-            d_eval,
-            lambda,
-            &mut ch,
-        );
+        let proof =
+            prove_gkr_round::<KoalaBear, EF, _>(&state, &point, n_eval, d_eval, lambda, &mut ch);
 
         // Claimed sum = λ · n_eval + d_eval.
         assert_eq!(proof.sumcheck_proof.claimed_sum, lambda * n_eval + d_eval);
@@ -4003,17 +4037,20 @@ mod tests {
         // Output numerator/denominator MLE at the full hypercube:
         //   out_n(b) = n0(b)·d1(b) + n1(b)·d0(b)
         //   out_d(b) = d0(b)·d1(b)
-        let n_eval: EF = eq.iter().zip(n0f.iter()).zip(d1f.iter()).zip(n1f.iter()).zip(d0f.iter())
+        let n_eval: EF = eq
+            .iter()
+            .zip(n0f.iter())
+            .zip(d1f.iter())
+            .zip(n1f.iter())
+            .zip(d0f.iter())
             .map(|((((e, n0), d1), n1), d0)| *e * (*n0 * *d1 + *n1 * *d0))
             .sum();
-        let d_eval: EF = eq.iter().zip(d0f.iter()).zip(d1f.iter())
-            .map(|((e, d0), d1)| *e * (*d0 * *d1))
-            .sum();
+        let d_eval: EF =
+            eq.iter().zip(d0f.iter()).zip(d1f.iter()).map(|((e, d0), d1)| *e * (*d0 * *d1)).sum();
 
         let mut ch = test_challenger();
-        let proof = prove_gkr_round::<KoalaBear, EF, _>(
-            &state, &point, n_eval, d_eval, lambda, &mut ch,
-        );
+        let proof =
+            prove_gkr_round::<KoalaBear, EF, _>(&state, &point, n_eval, d_eval, lambda, &mut ch);
 
         // First round's p(0) + p(1) must equal claimed_sum.
         let first_poly = &proof.sumcheck_proof.univariate_polys[0];

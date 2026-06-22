@@ -189,16 +189,10 @@ mod tests {
         let g_first = DeviceFirstLayerGuard::new(first_arc);
         let _g_second = DeviceFirstLayerGuard::new(second_arc);
 
-        assert!(current_device_first_layer()
-            .unwrap()
-            .downcast_ref::<Second>()
-            .is_some());
+        assert!(current_device_first_layer().unwrap().downcast_ref::<Second>().is_some());
 
         // Stale Guard's gen no longer matches; Drop must be a no-op.
         drop(g_first);
-        assert!(current_device_first_layer()
-            .unwrap()
-            .downcast_ref::<Second>()
-            .is_some());
+        assert!(current_device_first_layer().unwrap().downcast_ref::<Second>().is_some());
     }
 }

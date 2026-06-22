@@ -105,7 +105,6 @@ impl<C: Clone> ShardCommitment<C> {
     pub fn quotient_commit(&self) -> Option<&C> {
         self.auxiliary_commits.get(1)
     }
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,14 +172,8 @@ pub struct ShardProof<SC: StarkGenericConfig> {
     /// behind `shard-level-proof` so serde wire format stays stable
     /// for consumers built without the feature.
     #[serde(default)]
-    pub basefold_shard_proof: Option<
-        Box<
-            crate::shard_level::shard_proof::BasefoldShardProof<
-                Val<SC>,
-                Challenge<SC>,
-            >,
-        >,
-    >,
+    pub basefold_shard_proof:
+        Option<Box<crate::shard_level::shard_proof::BasefoldShardProof<Val<SC>, Challenge<SC>>>>,
 }
 
 impl<SC: StarkGenericConfig> Debug for ShardProof<SC> {

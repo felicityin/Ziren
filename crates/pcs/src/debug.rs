@@ -4,10 +4,7 @@ use std::{
     process::exit,
 };
 
-use p3_air::{
-    Air, AirBuilder, ExtensionBuilder,
-    PermutationAirBuilder,
-};
+use p3_air::{Air, AirBuilder, ExtensionBuilder, PermutationAirBuilder};
 use p3_field::{ExtensionField, Field, PrimeCharacteristicRing, PrimeField32};
 use p3_matrix::{
     dense::{RowMajorMatrix, RowMajorMatrixView},
@@ -299,4 +296,3 @@ where
         self.global_cumulative_sum
     }
 }
-

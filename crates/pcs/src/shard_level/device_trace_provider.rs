@@ -25,10 +25,7 @@ pub trait DeviceTraceProvider: Send + Sync {
 
     /// Look up by chip name only, skipping shape check; consumers
     /// that read dims from the returned trace use this.
-    fn lookup_by_name(
-        &self,
-        chip_name: &str,
-    ) -> Option<Arc<dyn Any + Send + Sync>>;
+    fn lookup_by_name(&self, chip_name: &str) -> Option<Arc<dyn Any + Send + Sync>>;
 
     /// Signal that `chip_name`'s device trace has been fully consumed
     /// — called by the zerocheck `prepare` (device-fold) path AFTER it
@@ -101,10 +98,7 @@ pub trait DeviceTraceProvider: Send + Sync {
     /// this so they don't steal the single drain-mode lookup from the
     /// real consumer.  Default `None` (observers fall back to host
     /// cells).
-    fn peek_by_name(
-        &self,
-        _chip_name: &str,
-    ) -> Option<Arc<dyn Any + Send + Sync>> {
+    fn peek_by_name(&self, _chip_name: &str) -> Option<Arc<dyn Any + Send + Sync>> {
         None
     }
 

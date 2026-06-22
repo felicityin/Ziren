@@ -15,7 +15,6 @@
 //! evaluation point, no jagged sumcheck reduction yet.  Wiring into
 //! [`crate::jagged`]'s sumcheck flow is C2/C3.
 
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -174,8 +173,7 @@ fn build_pcs(
     StackedPcsVerifier<JaggedVal, JaggedChallenge, JaggedMmcs>,
     JaggedMmcs,
 ) {
-    let perm: crate::kb31_poseidon2::InnerPerm =
-        zkm_primitives::poseidon2_init();
+    let perm: crate::kb31_poseidon2::InnerPerm = zkm_primitives::poseidon2_init();
     let hash = crate::kb31_poseidon2::InnerHash::new(perm.clone());
     let compress = crate::kb31_poseidon2::InnerCompress::new(perm);
     let mmcs = JaggedMmcs::new(hash, compress, 0);
@@ -268,7 +266,10 @@ pub fn commit_jagged_pcs(
     chip_traces: Vec<(String, RowMajorMatrix<JaggedVal>)>,
     challenger: &mut JaggedChallenger,
 ) -> (BasefoldLateBindingCommit, BasefoldLateBindingProverData) {
-    if std::env::var("ZIREN_GPU_BASEFOLD").map(|v| v != "0" && !v.eq_ignore_ascii_case("false")).unwrap_or(true) {
+    if std::env::var("ZIREN_GPU_BASEFOLD")
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+    {
         if let Some(hook) = get_gpu_basefold_commit_hook() {
             // The hook signature returns `Result` so the device side
             // can tunnel its host-input back to us on shape-unsupported
@@ -330,10 +331,7 @@ pub fn commit_jagged_pcs_host_generic<Challenger, MT, D>(
     mmcs: MT,
     dft: Arc<D>,
     fri: FriConfig<JaggedVal>,
-) -> (
-    BasefoldLateBindingCommitGeneric<MT>,
-    BasefoldLateBindingProverDataGeneric<MT>,
-)
+) -> (BasefoldLateBindingCommitGeneric<MT>, BasefoldLateBindingProverDataGeneric<MT>)
 where
     MT: p3_commit::Mmcs<JaggedVal, Commitment: Clone> + Clone,
     D: p3_dft::TwoAdicSubgroupDft<JaggedVal> + Send + Sync,
@@ -356,7 +354,10 @@ where
 pub fn commit_jagged_pcs_no_observe(
     chip_traces: Vec<(String, RowMajorMatrix<JaggedVal>)>,
 ) -> (BasefoldLateBindingCommit, BasefoldLateBindingProverData) {
-    if std::env::var("ZIREN_GPU_BASEFOLD").map(|v| v != "0" && !v.eq_ignore_ascii_case("false")).unwrap_or(true) {
+    if std::env::var("ZIREN_GPU_BASEFOLD")
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+    {
         if let Some(hook) = get_gpu_basefold_commit_hook() {
             let mut throwaway: JaggedChallenger =
                 JaggedChallenger::new(zkm_primitives::poseidon2_init());
@@ -413,10 +414,7 @@ pub fn commit_jagged_pcs_no_observe_generic<MT, D>(
     mmcs: MT,
     dft: Arc<D>,
     fri: FriConfig<JaggedVal>,
-) -> (
-    BasefoldLateBindingCommitGeneric<MT>,
-    BasefoldLateBindingProverDataGeneric<MT>,
-)
+) -> (BasefoldLateBindingCommitGeneric<MT>, BasefoldLateBindingProverDataGeneric<MT>)
 where
     MT: p3_commit::Mmcs<JaggedVal, Commitment: Clone> + Clone,
     D: p3_dft::TwoAdicSubgroupDft<JaggedVal> + Send + Sync,
@@ -465,10 +463,7 @@ pub fn basefold_commit_digest_felts(
 
 pub fn basefold_commit_digest(commit: &BasefoldLateBindingCommit) -> [JaggedVal; 8] {
     let roots = commit.commitment.roots();
-    assert!(
-        !roots.is_empty(),
-        "BasefoldLateBindingCommit MerkleCap must have at least one root",
-    );
+    assert!(!roots.is_empty(), "BasefoldLateBindingCommit MerkleCap must have at least one root",);
     roots[0]
 }
 
@@ -584,15 +579,16 @@ pub fn get_gpu_basefold_commit_hook() -> Option<GpuBasefoldCommitFn> {
 /// These mirror `prove_jagged_reduction_owned`'s post-ITEM-12
 /// signature; the pre-ITEM-12 gamma/evals-observe/LSB-fold scaffold
 /// produced INVALID proofs once the host moved (s4 R4 fib rejection).
-pub type GpuJaggedReductionFn = fn(
-    dense_q: alloc::vec::Vec<JaggedVal>,
-    packing: &crate::jagged::JaggedPacking<JaggedVal>,
-    r_row_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
-    y_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
-    z_col: &[JaggedChallenge],
-    z_row: &[JaggedChallenge],
-    challenger: &mut JaggedChallenger,
-) -> Option<crate::jagged_sumcheck::JaggedReductionProof<JaggedChallenge>>;
+pub type GpuJaggedReductionFn =
+    fn(
+        dense_q: alloc::vec::Vec<JaggedVal>,
+        packing: &crate::jagged::JaggedPacking<JaggedVal>,
+        r_row_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
+        y_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
+        z_col: &[JaggedChallenge],
+        z_row: &[JaggedChallenge],
+        challenger: &mut JaggedChallenger,
+    ) -> Option<crate::jagged_sumcheck::JaggedReductionProof<JaggedChallenge>>;
 
 static GPU_JAGGED_REDUCTION_HOOK: std::sync::OnceLock<GpuJaggedReductionFn> =
     std::sync::OnceLock::new();
@@ -658,16 +654,17 @@ pub fn get_gpu_jagged_reduction_hook() -> Option<GpuJaggedReductionFn> {
 ///
 /// The handle is opaque — `zkm-pcs` never dereferences it.  The
 /// GPU side owns allocation / deallocation.
-pub type GpuJaggedReductionFnV2 = fn(
-    dense_q_host: alloc::vec::Vec<JaggedVal>,
-    dense_q_device_handle: Option<u64>,
-    packing: &crate::jagged::JaggedPacking<JaggedVal>,
-    r_row_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
-    y_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
-    z_col: &[JaggedChallenge],
-    z_row: &[JaggedChallenge],
-    challenger: &mut JaggedChallenger,
-) -> Option<crate::jagged_sumcheck::JaggedReductionProof<JaggedChallenge>>;
+pub type GpuJaggedReductionFnV2 =
+    fn(
+        dense_q_host: alloc::vec::Vec<JaggedVal>,
+        dense_q_device_handle: Option<u64>,
+        packing: &crate::jagged::JaggedPacking<JaggedVal>,
+        r_row_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
+        y_per_chip: &[alloc::vec::Vec<JaggedChallenge>],
+        z_col: &[JaggedChallenge],
+        z_row: &[JaggedChallenge],
+        challenger: &mut JaggedChallenger,
+    ) -> Option<crate::jagged_sumcheck::JaggedReductionProof<JaggedChallenge>>;
 
 static GPU_JAGGED_REDUCTION_HOOK_V2: std::sync::OnceLock<GpuJaggedReductionFnV2> =
     std::sync::OnceLock::new();
@@ -863,17 +860,13 @@ pub struct HostLayerView<'a> {
 /// Multi-GPU isolation — `circuit_id` scopes this hook to a single
 /// GKR-circuit build call.  See `GpuLayerTransitionFn` docs for the
 /// per-circuit registry rationale.
-pub type GpuLayerInitFn =
-    for<'a> fn(circuit_id: u64, view: HostLayerView<'a>) -> u64;
+pub type GpuLayerInitFn = for<'a> fn(circuit_id: u64, view: HostLayerView<'a>) -> u64;
 
-static GPU_LAYER_INIT_HOOK: std::sync::OnceLock<GpuLayerInitFn> =
-    std::sync::OnceLock::new();
+static GPU_LAYER_INIT_HOOK: std::sync::OnceLock<GpuLayerInitFn> = std::sync::OnceLock::new();
 
 /// Register the GPU row-GKR layer-init driver.  Idempotent; returns
 /// `Err(existing_hook)` when a hook was already registered.
-pub fn register_gpu_layer_init_hook(
-    f: GpuLayerInitFn,
-) -> Result<(), GpuLayerInitFn> {
+pub fn register_gpu_layer_init_hook(f: GpuLayerInitFn) -> Result<(), GpuLayerInitFn> {
     GPU_LAYER_INIT_HOOK.set(f)
 }
 
@@ -911,8 +904,7 @@ pub fn get_gpu_layer_init_hook() -> Option<GpuLayerInitFn> {
 /// `true` when the device fold is expected to fit (proceed to `init_hook`)
 /// and `false` to DECLINE to the host fold path.  Conservative: when the
 /// hook is unregistered the device path proceeds as before (no decline).
-pub type GpuLayerFitPreflightFn =
-    for<'a> fn(view: &HostLayerView<'a>) -> bool;
+pub type GpuLayerFitPreflightFn = for<'a> fn(view: &HostLayerView<'a>) -> bool;
 
 static GPU_LAYER_FIT_PREFLIGHT_HOOK: std::sync::OnceLock<GpuLayerFitPreflightFn> =
     std::sync::OnceLock::new();
@@ -947,19 +939,18 @@ pub fn get_gpu_layer_fit_preflight_hook() -> Option<GpuLayerFitPreflightFn> {
 /// circuit's intermediate states after extracting the requested
 /// terminal (no concurrent shards' state to step on, since they have
 /// distinct `circuit_id`s).
-pub type GpuLayerPullFn = fn(
-    circuit_id: u64,
-    handle: u64,
-) -> crate::shard_level::row_gkr::layer::LogUpGkrCpuLayer<JaggedChallenge, JaggedChallenge>;
+pub type GpuLayerPullFn =
+    fn(
+        circuit_id: u64,
+        handle: u64,
+    )
+        -> crate::shard_level::row_gkr::layer::LogUpGkrCpuLayer<JaggedChallenge, JaggedChallenge>;
 
-static GPU_LAYER_PULL_HOOK: std::sync::OnceLock<GpuLayerPullFn> =
-    std::sync::OnceLock::new();
+static GPU_LAYER_PULL_HOOK: std::sync::OnceLock<GpuLayerPullFn> = std::sync::OnceLock::new();
 
 /// Register the GPU row-GKR layer-pull driver.  Idempotent; returns
 /// `Err(existing_hook)` when a hook was already registered.
-pub fn register_gpu_layer_pull_hook(
-    f: GpuLayerPullFn,
-) -> Result<(), GpuLayerPullFn> {
+pub fn register_gpu_layer_pull_hook(f: GpuLayerPullFn) -> Result<(), GpuLayerPullFn> {
     GPU_LAYER_PULL_HOOK.set(f)
 }
 
@@ -1048,11 +1039,10 @@ pub fn get_gpu_layer_drain_circuit_hook() -> Option<GpuLayerDrainCircuitFn> {
 /// ziren-gpu builds, or when the feature is disabled), `top_level.rs`
 /// skips the install call and the scope's `circuit` stays `None` —
 /// byte-equivalent to the legacy TLS-handle dispatch.
-pub type GpuLogupScopePopulateFn = fn(
-    circuit_id: u64,
-) -> Option<
-    Vec<crate::shard_level::row_gkr::device_circuit::DeviceCircuitLayerPayload>,
->;
+pub type GpuLogupScopePopulateFn =
+    fn(
+        circuit_id: u64,
+    ) -> Option<Vec<crate::shard_level::row_gkr::device_circuit::DeviceCircuitLayerPayload>>;
 
 static GPU_LOGUP_SCOPE_POPULATE_HOOK: std::sync::OnceLock<GpuLogupScopePopulateFn> =
     std::sync::OnceLock::new();
@@ -1141,11 +1131,10 @@ pub fn get_gpu_v3_fetch_publish_hook() -> Option<GpuV3FetchPublishFn> {
 /// `generate_first_layer` CUDA kernel, and returns the resulting
 /// device layer payload + shape metadata.  Returns `None` on any
 /// failure (lookup miss, downcast fail, kernel error).
-pub type GpuGenerateFirstLayerFn = fn(
-    circuit_id: u64,
-) -> Option<
-    crate::shard_level::row_gkr::device_circuit::DeviceCircuitLayerPayload,
->;
+pub type GpuGenerateFirstLayerFn =
+    fn(
+        circuit_id: u64,
+    ) -> Option<crate::shard_level::row_gkr::device_circuit::DeviceCircuitLayerPayload>;
 
 static GPU_GENERATE_FIRST_LAYER_HOOK: std::sync::OnceLock<GpuGenerateFirstLayerFn> =
     std::sync::OnceLock::new();
@@ -1219,7 +1208,10 @@ pub fn open_jagged_pcs(
     eval_point: Vec<JaggedChallenge>,
     challenger: &mut JaggedChallenger,
 ) -> StackedBasefoldProof<JaggedVal, JaggedChallenge, JaggedMmcs> {
-    if std::env::var("ZIREN_GPU_BASEFOLD").map(|v| v != "0" && !v.eq_ignore_ascii_case("false")).unwrap_or(true) {
+    if std::env::var("ZIREN_GPU_BASEFOLD")
+        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+    {
         if let Some(hook) = get_gpu_basefold_open_hook() {
             // Transcript safety: the device open ADVANCES the
             // challenger (pre-prove grind, per-round digest observes,
@@ -1346,15 +1338,12 @@ pub type GpuBasefoldOpenFn = fn(
     (BasefoldLateBindingProverData, Vec<JaggedChallenge>),
 >;
 
-static GPU_BASEFOLD_OPEN_HOOK: std::sync::OnceLock<GpuBasefoldOpenFn> =
-    std::sync::OnceLock::new();
+static GPU_BASEFOLD_OPEN_HOOK: std::sync::OnceLock<GpuBasefoldOpenFn> = std::sync::OnceLock::new();
 
 /// Register the GPU BaseFold open driver.  Idempotent; returns
 /// `Err(existing_hook)` when a hook was already registered.  Called
 /// once by `ziren-gpu`'s `compress_multi_gpu` at startup.
-pub fn register_gpu_basefold_open_hook(
-    f: GpuBasefoldOpenFn,
-) -> Result<(), GpuBasefoldOpenFn> {
+pub fn register_gpu_basefold_open_hook(f: GpuBasefoldOpenFn) -> Result<(), GpuBasefoldOpenFn> {
     GPU_BASEFOLD_OPEN_HOOK.set(f)
 }
 
@@ -1420,8 +1409,7 @@ where
         + p3_challenger::GrindingChallenger<Witness = JaggedVal>
         + CanObserve<<MT as p3_commit::Mmcs<JaggedVal>>::Commitment>,
 {
-    let (_prover, verifier) =
-        build_pcs_generic::<MT, D>(log_stacking_height, mmcs, dft, fri);
+    let (_prover, verifier) = build_pcs_generic::<MT, D>(log_stacking_height, mmcs, dft, fri);
     verifier.verify_trusted_evaluation(
         core::slice::from_ref(commitment),
         &[area],
@@ -1547,15 +1535,14 @@ pub mod jagged {
     use p3_matrix::dense::RowMajorMatrix;
 
     use crate::basefold::StackedBasefoldProof;
-    use crate::jagged::{JaggedChipInfo, JaggedPacking, compute_jagged_metadata, materialize_dense_jagged};
-    use crate::jagged_sumcheck::{JaggedReductionProof, verify_jagged_reduction};
+    use crate::jagged::{
+        compute_jagged_metadata, materialize_dense_jagged, JaggedChipInfo, JaggedPacking,
+    };
+    use crate::jagged_sumcheck::{verify_jagged_reduction, JaggedReductionProof};
     use crate::kb31_poseidon2::{InnerChallenge, InnerVal};
 
     use super::{
-        BasefoldLateBindingCommit,
-        FriConfig,
-        commit_jagged_pcs, open_jagged_pcs,
-        verify_jagged_pcs,
+        commit_jagged_pcs, open_jagged_pcs, verify_jagged_pcs, BasefoldLateBindingCommit, FriConfig,
     };
 
     /// Wire-format jagged metadata: only the per-bundle quantities
@@ -1593,11 +1580,7 @@ pub mod jagged {
     ))]
     pub struct JaggedBasefoldBundleGeneric<MT: p3_commit::Mmcs<crate::jagged_pcs::JaggedVal>> {
         pub reduction: JaggedReductionProof<InnerChallenge>,
-        pub basefold_proof: StackedBasefoldProof<
-            InnerVal,
-            InnerChallenge,
-            MT,
-        >,
+        pub basefold_proof: StackedBasefoldProof<InnerVal, InnerChallenge, MT>,
         pub y_per_chip: Vec<Vec<InnerChallenge>>,
         pub commit: crate::jagged_pcs::BasefoldLateBindingCommitGeneric<MT>,
         pub packing: PackingMeta,
@@ -1677,7 +1660,8 @@ pub mod jagged {
         pub host_dense_q: Option<alloc::vec::Vec<crate::jagged_pcs::JaggedVal>>,
     }
     /// Concrete inner alias (MT = JaggedMmcs).
-    pub type PrecomputedJaggedCommit = PrecomputedJaggedCommitGeneric<crate::jagged_pcs::JaggedMmcs>;
+    pub type PrecomputedJaggedCommit =
+        PrecomputedJaggedCommitGeneric<crate::jagged_pcs::JaggedMmcs>;
 
     // ─────────────────────────────────────────────────────────────────
     // Single shard-wide commit buffer — GPU precompute-commit hook.
@@ -1764,9 +1748,7 @@ pub mod jagged {
         std::sync::OnceLock::new();
 
     /// Register the device BN254 wrap-commit hook (idempotent).
-    pub fn register_gpu_bn254_commit_hook(
-        f: GpuBn254CommitFn,
-    ) -> Result<(), GpuBn254CommitFn> {
+    pub fn register_gpu_bn254_commit_hook(f: GpuBn254CommitFn) -> Result<(), GpuBn254CommitFn> {
         GPU_BN254_COMMIT_HOOK.set(f)
     }
 
@@ -1806,16 +1788,13 @@ pub mod jagged {
         let _t_commit = std::time::Instant::now();
         let _commit_span = tracing::info_span!("jagged_dense_commit_pre").entered();
         let (commit, prover_data) = {
-            let dense_q =
-                materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
+            let dense_q = materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
             debug_assert_eq!(dense_q.len(), 1usize << packing.log_dense_size);
             let dense_traces = vec![(
                 alloc::string::String::from("<jagged-dense>"),
                 RowMajorMatrix::new(dense_q, 1),
             )];
-            crate::jagged_pcs::commit_jagged_pcs_no_observe(
-                dense_traces,
-            )
+            crate::jagged_pcs::commit_jagged_pcs_no_observe(dense_traces)
         };
         drop(_commit_span);
         tracing::info!(
@@ -1826,7 +1805,13 @@ pub mod jagged {
             "jagged sub-phase done"
         );
 
-        PrecomputedJaggedCommit { packing, commit, prover_data, dense_device_handle: None, host_dense_q: None }
+        PrecomputedJaggedCommit {
+            packing,
+            commit,
+            prover_data,
+            dense_device_handle: None,
+            host_dense_q: None,
+        }
     }
 
     /// Provider-aware host precompute (used when commit-traces are not
@@ -1845,8 +1830,7 @@ pub mod jagged {
     ) -> PrecomputedJaggedCommit {
         // No empty entry / no provider → identical to the plain path
         // (a cheap clone-through when nothing needs re-materializing).
-        let needs_remat =
-            provider.is_some() && chip_traces.iter().any(|(_, t)| t.width == 0);
+        let needs_remat = provider.is_some() && chip_traces.iter().any(|(_, t)| t.width == 0);
         if !needs_remat {
             return precompute_jagged_basefold_commit(chip_traces);
         }
@@ -1864,8 +1848,7 @@ pub mod jagged {
         // re-materialized chips that produced the committed digest).
         let full = rematerialize_chip_traces_via_provider(chip_traces, provider);
         let mut pre = precompute_jagged_basefold_commit(&full);
-        let dense_q =
-            materialize_dense_jagged::<InnerVal>(&full, pre.packing.log_dense_size);
+        let dense_q = materialize_dense_jagged::<InnerVal>(&full, pre.packing.log_dense_size);
         debug_assert_eq!(dense_q.len(), 1usize << pre.packing.log_dense_size);
         pre.host_dense_q = Some(dense_q);
         pre
@@ -1897,8 +1880,7 @@ pub mod jagged {
     {
         let packing = compute_jagged_metadata::<InnerVal>(chip_traces);
         let (commit, prover_data) = {
-            let dense_q =
-                materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
+            let dense_q = materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
             debug_assert_eq!(dense_q.len(), 1usize << packing.log_dense_size);
             let dense_traces = vec![(
                 alloc::string::String::from("<jagged-dense>"),
@@ -1938,12 +1920,19 @@ pub mod jagged {
                 (commit, prover_data)
             } else {
                 let dft = std::sync::Arc::new(crate::jagged_pcs::JaggedDft::default());
-                crate::jagged_pcs::commit_jagged_pcs_no_observe_generic::<MT, crate::jagged_pcs::JaggedDft>(
-                    dense_traces, mmcs, dft, fri,
-                )
+                crate::jagged_pcs::commit_jagged_pcs_no_observe_generic::<
+                    MT,
+                    crate::jagged_pcs::JaggedDft,
+                >(dense_traces, mmcs, dft, fri)
             }
         };
-        PrecomputedJaggedCommitGeneric { packing, commit, prover_data, dense_device_handle: None, host_dense_q: None }
+        PrecomputedJaggedCommitGeneric {
+            packing,
+            commit,
+            prover_data,
+            dense_device_handle: None,
+            host_dense_q: None,
+        }
     }
 
     /// **Prover-side one-call entry point** — full pipeline:
@@ -1956,13 +1945,7 @@ pub mod jagged {
         z_row: &[InnerChallenge],
         challenger: &mut crate::jagged_pcs::JaggedChallenger,
     ) -> JaggedBasefoldBundle {
-        prove_jagged_basefold_with_y_per_chip(
-            chip_traces,
-            r_row_per_chip,
-            z_row,
-            None,
-            challenger,
-        )
+        prove_jagged_basefold_with_y_per_chip(chip_traces, r_row_per_chip, z_row, None, challenger)
     }
 
     /// Single-main-commit variant: run steps (3)+(4)+(5)
@@ -2111,69 +2094,74 @@ pub mod jagged {
         // shard-level Phase 1 prologue.  Skip the in-band commit
         // observe in that case to keep transcripts aligned with the
         // verifier (which uses `verify_jagged_basefold_no_observe`).
-        let (packing, commit, prover_data, precomputed_dense_handle, precomputed_host_dense_q) = if let Some(pre) =
-            precomputed
-        {
-            tracing::debug!(
-                chips = n_chips,
-                "jagged_pcs: using precomputed commit (Option B single-main-commit flow)",
-            );
-            // #77: `pre.host_dense_q` is `Some` ONLY on the H53/TMFIT
-            // device-commit DECLINE path (the provider-aware host fallback
-            // body captured the correct dense_q while the provider was live).
-            // It carries the dense_q forward so the reduction below does not
-            // re-materialize from the (drained) provider.
-            (pre.packing, pre.commit, pre.prover_data, pre.dense_device_handle, pre.host_dense_q)
-        } else {
-            // No precompute → this path materializes the dense commit on
-            // host.  Re-materialize empty device-resident chips from the
-            // provider first so metadata dims + dense values are correct
-            // (no-op clone when provider is None / traces already full).
-            let chip_traces_full =
-                rematerialize_chip_traces_via_provider(chip_traces, provider);
-            let chip_traces: &[(alloc::string::String, RowMajorMatrix<InnerVal>)] =
-                &chip_traces_full;
-            let _t_meta = std::time::Instant::now();
-            let _meta_span = tracing::info_span!("jagged_compute_metadata").entered();
-            let packing = compute_jagged_metadata::<InnerVal>(chip_traces);
-            drop(_meta_span);
-            tracing::info!(
-                elapsed_ms = _t_meta.elapsed().as_millis() as u64,
-                chips = n_chips,
-                sub_phase = "compute_metadata",
-                "jagged sub-phase done"
-            );
+        let (packing, commit, prover_data, precomputed_dense_handle, precomputed_host_dense_q) =
+            if let Some(pre) = precomputed {
+                tracing::debug!(
+                    chips = n_chips,
+                    "jagged_pcs: using precomputed commit (Option B single-main-commit flow)",
+                );
+                // #77: `pre.host_dense_q` is `Some` ONLY on the H53/TMFIT
+                // device-commit DECLINE path (the provider-aware host fallback
+                // body captured the correct dense_q while the provider was live).
+                // It carries the dense_q forward so the reduction below does not
+                // re-materialize from the (drained) provider.
+                (
+                    pre.packing,
+                    pre.commit,
+                    pre.prover_data,
+                    pre.dense_device_handle,
+                    pre.host_dense_q,
+                )
+            } else {
+                // No precompute → this path materializes the dense commit on
+                // host.  Re-materialize empty device-resident chips from the
+                // provider first so metadata dims + dense values are correct
+                // (no-op clone when provider is None / traces already full).
+                let chip_traces_full =
+                    rematerialize_chip_traces_via_provider(chip_traces, provider);
+                let chip_traces: &[(alloc::string::String, RowMajorMatrix<InnerVal>)] =
+                    &chip_traces_full;
+                let _t_meta = std::time::Instant::now();
+                let _meta_span = tracing::info_span!("jagged_compute_metadata").entered();
+                let packing = compute_jagged_metadata::<InnerVal>(chip_traces);
+                drop(_meta_span);
+                tracing::info!(
+                    elapsed_ms = _t_meta.elapsed().as_millis() as u64,
+                    chips = n_chips,
+                    sub_phase = "compute_metadata",
+                    "jagged sub-phase done"
+                );
 
-            // Memory-critical ordering (E3 partial): materialize `dense_q`
-            // ONLY long enough to hand it to the commit — move, don't
-            // clone — then drop it and re-materialize for the reduction.
-            // Previous flow kept a duplicate live across (commit + reduction)
-            // which doubled peak RSS on wide workloads (tendermint OOM'd at
-            // 112 GB RSS).  Re-materialization is a cheap linear pass over
-            // `chip_traces` compared to the LDE / stripe work already done
-            // in the commit.
-            let _t_commit = std::time::Instant::now();
-            let _commit_span = tracing::info_span!("jagged_dense_commit").entered();
-            let (commit, prover_data) = {
-                let dense_q =
-                    materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
-                debug_assert_eq!(dense_q.len(), 1usize << packing.log_dense_size);
-                let dense_traces = vec![(
-                    alloc::string::String::from("<jagged-dense>"),
-                    RowMajorMatrix::new(dense_q, 1),
-                )];
-                commit_jagged_pcs(dense_traces, challenger)
+                // Memory-critical ordering (E3 partial): materialize `dense_q`
+                // ONLY long enough to hand it to the commit — move, don't
+                // clone — then drop it and re-materialize for the reduction.
+                // Previous flow kept a duplicate live across (commit + reduction)
+                // which doubled peak RSS on wide workloads (tendermint OOM'd at
+                // 112 GB RSS).  Re-materialization is a cheap linear pass over
+                // `chip_traces` compared to the LDE / stripe work already done
+                // in the commit.
+                let _t_commit = std::time::Instant::now();
+                let _commit_span = tracing::info_span!("jagged_dense_commit").entered();
+                let (commit, prover_data) = {
+                    let dense_q =
+                        materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
+                    debug_assert_eq!(dense_q.len(), 1usize << packing.log_dense_size);
+                    let dense_traces = vec![(
+                        alloc::string::String::from("<jagged-dense>"),
+                        RowMajorMatrix::new(dense_q, 1),
+                    )];
+                    commit_jagged_pcs(dense_traces, challenger)
+                };
+                drop(_commit_span);
+                tracing::info!(
+                    elapsed_ms = _t_commit.elapsed().as_millis() as u64,
+                    chips = n_chips,
+                    log_dense_size = packing.log_dense_size as u64,
+                    sub_phase = "dense_commit",
+                    "jagged sub-phase done"
+                );
+                (packing, commit, prover_data, None, None)
             };
-            drop(_commit_span);
-            tracing::info!(
-                elapsed_ms = _t_commit.elapsed().as_millis() as u64,
-                chips = n_chips,
-                log_dense_size = packing.log_dense_size as u64,
-                sub_phase = "dense_commit",
-                "jagged sub-phase done"
-            );
-            (packing, commit, prover_data, None, None)
-        };
 
         // (3) Compute per-chip per-column row-MLE values y_{c,j}.
         //
@@ -2258,8 +2246,8 @@ pub mod jagged {
                                 } else {
                                     row
                                 };
-                                acc += eq_c[row]
-                                    * InnerChallenge::from(trace.values[src * w + col]);
+                                acc +=
+                                    eq_c[row] * InnerChallenge::from(trace.values[src * w + col]);
                             }
                             acc
                         })
@@ -2319,9 +2307,8 @@ pub mod jagged {
         // jagged-eval sub-protocol.  Mirrors recursive_jagged_pcs.rs.
         let num_cols = packing.offsets.len().saturating_sub(1);
         let num_col_vars = num_cols.next_power_of_two().trailing_zeros() as usize;
-        let z_col: Vec<InnerChallenge> = (0..num_col_vars)
-            .map(|_| challenger.sample_algebra_element())
-            .collect();
+        let z_col: Vec<InnerChallenge> =
+            (0..num_col_vars).map(|_| challenger.sample_algebra_element()).collect();
 
         // DROPLDES (#74): free the prior-phase device residency BEFORE
         // the jagged sumcheck reduce -- SP1's drop_ldes + read-base-by-ref
@@ -2341,9 +2328,8 @@ pub mod jagged {
                 .map(|v| v != "0")
                 .unwrap_or(false);
             if free_pre_reduce {
-                let try_gpu_pr = std::env::var("ZIREN_GPU_JAGGED_PCS")
-                    .map(|v| v != "0")
-                    .unwrap_or(false);
+                let try_gpu_pr =
+                    std::env::var("ZIREN_GPU_JAGGED_PCS").map(|v| v != "0").unwrap_or(false);
                 let hook_v2_present = super::get_gpu_jagged_reduction_hook_v2().is_some();
                 let device_happy =
                     precomputed_dense_handle.is_some() && try_gpu_pr && hook_v2_present;
@@ -2424,9 +2410,8 @@ pub mod jagged {
             // the device buffer (the same one the commit was packed
             // from) is the source.  Every fallback edge below
             // re-materializes on host before running the host body.
-            let skip_host_dense = precomputed_dense_handle.is_some()
-                && try_gpu
-                && hook_v2.is_some();
+            let skip_host_dense =
+                precomputed_dense_handle.is_some() && try_gpu && hook_v2.is_some();
             // #77: true when `dense_q` below is the CARRIED host dense_q from
             // the device-commit-decline fallback — the provider is DRAINED by
             // reduction time so this is the ONLY correct source; the V2/V1
@@ -2453,8 +2438,7 @@ pub mod jagged {
                 // When device-resident chips carry empty host traces,
                 // re-materialize them from the provider before the host
                 // dense pack (cold path — happy path takes skip_host_dense).
-                let rematerialized =
-                    rematerialize_chip_traces_via_provider(chip_traces, provider);
+                let rematerialized = rematerialize_chip_traces_via_provider(chip_traces, provider);
                 materialize_dense_jagged::<InnerVal>(&rematerialized, packing.log_dense_size)
             };
 
@@ -2499,17 +2483,13 @@ pub mod jagged {
             // hook takes it from the registry (`DenseQDevice::Owned`) so
             // commit + reduction share ONE device buffer.  `None` on the
             // host build path — V2 collapses to V1 semantics.
-            let dense_q_device_handle: Option<u64> = if try_gpu && hook_v2.is_some() {
-                precomputed_dense_handle
-            } else {
-                None
-            };
+            let dense_q_device_handle: Option<u64> =
+                if try_gpu && hook_v2.is_some() { precomputed_dense_handle } else { None };
 
             match active {
                 ActiveHook::V2(f) => {
-                    let _ = super::jagged_dispatch_diag::bump(
-                        &super::jagged_dispatch_diag::HOOK_FIRED,
-                    );
+                    let _ =
+                        super::jagged_dispatch_diag::bump(&super::jagged_dispatch_diag::HOOK_FIRED);
                     let _ = super::jagged_dispatch_diag::bump(
                         &super::jagged_dispatch_diag::V2_HOOK_FIRED,
                     );
@@ -2531,7 +2511,8 @@ pub mod jagged {
                         Some(dense_q.clone())
                     } else if !dense_q.is_empty()
                         && std::env::var("ZIREN_GPU_JAGGED_PCS_HOST_GUARD")
-                            .map(|v| v == "1").unwrap_or(false)
+                            .map(|v| v == "1")
+                            .unwrap_or(false)
                     {
                         Some(dense_q.clone())
                     } else {
@@ -2576,10 +2557,7 @@ pub mod jagged {
                                 // reduction fallback rebuilds the correct
                                 // dense_q (not a partial zero buffer).
                                 let rematerialized =
-                                    rematerialize_chip_traces_via_provider(
-                                        chip_traces,
-                                        provider,
-                                    );
+                                    rematerialize_chip_traces_via_provider(chip_traces, provider);
                                 materialize_dense_jagged::<InnerVal>(
                                     &rematerialized,
                                     packing.log_dense_size,
@@ -2598,9 +2576,8 @@ pub mod jagged {
                     }
                 }
                 ActiveHook::V1(f) => {
-                    let _ = super::jagged_dispatch_diag::bump(
-                        &super::jagged_dispatch_diag::HOOK_FIRED,
-                    );
+                    let _ =
+                        super::jagged_dispatch_diag::bump(&super::jagged_dispatch_diag::HOOK_FIRED);
                     // Move dense_q into the hook.  Move-not-clone:
                     // avoids holding a 4N base-field duplicate live
                     // across the call.  On a hard fall-through (None
@@ -2614,7 +2591,8 @@ pub mod jagged {
                     let saved_dense = if dense_q_is_carried {
                         Some(dense_q.clone())
                     } else if std::env::var("ZIREN_GPU_JAGGED_PCS_HOST_GUARD")
-                        .map(|v| v == "1").unwrap_or(false)
+                        .map(|v| v == "1")
+                        .unwrap_or(false)
                     {
                         Some(dense_q.clone())
                     } else {
@@ -2642,10 +2620,7 @@ pub mod jagged {
                             let dense_q = saved_dense.unwrap_or_else(|| {
                                 // Provider-aware re-materialize (V1 twin).
                                 let rematerialized =
-                                    rematerialize_chip_traces_via_provider(
-                                        chip_traces,
-                                        provider,
-                                    );
+                                    rematerialize_chip_traces_via_provider(chip_traces, provider);
                                 materialize_dense_jagged::<InnerVal>(
                                     &rematerialized,
                                     packing.log_dense_size,
@@ -2700,12 +2675,10 @@ pub mod jagged {
         // so the host test/verify path is unaffected.  Kill-switch:
         // ZIREN_GPU_FREE_TRACES_PRE_OPEN=0.
         if let Some(p) = provider {
-            let free_pre_open = std::env::var("ZIREN_GPU_FREE_TRACES_PRE_OPEN")
-                .map(|v| v != "0")
-                .unwrap_or(true);
+            let free_pre_open =
+                std::env::var("ZIREN_GPU_FREE_TRACES_PRE_OPEN").map(|v| v != "0").unwrap_or(true);
             if free_pre_open {
-                let _rel_span =
-                    tracing::info_span!("piece2_free_traces_pre_open").entered();
+                let _rel_span = tracing::info_span!("piece2_free_traces_pre_open").entered();
                 p.release_all();
                 tracing::info!(
                     chips = n_chips,
@@ -2731,8 +2704,7 @@ pub mod jagged {
         // the reduction's closing weight w_at_z (the SP1 closing identity
         // validated by phase1_acceptance_gate).  reduction.eval_point is
         // kept UN-reversed for the BaseFold open below (the PCS point).
-        let z_trace_be: Vec<InnerChallenge> =
-            reduction.eval_point.iter().rev().copied().collect();
+        let z_trace_be: Vec<InnerChallenge> = reduction.eval_point.iter().rev().copied().collect();
         let jagged_eval = crate::jagged_eval_sumcheck::prove_jagged_evaluation(
             &packing.offsets,
             z_row,
@@ -2778,11 +2750,7 @@ pub mod jagged {
         }
         let _t_open = std::time::Instant::now();
         let _open_span = tracing::info_span!("jagged_basefold_open").entered();
-        let proof = open_jagged_pcs(
-            prover_data,
-            extended_eval_point,
-            challenger,
-        );
+        let proof = open_jagged_pcs(prover_data, extended_eval_point, challenger);
         drop(_open_span);
         tracing::info!(
             elapsed_ms = _t_open.elapsed().as_millis() as u64,
@@ -2797,11 +2765,7 @@ pub mod jagged {
             log_dense_size: packing.log_dense_size,
             // fix: per-chip *actual* column count, so verifier
             // does not need to consult `BaseAir::width(chip)`.
-            column_counts: packing
-                .chip_infos
-                .iter()
-                .map(|ci| ci.column_count)
-                .collect(),
+            column_counts: packing.chip_infos.iter().map(|ci| ci.column_count).collect(),
         };
         JaggedBasefoldBundle {
             reduction,
@@ -2836,13 +2800,22 @@ pub mod jagged {
             + CanObserve<<MT as p3_commit::Mmcs<crate::jagged_pcs::JaggedVal>>::Commitment>,
     {
         use p3_maybe_rayon::prelude::*;
-        let PrecomputedJaggedCommitGeneric { packing, commit, prover_data, dense_device_handle: _, host_dense_q: _ } = precomputed;
+        let PrecomputedJaggedCommitGeneric {
+            packing,
+            commit,
+            prover_data,
+            dense_device_handle: _,
+            host_dense_q: _,
+        } = precomputed;
 
         // (3) per-chip per-column row-MLE values y_{c,j} (field-only; mirrors
         // the host path including the ITEM-12 embedding factor + empty-chip skip).
         let y_per_chip: Vec<Vec<InnerChallenge>> = if let Some(pre) = pre_y_per_chip {
-            assert_eq!(pre.len(), chip_traces.len(),
-                "pre_y_per_chip length must match chip_traces length");
+            assert_eq!(
+                pre.len(),
+                chip_traces.len(),
+                "pre_y_per_chip length must match chip_traces length"
+            );
             pre
         } else {
             chip_traces
@@ -2857,10 +2830,10 @@ pub mod jagged {
                     let h_padded = h.next_power_of_two();
                     assert_eq!(h_padded.trailing_zeros() as usize, r_row_c.len());
                     let _ = r_row_c; // SP1 convention uses the full z_row row_eq
-                    // SP1-faithful column claim: full row_eq over z_row indexed
-                    // by the NATURAL row (eq(z_row, r)), no Pi_high embedding.
-                    // Build over reversed z_row so eq_c[r] = eq(z_row, r) (undo
-                    // eq_mle_table's LSB-first bitrev), matching build_weight_table.
+                                     // SP1-faithful column claim: full row_eq over z_row indexed
+                                     // by the NATURAL row (eq(z_row, r)), no Pi_high embedding.
+                                     // Build over reversed z_row so eq_c[r] = eq(z_row, r) (undo
+                                     // eq_mle_table's LSB-first bitrev), matching build_weight_table.
                     let z_row_rev: Vec<InnerChallenge> = z_row.iter().rev().copied().collect();
                     let eq_c = crate::zerocheck_prover::eq_mle_table::<InnerChallenge>(&z_row_rev);
                     // Orientation: bit-reverse the trace row index so
@@ -2877,8 +2850,8 @@ pub mod jagged {
                                 } else {
                                     row
                                 };
-                                acc += eq_c[row]
-                                    * InnerChallenge::from(trace.values[src * w + col]);
+                                acc +=
+                                    eq_c[row] * InnerChallenge::from(trace.values[src * w + col]);
                             }
                             acc
                         })
@@ -2890,24 +2863,31 @@ pub mod jagged {
         // (4) sample z_col, then run the HOST jagged-sumcheck reduction.
         let num_cols = packing.offsets.len().saturating_sub(1);
         let num_col_vars = num_cols.next_power_of_two().trailing_zeros() as usize;
-        let z_col: Vec<InnerChallenge> = (0..num_col_vars)
-            .map(|_| challenger.sample_algebra_element())
-            .collect();
+        let z_col: Vec<InnerChallenge> =
+            (0..num_col_vars).map(|_| challenger.sample_algebra_element()).collect();
         let reduction = {
-            let dense_q =
-                materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
+            let dense_q = materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
             crate::jagged_sumcheck::prove_jagged_reduction_owned(
-                dense_q, &packing, r_row_per_chip, &y_per_chip, &z_col, z_row, challenger,
+                dense_q,
+                &packing,
+                r_row_per_chip,
+                &y_per_chip,
+                &z_col,
+                z_row,
+                challenger,
             )
         };
 
         // jagged-eval sub-proof at (z_row, z_col, z*).  PHASE 2 (jagged SP1
         // re-align): feed rev(z_star) — BP reads z_index big-endian while the
         // reduction emits z_star little-endian (see prove_jagged_basefold_inner).
-        let z_trace_be: Vec<InnerChallenge> =
-            reduction.eval_point.iter().rev().copied().collect();
+        let z_trace_be: Vec<InnerChallenge> = reduction.eval_point.iter().rev().copied().collect();
         let jagged_eval = crate::jagged_eval_sumcheck::prove_jagged_evaluation(
-            &packing.offsets, z_row, &z_col, &z_trace_be, challenger,
+            &packing.offsets,
+            z_row,
+            &z_col,
+            &z_trace_be,
+            challenger,
         );
 
         // (5) extend the eval point to log2(area) + BaseFold open at z*.
@@ -3023,48 +3003,80 @@ pub mod jagged {
             {
                 let mut col_idx = 0usize;
                 for &cc in pcc.iter() {
-                    if cc == 0 { prc.push(0); continue; }
+                    if cc == 0 {
+                        prc.push(0);
+                        continue;
+                    }
                     let h = if col_idx + 1 < offsets.len() {
                         offsets[col_idx + 1].saturating_sub(offsets[col_idx])
                     } else if col_idx < offsets.len() {
                         tv.saturating_sub(offsets[col_idx])
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     prc.push(h);
                     col_idx += cc;
                 }
             }
             let ccbr: Vec<Vec<usize>> = if pcc.is_empty() { vec![] } else { vec![pcc.clone()] };
-            let total_cols_before_pad: usize = ccbr.iter().map(|cc| {
-                let flat = cc.iter().sum::<usize>();
-                let added = if cc.len() >= 2 { cc[cc.len() - 2] + 1 } else { 1 };
-                flat + added
-            }).sum();
+            let total_cols_before_pad: usize = ccbr
+                .iter()
+                .map(|cc| {
+                    let flat = cc.iter().sum::<usize>();
+                    let added = if cc.len() >= 2 { cc[cc.len() - 2] + 1 } else { 1 };
+                    flat + added
+                })
+                .sum();
             let padded_cols = total_cols_before_pad.max(1).next_power_of_two();
             let col_prefix_sums_len = padded_cols + 1;
             let jagged_pt_len = bundle.jagged_eval.partial_sumcheck_proof.point_and_eval.0.len();
             let bits_per_entry = if jagged_pt_len >= 2 { jagged_pt_len / 2 } else { 0 };
-            let clamp = if bits_per_entry < 63 { (1usize << bits_per_entry) - 1 } else { usize::MAX };
-            let cap = |v: usize| -> usize { if bits_per_entry < 63 { v.min(clamp) } else { v } };
+            let clamp =
+                if bits_per_entry < 63 { (1usize << bits_per_entry) - 1 } else { usize::MAX };
+            let cap = |v: usize| -> usize {
+                if bits_per_entry < 63 {
+                    v.min(clamp)
+                } else {
+                    v
+                }
+            };
             // col_prefix_sums (shard_level_witness.rs:994-1039)
             let mut cps: Vec<usize> = vec![0usize];
-            let mut oi = 0usize; let mut co = 0usize;
+            let mut oi = 0usize;
+            let mut co = 0usize;
             for cc in ccbr.iter() {
                 let real = cc.iter().sum::<usize>();
                 for _ in 0..real {
-                    if oi < offsets.len() { co = offsets[oi]; oi += 1; }
-                    if cps.len() >= col_prefix_sums_len { break; }
+                    if oi < offsets.len() {
+                        co = offsets[oi];
+                        oi += 1;
+                    }
+                    if cps.len() >= col_prefix_sums_len {
+                        break;
+                    }
                     cps.push(cap(co));
                 }
                 let added = if cc.len() >= 2 { cc[cc.len() - 2] + 1 } else { 1 };
-                for _ in 0..added { if cps.len() >= col_prefix_sums_len { break; } cps.push(cap(co)); }
+                for _ in 0..added {
+                    if cps.len() >= col_prefix_sums_len {
+                        break;
+                    }
+                    cps.push(cap(co));
+                }
             }
-            while cps.len() < col_prefix_sums_len - 1 { cps.push(cap(co)); }
-            if cps.len() < col_prefix_sums_len { cps.push(cap(tv)); }
+            while cps.len() < col_prefix_sums_len - 1 {
+                cps.push(cap(co));
+            }
+            if cps.len() < col_prefix_sums_len {
+                cps.push(cap(tv));
+            }
             let prefix_sum: Vec<usize> = cps.iter().skip(1).copied().collect();
             let mut repeated: Vec<usize> = Vec::new();
             for (round_rc, round_cc) in std::iter::repeat(&prc).zip(ccbr.iter()) {
                 for (&rc, &cc) in round_rc.iter().zip(round_cc.iter()) {
-                    for _ in 0..cc { repeated.push(rc); }
+                    for _ in 0..cc {
+                        repeated.push(rc);
+                    }
                 }
             }
             let max_off = offsets.iter().copied().max().unwrap_or(0);
@@ -3074,8 +3086,13 @@ pub mod jagged {
                 padded_cols, prefix_sum.len(), repeated.len());
             eprintln!("[STEP7] column_counts={:?}", pcc);
             eprintln!("[STEP7] row_counts={:?}", prc);
-            eprintln!("[STEP7] offsets head={:?} tail={:?}", &offsets[..offsets.len().min(10)], &offsets[offsets.len().saturating_sub(6)..]);
-            let mut acc = 0usize; let mut found = false;
+            eprintln!(
+                "[STEP7] offsets head={:?} tail={:?}",
+                &offsets[..offsets.len().min(10)],
+                &offsets[offsets.len().saturating_sub(6)..]
+            );
+            let mut acc = 0usize;
+            let mut found = false;
             for (k, (rc, expected)) in repeated.iter().zip(prefix_sum.iter()).enumerate() {
                 if acc != *expected && !found {
                     found = true;
@@ -3084,16 +3101,20 @@ pub mod jagged {
                 }
                 acc += *rc;
             }
-            if !found { eprintln!("[STEP7] NO divergence over {} pairs (acc==prefix_sum)", repeated.len().min(prefix_sum.len())); }
+            if !found {
+                eprintln!(
+                    "[STEP7] NO divergence over {} pairs (acc==prefix_sum)",
+                    repeated.len().min(prefix_sum.len())
+                );
+            }
         }
         // SP1-aligned: sample z_col at the matching transcript position
         // (after the commit observe, before the reduction), mirroring
         // the prover.
         let num_cols = packing.offsets.len().saturating_sub(1);
         let num_col_vars = num_cols.next_power_of_two().trailing_zeros() as usize;
-        let z_col: Vec<InnerChallenge> = (0..num_col_vars)
-            .map(|_| challenger.sample_algebra_element())
-            .collect();
+        let z_col: Vec<InnerChallenge> =
+            (0..num_col_vars).map(|_| challenger.sample_algebra_element()).collect();
         let red_result = verify_jagged_reduction(
             &bundle.reduction,
             &packing,
@@ -3157,11 +3178,7 @@ pub mod jagged {
         packing: &PackingMeta,
         chip_widths: &[usize],
         eval_point: &[InnerChallenge],
-    ) -> (
-        Vec<crate::jagged::JaggedChipInfo>,
-        Vec<Vec<InnerChallenge>>,
-        Vec<InnerChallenge>,
-    ) {
+    ) -> (Vec<crate::jagged::JaggedChipInfo>, Vec<Vec<InnerChallenge>>, Vec<InnerChallenge>) {
         use crate::jagged::JaggedChipInfo;
         let column_counts = &packing.column_counts;
         let mut chip_infos: Vec<JaggedChipInfo> = (0..chip_widths.len())
@@ -3192,8 +3209,7 @@ pub mod jagged {
         let r_row_per_chip: Vec<Vec<InnerChallenge>> = chip_infos
             .iter()
             .map(|info| {
-                let log_h =
-                    info.row_count.max(1).next_power_of_two().trailing_zeros() as usize;
+                let log_h = info.row_count.max(1).next_power_of_two().trailing_zeros() as usize;
                 if eval_point.len() >= log_h {
                     eval_point[eval_point.len() - log_h..].to_vec()
                 } else {
@@ -3241,9 +3257,8 @@ pub mod jagged {
         };
         let num_cols = packing.offsets.len().saturating_sub(1);
         let num_col_vars = num_cols.next_power_of_two().trailing_zeros() as usize;
-        let z_col: Vec<InnerChallenge> = (0..num_col_vars)
-            .map(|_| challenger.sample_algebra_element())
-            .collect();
+        let z_col: Vec<InnerChallenge> =
+            (0..num_col_vars).map(|_| challenger.sample_algebra_element()).collect();
         let red_result = crate::jagged_sumcheck::verify_jagged_reduction(
             &bundle.reduction,
             &packing,
@@ -3306,8 +3321,7 @@ mod test {
     }
 
     fn build_challenger() -> JaggedChallenger {
-        let perm: crate::kb31_poseidon2::InnerPerm =
-            zkm_primitives::poseidon2_init();
+        let perm: crate::kb31_poseidon2::InnerPerm = zkm_primitives::poseidon2_init();
         JaggedChallenger::new(perm)
     }
 
@@ -3330,8 +3344,7 @@ mod test {
         ];
 
         let mut p_chal = build_challenger();
-        let (commit, prover_data) =
-            commit_jagged_pcs(traces.clone(), &mut p_chal);
+        let (commit, prover_data) = commit_jagged_pcs(traces.clone(), &mut p_chal);
 
         // Compute the eval point + claim for the stacked PCS.  Claim
         // is the multilinear-extension of the *flattened*
@@ -3340,8 +3353,7 @@ mod test {
         let num_stripes = commit.area >> stack_dim;
         let num_batch_vars = num_stripes.next_power_of_two().trailing_zeros() as usize;
         let total_vars = num_batch_vars + stack_dim;
-        let eval_point: Vec<JaggedChallenge> =
-            (0..total_vars).map(|_| rand_ef(&mut rng)).collect();
+        let eval_point: Vec<JaggedChallenge> = (0..total_vars).map(|_| rand_ef(&mut rng)).collect();
 
         let stack_point: Vec<JaggedChallenge> = eval_point[..stack_dim].to_vec();
         let batch_evals_flat: Vec<JaggedChallenge> = prover_data
@@ -3392,9 +3404,7 @@ mod test {
     /// were moved out of the whir feature gate.
     #[test]
     fn test_jagged_basefold_roundtrip() {
-        use crate::jagged_pcs::jagged::{
-            prove_jagged_basefold, verify_jagged_basefold,
-        };
+        use crate::jagged_pcs::jagged::{prove_jagged_basefold, verify_jagged_basefold};
 
         let mut rng = StdRng::seed_from_u64(0xC0DE_BA5E);
 
@@ -3422,23 +3432,18 @@ mod test {
             .collect();
 
         let mut p_chal = build_challenger();
-        let z_row_test: Vec<JaggedChallenge> = r_row_per_chip
-            .iter()
-            .max_by_key(|v| v.len())
-            .cloned()
-            .unwrap_or_default();
-        let bundle =
-            prove_jagged_basefold(&traces, &r_row_per_chip, &z_row_test, &mut p_chal);
+        let z_row_test: Vec<JaggedChallenge> =
+            r_row_per_chip.iter().max_by_key(|v| v.len()).cloned().unwrap_or_default();
+        let bundle = prove_jagged_basefold(&traces, &r_row_per_chip, &z_row_test, &mut p_chal);
 
         // Verifier reconstructs chip_infos from the same traces it
         // already has access to via the protocol's outer loop.
-        let chip_infos =
-            crate::jagged::compute_jagged_metadata::<JaggedVal>(&traces).chip_infos;
+        let chip_infos = crate::jagged::compute_jagged_metadata::<JaggedVal>(&traces).chip_infos;
         let mut v_chal = build_challenger();
-        let ok = verify_jagged_basefold(&chip_infos, &r_row_per_chip, &z_row_test, &bundle, &mut v_chal);
+        let ok =
+            verify_jagged_basefold(&chip_infos, &r_row_per_chip, &z_row_test, &bundle, &mut v_chal);
         assert!(ok, "jagged-basefold pipeline should accept honest proof");
     }
-
 
     /// **Soundness sanity** — flipping any single field of the bundle
     /// must cause the verifier to reject.  Catches whole classes of
@@ -3446,10 +3451,8 @@ mod test {
     /// honest-prover tests but admit forgery.
     #[test]
     fn test_jagged_basefold_rejects_tampered_proof() {
+        use crate::jagged_pcs::jagged::{prove_jagged_basefold, verify_jagged_basefold};
         use p3_field::PrimeCharacteristicRing;
-        use crate::jagged_pcs::jagged::{
-            prove_jagged_basefold, verify_jagged_basefold,
-        };
 
         let mut rng = StdRng::seed_from_u64(0xDEAD_BEEF);
         let mk_trace =
@@ -3468,22 +3471,23 @@ mod test {
             .collect();
 
         let mut p_chal = build_challenger();
-        let z_row_test: Vec<JaggedChallenge> = r_row_per_chip
-            .iter()
-            .max_by_key(|v| v.len())
-            .cloned()
-            .unwrap_or_default();
-        let bundle =
-            prove_jagged_basefold(&traces, &r_row_per_chip, &z_row_test, &mut p_chal);
-        let chip_infos =
-            crate::jagged::compute_jagged_metadata::<JaggedVal>(&traces).chip_infos;
+        let z_row_test: Vec<JaggedChallenge> =
+            r_row_per_chip.iter().max_by_key(|v| v.len()).cloned().unwrap_or_default();
+        let bundle = prove_jagged_basefold(&traces, &r_row_per_chip, &z_row_test, &mut p_chal);
+        let chip_infos = crate::jagged::compute_jagged_metadata::<JaggedVal>(&traces).chip_infos;
 
         // Tamper #1: corrupt the sumcheck final claim `q_at_z`.
         let mut tampered = bundle.clone();
         tampered.reduction.q_at_z = tampered.reduction.q_at_z + JaggedChallenge::ONE;
         let mut v_chal = build_challenger();
         assert!(
-            !verify_jagged_basefold(&chip_infos, &r_row_per_chip, &z_row_test, &tampered, &mut v_chal),
+            !verify_jagged_basefold(
+                &chip_infos,
+                &r_row_per_chip,
+                &z_row_test,
+                &tampered,
+                &mut v_chal
+            ),
             "verifier must reject q_at_z tampering"
         );
 
@@ -3492,7 +3496,13 @@ mod test {
         tampered.y_per_chip[0][0] = tampered.y_per_chip[0][0] + JaggedChallenge::ONE;
         let mut v_chal = build_challenger();
         assert!(
-            !verify_jagged_basefold(&chip_infos, &r_row_per_chip, &z_row_test, &tampered, &mut v_chal),
+            !verify_jagged_basefold(
+                &chip_infos,
+                &r_row_per_chip,
+                &z_row_test,
+                &tampered,
+                &mut v_chal
+            ),
             "verifier must reject y_per_chip tampering"
         );
 
@@ -3502,7 +3512,13 @@ mod test {
             tampered.basefold_proof.basefold_proof.final_poly + JaggedChallenge::ONE;
         let mut v_chal = build_challenger();
         assert!(
-            !verify_jagged_basefold(&chip_infos, &r_row_per_chip, &z_row_test, &tampered, &mut v_chal),
+            !verify_jagged_basefold(
+                &chip_infos,
+                &r_row_per_chip,
+                &z_row_test,
+                &tampered,
+                &mut v_chal
+            ),
             "verifier must reject final_poly tampering"
         );
     }
@@ -3535,8 +3551,8 @@ mod test {
 
     #[test]
     fn test_jagged_dispatch_diag_bump_returns_new_count() {
-        use core::sync::atomic::AtomicU64;
         use super::jagged_dispatch_diag::bump;
+        use core::sync::atomic::AtomicU64;
         let counter = AtomicU64::new(0);
         assert_eq!(bump(&counter), 1);
         assert_eq!(bump(&counter), 2);
@@ -3545,8 +3561,8 @@ mod test {
 
     #[test]
     fn test_jagged_dispatch_diag_reset() {
-        use core::sync::atomic::{AtomicU64, Ordering};
         use super::jagged_dispatch_diag::bump;
+        use core::sync::atomic::{AtomicU64, Ordering};
         let counter = AtomicU64::new(0);
         bump(&counter);
         bump(&counter);
@@ -3555,14 +3571,10 @@ mod test {
         // first to ensure the API surface compiles & runs.
         super::jagged_dispatch_diag::reset_all();
         assert_eq!(
-            super::jagged_dispatch_diag::ENV_SET_BUT_UNREGISTERED
-                .load(Ordering::Relaxed),
+            super::jagged_dispatch_diag::ENV_SET_BUT_UNREGISTERED.load(Ordering::Relaxed),
             0,
         );
-        assert_eq!(
-            super::jagged_dispatch_diag::SHAPE_REJECTED.load(Ordering::Relaxed),
-            0,
-        );
+        assert_eq!(super::jagged_dispatch_diag::SHAPE_REJECTED.load(Ordering::Relaxed), 0,);
     }
 
     // V2 hook signature smoke test.
@@ -3575,8 +3587,7 @@ mod test {
         // but we DO exercise the type so the signature is stable.
         let _hook: super::GpuJaggedReductionFnV2 = test_v2_hook_noop;
         // get_gpu_jagged_reduction_hook_v2 must be callable.
-        let _: Option<super::GpuJaggedReductionFnV2> =
-            super::get_gpu_jagged_reduction_hook_v2();
+        let _: Option<super::GpuJaggedReductionFnV2> = super::get_gpu_jagged_reduction_hook_v2();
     }
 
     fn test_v2_hook_noop(

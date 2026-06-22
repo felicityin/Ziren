@@ -25,7 +25,6 @@ impl Default for FoldOrientation {
     }
 }
 
-
 /// Per-chip cumulative-sum exposures emitted by the LogUp-GKR
 /// prover; lives as a sibling of `opened_values` to keep the `F`
 /// generic out of the LogUp-GKR proof types.
@@ -146,10 +145,8 @@ mod tests {
 
     #[test]
     fn basefold_shard_proof_rmp_roundtrip() {
-        let proof: BasefoldShardProof<F, EF> = BasefoldShardProof::empty(
-            std::array::from_fn(|_| F::ZERO),
-            16,
-        );
+        let proof: BasefoldShardProof<F, EF> =
+            BasefoldShardProof::empty(std::array::from_fn(|_| F::ZERO), 16);
         let bytes = rmp_serde::to_vec(&proof).expect("serializes via rmp");
         let back: BasefoldShardProof<F, EF> =
             rmp_serde::from_slice(&bytes).expect("deserializes via rmp");
@@ -169,7 +166,9 @@ mod tests {
     /// compact array, so a SHORTER old array fills the new trailing
     /// fields from their defaults).
     #[derive(Serialize)]
-    #[serde(bound = "F: Serialize + for<'d> Deserialize<'d>, EF: Serialize + for<'d> Deserialize<'d>")]
+    #[serde(
+        bound = "F: Serialize + for<'d> Deserialize<'d>, EF: Serialize + for<'d> Deserialize<'d>"
+    )]
     struct OldBasefoldShardProof<F, EF> {
         public_values: Vec<F>,
         main_commitment: [F; 8],
@@ -177,8 +176,7 @@ mod tests {
         zerocheck_proof: PartialSumcheckProof<EF>,
         opened_values: ShardOpenedValues<F, EF>,
         chip_log_heights: std::collections::BTreeMap<String, u8>,
-        chip_cumulative_sums:
-            std::collections::BTreeMap<String, ChipCumulativeSums<F, EF>>,
+        chip_cumulative_sums: std::collections::BTreeMap<String, ChipCumulativeSums<F, EF>>,
         evaluation_proof: EvaluationProof,
         fold_orientation: FoldOrientation,
     }
@@ -203,38 +201,29 @@ mod tests {
         assert_eq!(back.public_values.len(), 7);
         // The new fields default to empty (serde(default)).
         assert!(back.row_counts.is_empty(), "row_counts must default empty");
-        assert!(
-            back.padding_column_counts.is_empty(),
-            "padding_column_counts must default empty"
-        );
+        assert!(back.padding_column_counts.is_empty(), "padding_column_counts must default empty");
     }
 
     #[test]
     fn basefold_shard_proof_empty_pv_count() {
-        let proof: BasefoldShardProof<F, EF> = BasefoldShardProof::empty(
-            std::array::from_fn(|_| F::ZERO),
-            0,
-        );
+        let proof: BasefoldShardProof<F, EF> =
+            BasefoldShardProof::empty(std::array::from_fn(|_| F::ZERO), 0);
         assert_eq!(proof.public_values.len(), 0);
         assert_eq!(proof.main_commitment.len(), 8);
     }
 
     #[test]
     fn basefold_shard_proof_large_pv_count() {
-        let proof: BasefoldShardProof<F, EF> = BasefoldShardProof::empty(
-            std::array::from_fn(|_| F::ZERO),
-            231,
-        );
+        let proof: BasefoldShardProof<F, EF> =
+            BasefoldShardProof::empty(std::array::from_fn(|_| F::ZERO), 231);
         assert_eq!(proof.public_values.len(), 231);
     }
 
     #[test]
     fn basefold_shard_proof_fold_orientation_roundtrip() {
         for orientation in [FoldOrientation::Msb, FoldOrientation::Lsb] {
-            let mut proof: BasefoldShardProof<F, EF> = BasefoldShardProof::empty(
-                std::array::from_fn(|_| F::ZERO),
-                4,
-            );
+            let mut proof: BasefoldShardProof<F, EF> =
+                BasefoldShardProof::empty(std::array::from_fn(|_| F::ZERO), 4);
             proof.fold_orientation = orientation;
             let bytes = rmp_serde::to_vec(&proof).expect("serializes via rmp");
             let back: BasefoldShardProof<F, EF> =
@@ -245,10 +234,8 @@ mod tests {
 
     #[test]
     fn basefold_shard_proof_constructs() {
-        let proof: BasefoldShardProof<F, EF> = BasefoldShardProof::empty(
-            std::array::from_fn(|_| F::ZERO),
-            16,
-        );
+        let proof: BasefoldShardProof<F, EF> =
+            BasefoldShardProof::empty(std::array::from_fn(|_| F::ZERO), 16);
         assert_eq!(proof.public_values.len(), 16);
         assert_eq!(proof.main_commitment.len(), 8);
         assert!(proof.logup_gkr_proof.round_proofs.is_empty());

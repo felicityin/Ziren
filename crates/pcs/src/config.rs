@@ -121,10 +121,10 @@ pub trait BasefoldRing: StarkGenericConfig {
         + p3_commit::Mmcs<
             crate::jagged_pcs::JaggedVal,
             Commitment: Clone + Send + Sync + 'static,
-            ProverData<p3_matrix::dense::RowMajorMatrix<crate::jagged_pcs::JaggedVal>>:
-                Send + Sync + 'static,
-        >
-        + Clone;
+            ProverData<p3_matrix::dense::RowMajorMatrix<crate::jagged_pcs::JaggedVal>>: Send
+                                                                                            + Sync
+                                                                                            + 'static,
+        > + Clone;
 
     /// Construct the BaseFold MMCS for this config (perm + hash + compress).
     fn bf_mmcs() -> Self::BfMmcs;
@@ -150,7 +150,6 @@ pub trait BasefoldRing: StarkGenericConfig {
     fn fri_config() -> crate::basefold::config::FriConfig<crate::jagged_pcs::JaggedVal> {
         crate::basefold::config::FriConfig::<crate::jagged_pcs::JaggedVal>::from_env_or_default()
     }
-
 
     /// #H: per-ring projection of the BaseFold commitment to 8 KoalaBear felts
     /// for the `[F;8] main_commitment` FS observe (host path). Inner = MerkleCap

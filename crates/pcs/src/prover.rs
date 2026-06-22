@@ -434,7 +434,9 @@ where
                     let last_row = &main_trace.values[main_trace_size - 14..main_trace_size];
                     SepticDigest(SepticCurve {
                         x: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|j| last_row[j]),
-                        y: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|j| last_row[j + 7]),
+                        y: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|j| {
+                            last_row[j + 7]
+                        }),
                     })
                 };
                 challenger.observe_slice(local_sum.as_basis_coefficients_slice());
@@ -465,12 +467,9 @@ where
             // valid (a real `FriProof` value with empty FRI work).
             // Cost is microseconds vs the seconds of the real
             // multi-trace FRI open this replaces.
-            let main_trace_opening_points_placeholder: Vec<Vec<SC::Challenge>> =
-                vec![vec![_zeta]];
-            let (_openings_unused, opening_proof) = pcs.open(
-                vec![(&data.main_data, main_trace_opening_points_placeholder)],
-                challenger,
-            );
+            let main_trace_opening_points_placeholder: Vec<Vec<SC::Challenge>> = vec![vec![_zeta]];
+            let (_openings_unused, opening_proof) = pcs
+                .open(vec![(&data.main_data, main_trace_opening_points_placeholder)], challenger);
 
             let basefold_path_ms = t_basefold_path.elapsed().as_millis();
 
@@ -478,7 +477,9 @@ where
             {
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true).append(true).open("/tmp/ziren_open_breakdown.txt")
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/ziren_open_breakdown.txt")
                 {
                     let _ = writeln!(
                         f,
@@ -504,8 +505,12 @@ where
                         let main_trace_size = main_trace.height() * main_trace.width();
                         let last_row = &main_trace.values[main_trace_size - 14..main_trace_size];
                         SepticDigest(SepticCurve {
-                            x: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|j| last_row[j]),
-                            y: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|j| last_row[j + 7]),
+                            x: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|j| {
+                                last_row[j]
+                            }),
+                            y: SepticExtension::<Val<SC>>::from_basis_coefficients_fn(|j| {
+                                last_row[j + 7]
+                            }),
                         })
                     };
 
@@ -602,7 +607,9 @@ where
 
                     println!(
                         ">>> PCS_TIMING trace_gen={}ms commit={}ms open={}ms total={}ms",
-                        trace_gen_ms, commit_ms, open_ms,
+                        trace_gen_ms,
+                        commit_ms,
+                        open_ms,
                         trace_gen_ms + commit_ms + open_ms
                     );
 
@@ -706,8 +713,8 @@ where
     Val<SC>: 'static,
     <SC as StarkGenericConfig>::Challenge: 'static,
 {
-    use core::any::TypeId;
     use crate::{InnerChallenge, InnerVal};
+    use core::any::TypeId;
 
     // BaseFold-over-BN254 wrap port: gate via `BasefoldRing::use_basefold()`
     // (the trait dispatch authority) instead of the open-coded TypeId check.
@@ -742,11 +749,10 @@ where
     // `use_basefold_path` branch, whose gate is byte-identical to the
     // `commit()` gate that routes through `commit_basefold_path`, which
     // unconditionally sets `Some(..)`.  Absence is unreachable → expect.
-    let precomputed_box = precomputed_basefold
-        .expect(
-            "try_prove_shard_to_basefold_boxed: precomputed_basefold must be Some on the \
+    let precomputed_box = precomputed_basefold.expect(
+        "try_prove_shard_to_basefold_boxed: precomputed_basefold must be Some on the \
              basefold path (commit_basefold_path always sets it under the same TypeId gate)",
-        );
+    );
     // BaseFold-over-BN254 wrap port: recover the precomputed commit from
     // the type-erased box as PrecomputedJaggedCommitGeneric<SC::BfMmcs> — works
     // for BOTH rings (inner BfMmcs=JaggedMmcs, outer BfMmcs=OuterValMmcs). The
@@ -791,8 +797,8 @@ where
     // Pin max_log_row_count to the BasefoldShardVerifier production
     // default (22) so the prover's sumchecks run over exactly the
     // variable count the verifier expects at zerocheck_point dim check.
-    let max_log_row_count = crate::shard_level::verifier::BasefoldShardVerifier::production_default()
-        .max_log_row_count;
+    let max_log_row_count =
+        crate::shard_level::verifier::BasefoldShardVerifier::production_default().max_log_row_count;
     // Materialize the Arc-wrapped main traces into a contiguous
     // `Vec<RowMajorMatrix>` for the legacy shard-level prover API.
     // The clone cost matches the pre-Vec<Arc<M>> refactor (the
@@ -870,11 +876,7 @@ where
         let ptr = v.as_mut_ptr();
         let len = v.len();
         let cap = v.capacity();
-        Vec::from_raw_parts(
-            ptr as *mut (String, RowMajorMatrix<crate::InnerVal>),
-            len,
-            cap,
-        )
+        Vec::from_raw_parts(ptr as *mut (String, RowMajorMatrix<crate::InnerVal>), len, cap)
     };
 
     // HEIGHT-AGNOSTIC RECURSION (step 5b): the CPU host path precomputes the
@@ -921,8 +923,7 @@ where
         use std::collections::BTreeSet;
         let missing_traces =
             crate::shard_level::band_cap::current_missing_chip_traces().unwrap_or_default();
-        let present: BTreeSet<String> =
-            named_traces_inner.iter().map(|(n, _)| n.clone()).collect();
+        let present: BTreeSet<String> = named_traces_inner.iter().map(|(n, _)| n.clone()).collect();
         for (name, (width, log_h)) in band_cap.iter() {
             if !present.contains(name) {
                 if let Some(t) = missing_traces.get(name) {
@@ -970,13 +971,12 @@ where
 
     // BaseFold-over-BN254: build the commit over the ring's BfMmcs
     // (inner = Poseidon2-KoalaBear; wrap = Poseidon2-BN254 OuterValMmcs).
-    let precomputed = crate::jagged_pcs::jagged::precompute_jagged_basefold_commit_generic::<
-        <SC as BasefoldRing>::BfMmcs,
-    >(
-        &commit_named_inner,
-        <SC as BasefoldRing>::bf_mmcs(),
-        <SC as BasefoldRing>::fri_config(),
-    );
+    let precomputed =
+        crate::jagged_pcs::jagged::precompute_jagged_basefold_commit_generic::<
+            <SC as BasefoldRing>::BfMmcs,
+        >(
+            &commit_named_inner, <SC as BasefoldRing>::bf_mmcs(), <SC as BasefoldRing>::fri_config()
+        );
     drop(commit_named_inner);
 
     // Com<SC> == BfMmcs::Commitment for both rings (FRI commits via the
@@ -986,15 +986,13 @@ where
             &precomputed.commit,
         ),
     );
-    let main_commit: Com<SC> = *commitment_any
-        .downcast::<Com<SC>>()
-        .unwrap_or_else(|_| {
-            panic!(
-                "commit_basefold_path: failed to downcast BfMmcs::Commitment to Com<SC> \
+    let main_commit: Com<SC> = *commitment_any.downcast::<Com<SC>>().unwrap_or_else(|_| {
+        panic!(
+            "commit_basefold_path: failed to downcast BfMmcs::Commitment to Com<SC> \
                  (size_of Com<SC> = {})",
-                core::mem::size_of::<Com<SC>>(),
-            )
-        });
+            core::mem::size_of::<Com<SC>>(),
+        )
+    });
 
     // Commit-ROOT byte-equality canary.  The
     // `main_commit` (BN254 Merkle root for the wrap) is the transcript-
@@ -1032,43 +1030,29 @@ where
         let ptr = v.as_mut_ptr();
         let len = v.len();
         let cap_ = v.capacity();
-        Vec::from_raw_parts(
-            ptr as *mut (String, RowMajorMatrix<Val<SC>>),
-            len,
-            cap_,
-        )
+        Vec::from_raw_parts(ptr as *mut (String, RowMajorMatrix<Val<SC>>), len, cap_)
     };
 
     // Placeholder `pcs.commit` on a single 1×1 dummy trace.  Cheap
     // (microseconds) but produces a valid `(_, PcsProverData<SC>)`
     // pair so `main_data` has the right type and `open()` can drive a
     // matching placeholder `pcs.open` against it.
-    let dummy_trace: RowMajorMatrix<Val<SC>> =
-        RowMajorMatrix::new(vec![Val::<SC>::ZERO], 1);
+    let dummy_trace: RowMajorMatrix<Val<SC>> = RowMajorMatrix::new(vec![Val::<SC>::ZERO], 1);
     let dummy_domain = pcs.natural_domain_for_degree(1);
-    let (_placeholder_commit, main_data_concrete): (
-        Com<SC>,
-        PcsProverData<SC>,
-    ) = pcs.commit(vec![(dummy_domain, dummy_trace)]);
+    let (_placeholder_commit, main_data_concrete): (Com<SC>, PcsProverData<SC>) =
+        pcs.commit(vec![(dummy_domain, dummy_trace)]);
     // Downcast PcsProverData<SC> to the generic P.  For CpuProver
     // (the only consumer of this helper), P == PcsProverData<SC>
     // (see the trait impl in this file's `MachineProver for CpuProver`
     // block), so the downcast is sound under the TypeId gate.
     let main_data_any: Box<dyn Any> = Box::new(main_data_concrete);
-    let main_data: P = *main_data_any
-        .downcast::<P>()
-        .unwrap_or_else(|_| {
-            panic!(
-                "commit_basefold_path: failed to downcast PcsProverData<SC> to generic P",
-            )
-        });
+    let main_data: P = *main_data_any.downcast::<P>().unwrap_or_else(|_| {
+        panic!("commit_basefold_path: failed to downcast PcsProverData<SC> to generic P",)
+    });
 
     // Get the chip ordering.
-    let chip_ordering: hashbrown::HashMap<String, usize> = named_traces
-        .iter()
-        .enumerate()
-        .map(|(i, (name, _))| (name.to_owned(), i))
-        .collect();
+    let chip_ordering: hashbrown::HashMap<String, usize> =
+        named_traces.iter().enumerate().map(|(i, (name, _))| (name.to_owned(), i)).collect();
 
     // Wrap each trace in `Arc::new` — but we need the wrapper type to
     // match `Self::DeviceMatrix = M` which for `CpuProver` is
@@ -1076,14 +1060,11 @@ where
     //
     // SAFETY: caller's TypeId gate guarantees this `CpuProver`-shape
     // monomorphization always has `M == RowMajorMatrix<Val<SC>>`.
-    let traces_rm: Vec<std::sync::Arc<RowMajorMatrix<Val<SC>>>> = named_traces
-        .into_iter()
-        .map(|(_, trace)| std::sync::Arc::new(trace))
-        .collect();
+    let traces_rm: Vec<std::sync::Arc<RowMajorMatrix<Val<SC>>>> =
+        named_traces.into_iter().map(|(_, trace)| std::sync::Arc::new(trace)).collect();
     let traces_any: Box<dyn Any> = Box::new(traces_rm);
-    let traces: Vec<std::sync::Arc<M>> = *traces_any
-        .downcast::<Vec<std::sync::Arc<M>>>()
-        .unwrap_or_else(|_| {
+    let traces: Vec<std::sync::Arc<M>> =
+        *traces_any.downcast::<Vec<std::sync::Arc<M>>>().unwrap_or_else(|_| {
             panic!(
                 "commit_basefold_path: failed to downcast Vec<Arc<RowMajorMatrix<Val<SC>>>> \
                  to Vec<Arc<M>>",

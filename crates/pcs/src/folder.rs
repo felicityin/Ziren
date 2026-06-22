@@ -3,17 +3,12 @@ use std::{
     ops::{Add, Mul, MulAssign, Sub},
 };
 
-use p3_air::{
-    AirBuilder, ExtensionBuilder, PermutationAirBuilder, WindowAccess,
-};
+use p3_air::{AirBuilder, ExtensionBuilder, PermutationAirBuilder, WindowAccess};
 use p3_field::{Algebra, ExtensionField, Field};
 use p3_matrix::{dense::RowMajorMatrixView, stack::VerticalPair};
 
 use super::{Challenge, PackedChallenge, PackedVal, StarkGenericConfig, Val};
-use crate::{
-    air::MultiTableAirBuilder,
-    septic_digest::SepticDigest,
-};
+use crate::{air::MultiTableAirBuilder, septic_digest::SepticDigest};
 
 /// A two-row window backed by slices.
 #[derive(Clone, Copy)]

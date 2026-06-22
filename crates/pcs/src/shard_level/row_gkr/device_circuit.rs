@@ -85,9 +85,7 @@ impl DeviceLayerHandle {
     /// the upcast well-defined.
     #[inline]
     #[must_use]
-    pub fn to_sumcheck_handle(
-        &self,
-    ) -> crate::shard_level::sumcheck_poly::DeviceLayerHandle {
+    pub fn to_sumcheck_handle(&self) -> crate::shard_level::sumcheck_poly::DeviceLayerHandle {
         let any_arc: Arc<dyn core::any::Any + Send + Sync> = self.inner.clone();
         crate::shard_level::sumcheck_poly::DeviceLayerHandle(any_arc)
     }
@@ -131,17 +129,8 @@ impl DeviceInputData {
     /// [`Self::with_input_handle`] / [`Self::set_input_handle`] to
     /// install one before any path that may invoke the regen hook.
     #[must_use]
-    pub fn new(
-        circuit_id: u64,
-        num_row_variables: u32,
-        num_interaction_variables: u32,
-    ) -> Self {
-        Self {
-            circuit_id,
-            num_row_variables,
-            num_interaction_variables,
-            input_handle: None,
-        }
+    pub fn new(circuit_id: u64, num_row_variables: u32, num_interaction_variables: u32) -> Self {
+        Self { circuit_id, num_row_variables, num_interaction_variables, input_handle: None }
     }
 
     /// Builder variant of [`Self::new`] that takes the opaque
@@ -177,10 +166,7 @@ impl core::fmt::Debug for DeviceInputData {
             .field("circuit_id", &self.circuit_id)
             .field("num_row_variables", &self.num_row_variables)
             .field("num_interaction_variables", &self.num_interaction_variables)
-            .field(
-                "input_handle",
-                &self.input_handle.as_ref().map(|_| "<opaque>"),
-            )
+            .field("input_handle", &self.input_handle.as_ref().map(|_| "<opaque>"))
             .finish()
     }
 }
@@ -327,12 +313,7 @@ impl<F: Field, EF: ExtensionField<F>> DeviceLogupGkrCircuit<F, EF> {
             num_virtual_layers <= 1,
             "DeviceLogupGkrCircuit: num_virtual_layers must be 0 or 1, got {num_virtual_layers}"
         );
-        Self {
-            materialized_layers,
-            input_data,
-            num_virtual_layers,
-            _phantom: PhantomData,
-        }
+        Self { materialized_layers, input_data, num_virtual_layers, _phantom: PhantomData }
     }
 
     /// Total number of layers remaining to be yielded by `next()`.
@@ -400,9 +381,7 @@ impl<F: Field, EF: ExtensionField<F>> DeviceLogupGkrCircuit<F, EF> {
         // pull-stub panic in ziren-gpu's `gpu_layer_pull_hook` remains
         // the primary signal that the regen path was needed but
         // unavailable.
-        if let Some(hook) =
-            crate::jagged_pcs::get_gpu_generate_first_layer_hook()
-        {
+        if let Some(hook) = crate::jagged_pcs::get_gpu_generate_first_layer_hook() {
             if let Some(payload) = hook(self.input_data.circuit_id) {
                 let handle = DeviceLayerHandle::new(
                     payload.inner,
@@ -508,12 +487,7 @@ impl<F: Field, EF: ExtensionField<F>> LogupTaskScope<F, EF> {
     /// [`Self::enter`] to obtain an RAII guard that performs the bind.
     #[must_use]
     pub fn new(circuit_id: u64) -> Self {
-        Self {
-            circuit_id,
-            circuit: None,
-            input_data: None,
-            _phantom: PhantomData,
-        }
+        Self { circuit_id, circuit: None, input_data: None, _phantom: PhantomData }
     }
 
     /// Install a freshly-built `DeviceLogupGkrCircuit` into the scope.
@@ -587,11 +561,7 @@ impl<F: Field, EF: ExtensionField<F>> LogupTaskScope<F, EF> {
                 DeviceCircuitLayer::Materialized(handle, PhantomData)
             })
             .collect();
-        self.install_circuit(DeviceLogupGkrCircuit::new(
-            layers,
-            input_data,
-            0,
-        ));
+        self.install_circuit(DeviceLogupGkrCircuit::new(layers, input_data, 0));
     }
 }
 
@@ -692,9 +662,7 @@ std::thread_local! {
 /// safe because Rust's borrow checker prevents simultaneous mutable
 /// borrows on a single-threaded TLS slot.
 #[must_use]
-pub fn with_production_scope_mut<R>(
-    f: impl FnOnce(&mut ProductionScope) -> R,
-) -> Option<R> {
+pub fn with_production_scope_mut<R>(f: impl FnOnce(&mut ProductionScope) -> R) -> Option<R> {
     let ptr = LOGUP_TASK_SCOPE_PTR.with(|c| c.get())?;
     // SAFETY: see safety contract on LOGUP_TASK_SCOPE_PTR. The pointer
     // was set by enter_with_scope from a &mut borrow whose lifetime
@@ -769,10 +737,7 @@ impl LogupTaskScopeGuard {
             == core::any::TypeId::of::<p3_koala_bear::KoalaBear>()
             && core::any::TypeId::of::<EF>()
                 == core::any::TypeId::of::<
-                    p3_field::extension::BinomialExtensionField<
-                        p3_koala_bear::KoalaBear,
-                        4,
-                    >,
+                    p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>,
                 >() {
             // SAFETY: TypeId equality guarantees `LogupTaskScope<F, EF>`
             // and `ProductionScope` have identical layout; the cast is
@@ -883,8 +848,7 @@ mod tests {
             num_interaction_variables: 3,
             input_handle: None,
         };
-        let mut circuit =
-            DeviceLogupGkrCircuit::<KoalaBear, EF>::new(Vec::new(), input_data, 0);
+        let mut circuit = DeviceLogupGkrCircuit::<KoalaBear, EF>::new(Vec::new(), input_data, 0);
         assert!(circuit.is_empty());
         assert_eq!(circuit.len(), 0);
         assert!(circuit.next().is_none());
@@ -913,9 +877,7 @@ mod tests {
         // Hook is unregistered on a fresh test process; if a parallel
         // test happens to register it, we tolerate `Some(...)` here
         // because the contract is "return whatever the hook says".
-        let hook_present =
-            crate::jagged_pcs::get_gpu_generate_first_layer_hook()
-                .is_some();
+        let hook_present = crate::jagged_pcs::get_gpu_generate_first_layer_hook().is_some();
 
         let input_data = DeviceInputData {
             circuit_id: 4242,
@@ -923,8 +885,7 @@ mod tests {
             num_interaction_variables: 4,
             input_handle: None,
         };
-        let mut circuit =
-            DeviceLogupGkrCircuit::<KoalaBear, EF>::new(Vec::new(), input_data, 1);
+        let mut circuit = DeviceLogupGkrCircuit::<KoalaBear, EF>::new(Vec::new(), input_data, 1);
 
         assert_eq!(circuit.len(), 1);
         assert!(!circuit.is_empty());
@@ -933,10 +894,7 @@ mod tests {
         if hook_present {
             // Cannot assert further — hook impl decides.
         } else {
-            assert!(
-                next.is_none(),
-                "no regen hook ⇒ next() returns None instead of panicking"
-            );
+            assert!(next.is_none(), "no regen hook ⇒ next() returns None instead of panicking");
         }
         assert_eq!(circuit.num_virtual_layers, 0);
         assert!(circuit.is_empty());
@@ -963,8 +921,7 @@ mod tests {
         assert!(with.input_handle.is_some());
 
         // Downcast round-trip preserves payload identity.
-        let any_ref: &dyn core::any::Any =
-            &**with.input_handle.as_ref().unwrap();
+        let any_ref: &dyn core::any::Any = &**with.input_handle.as_ref().unwrap();
         assert_eq!(any_ref.downcast_ref::<Bundle>().unwrap().0, 99);
 
         // set_input_handle returns prior (None) and installs new.
@@ -1086,8 +1043,7 @@ mod tests {
     #[test]
     fn task_scope_guard_clears_v3_handle_on_drop() {
         use crate::shard_level::sumcheck_poly::{
-            publish_logup_v3_next_handle, take_logup_v3_next_handle,
-            DeviceLayerHandle as V3Handle,
+            publish_logup_v3_next_handle, take_logup_v3_next_handle, DeviceLayerHandle as V3Handle,
         };
         struct Tag;
         // Install a fake handle as if the prior round had returned one.
@@ -1118,19 +1074,14 @@ mod tests {
 
         let mut scope = LogupTaskScope::<KoalaBear, Ef4>::new(101);
         {
-            let _guard =
-                LogupTaskScopeGuard::enter_with_scope::<KoalaBear, Ef4>(&mut scope);
+            let _guard = LogupTaskScopeGuard::enter_with_scope::<KoalaBear, Ef4>(&mut scope);
             // Inside the guard: accessor returns Some and yields the
             // scope's circuit_id (proves the pointer points to OUR scope).
-            let cid = with_production_scope_mut(|s| s.circuit_id())
-                .expect("scope installed");
+            let cid = with_production_scope_mut(|s| s.circuit_id()).expect("scope installed");
             assert_eq!(cid, 101);
         }
         // After drop: typed pointer slot cleared.
-        assert!(
-            with_production_scope_mut(|_| ()).is_none(),
-            "guard drop ⇒ typed slot cleared"
-        );
+        assert!(with_production_scope_mut(|_| ()).is_none(), "guard drop ⇒ typed slot cleared");
     }
 
     /// Non-production EF: `active_circuit_id` still binds but
@@ -1141,9 +1092,7 @@ mod tests {
     fn enter_with_scope_non_production_falls_back_to_untyped() {
         let mut scope = LogupTaskScope::<KoalaBear, KoalaBear>::new(303);
         {
-            let _guard = LogupTaskScopeGuard::enter_with_scope::<KoalaBear, KoalaBear>(
-                &mut scope,
-            );
+            let _guard = LogupTaskScopeGuard::enter_with_scope::<KoalaBear, KoalaBear>(&mut scope);
             assert_eq!(LogupTaskScopeGuard::active_circuit_id(), Some(303));
             // Typed slot remains None for non-production types.
             assert!(
@@ -1224,10 +1173,7 @@ mod tests {
         let l1 = scope.next_layer().expect("middle layer");
         let h1 = l1.as_handle().unwrap();
         assert_eq!(
-            (&**h1.inner() as &dyn core::any::Any)
-                .downcast_ref::<TestHandle>()
-                .unwrap()
-                .tag,
+            (&**h1.inner() as &dyn core::any::Any).downcast_ref::<TestHandle>().unwrap().tag,
             902
         );
         assert_eq!(h1.num_row_variables(), 2);
@@ -1235,10 +1181,7 @@ mod tests {
         let l2 = scope.next_layer().expect("terminal layer");
         let h2 = l2.as_handle().unwrap();
         assert_eq!(
-            (&**h2.inner() as &dyn core::any::Any)
-                .downcast_ref::<TestHandle>()
-                .unwrap()
-                .tag,
+            (&**h2.inner() as &dyn core::any::Any).downcast_ref::<TestHandle>().unwrap().tag,
             901
         );
         assert_eq!(h2.num_row_variables(), 1);
@@ -1269,7 +1212,7 @@ mod tests {
     /// pop a layer from an installed scope via
     /// `with_production_scope_mut`, bridge to a sumcheck handle, and
     /// confirm the round-trip.  This mirrors what
-    /// `try_logup_round_gpu_v3` does on the hot path once 
+    /// `try_logup_round_gpu_v3` does on the hot path once
     /// installs a circuit.
     #[test]
     fn dispatch_site_pop_and_bridge_roundtrip() {
@@ -1281,17 +1224,10 @@ mod tests {
             input_handle: None,
         };
         let layers = vec![
-            DeviceCircuitLayer::<KoalaBear, Ef4>::Materialized(
-                make_handle(701, 1, 2),
-                PhantomData,
-            ),
-            DeviceCircuitLayer::<KoalaBear, Ef4>::FirstLayer(
-                make_handle(702, 2, 2),
-                PhantomData,
-            ),
+            DeviceCircuitLayer::<KoalaBear, Ef4>::Materialized(make_handle(701, 1, 2), PhantomData),
+            DeviceCircuitLayer::<KoalaBear, Ef4>::FirstLayer(make_handle(702, 2, 2), PhantomData),
         ];
-        let circuit =
-            DeviceLogupGkrCircuit::<KoalaBear, Ef4>::new(layers, input_data, 0);
+        let circuit = DeviceLogupGkrCircuit::<KoalaBear, Ef4>::new(layers, input_data, 0);
 
         let mut scope = LogupTaskScope::<KoalaBear, Ef4>::new(200);
         scope.install_circuit(circuit);

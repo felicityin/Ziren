@@ -20,8 +20,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use p3_field::{ExtensionField, Field};
-use p3_matrix::Matrix;
 use p3_matrix::dense::RowMajorMatrix;
+use p3_matrix::Matrix;
 
 #[derive(Clone, Debug)]
 pub struct Mle<F: Field> {
@@ -77,8 +77,7 @@ impl<F: Field> Mle<F> {
         // recursion-circuit's bit-exact OOD checks (root cause not
         // isolated; the algorithm here still produces the same Vec<EF>
         // but the proof bytes change in a way the verifier rejects).
-        let mut current: Vec<EF> =
-            self.guts.values.par_iter().map(|&v| EF::from(v)).collect();
+        let mut current: Vec<EF> = self.guts.values.par_iter().map(|&v| EF::from(v)).collect();
         let mut n_rows = self.hypercube_size();
         for &r in point {
             let half = n_rows / 2;
@@ -150,4 +149,3 @@ pub type Rounds<T> = Vec<T>;
 pub fn message_from_iter<T, I: IntoIterator<Item = T>>(iter: I) -> Message<T> {
     iter.into_iter().map(Arc::new).collect()
 }
-

@@ -47,15 +47,14 @@
 
 use std::collections::BTreeMap;
 
-use p3_air::Air;
-use p3_challenger::FieldChallenger;
-use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField};
-use p3_matrix::dense::RowMajorMatrix;
 use super::types::PartialSumcheckProof;
 use crate::air::MachineAir;
 use crate::folder::VerifierConstraintFolder;
 use crate::{Challenge, Chip, StarkGenericConfig, Val};
-
+use p3_air::Air;
+use p3_challenger::FieldChallenger;
+use p3_field::{BasedVectorSpace, ExtensionField, Field, PrimeField};
+use p3_matrix::dense::RowMajorMatrix;
 
 /// Shard-level zerocheck prover.
 ///
@@ -76,10 +75,7 @@ pub fn prove_shard_zerocheck<SC, A>(
     max_log_row_count: usize,
     challenger: &mut SC::Challenger,
     _device_traces: Option<&dyn crate::shard_level::DeviceTraceProvider>,
-) -> (
-    PartialSumcheckProof<Challenge<SC>>,
-    std::collections::BTreeMap<String, Vec<Challenge<SC>>>,
-)
+) -> (PartialSumcheckProof<Challenge<SC>>, std::collections::BTreeMap<String, Vec<Challenge<SC>>>)
 where
     SC: StarkGenericConfig,
     A: MachineAir<Val<SC>>
@@ -117,8 +113,7 @@ where
     // one EF squeeze and downstream sumcheck/jagged-PCS round 0
     // checks will desync (audit D1, May 1 2026).
     let alpha: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
-    let gkr_batch_open: Challenge<SC> =
-        challenger.sample_algebra_element::<Challenge<SC>>();
+    let gkr_batch_open: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
     let lambda: Challenge<SC> = challenger.sample_algebra_element::<Challenge<SC>>();
 
     // ── SP1-aligned per-chip ZeroCheckPoly path ──────────────────────
@@ -173,10 +168,9 @@ where
         for &chip_idx in name_order.iter() {
             let chip = chips[chip_idx];
             let name = chip.name().to_string();
-            let opening =
-                logup_evaluations.chip_openings.get(&name).unwrap_or_else(|| {
-                    panic!("chip {name} missing from logup_evaluations.chip_openings")
-                });
+            let opening = logup_evaluations.chip_openings.get(&name).unwrap_or_else(|| {
+                panic!("chip {name} missing from logup_evaluations.chip_openings")
+            });
 
             // Device-fold: for device-only chips (empty host main trace),
             // run the zerocheck FULLY on device — build the round-0 device cells
@@ -189,9 +183,8 @@ where
             // (odd num_real folds host-side, div_ceil + ZERO tail, matching host
             // fold_cells); the virtual_geq/padded_row_adjustment pad correction stays
             // host-side in finalize (same as the materialize path).
-            let device_fold_on = std::env::var("ZIREN_GPU_DEVICE_FOLD")
-                .map(|v| v != "0")
-                .unwrap_or(true);
+            let device_fold_on =
+                std::env::var("ZIREN_GPU_DEVICE_FOLD").map(|v| v != "0").unwrap_or(true);
             let device_cells_opt: Option<std::sync::Arc<dyn core::any::Any + Send + Sync>> =
                 if main_traces[chip_idx].width == 0 && device_fold_on {
                     _device_traces.and_then(|p| {
@@ -261,25 +254,28 @@ where
             };
             // Materialize fallback (host cells via D2H) only when device-fold is
             // unavailable for this empty-host chip.
-            let materialized_dev: Option<RowMajorMatrix<Val<SC>>> =
-                if device_cells_opt.is_none() && main_traces[chip_idx].width == 0 {
-                    _device_traces.and_then(|p| {
+            let materialized_dev: Option<RowMajorMatrix<Val<SC>>> = if device_cells_opt.is_none()
+                && main_traces[chip_idx].width == 0
+            {
+                _device_traces.and_then(|p| {
                         crate::shard_level::logup_gkr_prover::materialize_chip_main_trace_via_provider::<Val<SC>>(
                             &name, p,
                         )
                         .map(|(vals, w)| RowMajorMatrix::new(vals, w))
                     })
-                } else {
-                    None
-                };
+            } else {
+                None
+            };
             let main_trace: &RowMajorMatrix<Val<SC>> =
                 materialized_dev.as_ref().unwrap_or(&main_traces[chip_idx]);
             let prep_trace = &preprocessed_traces[chip_idx];
             let main_width = df_dims.map(|(w, _)| w).unwrap_or(main_trace.width);
             let prep_width = prep_trace.width;
-            let main_height = df_dims.map(|(_, h)| h).unwrap_or(
-                if main_trace.width == 0 { 0 } else { main_trace.values.len() / main_trace.width },
-            );
+            let main_height = df_dims.map(|(_, h)| h).unwrap_or(if main_trace.width == 0 {
+                0
+            } else {
+                main_trace.values.len() / main_trace.width
+            });
 
             // GKR-opening batch powers [β¹ .. β^(main+prep)].
             let combined_width = main_width + prep_width;
@@ -351,16 +347,23 @@ where
             let main_cells = if df_dims.is_some() {
                 main_cells
             } else {
-                crate::shard_level::zerocheck_poly::bitrev_rows(&main_cells, main_width, main_height)
+                crate::shard_level::zerocheck_poly::bitrev_rows(
+                    &main_cells,
+                    main_width,
+                    main_height,
+                )
             };
-            let prep_cells = prep_cells
-                .map(|c| crate::shard_level::zerocheck_poly::bitrev_rows(&c, prep_width, main_height));
+            let prep_cells = prep_cells.map(|c| {
+                crate::shard_level::zerocheck_poly::bitrev_rows(&c, prep_width, main_height)
+            });
 
-            let padded_row_adjustment = compute_padded_row_adjustment::<
-                Val<SC>,
-                Challenge<SC>,
-                A,
-            >(chip, alpha, public_values, main_width, prep_width);
+            let padded_row_adjustment = compute_padded_row_adjustment::<Val<SC>, Challenge<SC>, A>(
+                chip,
+                alpha,
+                public_values,
+                main_width,
+                prep_width,
+            );
             let initial_geq_value =
                 if main_height > 0 { Challenge::<SC>::ZERO } else { Challenge::<SC>::ONE };
             let virtual_geq = VirtualGeq::new(
@@ -447,12 +450,11 @@ where
         return crate::septic_digest::SepticDigest::<F>::zero();
     }
     let last_row = &main_trace.values[sz - 14..sz];
-    let x = crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(
-        |j| last_row[j],
-    );
-    let y = crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(
-        |j| last_row[j + 7],
-    );
+    let x =
+        crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(|j| last_row[j]);
+    let y = crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(|j| {
+        last_row[j + 7]
+    });
     crate::septic_digest::SepticDigest(crate::septic_curve::SepticCurve { x, y })
 }
 
@@ -474,16 +476,13 @@ where
     if chip.commit_scope() == crate::air::LookupScope::Local || tail14.len() != 14 {
         return crate::septic_digest::SepticDigest::<F>::zero();
     }
-    let x = crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(
-        |j| tail14[j],
-    );
-    let y = crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(
-        |j| tail14[j + 7],
-    );
+    let x =
+        crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(|j| tail14[j]);
+    let y = crate::septic_extension::SepticExtension::<F>::from_basis_coefficients_fn(|j| {
+        tail14[j + 7]
+    });
     crate::septic_digest::SepticDigest(crate::septic_curve::SepticCurve { x, y })
 }
-
-
 
 /// Max log_degree across a shard's main traces; equals the
 /// shard-level zerocheck round count.
@@ -505,7 +504,6 @@ fn _btreemap_anchor() -> BTreeMap<String, ()> {
     BTreeMap::new()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,8 +522,8 @@ mod tests {
     #[test]
     fn shard_max_log_degree_single_row_returns_zero() {
         type F = p3_koala_bear::KoalaBear;
-        use p3_matrix::dense::RowMajorMatrix;
         use p3_field::PrimeCharacteristicRing;
+        use p3_matrix::dense::RowMajorMatrix;
         let trace = RowMajorMatrix::new(vec![F::ZERO], 1);
         assert_eq!(shard_max_log_degree::<F>(&[trace]), 0);
     }
@@ -547,4 +545,183 @@ mod tests {
         assert_eq!(shard_max_log_degree::<F>(&traces), 4);
     }
 
+    #[cfg(test)]
+    mod perf_tests {
+        use std::{collections::BTreeMap, sync::Arc, time::Instant};
+
+        use hashbrown::HashMap;
+        use p3_air::{Air, BaseAir, WindowAccess};
+        use p3_challenger::DuplexChallenger;
+        use p3_field::{Field, PrimeCharacteristicRing};
+        use p3_koala_bear::Poseidon2KoalaBear;
+        use p3_matrix::dense::RowMajorMatrix;
+
+        use crate::{
+            air::{
+                AirLookup, BaseAirBuilder, LookupScope, MachineAir, MachineProgram, MessageBuilder,
+            },
+            lookup::LookupKind,
+            record::MachineRecord,
+            septic_digest::SepticDigest,
+            shard_level::types::{ChipEvaluation, LogUpEvaluations},
+            Challenge, Chip, InnerVal,
+        };
+
+        use super::prove_shard_zerocheck;
+
+        type SC = crate::koala_bear_poseidon2::KoalaBearPoseidon2;
+        type EF = Challenge<SC>;
+
+        #[derive(Clone, Debug)]
+        struct MockAir {
+            width: usize,
+        }
+
+        #[derive(Clone, Default)]
+        struct MockRecord;
+
+        #[derive(Clone, Default)]
+        struct MockProgram;
+
+        impl<F: Field> BaseAir<F> for MockAir {
+            fn width(&self) -> usize {
+                self.width
+            }
+        }
+
+        impl<AB: BaseAirBuilder> Air<AB> for MockAir {
+            fn eval(&self, builder: &mut AB) {
+                let main = builder.main();
+                let row = main.current_slice();
+                let x: AB::Expr = row[0].into();
+                let one = AB::Expr::ONE;
+                let two = AB::Expr::ONE + AB::Expr::ONE;
+                builder.assert_zero(x.clone() * (x.clone() - one) * (x.clone() - two));
+                builder.send(
+                    AirLookup::new(vec![x], AB::Expr::ONE, LookupKind::Byte),
+                    LookupScope::Local,
+                );
+            }
+        }
+
+        impl MachineAir<InnerVal> for MockAir {
+            type Record = MockRecord;
+            type Program = MockProgram;
+            type Error = core::convert::Infallible;
+
+            fn name(&self) -> String {
+                "MockZerocheck".to_string()
+            }
+
+            fn generate_trace(
+                &self,
+                _input: &Self::Record,
+                _output: &mut Self::Record,
+            ) -> Result<RowMajorMatrix<InnerVal>, Self::Error> {
+                unreachable!("perf test builds traces directly")
+            }
+
+            fn included(&self, _shard: &Self::Record) -> bool {
+                true
+            }
+        }
+
+        impl MachineRecord for MockRecord {
+            type Config = ();
+
+            fn stats(&self) -> HashMap<String, usize> {
+                HashMap::new()
+            }
+
+            fn append(&mut self, _other: &mut Self) {}
+
+            fn public_values<F: PrimeCharacteristicRing>(&self) -> Vec<F> {
+                Vec::new()
+            }
+        }
+
+        impl MachineProgram<InnerVal> for MockProgram {
+            fn pc_start(&self) -> InnerVal {
+                InnerVal::ZERO
+            }
+
+            fn initial_global_cumulative_sum(&self) -> SepticDigest<InnerVal> {
+                SepticDigest::zero()
+            }
+        }
+
+        fn env_usize(name: &str, default: usize) -> usize {
+            std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+        }
+
+        fn challenger() -> DuplexChallenger<InnerVal, Poseidon2KoalaBear<16>, 16, 8> {
+            DuplexChallenger::new(zkm_primitives::poseidon2_init())
+        }
+
+        fn trace(rows: usize) -> RowMajorMatrix<InnerVal> {
+            let values = (0..rows).map(|i| InnerVal::from_usize(i % 3)).collect();
+            RowMajorMatrix::new(values, 1)
+        }
+
+        #[test]
+        #[ignore = "manual CPU perf comparison; prints timing instead of asserting"]
+        fn shard_zerocheck_cpu_perf() {
+            let log_rows = env_usize("ZIREN_ZEROCHECK_CPU_PERF_LOG_ROWS", 21);
+            let rows = 1usize << log_rows;
+            let iters = env_usize("ZIREN_ZEROCHECK_CPU_PERF_ITERS", 3);
+            let chips_n = env_usize("ZIREN_ZEROCHECK_CPU_PERF_CHIPS", 1);
+
+            let chips_owned: Vec<Chip<InnerVal, MockAir>> =
+                (0..chips_n).map(|_| Chip::new(MockAir { width: 1 })).collect();
+            let chips: Vec<&Chip<InnerVal, MockAir>> = chips_owned.iter().collect();
+            let preprocessed_traces: Vec<RowMajorMatrix<InnerVal>> =
+                (0..chips_n).map(|_| RowMajorMatrix::new(Vec::new(), 0)).collect();
+            let main_traces: Vec<RowMajorMatrix<InnerVal>> =
+                (0..chips_n).map(|_| trace(rows)).collect();
+            let public_values: Vec<InnerVal> = Vec::new();
+
+            let logup_evaluations = LogUpEvaluations {
+                point: vec![EF::ZERO; log_rows],
+                chip_openings: chips_owned
+                    .iter()
+                    .map(|chip| {
+                        (
+                            chip.name().to_string(),
+                            ChipEvaluation {
+                                main_trace_evaluations: Vec::new(),
+                                preprocessed_trace_evaluations: None,
+                                log_degree: 0,
+                            },
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>(),
+            };
+
+            let mut total = 0u128;
+            let mut rounds = 0usize;
+            for _ in 0..iters {
+                let mut challenger = challenger();
+                let start = Instant::now();
+                let proof = prove_shard_zerocheck::<SC, MockAir>(
+                    &chips,
+                    &preprocessed_traces,
+                    &main_traces,
+                    &public_values,
+                    &logup_evaluations,
+                    log_rows,
+                    &mut challenger,
+                    None,
+                );
+                total += start.elapsed().as_micros();
+                rounds = proof.0.univariate_polys.len();
+                std::hint::black_box(proof);
+            }
+
+            println!(
+                "ZIREN_ZEROCHECK_CPU_PERF rows={rows} log_rows={log_rows} chips={chips_n}         
+            rounds={rounds} iters={iters} avg_ms={}",
+                total / (iters as u128 * 1000 as u128)
+            );
+        }
+    }
 }

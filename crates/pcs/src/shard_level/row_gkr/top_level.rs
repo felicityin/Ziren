@@ -52,10 +52,10 @@ where
         crate::jagged_pcs::allocate_gpu_layer_circuit_id(),
     );
 
-    let _logup_task_scope_guard =
-        super::device_circuit::LogupTaskScopeGuard::enter_with_scope::<F, EF>(
-            &mut logup_task_scope,
-        );
+    let _logup_task_scope_guard = super::device_circuit::LogupTaskScopeGuard::enter_with_scope::<
+        F,
+        EF,
+    >(&mut logup_task_scope);
 
     // Proof-of-work grinding. MUST run BEFORE sampling alpha/beta to
     // match the in-circuit verifier's `check_witness`, which is the FIRST
@@ -81,15 +81,10 @@ where
         .max()
         .unwrap_or(1);
     let beta_seed_dim = max_arity.next_power_of_two().trailing_zeros() as usize;
-    let beta_seed: Vec<EF> = (0..beta_seed_dim)
-        .map(|_| challenger.sample_algebra_element::<EF>())
-        .collect();
+    let beta_seed: Vec<EF> =
+        (0..beta_seed_dim).map(|_| challenger.sample_algebra_element::<EF>()).collect();
     // Expand beta_seed to the partial-lagrange table over {0,1}^beta_seed_dim.
-    let betas = if beta_seed.is_empty() {
-        vec![EF::ONE]
-    } else {
-        eq_mle_table::<EF>(&beta_seed)
-    };
+    let betas = if beta_seed.is_empty() { vec![EF::ONE] } else { eq_mle_table::<EF>(&beta_seed) };
 
     // SP1-faithful GKR padding (VERIFY_VK enumerability): the GKR
     // round count is FIXED to `max_log_row_count - 1` regardless of
@@ -115,9 +110,7 @@ where
                 .zip(main_traces.iter())
                 .map(|(chip, t)| {
                     if t.width == 0 {
-                        _device_traces
-                            .and_then(|p| p.chip_height(&chip.name()))
-                            .unwrap_or(0)
+                        _device_traces.and_then(|p| p.chip_height(&chip.name())).unwrap_or(0)
                     } else {
                         t.values.len() / t.width
                     }
@@ -166,29 +159,23 @@ where
     // only `(F, EF) == (KoalaBear, Ef4)` runs the populator.
     {
         use core::any::TypeId;
-        type Ef4Local = p3_field::extension::BinomialExtensionField<
-            p3_koala_bear::KoalaBear, 4>;
+        type Ef4Local = p3_field::extension::BinomialExtensionField<p3_koala_bear::KoalaBear, 4>;
         if TypeId::of::<F>() == TypeId::of::<p3_koala_bear::KoalaBear>()
             && TypeId::of::<EF>() == TypeId::of::<Ef4Local>()
         {
-            if let Some(hook) =
-                crate::jagged_pcs::get_gpu_logup_scope_populate_hook()
-            {
+            if let Some(hook) = crate::jagged_pcs::get_gpu_logup_scope_populate_hook() {
                 let cid = logup_task_scope.circuit_id();
                 if let Some(payloads) = hook(cid) {
-                    let input_data =
-                        super::device_circuit::DeviceInputData {
-                            circuit_id: cid,
-                            num_row_variables: max_log_row_count as u32,
-                            num_interaction_variables: 0,
-                            // Eager populator path: all layers are
-                            // materialized at scope entry, so the
-                            // lazy regen arm never fires.
-                            input_handle: None,
-                        };
-                    logup_task_scope.install_circuit_from_payloads(
-                        payloads, input_data,
-                    );
+                    let input_data = super::device_circuit::DeviceInputData {
+                        circuit_id: cid,
+                        num_row_variables: max_log_row_count as u32,
+                        num_interaction_variables: 0,
+                        // Eager populator path: all layers are
+                        // materialized at scope entry, so the
+                        // lazy regen arm never fires.
+                        input_handle: None,
+                    };
+                    logup_task_scope.install_circuit_from_payloads(payloads, input_data);
                 }
             }
         }
@@ -228,10 +215,7 @@ where
             }
             weights = next;
         }
-        mle_evals
-            .iter()
-            .zip(weights.iter())
-            .fold(EF::ZERO, |acc, (v, w)| acc + *v * *w)
+        mle_evals.iter().zip(weights.iter()).fold(EF::ZERO, |acc, (v, w)| acc + *v * *w)
     }
     let mut numerator_eval: EF = evaluate_mle::<EF>(&output.numerator, &eval_point);
     let mut denominator_eval: EF = evaluate_mle::<EF>(&output.denominator, &eval_point);
@@ -323,9 +307,7 @@ where
     // Drain the GPU's per-circuit bucket. No-op on host-only path
     // or when ziren-gpu hasn't registered the drain hook.
     if let Some(circuit_id) = device_circuit_id_to_drain {
-        if let Some(drain_hook) =
-            crate::jagged_pcs::get_gpu_layer_drain_circuit_hook()
-        {
+        if let Some(drain_hook) = crate::jagged_pcs::get_gpu_layer_drain_circuit_hook() {
             drain_hook(circuit_id);
         }
     }
@@ -356,73 +338,70 @@ where
     // (same kernels, same fold); the par_iter below reads each device chip's
     // result from this map. Falls back to the per-chip hook when disabled, the
     // batch hook is unregistered, or a chip is absent from the batch result.
-    let batch_enabled =
-        std::env::var("ZIREN_GPU_EVAL_AT_BATCH").map(|v| v != "0").unwrap_or(true);
-    let batched_main_evals: BTreeMap<String, Vec<EF>> =
-        if let (true, Some(provider)) = (batch_enabled, _device_traces) {
-            let mut names: Vec<String> = Vec::new();
-            let mut points: Vec<Vec<EF>> = Vec::new();
-            for (chip, main_trace) in chips.iter().zip(main_traces.iter()) {
-                let chip_main_width = <_ as p3_air::BaseAir<F>>::width(&chip.air);
-                if main_trace.width != 0 || chip_main_width == 0 {
-                    continue;
-                }
-                let main_height = provider.chip_height(&chip.name()).unwrap_or(1);
-                let log_main_height =
-                    main_height.max(1).next_power_of_two().trailing_zeros() as usize;
-                let main_eval_point: Vec<EF> = if eval_point.len() >= log_main_height {
-                    eval_point[eval_point.len() - log_main_height..].to_vec()
-                } else {
-                    eval_point.clone()
-                };
-                names.push(chip.name().to_string());
-                points.push(main_eval_point);
+    let batch_enabled = std::env::var("ZIREN_GPU_EVAL_AT_BATCH").map(|v| v != "0").unwrap_or(true);
+    let batched_main_evals: BTreeMap<String, Vec<EF>> = if let (true, Some(provider)) =
+        (batch_enabled, _device_traces)
+    {
+        let mut names: Vec<String> = Vec::new();
+        let mut points: Vec<Vec<EF>> = Vec::new();
+        for (chip, main_trace) in chips.iter().zip(main_traces.iter()) {
+            let chip_main_width = <_ as p3_air::BaseAir<F>>::width(&chip.air);
+            if main_trace.width != 0 || chip_main_width == 0 {
+                continue;
             }
-            if names.is_empty() {
-                BTreeMap::new()
+            let main_height = provider.chip_height(&chip.name()).unwrap_or(1);
+            let log_main_height = main_height.max(1).next_power_of_two().trailing_zeros() as usize;
+            let main_eval_point: Vec<EF> = if eval_point.len() >= log_main_height {
+                eval_point[eval_point.len() - log_main_height..].to_vec()
             } else {
-                let results =
-                    crate::shard_level::logup_gkr_prover::eval_chips_at_points_batched_via_provider::<F, EF>(
-                        &names, &points, provider,
-                    );
-                let mut map = BTreeMap::new();
-                for (name, res) in names.iter().zip(results.into_iter()) {
-                    if let Some(v) = res {
-                        map.insert(name.clone(), v);
-                    }
+                eval_point.clone()
+            };
+            names.push(chip.name().to_string());
+            points.push(main_eval_point);
+        }
+        if names.is_empty() {
+            BTreeMap::new()
+        } else {
+            let results =
+                crate::shard_level::logup_gkr_prover::eval_chips_at_points_batched_via_provider::<
+                    F,
+                    EF,
+                >(&names, &points, provider);
+            let mut map = BTreeMap::new();
+            for (name, res) in names.iter().zip(results.into_iter()) {
+                if let Some(v) = res {
+                    map.insert(name.clone(), v);
                 }
-                // Parity gate (ZIREN_GPU_EVAL_AT_BATCH_VERIFY=1): re-run the
-                // legacy per-chip eval-at for every batched chip and assert the
-                // batched result is BYTE-IDENTICAL. Proves the batched path is
-                // transcript-neutral before the per-chip path is retired.
-                if std::env::var("ZIREN_GPU_EVAL_AT_BATCH_VERIFY").is_ok() {
-                    for (name, point) in names.iter().zip(points.iter()) {
-                        let per_chip =
+            }
+            // Parity gate (ZIREN_GPU_EVAL_AT_BATCH_VERIFY=1): re-run the
+            // legacy per-chip eval-at for every batched chip and assert the
+            // batched result is BYTE-IDENTICAL. Proves the batched path is
+            // transcript-neutral before the per-chip path is retired.
+            if std::env::var("ZIREN_GPU_EVAL_AT_BATCH_VERIFY").is_ok() {
+                for (name, point) in names.iter().zip(points.iter()) {
+                    let per_chip =
                             crate::shard_level::logup_gkr_prover::eval_chip_columns_at_point_via_provider::<F, EF>(
                                 name, point, provider,
                             );
-                        match (map.get(name), per_chip.as_ref()) {
-                            (Some(b), Some(pc)) => {
-                                assert_eq!(
-                                    b, pc,
-                                    "#49 parity: batched != per-chip for chip {name}"
-                                );
-                                tracing::info!(chip = %name, "#49 eval-at parity OK (byte-identical)");
-                            }
-                            (None, None) => {}
-                            (b, pc) => panic!(
-                                "#49 parity presence mismatch chip {name}: batched={} per_chip={}",
-                                b.is_some(),
-                                pc.is_some()
-                            ),
+                    match (map.get(name), per_chip.as_ref()) {
+                        (Some(b), Some(pc)) => {
+                            assert_eq!(b, pc, "#49 parity: batched != per-chip for chip {name}");
+                            tracing::info!(chip = %name, "#49 eval-at parity OK (byte-identical)");
                         }
+                        (None, None) => {}
+                        (b, pc) => panic!(
+                            "#49 parity presence mismatch chip {name}: batched={} per_chip={}",
+                            b.is_some(),
+                            pc.is_some()
+                        ),
                     }
                 }
-                map
             }
-        } else {
-            BTreeMap::new()
-        };
+            map
+        }
+    } else {
+        BTreeMap::new()
+    };
 
     let chip_openings: BTreeMap<String, ChipEvaluation<EF>> = chips
         .par_iter()
@@ -534,13 +513,9 @@ where
             denominator: output.denominator,
         },
         round_proofs,
-        logup_evaluations: LogUpEvaluations {
-            point: trace_dim_point,
-            chip_openings,
-        },
+        logup_evaluations: LogUpEvaluations { point: trace_dim_point, chip_openings },
         witness,
     };
-
 
     proof
 }
@@ -580,9 +555,8 @@ where
         "LayerState::Device under EF != JaggedChallenge"
     );
 
-    let pull_hook = get_gpu_layer_pull_hook().expect(
-        "LayerState::Device with no GpuLayerPullFn registered"
-    );
+    let pull_hook =
+        get_gpu_layer_pull_hook().expect("LayerState::Device with no GpuLayerPullFn registered");
 
     // Pass circuit_id so the GPU registry scopes per build call —
     // concurrent shards on the same GPU would otherwise collide on
@@ -592,11 +566,219 @@ where
 
     // SAFETY: assert above confirms `EF == JaggedChallenge` at runtime.
     let pulled_ef: super::layer::LogUpGkrCpuLayer<EF, EF> = unsafe {
-        let out: super::layer::LogUpGkrCpuLayer<EF, EF> =
-            core::mem::transmute_copy(&pulled_lb);
+        let out: super::layer::LogUpGkrCpuLayer<EF, EF> = core::mem::transmute_copy(&pulled_lb);
         core::mem::forget(pulled_lb);
         out
     };
 
     super::layer::GkrCircuitLayer::Layer(pulled_ef)
+}
+
+#[cfg(test)]
+mod perf_tests {
+    use std::time::Instant;
+
+    use hashbrown::HashMap;
+
+    use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
+    use p3_challenger::DuplexChallenger;
+    use p3_field::{Field, PrimeCharacteristicRing};
+    use p3_koala_bear::Poseidon2KoalaBear;
+    use p3_matrix::dense::RowMajorMatrix;
+    use p3_uni_stark::SymbolicAirBuilder;
+
+    use crate::air::{AirLookup, LookupScope, MachineAir, MessageBuilder};
+    use crate::lookup::{LookupBuilder, LookupKind};
+    use crate::{record::MachineRecord, Challenge, Chip, InnerVal};
+
+    use super::prove_shard_logup_gkr_rows;
+
+    type SC = crate::koala_bear_poseidon2::KoalaBearPoseidon2;
+    type EF = Challenge<SC>;
+
+    #[derive(Clone)]
+    struct PerfAir {
+        name: String,
+        width: usize,
+        interactions: usize,
+        arity: usize,
+    }
+
+    #[derive(Default, Clone)]
+    struct PerfRecord;
+
+    #[derive(Default, Clone)]
+    struct PerfProgram;
+
+    impl<F: Field> BaseAir<F> for PerfAir {
+        fn width(&self) -> usize {
+            self.width
+        }
+    }
+
+    impl MachineRecord for PerfRecord {
+        type Config = ();
+
+        fn stats(&self) -> HashMap<String, usize> {
+            HashMap::new()
+        }
+
+        fn append(&mut self, _other: &mut Self) {}
+
+        fn public_values<F: PrimeCharacteristicRing>(&self) -> Vec<F> {
+            Vec::new()
+        }
+    }
+
+    impl<F: PrimeCharacteristicRing> crate::air::MachineProgram<F> for PerfProgram {
+        fn pc_start(&self) -> F {
+            F::ZERO
+        }
+
+        fn initial_global_cumulative_sum(&self) -> crate::septic_digest::SepticDigest<F> {
+            crate::septic_digest::SepticDigest::zero()
+        }
+    }
+
+    impl<F> Air<LookupBuilder<F>> for PerfAir
+    where
+        F: Field + PrimeCharacteristicRing,
+    {
+        fn eval(&self, builder: &mut LookupBuilder<F>) {
+            let main = builder.main();
+            let row = main.current_slice();
+            let one: <LookupBuilder<F> as p3_air::AirBuilder>::Expr = F::ONE.into();
+
+            for i in 0..self.interactions {
+                let values = (0..self.arity)
+                    .map(|j| {
+                        let idx = (i + j) % self.width;
+                        row[idx].clone().into()
+                    })
+                    .collect();
+                builder.send(
+                    AirLookup::new(values, one.clone(), LookupKind::Byte),
+                    LookupScope::Local,
+                );
+            }
+        }
+    }
+
+    impl<F> Air<SymbolicAirBuilder<F>> for PerfAir
+    where
+        F: Field + PrimeCharacteristicRing,
+    {
+        fn eval(&self, builder: &mut SymbolicAirBuilder<F>) {
+            let main = builder.main();
+            let row = main.current_slice();
+            let one: <SymbolicAirBuilder<F> as p3_air::AirBuilder>::Expr = F::ONE.into();
+
+            for i in 0..self.interactions {
+                let values = (0..self.arity)
+                    .map(|j| {
+                        let idx = (i + j) % self.width;
+                        row[idx].clone().into()
+                    })
+                    .collect();
+                builder.send(
+                    AirLookup::new(values, one.clone(), LookupKind::Byte),
+                    LookupScope::Local,
+                );
+            }
+        }
+    }
+
+    impl MachineAir<InnerVal> for PerfAir {
+        type Record = PerfRecord;
+        type Program = PerfProgram;
+        type Error = core::convert::Infallible;
+
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        fn generate_trace(
+            &self,
+            _input: &Self::Record,
+            _output: &mut Self::Record,
+        ) -> Result<RowMajorMatrix<InnerVal>, Self::Error> {
+            unreachable!("perf test builds traces directly")
+        }
+
+        fn included(&self, _shard: &Self::Record) -> bool {
+            true
+        }
+    }
+
+    fn env_usize(name: &str, default: usize) -> usize {
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    }
+
+    fn challenger() -> DuplexChallenger<InnerVal, Poseidon2KoalaBear<16>, 16, 8> {
+        DuplexChallenger::new(zkm_primitives::poseidon2_init())
+    }
+
+    fn trace(rows: usize, width: usize, salt: usize) -> RowMajorMatrix<InnerVal> {
+        let values =
+            (0..rows * width).map(|i| InnerVal::from_usize((i + 17 * salt) % 251)).collect();
+        RowMajorMatrix::new(values, width)
+    }
+
+    /// CPU-only LogUp-GKR microbench for comparing against the matching
+    /// `sp1-hypercube` ignored test in `../sp1`.
+    ///
+    /// Example:
+    /// `ZIREN_LOGUP_CPU_PERF_LOG_ROWS=14 ZIREN_LOGUP_CPU_PERF_ITERS=5     ///  cargo test -p zkm-pcs shard_logup_gkr_cpu_perf --release -- --ignored --nocapture`
+    #[test]
+    #[ignore = "manual CPU perf comparison; prints timing instead of asserting"]
+    fn shard_logup_gkr_cpu_perf() {
+        std::env::set_var("ZIREN_GPU_DEVICE_HOOKS", "0");
+        std::env::set_var("ZIREN_GPU_LAYER_TRANSITION", "0");
+        std::env::set_var("ZIREN_GPU_LOGUP_GKR_DEVICE", "0");
+        std::env::set_var("ZIREN_GPU_EVAL_AT_BATCH", "0");
+
+        let log_rows = env_usize("ZIREN_LOGUP_CPU_PERF_LOG_ROWS", 22);
+        let rows = 1usize << log_rows;
+        let iters = env_usize("ZIREN_LOGUP_CPU_PERF_ITERS", 3);
+        let width = env_usize("ZIREN_LOGUP_CPU_PERF_WIDTH", 8);
+        let interactions = env_usize("ZIREN_LOGUP_CPU_PERF_INTERACTIONS", 8);
+        let arity = env_usize("ZIREN_LOGUP_CPU_PERF_ARITY", 2);
+        let chips_n = env_usize("ZIREN_LOGUP_CPU_PERF_CHIPS", 2);
+
+        let chips_owned: Vec<Chip<InnerVal, PerfAir>> = (0..chips_n)
+            .map(|i| {
+                Chip::new(PerfAir { name: format!("PerfChip{i}"), width, interactions, arity })
+            })
+            .collect();
+        let chips: Vec<&Chip<InnerVal, PerfAir>> = chips_owned.iter().collect();
+        let preprocessed_traces: Vec<RowMajorMatrix<InnerVal>> =
+            (0..chips_n).map(|_| RowMajorMatrix::new(Vec::new(), 0)).collect();
+        let main_traces: Vec<RowMajorMatrix<InnerVal>> =
+            (0..chips_n).map(|i| trace(rows, width, i)).collect();
+
+        let mut total = 0u128;
+        let mut rounds = 0usize;
+        for _ in 0..iters {
+            let mut challenger = challenger();
+            let start = Instant::now();
+            let proof = prove_shard_logup_gkr_rows::<InnerVal, EF, PerfAir, _>(
+                &chips,
+                &preprocessed_traces,
+                &main_traces,
+                log_rows,
+                &mut challenger,
+                None,
+            );
+            total += start.elapsed().as_micros();
+            rounds = proof.round_proofs.len();
+            std::hint::black_box(proof);
+        }
+
+        println!(
+            "ZIREN_LOGUP_GKR_CPU_PERF rows={rows} log_rows={log_rows} chips={chips_n}              
+            width={width} interactions={interactions} arity={arity} rounds={rounds}              
+            iters={iters} avg_ms={}",
+            total / (iters as u128 * 1000 as u128)
+        );
+    }
 }
