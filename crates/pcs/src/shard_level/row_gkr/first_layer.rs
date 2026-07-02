@@ -408,8 +408,10 @@ where
         let real_upper = chip_height.min(half_logical);
         let real_lower = chip_height.saturating_sub(half_logical).min(half_logical);
 
+        let start = std::time::Instant::now();
         let (n_upper, n_lower) = split_real_msb(numer_mat.values, num_interactions, half_logical, real_upper, real_lower);
         let (d_upper, d_lower) = split_real_msb(denom_mat.values, num_interactions, half_logical, real_upper, real_lower);
+        println!("-----split_real_msb {:?}", start.elapsed());
 
         // Encode each half as a `RowMajorTable` with raw per-chip
         // `num_interactions` storage (no per-chip column padding —
