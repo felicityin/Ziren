@@ -145,6 +145,9 @@ where
     // Build GKR circuit + extract output MLEs.
     let _t_first = std::time::Instant::now();
     let _first_span = tracing::info_span!("logup_gkr_first_layer").entered();
+    for i in main_traces.iter() {
+        println!("-----main_trace width={} height={}", i.width, i.values.len() / i.width);
+    }
     let (output, mut circuit) = build_gkr_circuit::<F, EF, A>(
         chips,
         preprocessed_traces,

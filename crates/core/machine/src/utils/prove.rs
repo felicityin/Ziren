@@ -789,9 +789,10 @@ where
                                                             .collect();
                                                         // Canonical-shaped clone (shares
                                                         // the program Arc); FIX-on path.
+                                                        let start = std::time::Instant::now();
                                                         let mut gen_record = record.clone();
                                                         gen_record.shape = Some(shape.clone());
-                                                        match prover.generate_traces(&gen_record) {
+                                                        let a = match prover.generate_traces(&gen_record) {
                                                             Ok(all_canonical) => {
                                                                 // SC::Val == InnerVal here
                                                                 // (TypeId-gated): reinterpret
@@ -833,7 +834,9 @@ where
                                                                     .collect()
                                                             }
                                                             Err(_) => Default::default(),
-                                                        }
+                                                        };
+                                                        println!("----------generate_traces: {:?}", start.elapsed());
+                                                        a
                                                     } else {
                                                         Default::default()
                                                     }

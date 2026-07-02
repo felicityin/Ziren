@@ -542,8 +542,10 @@ where
         "chips and main_trace_loader must be parallel arrays",
     );
 
+    let start = std::time::Instant::now();
     let mut main_traces: Vec<RowMajorMatrix<Val<SC>>> =
         main_trace_loader.materialize_all();
+    println!("---load main traces: {:?}", start.elapsed());
 
     // Option B auto-precompute (GPU pipeline path). The host CPU prover
     // supplies `Some(precomputed)` from `commit_basefold_path` / `open()`;
@@ -632,6 +634,7 @@ where
         && jagged_on
         && prospective_log_dense >= gpu_min_log_dense;
     let skip_device_d2h = !eager_kill && handle_path_guaranteed;
+    let start = std::time::Instant::now();
     let commit_traces: Vec<RowMajorMatrix<Val<SC>>> = chips
         .iter()
         .zip(main_traces.iter())
@@ -660,6 +663,7 @@ where
             t.clone()
         })
         .collect();
+    println!("-----get commit-traces {:?}", start.elapsed());
     // Commit-traces D2H removal: capture the cumulative-sum TAILS
     // (last 14 row-major values) for device-resident chips via a
     // ~56-byte provider gather, EARLY — before the zerocheck prepare's
