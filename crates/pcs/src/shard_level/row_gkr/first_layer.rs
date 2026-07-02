@@ -262,6 +262,7 @@ where
             .chain(chip.receives().iter().map(|r| (r, false)))
             .collect();
         let num_interactions = interactions.len();
+        println!("-------{} interactions: {}", chip.name(), num_interactions);
 
         // `provider_present` is load-bearing: without it the hook
         // would fall back to a host-upload launch from the calling
