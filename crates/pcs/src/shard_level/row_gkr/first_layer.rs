@@ -251,6 +251,7 @@ where
     //  contributions: offset {} + chip_cols {} > global {}"`
     // when chips have padded widths > raw widths.
     let mut total_padded_interactions: usize = 0;
+    let mut a = 0;
 
     for ((chip, main_trace), prep_trace) in
         chips.iter().zip(main_traces.iter()).zip(preprocessed_traces.iter())
@@ -262,6 +263,7 @@ where
             .chain(chip.receives().iter().map(|r| (r, false)))
             .collect();
         let num_interactions = interactions.len();
+        a += num_interactions;
         println!("-------{} interactions: {}", chip.name(), num_interactions);
 
         // `provider_present` is load-bearing: without it the hook
@@ -409,10 +411,10 @@ where
         let real_upper = chip_height.min(half_logical);
         let real_lower = chip_height.saturating_sub(half_logical).min(half_logical);
 
-        let start = std::time::Instant::now();
+        // let start = std::time::Instant::now();
         let (n_upper, n_lower) = split_real_msb(numer_mat.values, num_interactions, half_logical, real_upper, real_lower);
         let (d_upper, d_lower) = split_real_msb(denom_mat.values, num_interactions, half_logical, real_upper, real_lower);
-        println!("-----split_real_msb {:?}", start.elapsed());
+        // println!("-----split_real_msb {:?}", start.elapsed());
 
         // Encode each half as a `RowMajorTable` with raw per-chip
         // `num_interactions` storage (no per-chip column padding —
@@ -434,6 +436,8 @@ where
         denominator_0.push(make_table_ef(d_upper, real_upper));
         denominator_1.push(make_table_ef(d_lower, real_lower));
     }
+
+    println!("----total interactions: {}", a);
 
     let num_interaction_variables =
         total_padded_interactions.max(1).next_power_of_two().trailing_zeros() as usize;
