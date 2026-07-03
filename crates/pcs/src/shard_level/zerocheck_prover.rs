@@ -199,6 +199,7 @@ where
         Some(carrier) => carrier && _device_traces.is_none() && full_openings_ok(),
         None => false,
     };
+    println!("---shard_use_rev: {}", shard_use_rev);
 
     // #125 INC-4a: run the FIRST sumcheck round in the BASE field (K = F) on
     // the pure-host CPU path (no device provider) — dropping the up-front
@@ -227,6 +228,7 @@ where
     let mut chip_sumcheck_claims: Vec<Challenge<SC>> = Vec::with_capacity(n_chips);
 
     for &chip_idx in name_order.iter() {
+        let start = std::time::Instant::now();
         let chip = chips[chip_idx];
         let name = chip.name().to_string();
         let opening =
@@ -511,6 +513,7 @@ where
             Challenge::<SC>::ZERO,
             num_variables,
         );
+        println!("-------zerocheck pre aux: {:?}", start.elapsed());
 
         let poly = ZeroCheckPoly::<Val<SC>, $K, Challenge<SC>, A>::new(
             chip,
