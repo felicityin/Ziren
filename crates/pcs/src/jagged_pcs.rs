@@ -2705,6 +2705,7 @@ pub mod jagged {
             println!("-----no precomputed fast path: {:?}", start.elapsed());
             (packing, commit, prover_data, None, None)
         };
+        println!("-----------packing done");
 
         // (3) Compute per-chip per-column row-MLE values y_{c,j}.
         //
