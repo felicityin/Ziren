@@ -2654,6 +2654,7 @@ pub mod jagged {
             // re-materialize from the (drained) provider.
             (pre.packing, pre.commit, pre.prover_data, pre.dense_device_handle, pre.host_dense_q)
         } else {
+            let start = std::time::Instant::now();
             // No precompute → this path materializes the dense commit on
             // host.  Re-materialize empty device-resident chips from the
             // provider first so metadata dims + dense values are correct
@@ -2701,6 +2702,7 @@ pub mod jagged {
                 sub_phase = "dense_commit",
                 "jagged sub-phase done"
             );
+            println!("-----no precomputed fast path: {:?}", start.elapsed());
             (packing, commit, prover_data, None, None)
         };
 

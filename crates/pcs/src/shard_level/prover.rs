@@ -673,6 +673,7 @@ where
     // falls back to its materialized commit trace.  Once step-3
     // y_per_chip is device-served too, this gather replaces the
     // full-trace materialize as the cumsum source entirely.
+    let start = std::time::Instant::now();
     let chip_cum_tails: Vec<Option<Vec<Val<SC>>>> = chips
         .iter()
         .zip(main_traces.iter())
@@ -688,6 +689,7 @@ where
             )
         })
         .collect();
+    println!("-----get chip_cum_tails {:?}", start.elapsed());
     // -- HEIGHT-AGNOSTIC RECURSION (step 5b): pad the per-chip COMMIT
     // traces UP to the per-shard CLUSTER band-cap before packing.  The
     // band-cap (chip name -> log_height) is installed by the CORE prove
@@ -724,6 +726,7 @@ where
     let natural_commit = std::env::var("ZIREN_FIXOFF_NATURAL_COMMIT")
         .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
         .unwrap_or(true);
+    let start = std::time::Instant::now();
     let commit_traces: Vec<RowMajorMatrix<Val<SC>>> = {
         match crate::shard_level::band_cap::current_band_cap() {
             None => commit_traces,
@@ -759,6 +762,8 @@ where
                 .collect(),
         }
     };
+    println!("-----band-pad commit-traces {:?}", start.elapsed());
+    let start = std::time::Instant::now();
     let (commit_traces, main_commitment, precomputed_commit) =
         maybe_auto_precompute_basefold::<SC, A>(
             chips,
@@ -768,6 +773,7 @@ where
             _device_traces,
         );
     let commit_traces: &[RowMajorMatrix<Val<SC>>] = &commit_traces;
+    println!("-----maybe_auto_precompute_basefold {:?}", start.elapsed());
     // ZIREN_SP1_ZEROPAD (SP1 missing-chip model): the zero-padded missing chips
     // were committed at band height above (`commit_traces` and the precomputed
     // commit keep the chip-SET / VK).  For the STARK phases below they have a
@@ -782,6 +788,7 @@ where
     //     below), so the verifier's threshold + reconstruction fully mask it.
     // Done AFTER `commit_traces` is built so the commit stays band-height.
     // `None` (default / FIX-on / non-core) => no change (byte-identical).
+    let start = std::time::Instant::now();
     if let Some(zeropad_missing) = crate::shard_level::band_cap::current_zeropad_missing() {
         for (chip, trace) in chips.iter().zip(main_traces.iter_mut()) {
             if zeropad_missing.contains(&MachineAir::<Val<SC>>::name(*chip)) {
@@ -790,6 +797,7 @@ where
             }
         }
     }
+    println!("-----maybe_zeropad_missing {:?}", start.elapsed());
     let main_traces: &[RowMajorMatrix<Val<SC>>] = &main_traces;
 
     let n_chips = chips.len();
@@ -1550,6 +1558,7 @@ where
         alloc::vec::Vec::from_raw_parts(v.as_mut_ptr() as *mut B, v.len(), v.capacity())
     }
 
+    let start = std::time::Instant::now();
     // Send `trace.width` directly; the verifier reads each chip's
     // `column_count` from `PackingMeta` so padding to `chip.width()`
     // would just inflate jagged-PCS data on sparse chips.
@@ -1565,6 +1574,7 @@ where
             (name, RowMajorMatrix::new(values, trace_width))
         })
         .collect();
+    println!("------chip_traces------{:?}", start.elapsed());
 
     // Per-chip `r_row` = trailing log(chip_height) coords of the
     // shared eval_point.
