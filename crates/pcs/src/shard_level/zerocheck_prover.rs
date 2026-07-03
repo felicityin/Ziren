@@ -542,6 +542,7 @@ where
         zerocheck_polys.push(poly);
     }
 
+    let start = std::time::Instant::now();
     // `component_poly_evals` are the per-chip trace openings at the reduced
     // point z (padded-MLE@z, prep-then-main, name order).
     let (sp1_proof, component_poly_evals) =
@@ -551,6 +552,7 @@ where
             _,
             SC::Challenger,
         >(zerocheck_polys, challenger, chip_sumcheck_claims, 1, lambda);
+    println!("-------zerocheck reduce_sumcheck_serial: {:?}", start.elapsed());
     let mut trace_at_z: std::collections::BTreeMap<String, Vec<Challenge<SC>>> =
         std::collections::BTreeMap::new();
     for (k, &chip_idx) in name_order.iter().enumerate() {
