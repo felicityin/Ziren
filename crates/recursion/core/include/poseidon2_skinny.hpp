@@ -87,16 +87,13 @@ __ZKM_HOSTDEV__ void instr_to_row(const Poseidon2Instr<F>& instr, size_t i,
   cols.round_counters_preprocessed.is_internal_round =
       F::from_bool(i == INTERNAL_ROUND_IDX);
 
-  // The shared `round_constants` column holds WIDTH per-lane constants on external rows and
-  // NUM_INTERNAL_ROUNDS constants on the single internal row, so iterate over the full column
-  // width (NUM_ROUND_CONSTANTS) and fill each kind in its own range.
-  for (size_t j = 0; j < NUM_ROUND_CONSTANTS; j++) {
-    if (is_external_round && j < WIDTH) {
+  for (size_t j = 0; j < WIDTH; j++) {
+    if (is_external_round) {
       size_t r = i - 1;
       size_t round = (i < INTERNAL_ROUND_IDX) ? r : r + NUM_INTERNAL_ROUNDS - 1;
       cols.round_counters_preprocessed.round_constants[j] =
           F(F::to_monty(RC_16_30_U32[round][j]));
-    } else if (i == INTERNAL_ROUND_IDX && j < NUM_INTERNAL_ROUNDS) {
+    } else if (i == INTERNAL_ROUND_IDX) {
       cols.round_counters_preprocessed.round_constants[j] =
           F(F::to_monty(RC_16_30_U32[NUM_EXTERNAL_ROUNDS / 2 + j][0]));
     } else {

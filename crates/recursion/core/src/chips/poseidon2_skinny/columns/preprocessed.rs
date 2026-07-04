@@ -1,9 +1,6 @@
 use zkm_derive::AlignedBorrow;
 
-use crate::chips::{
-    mem::MemoryAccessColsChips,
-    poseidon2_skinny::{NUM_ROUND_CONSTANTS, WIDTH},
-};
+use crate::chips::{mem::MemoryAccessColsChips, poseidon2_skinny::WIDTH};
 
 #[derive(AlignedBorrow, Clone, Copy, Debug)]
 #[repr(C)]
@@ -11,7 +8,7 @@ pub struct RoundCountersPreprocessedCols<T: Copy> {
     pub is_input_round: T,
     pub is_external_round: T,
     pub is_internal_round: T,
-    pub round_constants: [T; NUM_ROUND_CONSTANTS],
+    pub round_constants: [T; WIDTH],
 }
 
 #[derive(AlignedBorrow, Clone, Copy, Debug)]

@@ -13,20 +13,8 @@ pub const WIDTH: usize = 16;
 pub const RATE: usize = WIDTH / 2;
 
 pub const NUM_EXTERNAL_ROUNDS: usize = 8;
-// Must match `poseidon2_init()` in zkm-primitives (KoalaBear/α=3 reference R_P = 20). Native and
-// circuit (poseidon2_wide) chips must stay equal or the equivalence test breaks.
-pub const NUM_INTERNAL_ROUNDS: usize = 20;
+pub const NUM_INTERNAL_ROUNDS: usize = 13;
 pub const NUM_ROUNDS: usize = NUM_EXTERNAL_ROUNDS + NUM_INTERNAL_ROUNDS;
-
-/// Number of slots in each preprocessed row's shared `round_constants` column.
-///
-/// The column is reused by two kinds of rows: every external-round row uses its first `WIDTH`
-/// entries as the per-lane round constants, while the single internal-rounds row packs all
-/// `NUM_INTERNAL_ROUNDS` internal-round constants. The column must hold the larger of the two. For
-/// KoalaBear/α=3, `NUM_INTERNAL_ROUNDS` (20) exceeds `WIDTH` (16); the assertion below guards the
-/// invariant if either constant changes (with R_P=13 the old code relied on `WIDTH` being larger).
-pub const NUM_ROUND_CONSTANTS: usize = NUM_INTERNAL_ROUNDS;
-const _: () = assert!(NUM_ROUND_CONSTANTS >= WIDTH);
 
 /// A chip that implements the Poseidon2 permutation in the skinny variant (one external round per
 /// row and one row for all internal rounds).

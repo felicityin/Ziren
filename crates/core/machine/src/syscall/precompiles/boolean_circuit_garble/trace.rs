@@ -244,8 +244,6 @@ impl BooleanCircuitGarbleChip {
 mod tests {
     use super::*;
     use crate::syscall::precompiles::boolean_circuit_garble::columns::BooleanCircuitGarbleCols;
-    use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues};
-    use p3_field::FieldAlgebra;
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::{RowMajorMatrix, RowMajorMatrixView};
     use p3_matrix::stack::VerticalPair;

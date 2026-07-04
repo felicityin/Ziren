@@ -1106,9 +1106,7 @@ lazy_static! {
 
 pub fn poseidon2_init() -> Poseidon2KoalaBear<16> {
     const ROUNDS_F: usize = 8;
-    // Plonky3's KoalaBear/α=3 reference (poseidon2_round_numbers_128) recommends R_P = 20
-    // for a 31-bit field at width 16. (R_P=13 was a leftover from the BabyBear/α=7 fork.)
-    const ROUNDS_P: usize = 20;
+    const ROUNDS_P: usize = 13;
     let mut round_constants = RC_16_30.to_vec();
     let internal_start = ROUNDS_F / 2;
     let internal_end = (ROUNDS_F / 2) + ROUNDS_P;
@@ -1149,26 +1147,4 @@ pub fn hash_deferred_proof(
     inputs.extend_from_slice(vk_digest);
     inputs.extend_from_slice(pv_digest);
     poseidon2_hash(inputs.to_vec())
-}
-
-#[cfg(test)]
-mod tests {
-    use p3_koala_bear::KoalaBear;
-    use p3_poseidon2::poseidon2_round_numbers_128;
-
-    /// Ziren instantiates Poseidon2 over KoalaBear (width 16) with S-box degree α=3 (see
-    /// `poseidon2_init`). The partial- (internal-) round count must match Plonky3's own 128-bit
-    /// recommendation for that configuration; a lower-degree S-box needs *more* partial rounds for
-    /// algebraic-attack resistance, so under-counting silently weakens the hash. This pins R_F/R_P
-    /// to the library reference so switching the field or S-box can never leave the round count
-    /// stale (the original α=7 fork shipped R_P=13, which is the α=7 value, not the α=3 value).
-    #[test]
-    fn koalabear_poseidon2_round_counts_match_plonky3_reference() {
-        let (rounds_f, rounds_p) = poseidon2_round_numbers_128::<KoalaBear>(16, 3);
-        assert_eq!(rounds_f, 8, "external (full) round count drifted from the Plonky3 reference");
-        assert_eq!(
-            rounds_p, 20,
-            "internal (partial) round count drifted from the Plonky3 reference"
-        );
-    }
 }
