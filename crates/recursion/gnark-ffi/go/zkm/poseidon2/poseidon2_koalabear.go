@@ -9,7 +9,7 @@ import (
 
 const KOALABEAR_WIDTH = 16
 const koalabearNumExternalRounds = 8
-const koalabearNumInternalRounds = 20
+const koalabearNumInternalRounds = 13
 
 type Poseidon2KoalaBearChip struct {
 	api      frontend.API
