@@ -2685,8 +2685,10 @@ pub mod jagged {
             let _t_commit = std::time::Instant::now();
             let _commit_span = tracing::info_span!("jagged_dense_commit").entered();
             let (commit, prover_data) = {
+                let start = std::time::Instant::now();
                 let dense_q =
                     materialize_dense_jagged::<InnerVal>(chip_traces, packing.log_dense_size);
+                println!("-----2691 no precomputed fast path: dense materialize {:?}", start.elapsed());
                 debug_assert_eq!(dense_q.len(), 1usize << packing.log_dense_size);
                 let dense_traces = vec![(
                     alloc::string::String::from("<jagged-dense>"),
@@ -3024,7 +3026,12 @@ pub mod jagged {
                 // dense pack (cold path — happy path takes skip_host_dense).
                 let rematerialized =
                     rematerialize_chip_traces_via_provider(chip_traces, provider);
-                materialize_dense_jagged::<InnerVal>(&rematerialized, packing.log_dense_size)
+                let start = std::time::Instant::now();
+                let a = materialize_dense_jagged::<InnerVal>(&rematerialized, packing.log_dense_size);
+                let elapsed = start.elapsed();
+                println!("---3032 Dense jagged materialization time: {:?}", elapsed);
+                a
+
             };
 
             // Diagnostic (1): env=1 but no hook → bump the counter.
