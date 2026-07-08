@@ -4,12 +4,12 @@ use p3_air::{Air, AirBuilder};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use zkm_core_executor::{syscalls::SyscallCode, Opcode};
-use zkm_stark::{
+use zkm_hypercube::{
     air::{
         BaseAirBuilder, LookupScope, PublicValues, ZKMAirBuilder, POSEIDON_NUM_WORDS,
         PV_DIGEST_NUM_WORDS, ZKM_PROOF_NUM_PV_ELTS,
     },
-    Word,
+    word::Word,
 };
 
 use crate::{

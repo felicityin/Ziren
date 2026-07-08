@@ -1,6 +1,6 @@
 use p3_field::Field;
 use zkm_derive::AlignedBorrow;
-use zkm_stark::{air::ZKMAirBuilder, Word};
+use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
 
 use super::IsZeroWordOperation;
 

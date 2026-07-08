@@ -40,6 +40,7 @@ rand = { workspace = true }
 zkm-derive = { workspace = true }
 zkm-primitives = { workspace = true }
 zkm-zkvm = { workspace = true }
+zkm-hypercube = { workspace = true }
 
 strum = "0.26.3"
 strum_macros = "0.26.4"

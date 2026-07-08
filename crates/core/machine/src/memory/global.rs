@@ -15,12 +15,13 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_stark::PicusInfo;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{
         AirLookup, BaseAirBuilder, LookupScope, MachineAir, PublicValues, ZKMAirBuilder,
         ZKM_PROOF_NUM_PV_ELTS,
     },
-    LookupKind, Word,
+    lookup::LookupKind,
+    word::Word,
 };
 
 use crate::{
@@ -553,9 +554,13 @@ mod tests {
     };
     use p3_koala_bear::KoalaBear;
     use zkm_core_executor::Executor;
+    // `LookupKind`/`LookupScope` are re-imported here (shadowing the `use super::*` glob,
+    // which now brings in the new `zkm_hypercube` versions) because `debug_lookups_with_all_chips`
+    // and `StarkMachine` below are still the old FRI-backed `zkm_stark` utilities and expect the
+    // old-crate types.
     use zkm_stark::{
-        debug_lookups_with_all_chips, koala_bear_poseidon2::KoalaBearPoseidon2, StarkMachine,
-        ZKMCoreOpts,
+        air::LookupScope, debug_lookups_with_all_chips, koala_bear_poseidon2::KoalaBearPoseidon2,
+        LookupKind, StarkMachine, ZKMCoreOpts,
     };
 
     #[test]

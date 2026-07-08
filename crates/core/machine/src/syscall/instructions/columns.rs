@@ -2,7 +2,7 @@ use std::mem::size_of;
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
-use zkm_stark::{air::PV_DIGEST_NUM_WORDS, Word};
+use zkm_hypercube::{air::PV_DIGEST_NUM_WORDS, word::Word};
 
 use crate::operations::{IsZeroOperation, KoalaBearWordRangeChecker};
 #[cfg(feature = "picus")]

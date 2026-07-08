@@ -18,11 +18,15 @@ use zkm_core_executor::{
     events::PrecompileLocalMemory, syscalls::SyscallCode, ExecutionRecord, MipsAirId, Program,
 };
 use zkm_curves::weierstrass::{bls12_381::Bls12381BaseField, bn254::Bn254BaseField};
-use zkm_stark::PicusInfo;
-use zkm_stark::{
-    air::{LookupScope, MachineAir, ZKM_PROOF_NUM_PV_ELTS},
-    Chip, LookupKind, StarkGenericConfig, StarkMachine,
+use zkm_hypercube::{
+    air::{LookupScope, MachineAir, PicusInfo},
+    lookup::LookupKind,
+    Chip,
 };
+// TODO(zkm-hypercube): `StarkGenericConfig`/`StarkMachine`/`ZKM_PROOF_NUM_PV_ELTS` have no
+// equivalent yet (no shard-proving driver exists in zkm-hypercube). `MipsAir::machine` below
+// is commented out until that lands; these old-backend imports it needed are commented out too.
+// use zkm_stark::{air::ZKM_PROOF_NUM_PV_ELTS, StarkGenericConfig, StarkMachine};
 
 /// A module for importing all the different MIPS chips.
 pub(crate) mod mips_chips {
@@ -180,10 +184,11 @@ pub enum MipsAir<F: PrimeField32> {
 }
 
 impl<F: PrimeField32> MipsAir<F> {
-    pub fn machine<SC: StarkGenericConfig<Val = F>>(config: SC) -> StarkMachine<SC, Self> {
-        let chips = Self::chips();
-        StarkMachine::new(config, chips, ZKM_PROOF_NUM_PV_ELTS)
-    }
+    // TODO(zkm-hypercube): no shard-proving driver / StarkMachine equivalent exists yet.
+    // pub fn machine<SC: StarkGenericConfig<Val = F>>(config: SC) -> StarkMachine<SC, Self> {
+    //     let chips = Self::chips();
+    //     StarkMachine::new(config, chips, ZKM_PROOF_NUM_PV_ELTS)
+    // }
 
     /// Get all the different MIPS AIRs.
     pub fn chips() -> Vec<Chip<F, Self>> {
@@ -200,7 +205,7 @@ impl<F: PrimeField32> MipsAir<F> {
     /// Get all the different MIPS AIRs and their costs.
     pub fn get_airs_and_costs() -> (Vec<Self>, HashMap<String, u64>) {
         let (chips, costs) = Self::get_chips_and_costs();
-        (chips.into_iter().map(|chip| chip.into_inner()).collect(), costs)
+        (chips.into_iter().map(|chip| chip.into_inner().unwrap()).collect(), costs)
     }
 
     /// Get all the different MIPS chips and their costs.
@@ -582,7 +587,7 @@ impl<F: PrimeField32> MipsAir<F> {
                     })
                     .count();
 
-                (chip.into_inner(), local_mem_events)
+                (chip.into_inner().unwrap(), local_mem_events)
             })
             .collect()
     }
@@ -732,7 +737,7 @@ pub mod tests {
     use strum::IntoEnumIterator;
 
     use zkm_core_executor::{Instruction, MipsAirId, Opcode, Program};
-    use zkm_stark::air::MachineAir;
+    use zkm_hypercube::air::MachineAir;
     use zkm_stark::{
         koala_bear_poseidon2::KoalaBearPoseidon2, CpuProver, StarkProvingKey, StarkVerifyingKey,
         ZKMCoreOpts,

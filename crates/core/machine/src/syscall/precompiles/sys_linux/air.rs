@@ -4,9 +4,9 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use zkm_core_executor::{syscalls::SyscallCode, Register};
-use zkm_stark::{
-    air::{LookupScope, ZKMAirBuilder},
-    Word,
+use zkm_hypercube::{
+    air::{BaseAirBuilder, LookupScope, ZKMAirBuilder},
+    word::Word,
 };
 
 use super::{
@@ -18,7 +18,6 @@ use crate::{
     memory::MemoryCols,
     operations::{AddOperation, GtColsBytes, IsZeroOperation},
 };
-use zkm_stark::air::BaseAirBuilder;
 
 impl<F> BaseAir<F> for SysLinuxChip {
     fn width(&self) -> usize {

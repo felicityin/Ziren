@@ -34,7 +34,8 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::air::{BaseAirBuilder, LookupScope, MachineAir, Polynomial, ZKMAirBuilder};
+use zkm_stark::air::Polynomial;
+use zkm_hypercube::air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder};
 
 use crate::{
     memory::{MemoryReadCols, MemoryReadWriteCols},

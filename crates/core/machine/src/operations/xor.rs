@@ -12,7 +12,7 @@ use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusProjection;
 use zkm_primitives::consts::WORD_SIZE;
-use zkm_stark::{air::ZKMAirBuilder, Word};
+use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
 
 #[cfg(feature = "picus")]
 use crate::utils::indices_arr;

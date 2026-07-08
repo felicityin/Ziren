@@ -4,9 +4,9 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use zkm_core_executor::syscalls::SyscallCode;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{LookupScope, ZKMAirBuilder},
-    Word,
+    word::Word,
 };
 
 use super::{
@@ -21,7 +21,7 @@ use crate::{
         XorOperation,
     },
 };
-use zkm_stark::air::BaseAirBuilder;
+use zkm_hypercube::air::BaseAirBuilder;
 
 impl<F> BaseAir<F> for ShaCompressChip {
     fn width(&self) -> usize {

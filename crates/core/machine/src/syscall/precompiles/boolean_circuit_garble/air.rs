@@ -11,7 +11,7 @@ use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use std::borrow::Borrow;
 use zkm_core_executor::syscalls::SyscallCode;
-use zkm_stark::{LookupScope, ZKMAirBuilder};
+use zkm_hypercube::air::{LookupScope, ZKMAirBuilder};
 
 impl<F> BaseAir<F> for BooleanCircuitGarbleChip {
     fn width(&self) -> usize {

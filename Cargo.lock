@@ -8353,7 +8353,6 @@ dependencies = [
  "thousands",
  "tracing",
  "zkm-derive",
- "zkm-stark",
  "zkm-zkvm",
 ]
 
@@ -8694,6 +8693,7 @@ dependencies = [
  "tracing-forest",
  "tracing-subscriber 0.3.23",
  "zkm-derive",
+ "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-zkvm",
 ]

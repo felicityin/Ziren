@@ -47,7 +47,6 @@ thiserror = "1.0"
 p3-field = { workspace = true }
 p3-maybe-rayon = { workspace = true, features = ["parallel"] }
 zkm-derive = { workspace = true }
-zkm-stark = { workspace = true }
 
 [dev-dependencies]
 rand = { workspace = true }

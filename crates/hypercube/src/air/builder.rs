@@ -150,6 +150,20 @@ pub trait ByteAirBuilder: BaseAirBuilder {
     }
 }
 
+/// Describes which ranges inside a hidden witness row correspond to the caller-visible
+/// semantic boundary of an outlined Picus module. See [`OperationSummaryAirBuilder`].
+#[derive(Debug, Clone, Default)]
+pub struct PicusProjectionInfo {
+    /// Column to projected-name mapping for every byte covered by the projection.
+    pub col_to_name: hashbrown::HashMap<usize, String>,
+    /// Projected field names to concrete column ranges in the source layout.
+    pub name_to_colrange: hashbrown::HashMap<String, (usize, usize)>,
+    /// Projected ranges that should be treated as module inputs.
+    pub input_ranges: Vec<(usize, usize, String)>,
+    /// Projected ranges that should be treated as module outputs.
+    pub output_ranges: Vec<(usize, usize, String)>,
+}
+
 /// Optional hooks for builders that want to replace exact operation AIR with a summary.
 ///
 /// Builders should return `true` only when they have emitted a semantically sound replacement for
@@ -213,7 +227,7 @@ pub trait OperationSummaryAirBuilder: AirBuilder {
     fn try_emit_projected_summary<F>(
         &mut self,
         _module_name: &str,
-        _projection_info: &zkm_stark::air::PicusProjectionInfo,
+        _projection_info: &PicusProjectionInfo,
         _current_inputs: &[Self::Expr],
         _current_outputs: &[Self::Expr],
         _source_width: usize,
@@ -232,7 +246,7 @@ pub trait OperationSummaryAirBuilder: AirBuilder {
     fn try_emit_projected_summary_with_hidden_consts<F>(
         &mut self,
         _module_name: &str,
-        _projection_info: &zkm_stark::air::PicusProjectionInfo,
+        _projection_info: &PicusProjectionInfo,
         _current_inputs: &[Self::Expr],
         _current_outputs: &[Self::Expr],
         _source_width: usize,
@@ -251,7 +265,7 @@ pub trait OperationSummaryAirBuilder: AirBuilder {
     fn try_emit_hidden_subair_summary<F>(
         &mut self,
         _module_name: &str,
-        _projection_info: &zkm_stark::air::PicusProjectionInfo,
+        _projection_info: &PicusProjectionInfo,
         _current_inputs: &[Self::Expr],
         _current_outputs: &[Self::Expr],
         _source_width: usize,

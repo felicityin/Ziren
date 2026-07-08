@@ -20,7 +20,7 @@ use zkm_core_executor::syscalls::SyscallCode;
 use zkm_core_executor::{ExecutionRecord, Program};
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::MachineAir;
+use zkm_hypercube::air::MachineAir;
 
 impl<F: PrimeField32> MachineAir<F> for BooleanCircuitGarbleChip {
     type Record = ExecutionRecord;
@@ -264,7 +264,7 @@ mod tests {
         syscalls::SyscallCode,
         ExecutionRecord,
     };
-    use zkm_stark::air::{EmptyMessageBuilder, MachineAir};
+    use zkm_hypercube::air::{EmptyMessageBuilder, MachineAir};
 
     fn gate_info_words(gate_type: u32, delta: [u32; 4], valid: bool) -> [u32; GATE_INFO_BYTES] {
         let h0 = [11, 12, 13, 14];

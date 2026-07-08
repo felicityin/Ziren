@@ -9,7 +9,7 @@ use zkm_core_executor::{
     events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum, MiscEvent},
     ByteOpcode, ExecutionRecord, Opcode, Program,
 };
-use zkm_stark::{air::MachineAir, Word};
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
     utils::{next_power_of_two, zeroed_f_vec},

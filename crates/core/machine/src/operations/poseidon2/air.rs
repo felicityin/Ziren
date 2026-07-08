@@ -7,7 +7,7 @@ use p3_field::{FieldAlgebra, PrimeField32};
 use p3_koala_bear::KoalaBear;
 use p3_poseidon2::matmul_internal;
 use zkm_primitives::RC_16_30_U32;
-use zkm_stark::air::{MachineAirBuilder, OperationSummaryAirBuilder};
+use zkm_hypercube::air::{MachineAirBuilder, OperationSummaryAirBuilder};
 
 #[cfg(feature = "picus")]
 use super::permutation::{permutation, Poseidon2Degree3Cols, Poseidon2Degree3Projection};

@@ -9,8 +9,8 @@ use zkm_core_executor::{
     ByteOpcode,
 };
 use zkm_derive::AlignedBorrow;
-use zkm_stark::air::ZKMAirBuilder;
-use zkm_stark::Word;
+use zkm_hypercube::air::ZKMAirBuilder;
+use zkm_hypercube::word::Word;
 
 /// Operation columns for verifying that an element is within the range `[0, modulus)`.
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]

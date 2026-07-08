@@ -37,9 +37,10 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::{
-    air::{BaseAirBuilder, LookupScope, MachineAir, Polynomial, ZKMAirBuilder},
-    MachineRecord,
+use zkm_stark::air::Polynomial;
+use zkm_hypercube::{
+    air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder},
+    record::MachineRecord,
 };
 
 /// The number of columns in the Uint256MulCols.

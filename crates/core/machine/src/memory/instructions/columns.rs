@@ -2,7 +2,7 @@ use std::mem::size_of;
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
-use zkm_stark::Word;
+use zkm_hypercube::word::Word;
 
 use crate::{
     memory::MemoryReadWriteCols,

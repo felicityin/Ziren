@@ -4,7 +4,7 @@ use p3_air::{Air, BaseAir, PairBuilder};
 use p3_field::{Field, FieldAlgebra};
 use p3_matrix::Matrix;
 use zkm_core_executor::ByteOpcode;
-use zkm_stark::air::ZKMAirBuilder;
+use zkm_hypercube::air::ZKMAirBuilder;
 
 use super::{
     columns::{ByteMultCols, BytePreprocessedCols, NUM_BYTE_MULT_COLS},

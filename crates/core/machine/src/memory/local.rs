@@ -14,9 +14,10 @@ use p3_maybe_rayon::prelude::{
 use zkm_core_executor::events::{ByteLookupEvent, ByteRecord, GlobalLookupEvent, MemoryLocalEvent};
 use zkm_core_executor::{ExecutionRecord, Program};
 use zkm_derive::AlignedBorrow;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
-    LookupKind, Word,
+    lookup::LookupKind,
+    word::Word,
 };
 
 use crate::{
@@ -383,10 +384,13 @@ mod tests {
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
     use zkm_core_executor::{ExecutionRecord, Executor};
+    // `MachineAir` is the new `zkm_hypercube` trait (needed for `chip.generate_trace(..)` since
+    // `MemoryLocalChip` now implements it). `LookupKind`/`LookupScope` stay on the old `zkm_stark`
+    // crate because `debug_lookups_with_all_chips` and `StarkMachine` below are still the old
+    // FRI-backed utilities and expect the old-crate types.
+    use zkm_hypercube::air::MachineAir;
     use zkm_stark::{
-        air::{LookupScope, MachineAir},
-        debug_lookups_with_all_chips,
-        koala_bear_poseidon2::KoalaBearPoseidon2,
+        air::LookupScope, debug_lookups_with_all_chips, koala_bear_poseidon2::KoalaBearPoseidon2,
         LookupKind, StarkMachine, ZKMCoreOpts,
     };
 

@@ -5,9 +5,9 @@ use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use zkm_core_executor::ByteOpcode;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{BaseAirBuilder, PublicValues, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
-    Word,
+    word::Word,
 };
 
 use crate::{

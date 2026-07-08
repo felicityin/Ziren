@@ -6,10 +6,10 @@ use core::mem::{size_of, transmute};
 use zkm_core_executor::events::ByteRecord;
 #[cfg(feature = "picus")]
 use zkm_primitives::consts::WORD_SIZE;
-use zkm_stark::{air::ZKMAirBuilder, Word};
+use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
 
-use p3_air::AirBuilder;
 use p3_field::{Field, FieldAlgebra};
+use slop_air::AirBuilder;
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusProjection;

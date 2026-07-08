@@ -81,7 +81,7 @@ use zkm_derive::PicusAnnotations;
 use zkm_primitives::consts::WORD_SIZE;
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::{air::MachineAir, Word};
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
     air::{WordAirBuilder, ZKMCoreAirBuilder},
@@ -788,7 +788,7 @@ mod tests {
     use zkm_core_executor::{events::CompAluEvent, ExecutionRecord, Opcode};
 
     use super::DivRemChip;
-    use zkm_stark::MachineAir;
+    use zkm_hypercube::air::MachineAir;
 
     #[test]
     fn generate_trace() {

@@ -4,7 +4,7 @@ use zkm_derive::AlignedBorrow;
 
 use zkm_core_executor::events::ByteRecord;
 use zkm_primitives::consts::WORD_SIZE;
-use zkm_stark::{air::ZKMAirBuilder, Word};
+use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
 
 use crate::air::WordAirBuilder;
 

@@ -18,9 +18,9 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{BaseAirBuilder, MachineAir, ZKMAirBuilder},
-    Word,
+    word::Word,
 };
 
 use crate::{air::WordAirBuilder, CoreChipError};

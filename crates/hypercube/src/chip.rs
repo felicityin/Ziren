@@ -205,6 +205,18 @@ where
     fn preprocessed_num_rows(&self, program: &A::Program, instrs_len: usize) -> Option<usize> {
         <A as MachineAir<F>>::preprocessed_num_rows(&self.air, program, instrs_len)
     }
+
+    fn picus_info(&self) -> crate::air::PicusInfo {
+        self.air.picus_info()
+    }
+
+    fn selectors_partition_real_rows(&self) -> bool {
+        self.air.selectors_partition_real_rows()
+    }
+
+    fn picus_selector_specialization_allowed(&self, phase: &str, selector_name: &str) -> bool {
+        self.air.picus_selector_specialization_allowed(phase, selector_name)
+    }
 }
 
 // Implement AIR directly on Chip, evaluating the execution trace constraints.

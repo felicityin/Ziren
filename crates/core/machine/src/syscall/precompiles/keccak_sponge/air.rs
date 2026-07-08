@@ -16,7 +16,8 @@ use p3_keccak_air::{KeccakAir, NUM_KECCAK_COLS, NUM_ROUNDS, U64_LIMBS};
 use p3_matrix::Matrix;
 use std::borrow::Borrow;
 use zkm_core_executor::syscalls::SyscallCode;
-use zkm_stark::{LookupScope, SubAirBuilder, ZKMAirBuilder};
+use zkm_hypercube::air::{LookupScope, ZKMAirBuilder};
+use zkm_stark::SubAirBuilder;
 
 impl<F> BaseAir<F> for KeccakSpongeChip {
     fn width(&self) -> usize {

@@ -18,7 +18,7 @@ use hashbrown::{HashMap, HashSet};
 use p3_field::PrimeField;
 use serde::{Deserialize, Serialize};
 
-use crate::air::MachineAir;
+use zkm_hypercube::air::MachineAir;
 
 /// A way to keep track of the log2 heights of some set of chips.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]

@@ -1,5 +1,5 @@
 use zkm_derive::AlignedBorrow;
-use zkm_stark::Word;
+use zkm_hypercube::word::Word;
 
 /// Memory read access.
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]

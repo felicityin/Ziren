@@ -11,7 +11,7 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::air::{MachineAir, ZKMAirBuilder};
+use zkm_hypercube::air::{MachineAir, ZKMAirBuilder};
 
 use crate::{
     operations::field::{

@@ -20,7 +20,7 @@ use std::borrow::BorrowMut;
 use zkm_core_executor::events::{ByteLookupEvent, ByteRecord, KeccakSpongeEvent, PrecompileEvent};
 use zkm_core_executor::syscalls::SyscallCode;
 use zkm_core_executor::{ExecutionRecord, Program};
-use zkm_stark::{MachineAir, Word};
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
     type Record = ExecutionRecord;

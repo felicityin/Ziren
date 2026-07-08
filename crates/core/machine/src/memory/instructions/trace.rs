@@ -10,7 +10,7 @@ use zkm_core_executor::{
     ByteOpcode, ExecutionRecord, Opcode, Program, NUM_REGISTERS,
 };
 use zkm_primitives::consts::WORD_SIZE;
-use zkm_stark::air::MachineAir;
+use zkm_hypercube::air::MachineAir;
 
 use crate::{
     utils::{next_power_of_two, zeroed_f_vec},

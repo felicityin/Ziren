@@ -6,7 +6,7 @@ use std::mem::{size_of, transmute};
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
-use zkm_stark::Word;
+use zkm_hypercube::word::Word;
 
 use crate::memory::{MemoryCols, MemoryReadCols, MemoryReadWriteCols};
 #[cfg(feature = "picus")]

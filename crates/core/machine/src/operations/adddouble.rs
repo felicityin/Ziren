@@ -1,5 +1,5 @@
 use zkm_core_executor::events::ByteRecord;
-use zkm_stark::{air::ZKMAirBuilder, Word};
+use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
 
 use p3_air::AirBuilder;
 use p3_field::{Field, FieldAlgebra};

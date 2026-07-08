@@ -1,5 +1,5 @@
 use p3_field::FieldAlgebra;
-use zkm_stark::air::ZKMAirBuilder;
+use zkm_hypercube::air::ZKMAirBuilder;
 
 use crate::{
     air::{MemoryAirBuilder, WordAirBuilder},

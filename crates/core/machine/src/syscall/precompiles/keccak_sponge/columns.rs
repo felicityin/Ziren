@@ -13,7 +13,7 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusProjection;
-use zkm_stark::Word;
+use zkm_hypercube::word::Word;
 
 #[cfg(feature = "picus")]
 use zkm_stark::PicusInfo;

@@ -2,7 +2,7 @@ use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use zkm_core_executor::syscalls::SyscallCode;
-use zkm_stark::air::{LookupScope, ZKMAirBuilder};
+use zkm_hypercube::air::{LookupScope, ZKMAirBuilder};
 
 use super::{ShaExtendChip, ShaExtendCols, NUM_SHA_EXTEND_COLS};
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
 };
 
 use core::borrow::Borrow;
-use zkm_stark::air::BaseAirBuilder;
+use zkm_hypercube::air::BaseAirBuilder;
 
 impl<F> BaseAir<F> for ShaExtendChip {
     fn width(&self) -> usize {

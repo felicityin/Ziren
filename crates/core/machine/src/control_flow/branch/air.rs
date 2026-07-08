@@ -4,9 +4,9 @@ use p3_air::{Air, AirBuilder};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use zkm_core_executor::Opcode;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{BaseAirBuilder, ZKMAirBuilder},
-    Word,
+    word::Word,
 };
 
 use crate::{air::WordAirBuilder, operations::KoalaBearWordRangeChecker};

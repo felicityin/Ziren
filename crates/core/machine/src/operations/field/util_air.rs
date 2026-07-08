@@ -1,6 +1,7 @@
 use p3_field::FieldAlgebra;
 use zkm_curves::params::FieldParameters;
-use zkm_stark::air::{Polynomial, ZKMAirBuilder};
+use zkm_hypercube::air::ZKMAirBuilder;
+use zkm_stark::air::Polynomial;
 
 pub fn eval_field_operation<AB: ZKMAirBuilder, P: FieldParameters>(
     builder: &mut AB,

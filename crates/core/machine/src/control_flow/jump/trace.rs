@@ -11,7 +11,7 @@ use zkm_core_executor::{
 };
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::{air::MachineAir, Word};
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
     utils::{next_power_of_two, zeroed_f_vec},

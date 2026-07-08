@@ -15,12 +15,12 @@ use zkm_core_executor::{
 };
 #[cfg(feature = "picus")]
 use zkm_stark::air::PicusInfo;
-use zkm_stark::{
-    air::{AirLookup, LookupScope, MachineAir},
+use zkm_hypercube::{
+    air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
+    lookup::LookupKind,
     septic_curve::{SepticCurve, SepticCurveComplete},
     septic_digest::SepticDigest,
     septic_extension::{SepticBlock, SepticExtension},
-    LookupKind, ZKMAirBuilder,
 };
 
 use crate::{
@@ -301,7 +301,8 @@ mod tests {
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
     use zkm_core_executor::{ExecutionRecord, Executor};
-    use zkm_stark::{air::MachineAir, ZKMCoreOpts};
+    use zkm_hypercube::air::MachineAir;
+    use zkm_stark::ZKMCoreOpts;
 
     #[test]
     fn test_global_generate_trace() {
