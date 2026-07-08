@@ -625,7 +625,7 @@ pub mod tests {
     use std::sync::Arc;
 
     use hashbrown::HashSet;
-    use zkm_stark::{Dom, MachineProver, StarkGenericConfig};
+    // use zkm_stark::{Dom, MachineProver, StarkGenericConfig};
 
     use super::*;
 
@@ -642,30 +642,35 @@ pub mod tests {
         record
     }
 
-    fn try_generate_dummy_proof<SC: StarkGenericConfig, P: MachineProver<SC, MipsAir<SC::Val>>>(
-        prover: &P,
-        shape: &Shape<MipsAirId>,
-    ) where
-        SC::Val: PrimeField32,
-        Dom<SC>: core::fmt::Debug,
-    {
-        let program = create_dummy_program(shape);
-        let record = create_dummy_record(shape);
-
-        // Try doing setup.
-        let (pk, _) = prover.setup(&program);
-
-        // Try to generate traces.
-        let main_traces = prover.generate_traces(&record).unwrap();
-
-        // Try to commit the traces.
-        let main_data = prover.commit(&record, main_traces);
-
-        let mut challenger = prover.machine().config().challenger();
-
-        // Try to "open".
-        prover.open(&pk, main_data, &mut challenger).unwrap();
-    }
+    // `try_generate_dummy_proof` is only used by `test_dummy_record` below, which is already
+    // `#[ignore]`d (no zkm-hypercube single-chip prove/verify utility yet). Its signature itself
+    // no longer type-checks, since `MipsAir<F>` no longer implements the old
+    // `zkm_stark::air::MachineAir` trait that `MachineProver`'s bound requires, so the whole
+    // function (not just its body) has to be commented out.
+    // fn try_generate_dummy_proof<SC: StarkGenericConfig, P: MachineProver<SC, MipsAir<SC::Val>>>(
+    //     prover: &P,
+    //     shape: &Shape<MipsAirId>,
+    // ) where
+    //     SC::Val: PrimeField32,
+    //     Dom<SC>: core::fmt::Debug,
+    // {
+    //     let program = create_dummy_program(shape);
+    //     let record = create_dummy_record(shape);
+    //
+    //     // Try doing setup.
+    //     let (pk, _) = prover.setup(&program);
+    //
+    //     // Try to generate traces.
+    //     let main_traces = prover.generate_traces(&record).unwrap();
+    //
+    //     // Try to commit the traces.
+    //     let main_data = prover.commit(&record, main_traces);
+    //
+    //     let mut challenger = prover.machine().config().challenger();
+    //
+    //     // Try to "open".
+    //     prover.open(&pk, main_data, &mut challenger).unwrap();
+    // }
 
     #[test]
     #[ignore]
