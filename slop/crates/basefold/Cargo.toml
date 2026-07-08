@@ -1,0 +1,31 @@
+[package]
+name = "slop-basefold"
+description = "BaseFold polynomial commitment scheme for SLOP"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+slop-algebra = { workspace = true }
+slop-multilinear = { workspace = true }
+slop-challenger = { workspace = true }
+slop-utils = { workspace = true }
+slop-tensor = { workspace = true }
+slop-alloc = { workspace = true }
+slop-baby-bear = { workspace = true }
+slop-primitives = { workspace = true }
+slop-koala-bear = { workspace = true }
+slop-merkle-tree = { workspace = true }
+slop-bn254 = { workspace = true }
+
+thiserror = { workspace = true }
+itertools = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+derive-where = { workspace = true }
+
+[dev-dependencies]
+slop-baby-bear = { workspace = true }

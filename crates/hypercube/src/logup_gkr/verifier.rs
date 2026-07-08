@@ -1,6 +1,6 @@
 use itertools::Itertools;
 use slop_air::BaseAir;
-use slop_algebra::AbstractField;
+use slop_algebra::FieldAlgebra;
 use slop_challenger::GrindingChallenger;
 use slop_challenger::{CanObserve, FieldChallenger, IopCtx, VariableLengthChallenger};
 use slop_multilinear::{full_geq, partial_lagrange_blocking, Mle, MleEval, MultilinearPcsChallenger, Point};

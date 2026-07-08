@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use slop_algebra::AbstractField;
+use slop_algebra::FieldAlgebra;
 use slop_alloc::{CanCopyFromRef, CpuBackend, ToHost};
 use slop_challenger::{CanObserve, FieldChallenger, GrindingChallenger, IopCtx, VariableLengthChallenger};
 use slop_multilinear::{Mle, MultilinearPcsChallenger, Point};

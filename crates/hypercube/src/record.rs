@@ -1,6 +1,6 @@
 use hashbrown::HashMap;
 
-use slop_algebra::AbstractField;
+use p3_field::FieldAlgebra;
 
 use crate::{air::ZKMAirBuilder, lookup::LookupKind};
 
@@ -13,7 +13,7 @@ pub trait MachineRecord: Default + Sized + Send + Sync + Clone {
     fn append(&mut self, other: &mut Self);
 
     /// Returns the public values of the record.
-    fn public_values<F: AbstractField>(&self) -> Vec<F>;
+    fn public_values<F: FieldAlgebra>(&self) -> Vec<F>;
 
     /// Constrains the public values of the record.
     fn eval_public_values<AB: ZKMAirBuilder>(builder: &mut AB);

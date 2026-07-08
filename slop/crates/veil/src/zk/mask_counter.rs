@@ -1,0 +1,113 @@
+use slop_algebra::Dorroh;
+use slop_challenger::FieldChallenger;
+
+use crate::compiler::{ConstraintCtx, ReadingCtx, TranscriptReadError};
+use crate::zk::inner::MaskCounterContext;
+use crate::zk::verifier_ctx::MleCommit;
+use crate::zk::ZkIopCtx;
+
+/// Expression type for the mask counter — a dummy that just counts transcript reads.
+#[allow(type_alias_bounds)]
+pub type MaskCounterExpr<GC: ZkIopCtx> = Dorroh<GC::EF, MaskCounterContext<GC>>;
+
+/// A counting context for determining the mask length needed by a ZK proof.
+///
+/// Implements `ReadingCtx` + `ConstraintCtx` so it can be used with the
+/// public interface (compiler sumcheck, etc.) to count how many transcript elements will be used.
+pub struct MaskCounter<GC: ZkIopCtx> {
+    inner: MaskCounterContext<GC>,
+    /// The PCS's fixed `num_encoding_variables`, used to recover `log_num_polynomials`
+    /// from an oracle's total number of variables in [`ReadingCtx::read_oracle`].
+    num_encoding_variables: u32,
+}
+
+impl<GC: ZkIopCtx> MaskCounter<GC> {
+    /// Creates a mask counter for a PCS with the given fixed `num_encoding_variables`.
+    pub fn new(num_encoding_variables: u32) -> Self {
+        Self { inner: MaskCounterContext::default(), num_encoding_variables }
+    }
+
+    fn count(&self) -> usize {
+        self.inner.count()
+    }
+}
+
+/// Computes the mask length by running the protocol's unified `verify` body on
+/// a counting context. The counter tallies every transcript read and every
+/// constraint emitted; the return matches the eventual `mask_length` the real
+/// prover/verifier need.
+///
+/// # Arguments
+/// * `num_encoding_variables` - the PCS's fixed encoding width, used to size oracle reads
+/// * `verify_all` - The protocol's `verify` function (reads + constrains in one pass)
+pub fn compute_mask_length<GC>(
+    num_encoding_variables: u32,
+    verify_all: impl FnOnce(&mut MaskCounter<GC>),
+) -> usize
+where
+    GC: ZkIopCtx,
+{
+    let mut counter = MaskCounter::<GC>::new(num_encoding_variables);
+    verify_all(&mut counter);
+    counter.count()
+}
+
+// ============================================================================
+// ConstraintCtx impl
+// ============================================================================
+
+impl<GC: ZkIopCtx> ConstraintCtx for MaskCounter<GC> {
+    type Field = GC::F;
+    type Extension = GC::EF;
+    type Expr = MaskCounterExpr<GC>;
+    type Challenge = GC::EF;
+    type MleOracle = MleCommit;
+    type AssertError = std::convert::Infallible;
+
+    fn assert_zero(&mut self, _expr: Self::Expr) -> Result<(), Self::AssertError> {
+        Ok(())
+    }
+
+    fn assert_mle_multi_eval(
+        &mut self,
+        claims: Vec<(MleCommit, Self::Expr)>,
+        _point: slop_multilinear::Point<GC::EF>,
+    ) {
+        use crate::zk::inner::ConstraintContextInnerExt;
+        // Delegate to inner which knows how to count PCS verification reads
+        let inner_claims: Vec<_> =
+            claims.into_iter().map(|(oracle, _)| (oracle.inner, self.inner.clone())).collect();
+        self.inner.assert_mle_multi_eval(inner_claims, slop_multilinear::Point::default());
+    }
+}
+
+// ============================================================================
+// ReadingCtx impl
+// ============================================================================
+
+impl<GC: ZkIopCtx> ReadingCtx for MaskCounter<GC> {
+    fn read_exact(&mut self, buf: &mut [Self::Expr]) -> Result<(), TranscriptReadError> {
+        use crate::zk::inner::ZkCnstrAndReadingCtxInner;
+        let values = self.inner.read_next(buf.len())?;
+        for (b, v) in buf.iter_mut().zip(values) {
+            *b = Dorroh::Element(v);
+        }
+        Ok(())
+    }
+
+    fn read_oracle(&mut self, num_variables: u32) -> Option<MleCommit> {
+        use crate::zk::inner::ZkCnstrAndReadingCtxInner;
+        let log_num_polynomials = num_variables.checked_sub(self.num_encoding_variables)?;
+        self.inner
+            .read_next_pcs_commitment(
+                self.num_encoding_variables as usize,
+                log_num_polynomials as usize,
+            )
+            .map(|idx| MleCommit { inner: idx })
+    }
+
+    fn sample(&mut self) -> GC::EF {
+        use crate::zk::inner::ZkCnstrAndReadingCtxInner;
+        self.inner.with_challenger(|c| c.sample_ext_element())
+    }
+}

@@ -1,0 +1,17 @@
+[package]
+name = "slop-challenger"
+description = "Fiat-Shamir challenger with SP1-specific extensions for SLOP"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+p3-challenger = { workspace = true }
+slop-symmetric = { workspace = true }
+slop-algebra = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }

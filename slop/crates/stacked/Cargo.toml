@@ -1,0 +1,40 @@
+[package]
+name = "slop-stacked"
+description = "Stacked polynomial commitment scheme for SLOP"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+slop-basefold = { workspace = true }
+slop-basefold-prover = { workspace = true }
+slop-multilinear = { workspace = true }
+slop-merkle-tree = { workspace = true }
+slop-alloc = { workspace = true }
+slop-challenger = { workspace = true }
+slop-futures = { workspace = true }
+slop-tensor = { workspace = true }
+slop-algebra = { workspace = true }
+slop-commit = { workspace = true }
+
+itertools = { workspace = true }
+thiserror = { workspace = true }
+derive-where = { workspace = true }
+serde = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+slop-basefold-prover = { workspace = true }
+slop-basefold = { workspace = true }
+slop-baby-bear = { workspace = true }
+slop-challenger = { workspace = true }
+slop-merkle-tree = { workspace = true }
+
+rand = { workspace = true }
+
+[lints]
+workspace = true

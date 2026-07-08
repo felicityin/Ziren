@@ -1,0 +1,26 @@
+[package]
+name = "slop-pgspcs"
+description = "Pretty Good Sparse Polynomial Commitment Scheme for SLOP"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+slop-algebra = { workspace = true }
+slop-basefold-prover = { workspace = true }
+slop-basefold = { workspace = true }
+slop-commit = { workspace = true }
+slop-multilinear = { workspace = true }
+slop-merkle-tree = { workspace = true }
+slop-challenger = { workspace = true }
+slop-alloc = { workspace = true }
+slop-sumcheck = { workspace = true }
+slop-baby-bear = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]

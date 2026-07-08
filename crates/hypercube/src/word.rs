@@ -5,7 +5,7 @@ use arrayref::array_ref;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use slop_air::AirBuilder;
-use slop_algebra::{AbstractField, Field};
+use slop_algebra::{FieldAlgebra, Field};
 use zkm_derive::AlignedBorrow;
 
 use crate::air::ZKMAirBuilder;
@@ -30,7 +30,7 @@ impl<T> Word<T> {
     }
 }
 
-impl<T: AbstractField> Word<T> {
+impl<T: FieldAlgebra> Word<T> {
     pub fn extend_expr<AB: ZKMAirBuilder<Expr = T>>(expr: T) -> Word<AB::Expr> {
         Word([AB::Expr::zero() + expr, AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()])
     }
@@ -68,7 +68,7 @@ impl<T> IndexMut<usize> for Word<T> {
     }
 }
 
-impl<F: AbstractField> From<u32> for Word<F> {
+impl<F: FieldAlgebra> From<u32> for Word<F> {
     fn from(value: u32) -> Self {
         Word(value.to_le_bytes().map(F::from_canonical_u8))
     }

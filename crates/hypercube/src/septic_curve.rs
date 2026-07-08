@@ -1,6 +1,6 @@
 //! Elliptic Curve `y^2 = x^3 + 3z*x - 3` over the `F_{p^7} = F_p[z]/(z^7 + 2z - 8)` extension field.
 use crate::septic_extension::SepticExtension;
-use slop_algebra::{Field, AbstractField, AbstractExtensionField, PrimeField32};
+use slop_algebra::{Field, FieldAlgebra, FieldExtensionAlgebra, PrimeField32};
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
 
@@ -97,7 +97,7 @@ impl<F: Field> SepticCurve<F> {
     }
 }
 
-impl<F: AbstractField> SepticCurve<F> {
+impl<F: FieldAlgebra> SepticCurve<F> {
     /// Evaluates the curve formula y^2 = x^3 + 3z*x -3
     pub fn curve_formula(x: SepticExtension<F>) -> SepticExtension<F> {
         x.cube()
@@ -154,7 +154,7 @@ impl<F: PrimeField32> SepticCurve<F> {
     }
 }
 
-impl<F: AbstractField> SepticCurve<F> {
+impl<F: FieldAlgebra> SepticCurve<F> {
     /// Given three points p1, p2, p3, the function is zero if and only if p3.x == (p1 + p2).x assuming that no weierstrass edge cases occur.
     pub fn sum_checker_x(
         p1: SepticCurve<F>,

@@ -69,6 +69,7 @@ p3-poseidon2 = { git = "https://github.com/ProjectZKM/Plonky3" }
 p3-symmetric = { git = "https://github.com/ProjectZKM/Plonky3" }
 p3-bn254-fr = { git = "https://github.com/ProjectZKM/Plonky3" }
 p3-uni-stark = { git = "https://github.com/ProjectZKM/Plonky3" }
+p3-baby-bear = { git = "https://github.com/ProjectZKM/Plonky3" }
 
 # p3-air = { path = "../patch/Plonky3/air" }
 # p3-field = { path = "../patch/Plonky3/field" }
@@ -93,37 +94,37 @@ p3-uni-stark = { git = "https://github.com/ProjectZKM/Plonky3" }
 # p3-uni-stark = { path = "../patch/Plonky3/uni-stark" }
 
 # Not [workspace] members: these already belong to ../sp1's own workspace.
-slop-air = { path = "../sp1/slop/crates/air" }
-slop-algebra = { path = "../sp1/slop/crates/algebra" }
-slop-alloc = { path = "../sp1/slop/crates/alloc" }
-slop-baby-bear = { path = "../sp1/slop/crates/baby-bear" }
-slop-basefold = { path = "../sp1/slop/crates/basefold" }
-slop-basefold-prover = { path = "../sp1/slop/crates/basefold-prover" }
-slop-bn254 = { path = "../sp1/slop/crates/bn254" }
-slop-challenger = { path = "../sp1/slop/crates/challenger" }
-slop-commit = { path = "../sp1/slop/crates/commit" }
-slop-dft = { path = "../sp1/slop/crates/dft" }
-slop-fri = { path = "../sp1/slop/crates/fri" }
-slop-futures = { path = "../sp1/slop/crates/futures" }
-slop-jagged = { path = "../sp1/slop/crates/jagged" }
-slop-keccak-air = { path = "../sp1/slop/crates/keccak-air" }
-slop-koala-bear = { path = "../sp1/slop/crates/koala-bear" }
-slop-matrix = { path = "../sp1/slop/crates/matrix" }
-slop-maybe-rayon = { path = "../sp1/slop/crates/maybe-rayon" }
-slop-merkle-tree = { path = "../sp1/slop/crates/merkle-tree" }
-slop-multilinear = { path = "../sp1/slop/crates/multilinear" }
-slop-pgspcs = { path = "../sp1/slop/crates/pgspcs" }
-slop-primitives = { path = "../sp1/slop/crates/primitives" }
-slop-poseidon2 = { path = "../sp1/slop/crates/poseidon2" }
-slop-spartan = { path = "../sp1/slop/crates/spartan" }
-slop-stacked = { path = "../sp1/slop/crates/stacked" }
-slop-sumcheck = { path = "../sp1/slop/crates/sumcheck" }
-slop-symmetric = { path = "../sp1/slop/crates/symmetric" }
-slop-tensor = { path = "../sp1/slop/crates/tensor" }
-slop-uni-stark = { path = "../sp1/slop/crates/uni-stark" }
-slop-utils = { path = "../sp1/slop/crates/utils" }
-slop-veil = { path = "../sp1/slop/crates/veil" }
-slop-whir = { path = "../sp1/slop/crates/whir" }
+slop-air = { path = "./slop/crates/air" }
+slop-algebra = { path = "./slop/crates/algebra" }
+slop-alloc = { path = "./slop/crates/alloc" }
+slop-baby-bear = { path = "./slop/crates/baby-bear" }
+slop-basefold = { path = "./slop/crates/basefold" }
+slop-basefold-prover = { path = "./slop/crates/basefold-prover" }
+slop-bn254 = { path = "./slop/crates/bn254" }
+slop-challenger = { path = "./slop/crates/challenger" }
+slop-commit = { path = "./slop/crates/commit" }
+slop-dft = { path = "./slop/crates/dft" }
+slop-fri = { path = "./slop/crates/fri" }
+slop-futures = { path = "./slop/crates/futures" }
+slop-jagged = { path = "./slop/crates/jagged" }
+slop-keccak-air = { path = "./slop/crates/keccak-air" }
+slop-koala-bear = { path = "./slop/crates/koala-bear" }
+slop-matrix = { path = "./slop/crates/matrix" }
+slop-maybe-rayon = { path = "./slop/crates/maybe-rayon" }
+slop-merkle-tree = { path = "./slop/crates/merkle-tree" }
+slop-multilinear = { path = "./slop/crates/multilinear" }
+slop-pgspcs = { path = "./slop/crates/pgspcs" }
+slop-primitives = { path = "./slop/crates/primitives" }
+slop-poseidon2 = { path = "./slop/crates/poseidon2" }
+slop-spartan = { path = "./slop/crates/spartan" }
+slop-stacked = { path = "./slop/crates/stacked" }
+slop-sumcheck = { path = "./slop/crates/sumcheck" }
+slop-symmetric = { path = "./slop/crates/symmetric" }
+slop-tensor = { path = "./slop/crates/tensor" }
+slop-uni-stark = { path = "./slop/crates/uni-stark" }
+slop-utils = { path = "./slop/crates/utils" }
+slop-veil = { path = "./slop/crates/veil" }
+slop-whir = { path = "./slop/crates/whir" }
 
 itertools = "0.13.0"
 tracing = "0.1.37"
@@ -133,7 +134,20 @@ serde = { version = "1.0", default-features = false, features = ["derive", "allo
 serde_json = "1.0.132"
 
 rand = "0.8.5"
+rand_chacha = "0.3.1"
 sha2 = { version = "0.10.8", default-features = false }
+arrayvec = "0.7.6"
+bincode = "1.3.3"
+crossbeam = "0.8.4"
+derive-where = { version = "1.5.0", features = ["serde"] }
+futures = "0.3"
+lazy_static = "1.5.0"
+num_cpus = "1.16.0"
+pin-project = "1"
+rayon = "1.10.0"
+thiserror = "1.0"
+tokio = { version = "1.42.0", default-features = false }
+transpose = "0.2.3"
 anyhow = "1.0.75"
 
 zkm-recursion-derive = { path = "crates/recursion/derive", default-features = false }
@@ -164,3 +178,13 @@ test-artifacts = { path = "crates/test-artifacts" }
 
 # misc
 hashbrown = "0.14.5"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = [
+  'cfg(sp1_debug_constraints)',
+  'cfg(sp1_debug_global_memory)',
+  'cfg(sp1_core_runner_override)',
+  'cfg(sp1_use_native_executor)',
+  'cfg(sp1_use_portable_executor)',
+  'cfg(sp1_native_executor_available)',
+] }

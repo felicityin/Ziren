@@ -3,7 +3,7 @@ use std::borrow::{Borrow, BorrowMut};
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use slop_algebra::{AbstractField, PrimeField32};
+use p3_field::{FieldAlgebra, PrimeField32};
 
 use crate::{word::Word, PROOF_MAX_NUM_PVS};
 
@@ -63,7 +63,7 @@ impl PublicValues<u32, u32> {
     /// Convert the public values into a vector of field elements. This function will pad the
     /// vector to the maximum number of public values.
     #[must_use]
-    pub fn to_vec<F: AbstractField>(&self) -> Vec<F> {
+    pub fn to_vec<F: FieldAlgebra>(&self) -> Vec<F> {
         let mut ret = vec![F::zero(); PROOF_MAX_NUM_PVS];
 
         let field_values = PublicValues::<Word<F>, F>::from(*self);
@@ -119,7 +119,7 @@ impl<T: Clone> BorrowMut<PublicValues<Word<T>, T>> for [T] {
     }
 }
 
-impl<F: AbstractField> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> {
+impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> {
     fn from(value: PublicValues<u32, u32>) -> Self {
         let PublicValues {
             committed_value_digest,
@@ -136,7 +136,8 @@ impl<F: AbstractField> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F>
             ..
         } = value;
 
-        let committed_value_digest: [_; PV_DIGEST_NUM_WORDS] = core::array::from_fn(|i| Word::from(committed_value_digest[i]));
+        let committed_value_digest: [_; PV_DIGEST_NUM_WORDS] =
+            core::array::from_fn(|i| Word(committed_value_digest[i].to_le_bytes().map(F::from_canonical_u8)));
 
         let deferred_proofs_digest: [_; POSEIDON_NUM_WORDS] =
             core::array::from_fn(|i| F::from_canonical_u32(deferred_proofs_digest[i]));

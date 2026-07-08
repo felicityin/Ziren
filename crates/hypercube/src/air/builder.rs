@@ -3,7 +3,7 @@ use std::iter::once;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use slop_air::{AirBuilder, AirBuilderWithPublicValues, FilteredAirBuilder};
-use slop_algebra::{AbstractField, Field};
+use slop_algebra::{FieldAlgebra, Field};
 use slop_uni_stark::SymbolicAirBuilder;
 use strum_macros::{Display, EnumIter};
 

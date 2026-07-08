@@ -1,7 +1,7 @@
 //! Elliptic Curve digests with a starting point to avoid weierstrass addition exceptions.
 use crate::septic_curve::SepticCurve;
 use crate::septic_extension::SepticExtension;
-use slop_algebra::{Field, AbstractField, AbstractExtensionField};
+use slop_algebra::{Field, FieldAlgebra, FieldExtensionAlgebra};
 use serde::{Deserialize, Serialize};
 use std::iter::Sum;
 
@@ -27,7 +27,7 @@ pub const DIGEST_SUM_START_Y: [u32; 7] =
 #[repr(C)]
 pub struct SepticDigest<F>(pub SepticCurve<F>);
 
-impl<F: AbstractField> SepticDigest<F> {
+impl<F: FieldAlgebra> SepticDigest<F> {
     #[must_use]
     /// The zero digest, the starting point of the accumulation of curve points derived from the scheme.
     pub fn zero() -> Self {

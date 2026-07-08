@@ -162,7 +162,7 @@ mod tests {
     use std::borrow::Borrow;
 
     use slop_air::{Air, BaseAir};
-    use slop_algebra::AbstractField;
+    use slop_algebra::FieldAlgebra;
     use slop_koala_bear::KoalaBear;
     use slop_matrix::Matrix;
 

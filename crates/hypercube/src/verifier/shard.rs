@@ -8,7 +8,7 @@ use std::{
 
 use itertools::Itertools;
 use slop_air::{Air, BaseAir};
-use slop_algebra::{AbstractField, PrimeField32, TwoAdicField};
+use slop_algebra::{FieldAlgebra, PrimeField32, TwoAdicField};
 use slop_challenger::{CanObserve, FieldChallenger, IopCtx, VariableLengthChallenger};
 use slop_commit::Rounds;
 use slop_jagged::{JaggedPcsVerifier, JaggedPcsVerifierError};

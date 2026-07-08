@@ -8,7 +8,7 @@ use itertools::Itertools;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slop_air::Air;
-use slop_algebra::{interpolate_univariate_polynomial, AbstractExtensionField, ExtensionField, Field, UnivariatePolynomial};
+use slop_algebra::{interpolate_univariate_polynomial, FieldExtensionAlgebra, ExtensionField, Field, UnivariatePolynomial};
 use slop_matrix::dense::RowMajorMatrixView;
 use slop_multilinear::{Mle, PaddedMle};
 use slop_sumcheck::SumcheckPolyBase;
@@ -171,7 +171,7 @@ where
 pub fn zerocheck_sum_as_poly_in_last_variable<
     K: ExtensionField<F>,
     F: Field,
-    EF: ExtensionField<F> + ExtensionField<K> + ExtensionField<F> + AbstractExtensionField<K>,
+    EF: ExtensionField<F> + ExtensionField<K> + ExtensionField<F> + FieldExtensionAlgebra<K>,
     AirData,
     const IS_FIRST_ROUND: bool,
 >(
@@ -334,7 +334,7 @@ pub fn increment_y_values<
     'a,
     K: Field + From<F> + Add<F, Output = K> + Sub<F, Output = K> + Mul<F, Output = K>,
     F: Field,
-    EF: ExtensionField<F> + From<K> + ExtensionField<F> + AbstractExtensionField<K>,
+    EF: ExtensionField<F> + From<K> + ExtensionField<F> + FieldExtensionAlgebra<K>,
     A: for<'b> Air<ConstraintSumcheckFolder<'b, F, K, EF>> + MachineAir<F>,
     const IS_FIRST_ROUND: bool,
 >(

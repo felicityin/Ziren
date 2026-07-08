@@ -31,8 +31,8 @@ pub use zerocheck::*;
 
 #[cfg(test)]
 mod tests {
+    use p3_field::FieldAlgebra;
     use slop_air::{Air, BaseAir};
-    use slop_algebra::AbstractField;
     use slop_koala_bear::KoalaBear;
     use slop_matrix::{dense::{RowMajorMatrix, RowMajorMatrixView}, Matrix};
 
@@ -158,7 +158,7 @@ mod tests {
 
         fn append(&mut self, _other: &mut Self) {}
 
-        fn public_values<F: AbstractField>(&self) -> Vec<F> {
+        fn public_values<F: FieldAlgebra>(&self) -> Vec<F> {
             Vec::new()
         }
 

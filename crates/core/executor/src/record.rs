@@ -1,12 +1,9 @@
 use enum_map::EnumMap;
 use hashbrown::HashMap;
 use itertools::{EitherOrBoth, Itertools};
-use p3_field::{FieldAlgebra, PrimeField};
-use zkm_stark::{
-    air::{MachineAir, PublicValues},
-    shape::Shape,
-    MachineRecord, SplitOpts, ZKMCoreOpts,
-};
+use p3_field::{Field, FieldAlgebra};
+use zkm_hypercube::{air::{MachineAir, PublicValues, ZKMAirBuilder}, lookup::LookupKind, record::MachineRecord};
+use zkm_stark::{shape::Shape, SplitOpts};
 
 use serde::{Deserialize, Serialize};
 use std::{mem::take, str::FromStr, sync::Arc};
@@ -281,7 +278,7 @@ impl ExecutionRecord {
 
     /// Return the number of rows needed for a chip, according to the proof shape specified in the
     /// struct.
-    pub fn fixed_log2_rows<F: PrimeField, A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
+    pub fn fixed_log2_rows<F: Field, A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
         self.shape.as_ref().map(|shape| {
             shape
                 .log2_height(&MipsAirId::from_str(&air.name()).unwrap())
@@ -341,8 +338,6 @@ pub struct MemoryAccessRecord {
 }
 
 impl MachineRecord for ExecutionRecord {
-    type Config = ZKMCoreOpts;
-
     fn stats(&self) -> HashMap<String, usize> {
         let mut stats = HashMap::new();
         stats.insert("cpu_events".to_string(), self.cpu_events.len());
@@ -413,6 +408,13 @@ impl MachineRecord for ExecutionRecord {
     /// Retrieves the public values.  This method is needed for the `MachineRecord` trait, since
     fn public_values<F: FieldAlgebra>(&self) -> Vec<F> {
         self.public_values.to_vec()
+    }
+
+    // STUB: does not constrain public values against the LogUp GKR global sum yet.
+    fn eval_public_values<AB: ZKMAirBuilder>(_builder: &mut AB) {}
+
+    fn lookups_in_public_values() -> Vec<LookupKind> {
+        Vec::new()
     }
 }
 

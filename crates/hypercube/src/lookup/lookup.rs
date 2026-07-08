@@ -2,7 +2,7 @@ use core::fmt::Debug;
 use std::ops::Mul;
 
 use slop_air::{PairCol, VirtualPairCol};
-use slop_algebra::{AbstractField, Field};
+use slop_algebra::{FieldAlgebra, Field};
 use slop_multilinear::MleEval;
 
 use crate::air::LookupScope;
@@ -43,7 +43,7 @@ impl<F: Field> Lookup<F> {
     ) -> (Expr, Expr)
     where
         F: Into<Expr>,
-        Expr: AbstractField + Mul<F, Output = Expr>,
+        Expr: FieldAlgebra + Mul<F, Output = Expr>,
         Var: Into<Expr> + Copy,
     {
         let mut multiplicity_eval = self.multiplicity.constant.into();

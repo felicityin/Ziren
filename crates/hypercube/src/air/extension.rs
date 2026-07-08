@@ -2,7 +2,7 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use slop_algebra::{
     extension::{BinomialExtensionField, BinomiallyExtendable},
-    AbstractExtensionField, AbstractField, Field,
+    FieldExtensionAlgebra, FieldAlgebra, Field,
 };
 use zkm_derive::AlignedBorrow;
 
@@ -16,7 +16,7 @@ pub struct BinomialExtension<T>(pub [T; D]);
 impl<T> BinomialExtension<T> {
     pub fn from_base(b: T) -> Self
     where
-        T: AbstractField,
+        T: FieldAlgebra,
     {
         let mut arr: [T; D] = core::array::from_fn(|_| T::zero());
         arr[0] = b;
@@ -49,7 +49,7 @@ impl<T: Sub<Output = T> + Clone> Sub for BinomialExtension<T> {
     }
 }
 
-impl<T: Add<Output = T> + Mul<Output = T> + AbstractField> Mul for BinomialExtension<T> {
+impl<T: Add<Output = T> + Mul<Output = T> + FieldAlgebra> Mul for BinomialExtension<T> {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
@@ -104,7 +104,7 @@ where
     }
 }
 
-impl<T: AbstractField + Copy> Neg for BinomialExtension<T> {
+impl<T: FieldAlgebra + Copy> Neg for BinomialExtension<T> {
     type Output = Self;
 
     fn neg(self) -> Self::Output {
@@ -114,7 +114,7 @@ impl<T: AbstractField + Copy> Neg for BinomialExtension<T> {
 
 impl<AF> From<BinomialExtensionField<AF, D>> for BinomialExtension<AF>
 where
-    AF: AbstractField + Copy,
+    AF: FieldAlgebra + Copy,
     AF::F: BinomiallyExtendable<D>,
 {
     fn from(value: BinomialExtensionField<AF, D>) -> Self {
@@ -125,7 +125,7 @@ where
 
 impl<AF> From<BinomialExtension<AF>> for BinomialExtensionField<AF, D>
 where
-    AF: AbstractField + Copy,
+    AF: FieldAlgebra + Copy,
     AF::F: BinomiallyExtendable<D>,
 {
     fn from(value: BinomialExtension<AF>) -> Self {

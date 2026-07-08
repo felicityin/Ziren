@@ -4,7 +4,7 @@ use std::{
 };
 
 use slop_air::{AirBuilder, AirBuilderWithPublicValues, ExtensionBuilder, PairBuilder, PermutationAirBuilder};
-use slop_algebra::{AbstractExtensionField, AbstractField, ExtensionField, Field};
+use slop_algebra::{FieldExtensionAlgebra, FieldAlgebra, ExtensionField, Field};
 use slop_challenger::IopCtx;
 use slop_matrix::dense::RowMajorMatrixView;
 
@@ -25,7 +25,7 @@ impl<'a, F, EF, PubVar, Var, Expr> AirBuilder for GenericVerifierConstraintFolde
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField
+    Expr: FieldAlgebra
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -81,7 +81,7 @@ impl<F, EF, PubVar, Var, Expr> ExtensionBuilder for GenericVerifierConstraintFol
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -121,7 +121,7 @@ impl<'a, F, EF, PubVar, Var, Expr> PermutationAirBuilder for GenericVerifierCons
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -161,7 +161,7 @@ impl<F, EF, PubVar, Var, Expr> PairBuilder for GenericVerifierConstraintFolder<'
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -194,7 +194,7 @@ impl<F, EF, PubVar, Var, Expr> EmptyMessageBuilder for GenericVerifierConstraint
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -224,7 +224,7 @@ impl<F, EF, PubVar, Var, Expr> AirBuilderWithPublicValues for GenericVerifierCon
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -302,7 +302,7 @@ impl<
 impl<
         F: Field,
         K: Field + From<F> + Add<F, Output = K> + Sub<F, Output = K> + Mul<F, Output = K>,
-        EF: Field + Mul<K, Output = EF> + ExtensionField<F> + AbstractExtensionField<K> + From<K>,
+        EF: Field + Mul<K, Output = EF> + ExtensionField<F> + FieldExtensionAlgebra<K> + From<K>,
     > ExtensionBuilder for ConstraintSumcheckFolder<'_, F, K, EF>
 {
     type EF = EF;
@@ -322,7 +322,7 @@ impl<
         'a,
         F: Field,
         K: Field + From<F> + Add<F, Output = K> + Sub<F, Output = K> + Mul<F, Output = K>,
-        EF: Field + Mul<K, Output = EF> + ExtensionField<F> + AbstractExtensionField<K>,
+        EF: Field + Mul<K, Output = EF> + ExtensionField<F> + FieldExtensionAlgebra<K>,
     > PermutationAirBuilder for ConstraintSumcheckFolder<'a, F, K, EF>
 {
     type MP = RowMajorMatrixView<'a, EF>;
@@ -388,7 +388,7 @@ impl<'a, F, EF, PubVar, Var, Expr> AirBuilder for GenericVerifierPublicValuesCon
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -444,7 +444,7 @@ impl<F, EF, PubVar, Var, Expr> ExtensionBuilder for GenericVerifierPublicValuesC
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -484,7 +484,7 @@ impl<'a, F, EF, PubVar, Var, Expr> PermutationAirBuilder for GenericVerifierPubl
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -524,7 +524,7 @@ impl<F, EF, PubVar, Var, Expr> PairBuilder for GenericVerifierPublicValuesConstr
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -557,7 +557,7 @@ impl<F, EF, PubVar, Var, Expr> MessageBuilder<AirLookup<Expr>> for GenericVerifi
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>
@@ -609,7 +609,7 @@ impl<F, EF, PubVar, Var, Expr> AirBuilderWithPublicValues for GenericVerifierPub
 where
     F: Field,
     EF: ExtensionField<F>,
-    Expr: AbstractField<F = EF>
+    Expr: FieldAlgebra<F = EF>
         + From<F>
         + Add<Var, Output = Expr>
         + Add<F, Output = Expr>

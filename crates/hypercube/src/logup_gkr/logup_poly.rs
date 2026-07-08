@@ -459,7 +459,7 @@ mod tests {
     use super::*;
     use itertools::Itertools;
     use rand::{thread_rng, Rng};
-    use slop_algebra::{extension::BinomialExtensionField, AbstractField};
+    use slop_algebra::{extension::BinomialExtensionField, FieldAlgebra};
     use slop_alloc::CpuBackend;
     use slop_challenger::{FieldChallenger, IopCtx};
     use slop_koala_bear::KoalaBear;
