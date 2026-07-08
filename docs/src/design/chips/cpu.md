@@ -21,7 +21,10 @@ Ziren's CPU constraints ensure instruction integrity across four key dimensions:
 
 - Flow Constraints​​
 
-  - Program counter continuity: Ensures sequential instruction flow continuity via program counter validation.
+  - Program counter continuity: Consecutive real rows satisfy `local.next_pc = next.pc`.
+  - Delay-slot carry: For non-halting successor rows, `local.next_next_pc = next.next_pc`, so branch/jump targets survive across the delay slot.
+  - Sequential rows: When `is_sequential = 1`, the CPU enforces `next_next_pc = next_pc + 4`.
+  - Shard boundary safety: The last real row of a shard must be sequential or halt. Branch/jump rows cannot end a shard because shard public values export only `next_pc`, not `next_next_pc`.
   - Clock synchronization: Synchronizes timing mechanisms for system operations.
 
 - ​​Operand Constraints​​
@@ -39,3 +42,11 @@ Ziren's CPU constraints ensure instruction integrity across four key dimensions:
   Real-row validation: Enforces operational validity flags for non-padded execution.
 
 These constraints are implemented through AIR polynomial identities, cross-table lookup arguments, boolean assertions, and multi-set hashing ensuring verifiable MIPS execution within Ziren's zkVM framework.
+
+## PC Boundary Rules
+
+The CPU chip carries both `next_pc` and `next_next_pc` in each row.
+
+- `next_pc` is the address of the delay-slot instruction and is always the next row's `pc` for real transitions.
+- `next_next_pc` is the PC after the delay slot. For sequential rows it equals `next_pc + 4`; for branch and jump rows it carries the taken or fall-through post-delay-slot target.
+- Shard public values expose only `start_pc` and `next_pc`. Because of that, a branch or jump row cannot be the last real row of a shard; otherwise its `next_next_pc` target would be lost at the boundary.

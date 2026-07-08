@@ -2,7 +2,6 @@ use std::{
     array,
     borrow::{Borrow, BorrowMut},
     marker::PhantomData,
-    mem::MaybeUninit,
 };
 
 use itertools::{izip, Itertools};
@@ -103,9 +102,8 @@ where
 
         // Initialize the values for the aggregated public output.
 
-        let mut reduce_public_values_stream: Vec<Felt<_>> = (0..RECURSIVE_PROOF_NUM_PV_ELTS)
-            .map(|_| unsafe { MaybeUninit::zeroed().assume_init() })
-            .collect();
+        let mut reduce_public_values_stream: Vec<Felt<_>> =
+            (0..RECURSIVE_PROOF_NUM_PV_ELTS).map(|_| builder.uninit()).collect();
         let compress_public_values: &mut RecursionPublicValues<_> =
             reduce_public_values_stream.as_mut_slice().borrow_mut();
 
@@ -115,27 +113,22 @@ where
         assert!(!vks_and_proofs.is_empty());
 
         // Initialize the consistency check variables.
-        let mut zkm_vk_digest: [Felt<_>; DIGEST_SIZE] =
-            array::from_fn(|_| unsafe { MaybeUninit::zeroed().assume_init() });
-        let mut pc: Felt<_> = unsafe { MaybeUninit::zeroed().assume_init() };
-        let mut shard: Felt<_> = unsafe { MaybeUninit::zeroed().assume_init() };
+        let mut zkm_vk_digest: [Felt<_>; DIGEST_SIZE] = array::from_fn(|_| builder.uninit());
+        let mut pc: Felt<_> = builder.uninit();
+        let mut shard: Felt<_> = builder.uninit();
 
         let mut exit_code: Felt<_> = builder.uninit();
 
-        let mut execution_shard: Felt<_> = unsafe { MaybeUninit::zeroed().assume_init() };
+        let mut execution_shard: Felt<_> = builder.uninit();
         let mut committed_value_digest: [Word<Felt<_>>; PV_DIGEST_NUM_WORDS] =
-            array::from_fn(|_| {
-                Word(array::from_fn(|_| unsafe { MaybeUninit::zeroed().assume_init() }))
-            });
+            array::from_fn(|_| Word(array::from_fn(|_| builder.uninit())));
         let mut deferred_proofs_digest: [Felt<_>; POSEIDON_NUM_WORDS] =
-            array::from_fn(|_| unsafe { MaybeUninit::zeroed().assume_init() });
+            array::from_fn(|_| builder.uninit());
         let mut reconstruct_deferred_digest: [Felt<_>; POSEIDON_NUM_WORDS] =
-            core::array::from_fn(|_| unsafe { MaybeUninit::zeroed().assume_init() });
+            core::array::from_fn(|_| builder.uninit());
         let mut global_cumulative_sums = Vec::new();
-        let mut init_addr_bits: [Felt<_>; 32] =
-            core::array::from_fn(|_| unsafe { MaybeUninit::zeroed().assume_init() });
-        let mut finalize_addr_bits: [Felt<_>; 32] =
-            core::array::from_fn(|_| unsafe { MaybeUninit::zeroed().assume_init() });
+        let mut init_addr_bits: [Felt<_>; 32] = core::array::from_fn(|_| builder.uninit());
+        let mut finalize_addr_bits: [Felt<_>; 32] = core::array::from_fn(|_| builder.uninit());
 
         // Initialize a flag to denote if any of the recursive proofs represents a shard range
         // where at least once of the shards is an execution shard (i.e. contains cpu).

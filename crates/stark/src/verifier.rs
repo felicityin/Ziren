@@ -1,9 +1,11 @@
 use core::fmt::Display;
 use std::{
+    collections::HashSet,
     fmt::{Debug, Formatter},
     marker::PhantomData,
 };
 
+use hashbrown::HashMap;
 use itertools::Itertools;
 use num_traits::cast::ToPrimitive;
 use p3_air::{Air, BaseAir};
@@ -25,6 +27,58 @@ use crate::{
 pub struct Verifier<SC, A>(PhantomData<SC>, PhantomData<A>);
 
 impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
+    fn validate_chip_ordering(
+        vk: &StarkVerifyingKey<SC>,
+        chips: &[&MachineChip<SC, A>],
+        opened_values_len: usize,
+        chip_ordering: &HashMap<String, usize>,
+    ) -> Result<(), VerificationError<SC>> {
+        if chip_ordering.len() != opened_values_len {
+            return Err(VerificationError::InvalidChipOrdering(
+                "chip ordering length does not match opened values".to_string(),
+            ));
+        }
+        if chips.len() != opened_values_len {
+            return Err(VerificationError::ChipOpeningLengthMismatch);
+        }
+
+        let chip_names = chips.iter().map(|chip| chip.name()).collect::<HashSet<_>>();
+        let mut seen_indices = vec![false; opened_values_len];
+        for (name, &index) in chip_ordering {
+            if !chip_names.contains(name) {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "unexpected chip in ordering: {name}"
+                )));
+            }
+            if index >= opened_values_len {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "chip ordering index out of bounds for {name}: {index}"
+                )));
+            }
+            if seen_indices[index] {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "duplicate chip ordering index: {index}"
+                )));
+            }
+            seen_indices[index] = true;
+        }
+        if seen_indices.iter().any(|seen| !seen) {
+            return Err(VerificationError::InvalidChipOrdering(
+                "chip ordering indices are not contiguous".to_string(),
+            ));
+        }
+
+        for (name, _, _) in &vk.chip_information {
+            if !chip_ordering.contains_key(name) {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "missing preprocessed chip in ordering: {name}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Verify a proof for a collection of air chips.
     #[allow(clippy::too_many_lines)]
     pub fn verify_shard(
@@ -53,6 +107,8 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> Verifier<SC, A> {
         if chips.len() != opened_values.chips.len() {
             return Err(VerificationError::ChipOpeningLengthMismatch);
         }
+
+        Self::validate_chip_ordering(vk, chips, opened_values.chips.len(), chip_ordering)?;
 
         // Assert that the byte multiplicities don't overflow.
         let mut max_byte_lookup_mult = 0u64;
@@ -466,6 +522,8 @@ pub enum VerificationError<SC: StarkGenericConfig> {
     MissingCpuChip,
     /// The length of the chip opening does not match the expected length.
     ChipOpeningLengthMismatch,
+    /// The prover-supplied chip ordering is malformed.
+    InvalidChipOrdering(String),
     /// Cumulative sums error
     CumulativeSumsError(&'static str),
 }
@@ -518,6 +576,9 @@ impl<SC: StarkGenericConfig> Debug for VerificationError<SC> {
             VerificationError::ChipOpeningLengthMismatch => {
                 write!(f, "Chip opening length mismatch")
             }
+            VerificationError::InvalidChipOrdering(s) => {
+                write!(f, "Invalid chip ordering: {}", s)
+            }
             VerificationError::CumulativeSumsError(s) => write!(f, "cumulative sums error: {}", s),
         }
     }
@@ -541,6 +602,9 @@ impl<SC: StarkGenericConfig> Display for VerificationError<SC> {
             }
             VerificationError::ChipOpeningLengthMismatch => {
                 write!(f, "Chip opening length mismatch")
+            }
+            VerificationError::InvalidChipOrdering(s) => {
+                write!(f, "Invalid chip ordering: {}", s)
             }
             VerificationError::CumulativeSumsError(s) => write!(f, "cumulative sums error: {}", s),
         }

@@ -31,6 +31,7 @@ pub struct BooleanCircuitGarbleCols<T> {
     pub is_last_gate: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]
     pub not_last_gate: T, // from first gate -> (last - 1)-th gate
+    pub is_empty: T,
     pub gate_type: [T; 2],
     #[cfg_attr(feature = "picus", picus(transition_input))]
     pub gate_id: T,

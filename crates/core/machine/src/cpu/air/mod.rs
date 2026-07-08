@@ -208,6 +208,16 @@ impl CpuChip {
 
         // If the last real row is the last row, verify the public value's next pc.
         builder.when_last_row().when(local.is_real).assert_eq(public_values.next_pc, local.next_pc);
+
+        // A branch or jump row carries its post-delay-slot target in `next_next_pc`.
+        // Since shard public values only export `next_pc`, such rows must not be
+        // the last real row of a shard; otherwise the target is dropped at the
+        // boundary and the next shard can rederive fall-through.
+        builder
+            .when_transition()
+            .when(local.is_real - next.is_real)
+            .assert_one(local.is_sequential + local.is_halt);
+        builder.when_last_row().when(local.is_real).assert_one(local.is_sequential + local.is_halt);
     }
 
     /// Constraints related to the is_real column.

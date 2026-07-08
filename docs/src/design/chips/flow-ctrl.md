@@ -26,10 +26,12 @@ We use the following key constraints to validate the branch chip:
 
 - Program Counter Validation
 
-  - Range check for all PC values (`pc`, `next_pc`, `target_pc`, `next_next_pc`, etc.).
-  - Branching case: `next_pc` must equal `target_pc`.
-  - Non-branching case: `next_next_pc` must equal `next_pc + 4`.
+  - `next_pc` is the delay-slot PC and must match the next CPU row's `pc`.
+  - `next_next_pc` is the post-delay-slot PC carried by the current row.
+  - Taken branch case: `next_next_pc = target_pc`.
+  - Not-taken branch case: `next_next_pc = next_pc + 4`.
   - `is_branching` and `not_branching` are mutually exclusive and exhaustive for real instructions.
+  - Branch rows cannot terminate a shard, because shard public values export only `next_pc` and not the post-delay-slot target in `next_next_pc`.
 
 - Instruction Validity
   - Exactly one branch instruction flag must be active per row (`1 = is_beq + ... + is_bgtz`).
@@ -76,6 +78,10 @@ We use the following key constraints to validate the jump chip:
     op_a_value = next_pc + 4
     ```
     op_a_value is saved into op_a register only when 'op_a_0 = 0'(checked in CpuChip)
+- Delay-slot / target handling
+  - `next_pc` is still the delay-slot PC.
+  - The actual jump destination is carried in `next_next_pc` and becomes the successor row's `next_pc` after the delay slot executes.
+  - Jump rows cannot be the last real row of a shard for the same reason as branches: only `next_pc` is exported through shard public values.
 - Range Checking
   - All critical values (`op_a_value, next_pc, target_pc`) are range-checked, ensuring values are valid 32-bit words.
 - PC Transition Logic
@@ -88,4 +94,3 @@ We use the following key constraints to validate the jump chip:
     )
     ```
   - Direct jumps (`is_jumpdirect`) use immediate operand addition.
-

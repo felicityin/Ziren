@@ -94,3 +94,145 @@ impl Syscall for BooleanCircuitGarbleSyscall {
         Ok(None)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{events::PrecompileEvent, Executor, Program};
+    use zkm_stark::ZKMCoreOpts;
+
+    const INPUT_PTR: u32 = 0x1000;
+    const OUTPUT_PTR: u32 = 0x2000;
+    const OR_GATE_ID: u32 = 7;
+
+    fn gate_info_words(gate_type: u32, delta: [u32; 4], valid: bool) -> [u32; GATE_INFO_BYTES] {
+        let h0 = [11, 12, 13, 14];
+        let h1 = [21, 22, 23, 24];
+        let label_b = [31, 32, 33, 34];
+        let mut expected = [0u32; 4];
+        for i in 0..4 {
+            expected[i] = h0[i] ^ h1[i] ^ label_b[i];
+            if gate_type == OR_GATE_ID {
+                expected[i] ^= delta[i];
+            }
+        }
+        if !valid {
+            expected[3] ^= 1;
+        }
+
+        let mut words = [0u32; GATE_INFO_BYTES];
+        words[0] = gate_type;
+        words[1..5].copy_from_slice(&h0);
+        words[5..9].copy_from_slice(&h1);
+        words[9..13].copy_from_slice(&label_b);
+        words[13..17].copy_from_slice(&expected);
+        words
+    }
+
+    fn write_input(
+        runtime: &mut Executor<'_>,
+        gate_infos: &[[u32; GATE_INFO_BYTES]],
+        delta: [u32; 4],
+    ) {
+        let mut timestamp = 1;
+        let shard = 1;
+        runtime.mw(INPUT_PTR, gate_infos.len() as u32, shard, timestamp, None);
+        timestamp += 1;
+        for (i, value) in delta.into_iter().enumerate() {
+            runtime.mw(INPUT_PTR + 4 + i as u32 * 4, value, shard, timestamp, None);
+            timestamp += 1;
+        }
+        for (gate_idx, gate_info) in gate_infos.iter().enumerate() {
+            let gate_base = INPUT_PTR + 20 + gate_idx as u32 * (GATE_INFO_BYTES as u32) * 4;
+            for (word_idx, value) in gate_info.iter().enumerate() {
+                runtime.mw(gate_base + word_idx as u32 * 4, *value, shard, timestamp, None);
+                timestamp += 1;
+            }
+        }
+        runtime.mw(OUTPUT_PTR, u32::MAX, shard, timestamp, None);
+    }
+
+    fn run_syscall(gate_infos: Vec<[u32; GATE_INFO_BYTES]>, delta: [u32; 4]) -> Executor<'static> {
+        let mut runtime = Executor::new(Program::default(), ZKMCoreOpts::default());
+        write_input(&mut runtime, &gate_infos, delta);
+        runtime.state.current_shard = 2;
+        runtime.state.clk = 1;
+
+        let syscall = BooleanCircuitGarbleSyscall;
+        let mut ctx = SyscallContext::new(&mut runtime);
+        syscall
+            .execute(&mut ctx, SyscallCode::BOOLEAN_CIRCUIT_GARBLE, INPUT_PTR, OUTPUT_PTR)
+            .unwrap();
+        runtime
+    }
+
+    #[test]
+    fn basic_and_gate_verification_succeeds() {
+        let delta = [101, 102, 103, 104];
+        let mut runtime = run_syscall(vec![gate_info_words(0, delta, true)], delta);
+        assert_eq!(runtime.word(OUTPUT_PTR), 1);
+
+        let events = runtime.record.get_precompile_events(SyscallCode::BOOLEAN_CIRCUIT_GARBLE);
+        assert_eq!(events.len(), 1);
+        let (_, event) = &events[0];
+        let event = match event {
+            PrecompileEvent::BooleanCircuitGarble(event) => event,
+            _ => unreachable!(),
+        };
+        assert_eq!(event.output, 1);
+        assert_eq!(event.num_gates, 1);
+        assert_eq!(event.gates_info.len(), GATE_INFO_BYTES);
+    }
+
+    #[test]
+    fn basic_or_gate_verification_succeeds() {
+        let delta = [201, 202, 203, 204];
+        let mut runtime = run_syscall(vec![gate_info_words(OR_GATE_ID, delta, true)], delta);
+        assert_eq!(runtime.word(OUTPUT_PTR), 1);
+    }
+
+    #[test]
+    fn mixed_gates_with_bad_ciphertext_return_false() {
+        let delta = [111, 222, 333, 444];
+        let gate_infos = vec![
+            gate_info_words(0, delta, true),
+            gate_info_words(OR_GATE_ID, delta, true),
+            gate_info_words(0, delta, false),
+        ];
+        let mut runtime = run_syscall(gate_infos, delta);
+        assert_eq!(runtime.word(OUTPUT_PTR), 0);
+
+        let events = runtime.record.get_precompile_events(SyscallCode::BOOLEAN_CIRCUIT_GARBLE);
+        let (_, event) = &events[0];
+        let event = match event {
+            PrecompileEvent::BooleanCircuitGarble(event) => event,
+            _ => unreachable!(),
+        };
+        let accessed_addrs = event
+            .local_mem_access
+            .iter()
+            .map(|access| access.addr)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(accessed_addrs.contains(&INPUT_PTR));
+        assert!(accessed_addrs.contains(&(INPUT_PTR + 20)));
+        assert!(accessed_addrs.contains(&(INPUT_PTR + 20 + (GATE_INFO_BYTES as u32) * 4)));
+        assert!(accessed_addrs.contains(&OUTPUT_PTR));
+    }
+
+    #[test]
+    fn zero_gates_write_true() {
+        let delta = [1, 2, 3, 4];
+        let mut runtime = run_syscall(vec![], delta);
+        assert_eq!(runtime.word(OUTPUT_PTR), 1);
+
+        let events = runtime.record.get_precompile_events(SyscallCode::BOOLEAN_CIRCUIT_GARBLE);
+        let (_, event) = &events[0];
+        let event = match event {
+            PrecompileEvent::BooleanCircuitGarble(event) => event,
+            _ => unreachable!(),
+        };
+        assert_eq!(event.num_gates, 0);
+        assert!(event.gates_info.is_empty());
+        assert_eq!(event.output, 1);
+    }
+}

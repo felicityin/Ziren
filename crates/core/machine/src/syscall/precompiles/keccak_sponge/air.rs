@@ -58,6 +58,26 @@ where
             LookupScope::Local,
         );
 
+        // The first block flag is fixed on the first row and then held steady
+        // within the block. Once a non-final block ends, the next block must
+        // reset this flag to zero.
+        builder.when(local.receive_syscall).assert_one(first_block);
+        builder
+            .when_transition()
+            .when(not_final_step.clone())
+            .assert_eq(next.is_first_input_block, first_block);
+        builder.when(local.is_absorbed).assert_zero(next.is_first_input_block);
+
+        // The final block flag stays low on all non-final blocks and is fixed
+        // to one on the final block's write-output row. Within a block it stays
+        // constant across Keccak rounds.
+        builder.when(local.write_output).assert_one(final_block);
+        builder.when(local.is_absorbed).assert_zero(final_block);
+        builder
+            .when_transition()
+            .when(not_final_step.clone())
+            .assert_eq(next.is_final_input_block, final_block);
+
         // Constrain that the inputs stay the same throughout the rows of each cycle
         let mut transition_builder = builder.when_transition();
         let mut transition_not_final_builder = transition_builder.when(not_final_sponge.clone());
@@ -142,6 +162,12 @@ where
             .assert_eq(local.input_address, next.input_address);
         // If this is the first block, absorbed bytes should be 0
         builder.when(first_block).assert_eq(local.already_absorbed_u32s, AB::Expr::zero());
+        // If this is the first block, the sponge state must start from the
+        // fixed all-zero Keccak IV.
+        let mut first_block_builder = builder.when(first_block);
+        for i in 0..KECCAK_STATE_U32S {
+            first_block_builder.assert_word_zero(local.original_state[i]);
+        }
         // If this is the final block, absorbed bytes should be equal to the input length - KECCAK_GENERAL_RATE_U32S
         builder.when(final_block).assert_eq(
             local.already_absorbed_u32s,
@@ -269,6 +295,9 @@ impl KeccakSpongeChip {
         // enforce booleanity and mutual exclusion of first/final step flags.
         // This prevents degenerate witnesses where a single row is both
         // first-round and final-round when summary internals are hidden.
+        builder.assert_bool(first_block);
+        builder.assert_bool(final_block);
+        builder.assert_bool(local.read_block);
         builder.when(local.is_real).assert_bool(first_step);
         builder.when(local.is_real).assert_bool(final_step);
         builder.when(local.is_real).assert_zero(first_step * final_step);

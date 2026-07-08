@@ -10,7 +10,7 @@ use p3_uni_stark::{get_symbolic_constraints, SymbolicAirBuilder};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use std::{cmp::Reverse, env, fmt::Debug, iter::once, time::Instant};
+use std::{cmp::Reverse, collections::HashSet, env, fmt::Debug, iter::once, time::Instant};
 use tracing::instrument;
 
 use super::{debug_constraints, Dom};
@@ -175,6 +175,56 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>>> StarkMachine<SC, A> {
             .iter()
             .filter(|chip| chip_ordering.contains_key(&chip.name()))
             .sorted_by_key(|chip| chip_ordering.get(&chip.name()))
+    }
+
+    fn validate_chip_ordering(
+        &self,
+        vk: &StarkVerifyingKey<SC>,
+        proof: &ShardProof<SC>,
+    ) -> Result<(), VerificationError<SC>> {
+        let n = proof.opened_values.chips.len();
+        if proof.chip_ordering.len() != n {
+            return Err(VerificationError::InvalidChipOrdering(
+                "chip ordering length does not match opened values".to_string(),
+            ));
+        }
+
+        let known_chips = self.chips.iter().map(|chip| chip.name()).collect::<HashSet<_>>();
+        let mut seen_indices = vec![false; n];
+        for (name, &index) in &proof.chip_ordering {
+            if !known_chips.contains(name) {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "unknown chip in ordering: {name}"
+                )));
+            }
+            if index >= n {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "chip ordering index out of bounds for {name}: {index}"
+                )));
+            }
+            if seen_indices[index] {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "duplicate chip ordering index: {index}"
+                )));
+            }
+            seen_indices[index] = true;
+        }
+
+        if seen_indices.iter().any(|seen| !seen) {
+            return Err(VerificationError::InvalidChipOrdering(
+                "chip ordering indices are not contiguous".to_string(),
+            ));
+        }
+
+        for (name, _, _) in &vk.chip_information {
+            if !proof.chip_ordering.contains_key(name) {
+                return Err(VerificationError::InvalidChipOrdering(format!(
+                    "missing preprocessed chip in ordering: {name}"
+                )));
+            }
+        }
+
+        Ok(())
     }
 
     /// Returns the config of the machine.
@@ -637,6 +687,8 @@ impl<SC: StarkGenericConfig, A: MachineAir<Val<SC>> + Air<SymbolicAirBuilder<Val
         tracing::debug_span!("verify shard proofs").in_scope(|| {
             for (i, shard_proof) in proof.shard_proofs.iter().enumerate() {
                 tracing::debug_span!("verifying shard", shard = i).in_scope(|| {
+                    self.validate_chip_ordering(vk, shard_proof)
+                        .map_err(MachineVerificationError::InvalidShardProof)?;
                     let chips =
                         self.shard_chips_ordered(&shard_proof.chip_ordering).collect::<Vec<_>>();
                     let mut shard_challenger = challenger.clone();

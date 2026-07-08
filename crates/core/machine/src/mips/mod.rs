@@ -784,6 +784,7 @@ pub mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
             Instruction::new(Opcode::ADD, 30, 0, 1, false, true),
             Instruction::new(Opcode::BEQ, 29, 30, 100, false, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();
@@ -796,6 +797,7 @@ pub mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
             Instruction::new(Opcode::ADD, 30, 0, 2, false, true),
             Instruction::new(Opcode::BEQ, 29, 30, 100, false, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();
@@ -808,6 +810,7 @@ pub mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 1, false, true),
             Instruction::new(Opcode::ADD, 30, 0, 2, false, true),
             Instruction::new(Opcode::BNE, 29, 30, 100, false, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();
@@ -820,6 +823,7 @@ pub mod tests {
             Instruction::new(Opcode::ADD, 29, 0, 0, false, true),
             Instruction::new(Opcode::ADD, 30, 0, 0, false, true),
             Instruction::new(Opcode::BNE, 29, 30, 100, false, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();
@@ -835,6 +839,7 @@ pub mod tests {
                 let instructions = vec![
                     Instruction::new(Opcode::ADD, 29, 0, *operand, false, true),
                     Instruction::new(*branch_op, 29, 0, 100, true, true),
+                    Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
                 ];
                 let program = Program::new(instructions, 0, 0);
                 run_test::<CpuProver<_, _>>(program).unwrap();
@@ -1018,6 +1023,7 @@ pub mod tests {
         let instructions = vec![
             Instruction::new(Opcode::ADD, 11, 0, 100, false, true),
             Instruction::new(Opcode::Jumpi, 0, 100, 0, true, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();
@@ -1033,6 +1039,7 @@ pub mod tests {
         let instructions = vec![
             Instruction::new(Opcode::ADD, 11, 0, 100, false, true),
             Instruction::new(Opcode::Jump, 0, 11, 0, false, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();
@@ -1048,6 +1055,7 @@ pub mod tests {
         let instructions = vec![
             Instruction::new(Opcode::ADD, 31, 0, 0, false, true),
             Instruction::new(Opcode::Jumpi, 31, 100, 0, true, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();
@@ -1064,6 +1072,7 @@ pub mod tests {
             Instruction::new(Opcode::ADD, 5, 0, 0, false, true),
             Instruction::new(Opcode::ADD, 11, 11, 100, false, true),
             Instruction::new(Opcode::Jump, 5, 11, 0, false, true),
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true),
         ];
         let program = Program::new(instructions, 0, 0);
         run_test::<CpuProver<_, _>>(program).unwrap();

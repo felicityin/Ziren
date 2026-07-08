@@ -12,7 +12,7 @@ use zkm_stark::{air::MachineAir, StarkMachine};
 use crate::{
     challenger::CanObserveVariable,
     constraints::RecursiveVerifierConstraintFolder,
-    machine::{assert_root_public_values_valid, RootPublicValues},
+    machine::{assert_complete, assert_root_public_values_valid, RootPublicValues},
     stark::StarkVerifier,
     CircuitConfig, KoalaBearFriConfigVariable,
 };
@@ -78,6 +78,8 @@ where
         // Get the public values, and assert that they are valid.
         let public_values: &RootPublicValues<Felt<C::F>> = proof.public_values.as_slice().borrow();
         assert_root_public_values_valid::<C, SC>(builder, public_values);
+        builder.assert_felt_eq(public_values.inner.is_complete, C::F::ONE);
+        assert_complete(builder, &public_values.inner, public_values.inner.is_complete);
 
         // Reflect the public values to the next level.
         if zkm_imm_wrap_vk_mode() {

@@ -228,3 +228,82 @@ impl KeccakSpongeChip {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::syscall::precompiles::keccak_sponge::columns::KeccakSpongeCols;
+    use p3_field::FieldAlgebra;
+    use p3_koala_bear::KoalaBear;
+    use std::borrow::Borrow;
+    use zkm_core_executor::events::{
+        ByteLookupEvent, KeccakSpongeEvent, MemoryReadRecord, MemoryWriteRecord,
+    };
+
+    fn make_event(blocks: usize) -> KeccakSpongeEvent {
+        let shard = 1;
+        let clk = 7;
+        let input_addr = 0x1000;
+        let output_addr = 0x2000;
+        let input_len_u32s = (blocks * KECCAK_GENERAL_RATE_U32S) as u32;
+        let input = vec![0u32; input_len_u32s as usize];
+        let output = [0u32; KECCAK_GENERAL_OUTPUT_U32S];
+        let input_length_record = MemoryReadRecord::new(input_len_u32s, shard, 1, 0, 0);
+
+        let mut timestamp = 2u32;
+        let input_read_records = input
+            .iter()
+            .map(|&value| {
+                let record = MemoryReadRecord::new(value, shard, timestamp, 0, 0);
+                timestamp += 1;
+                record
+            })
+            .collect::<Vec<_>>();
+
+        let output_write_records = output
+            .iter()
+            .map(|&value| {
+                let record = MemoryWriteRecord::new(value, shard, timestamp, 0, 0, 0);
+                timestamp += 1;
+                record
+            })
+            .collect::<Vec<_>>();
+
+        KeccakSpongeEvent {
+            shard,
+            clk,
+            input,
+            output,
+            input_len_u32s,
+            input_read_records,
+            input_length_record,
+            output_write_records,
+            xored_state_list: vec![[0u64; 25]; blocks],
+            input_addr,
+            output_addr,
+            local_mem_access: vec![],
+        }
+    }
+
+    #[test]
+    fn test_keccak_sponge_block_flags_follow_trace_positions() {
+        let chip = KeccakSpongeChip::new();
+        let event = make_event(2);
+        let mut rows = Some(Vec::new());
+        let mut blu = Vec::<ByteLookupEvent>::new();
+        chip.event_to_rows::<KoalaBear>(&event, &mut rows, &mut blu);
+
+        let rows = rows.unwrap();
+        assert_eq!(rows.len(), 2 * NUM_ROUNDS);
+
+        for (index, row) in rows.iter().enumerate() {
+            let cols: &KeccakSpongeCols<KoalaBear> = row.as_slice().borrow();
+            let block_index = index / NUM_ROUNDS;
+            let round_index = index % NUM_ROUNDS;
+
+            assert_eq!(cols.is_first_input_block, KoalaBear::from_bool(block_index == 0));
+            assert_eq!(cols.is_final_input_block, KoalaBear::from_bool(block_index == 1));
+            assert_eq!(cols.read_block, KoalaBear::from_bool(round_index == 0));
+        }
+    }
+}

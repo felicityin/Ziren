@@ -3,14 +3,15 @@ use std::{
     mem::size_of,
 };
 
-use p3_air::{Air, BaseAir};
+use hashbrown::HashMap;
+use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{
     IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
-use zkm_core_executor::events::{GlobalLookupEvent, MemoryLocalEvent};
+use zkm_core_executor::events::{ByteLookupEvent, ByteRecord, GlobalLookupEvent, MemoryLocalEvent};
 use zkm_core_executor::{ExecutionRecord, Program};
 use zkm_derive::AlignedBorrow;
 use zkm_stark::{
@@ -19,6 +20,8 @@ use zkm_stark::{
 };
 
 use crate::{
+    air::{MemoryAirBuilder, WordAirBuilder},
+    operations::KoalaBearBitDecomposition,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -32,6 +35,10 @@ pub struct SingleMemoryLocal<T: Copy> {
     /// The address of the memory access.
     pub addr: T,
 
+    /// The bit decomposition of `addr`, used to range check that `addr` is a valid KoalaBear
+    /// field element (i.e. strictly less than the modulus `0x7F000001`).
+    pub addr_bits: KoalaBearBitDecomposition<T>,
+
     /// The initial shard of the memory access.
     pub initial_shard: T,
 
@@ -43,6 +50,22 @@ pub struct SingleMemoryLocal<T: Copy> {
 
     /// The final clk of the memory access.
     pub final_clk: T,
+
+    /// The 16-bit limb of `initial_shard`, used for its 16-bit range check.
+    pub initial_shard_16bit_limb: T,
+
+    /// The 16-bit limb of `final_shard`, used for its 16-bit range check.
+    pub final_shard_16bit_limb: T,
+
+    /// The 16-bit limb of `initial_clk`, used for its 24-bit range check.
+    pub initial_clk_16bit_limb: T,
+    /// The 8-bit limb of `initial_clk`, used for its 24-bit range check.
+    pub initial_clk_8bit_limb: T,
+
+    /// The 16-bit limb of `final_clk`, used for its 24-bit range check.
+    pub final_clk_16bit_limb: T,
+    /// The 8-bit limb of `final_clk`, used for its 24-bit range check.
+    pub final_clk_8bit_limb: T,
 
     /// The initial value of the memory access.
     pub initial_value: Word<T>,
@@ -100,6 +123,8 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
         output: &mut ExecutionRecord,
     ) -> Result<(), Self::Error> {
         let mut events = Vec::new();
+        // Byte lookups required by the defense-in-depth range checks emitted in `eval`.
+        let mut blu: HashMap<ByteLookupEvent, usize> = HashMap::new();
 
         input.get_local_mem_events().for_each(|mem_event| {
             events.push(GlobalLookupEvent {
@@ -128,9 +153,27 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
                 is_receive: false,
                 kind: LookupKind::Memory as u8,
             });
+
+            // Byte range check the eight value limbs (initial and final).
+            blu.add_u8_range_checks(&mem_event.initial_mem_access.value.to_le_bytes());
+            blu.add_u8_range_checks(&mem_event.final_mem_access.value.to_le_bytes());
+
+            // 16-bit range checks for shards.
+            for value in [mem_event.initial_mem_access.shard, mem_event.final_mem_access.shard] {
+                blu.add_u16_range_check(value as u16);
+            }
+
+            // 24-bit range checks (16-bit + 8-bit limbs) for the clk fields.
+            for value in
+                [mem_event.initial_mem_access.timestamp, mem_event.final_mem_access.timestamp]
+            {
+                blu.add_u16_range_check((value & 0xffff) as u16);
+                blu.add_u8_range_check(0, ((value >> 16) & 0xff) as u8);
+            }
         });
 
         output.global_lookup_events.extend(events);
+        output.add_byte_lookup_events_from_maps(vec![&blu]);
         Ok(())
     }
 
@@ -170,12 +213,37 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
                     let cols = &mut cols.memory_local_entries[k];
                     if idx + k < events.len() {
                         let event: &&MemoryLocalEvent = &events[idx + k];
+                        let initial_shard = event.initial_mem_access.shard;
+                        let final_shard = event.final_mem_access.shard;
+                        let initial_clk = event.initial_mem_access.timestamp;
+                        let final_clk = event.final_mem_access.timestamp;
+
                         cols.addr = F::from_canonical_u32(event.addr);
-                        cols.initial_shard = F::from_canonical_u32(event.initial_mem_access.shard);
-                        cols.final_shard = F::from_canonical_u32(event.final_mem_access.shard);
-                        cols.initial_clk =
-                            F::from_canonical_u32(event.initial_mem_access.timestamp);
-                        cols.final_clk = F::from_canonical_u32(event.final_mem_access.timestamp);
+                        cols.addr_bits.populate(event.addr);
+                        cols.initial_shard = F::from_canonical_u32(initial_shard);
+                        cols.final_shard = F::from_canonical_u32(final_shard);
+                        cols.initial_clk = F::from_canonical_u32(initial_clk);
+                        cols.final_clk = F::from_canonical_u32(final_clk);
+
+                        // Populate the limbs backing the defense-in-depth range checks.
+                        for (value, limb_16, limb_8) in [
+                            (
+                                initial_clk,
+                                &mut cols.initial_clk_16bit_limb,
+                                &mut cols.initial_clk_8bit_limb,
+                            ),
+                            (
+                                final_clk,
+                                &mut cols.final_clk_16bit_limb,
+                                &mut cols.final_clk_8bit_limb,
+                            ),
+                        ] {
+                            *limb_16 = F::from_canonical_u32(value & 0xffff);
+                            *limb_8 = F::from_canonical_u32((value >> 16) & 0xff);
+                        }
+                        cols.initial_shard_16bit_limb = F::from_canonical_u32(initial_shard);
+                        cols.final_shard_16bit_limb = F::from_canonical_u32(final_shard);
+
                         cols.initial_value = event.initial_mem_access.value.into();
                         cols.final_value = event.final_mem_access.value.into();
                         cols.is_real = F::ONE;
@@ -212,6 +280,41 @@ where
 
         for local in local.memory_local_entries.iter() {
             builder.assert_bool(local.is_real);
+
+            // Defense-in-depth: byte range check all eight value limbs via the byte lookup table.
+            builder.slice_range_check_u8(&local.initial_value.0, local.is_real);
+            builder.slice_range_check_u8(&local.final_value.0, local.is_real);
+
+            // Defense-in-depth: range check `addr` to be a valid KoalaBear field element
+            // (strictly less than the modulus `0x7F000001`).
+            KoalaBearBitDecomposition::<AB::F>::range_check(
+                builder,
+                local.addr,
+                local.addr_bits,
+                local.is_real.into(),
+            );
+
+            // Defense-in-depth: range check shards to 16 bits and clocks to 24 bits.
+            builder
+                .when(local.is_real)
+                .assert_eq(local.initial_shard, local.initial_shard_16bit_limb);
+            builder.when(local.is_real).assert_eq(local.final_shard, local.final_shard_16bit_limb);
+            builder.slice_range_check_u16(
+                &[local.initial_shard_16bit_limb, local.final_shard_16bit_limb],
+                local.is_real,
+            );
+            builder.eval_range_check_24bits(
+                local.initial_clk,
+                local.initial_clk_16bit_limb,
+                local.initial_clk_8bit_limb,
+                local.is_real,
+            );
+            builder.eval_range_check_24bits(
+                local.final_clk,
+                local.final_clk_16bit_limb,
+                local.final_clk_8bit_limb,
+                local.is_real,
+            );
 
             let mut values =
                 vec![local.initial_shard.into(), local.initial_clk.into(), local.addr.into()];
@@ -308,6 +411,49 @@ mod tests {
         for mem_event in shard.global_memory_finalize_events {
             println!("{mem_event:?}");
         }
+    }
+
+    #[test]
+    fn test_memory_local_defense_in_depth_lookups() {
+        // Uses the inline `simple_program` (no guest ELF) so it can run without the zkVM
+        // toolchain. Verifies that the byte-lookup events recorded in `generate_dependencies`
+        // for the defense-in-depth range checks exactly balance the AIR `send_byte` calls, and
+        // that the memory lookups still balance.
+        setup_logger();
+        let program = simple_program();
+        let program_clone = program.clone();
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+
+        // Sanity check: the program must exercise the memory-local chip for the byte-lookup
+        // balance assertion below to be meaningful.
+        let n_local_events: usize =
+            runtime.records.iter().map(|r| r.get_local_mem_events().count()).sum();
+        assert!(n_local_events > 0, "expected the test program to produce local memory events");
+
+        let machine: StarkMachine<KoalaBearPoseidon2, MipsAir<KoalaBear>> =
+            MipsAir::machine(KoalaBearPoseidon2::new());
+        let (pkey, _) = machine.setup(&program_clone);
+        let opts = ZKMCoreOpts::default();
+        machine.generate_dependencies(&mut runtime.records, &opts, None).unwrap();
+
+        let shards = runtime.records;
+        for shard in shards.clone() {
+            debug_lookups_with_all_chips::<KoalaBearPoseidon2, MipsAir<KoalaBear>>(
+                &machine,
+                &pkey,
+                &[shard],
+                vec![LookupKind::Memory],
+                LookupScope::Local,
+            );
+        }
+        debug_lookups_with_all_chips::<KoalaBearPoseidon2, MipsAir<KoalaBear>>(
+            &machine,
+            &pkey,
+            &shards,
+            vec![LookupKind::Byte],
+            LookupScope::Global,
+        );
     }
 
     #[test]
