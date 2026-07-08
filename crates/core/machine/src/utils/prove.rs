@@ -29,12 +29,21 @@ use zkm_core_executor::{
     ZKMContext,
 };
 
-use slop_alloc::CpuBackend;
 use zkm_hypercube::{
     air::PublicValues,
-    prover::{DefaultTraceGenerator, ProverSemaphore, TraceData, TraceGenerator},
+    config::default_fri_config,
+    prover::{AirProver, PcsProof, ProverSemaphore, ZkmShardProver},
     record::MachineRecord,
+    ShardProof, ShardVerifier, ZkmSC,
 };
+
+/// The log2 of the number of rows each stacked-PCS column is grouped into. Matches the value
+/// used by `zkm-hypercube`'s own basic construction tests.
+const ZKM_LOG_STACKING_HEIGHT: u32 = 4;
+
+/// The concrete shard-proof type produced by Ziren's own (`KoalaBear`, jagged/basefold) shard
+/// prover.
+pub type ZkmShardProof = ShardProof<zkm_hypercube::config::ZkmGlobalContext, PcsProof<zkm_hypercube::config::ZkmGlobalContext, ZkmSC<MipsAir<KoalaBear>>>>;
 
 // Com/MachineAir/MachineProver/OpeningProof/PcsProverData/StarkVerifyingKey are used by the
 // commented-out run_test*/run_test_machine* functions below.
@@ -134,16 +143,14 @@ pub fn prove_with_context(
     opts: ZKMCoreOpts,
     context: ZKMContext,
     shape_config: Option<&CoreShapeConfig<KoalaBear>>,
-) -> Result<(Vec<TraceData<KoalaBear, MipsAir<KoalaBear>, CpuBackend>>, Vec<u8>, u64), ZKMCoreProverError>
-{
-    // Build the zkm-hypercube machine and trace generator.
-    //
-    // TODO(zkm-hypercube): no ShardProver equivalent exists yet, so this only produces
-    // per-shard TraceData (preprocessed + main traces) rather than a real proof. The next
-    // step is committing these traces via slop-jagged and running zerocheck/LogUp GKR.
+) -> Result<(Vec<ZkmShardProof>, Vec<u8>, u64), ZKMCoreProverError> {
+    // Build the zkm-hypercube machine, shard verifier, and CPU shard prover (jagged PCS +
+    // zerocheck + LogUp GKR), following the same setup/prove_shard split as SP1's
+    // prove_core/AirProver::setup_and_prove_shard.
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
-    let trace_generator = Arc::new(DefaultTraceGenerator::new(machine.clone()));
     let max_log_row_count = opts.shard_size.ilog2() as usize;
+    let shard_verifier = ShardVerifier::from_basefold_parameters(default_fri_config(), ZKM_LOG_STACKING_HEIGHT, max_log_row_count, machine);
+    let shard_prover = Arc::new(ZkmShardProver::<MipsAir<KoalaBear>>::new(shard_verifier));
     let prover_permits = ProverSemaphore::new(opts.trace_gen_workers.max(1));
 
     // Setup the runtime.
@@ -157,6 +164,12 @@ pub fn prove_with_context(
         let (proof, vk) = proof.clone();
         runtime.write_proof(proof, vk);
     }
+
+    // Setup the proving key once, up front; it's shared (via Arc) by every shard proved below.
+    let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    let program_arc = Arc::new(program.clone());
+    let (preprocessed, _vk) = setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
+    let pk = preprocessed.pk;
 
     #[cfg(feature = "debug")]
     let (all_records_tx, all_records_rx) = std::sync::mpsc::channel::<Vec<ExecutionRecord>>();
@@ -213,10 +226,8 @@ pub fn prove_with_context(
         let p2_record_gen_sync = Arc::new(TurnBasedSync::new());
         let p2_trace_gen_sync = Arc::new(TurnBasedSync::new());
         let checkpoints_rx = Arc::new(Mutex::new(checkpoints_rx));
-        let (p2_records_and_traces_tx, p2_records_and_traces_rx) = sync_channel::<(
-            Vec<ExecutionRecord>,
-            Vec<TraceData<KoalaBear, MipsAir<KoalaBear>, CpuBackend>>,
-        )>(opts.records_and_traces_channel_capacity);
+        let (p2_records_and_traces_tx, p2_records_and_traces_rx) =
+            sync_channel::<(Vec<ExecutionRecord>, Vec<ZkmShardProof>)>(opts.records_and_traces_channel_capacity);
         let p2_records_and_traces_tx = Arc::new(Mutex::new(p2_records_and_traces_tx));
 
         let report_aggregate = Arc::new(Mutex::new(ExecutionReport::default()));
@@ -233,9 +244,9 @@ pub fn prove_with_context(
             let state = Arc::clone(&state);
             let deferred = Arc::clone(&deferred);
             let program = program.clone();
-            let program_arc = Arc::new(program.clone());
-            let trace_generator = Arc::clone(&trace_generator);
-            let machine = machine.clone();
+            let shard_prover = Arc::clone(&shard_prover);
+            let machine = shard_prover.machine().clone();
+            let pk = Arc::clone(&pk);
             let prover_permits = prover_permits.clone();
             // A small single-worker tokio runtime, used only to block on the (rayon +
             // tokio-semaphore backed) async trace generator from this raw std thread.
@@ -429,38 +440,39 @@ pub fn prove_with_context(
                             #[cfg(feature = "debug")]
                             all_records_tx.send(records.clone()).unwrap();
 
-                            // Generate the (preprocessed + main) traces for each record via the
-                            // zkm-hypercube trace generator, bridging its async API onto this
-                            // raw thread with a small single-worker tokio runtime.
-                            let trace_data: Vec<
-                                TraceData<KoalaBear, MipsAir<KoalaBear>, CpuBackend>,
-                            > = tracing::debug_span!("generate main traces", index).in_scope(|| {
-                                records
-                                    .iter()
-                                    .map(|record| {
-                                        async_rt.block_on(trace_generator.generate_traces(
-                                            program_arc.clone(),
-                                            record.clone(),
-                                            max_log_row_count,
-                                            prover_permits.clone(),
-                                        ))
-                                    })
-                                    .collect()
-                            });
+                            // Prove each record's shard directly (traces -> jagged PCS commit ->
+                            // LogUp GKR -> zerocheck -> evaluation proof), bridging the shard
+                            // prover's async API onto this raw thread with a small
+                            // single-worker tokio runtime.
+                            let shard_proofs: Vec<ZkmShardProof> =
+                                tracing::debug_span!("prove shards", index).in_scope(|| {
+                                    records
+                                        .iter()
+                                        .map(|record| {
+                                            let (proof, _permit) =
+                                                async_rt.block_on(shard_prover.prove_shard_with_pk(
+                                                    Arc::clone(&pk),
+                                                    record.clone(),
+                                                    prover_permits.clone(),
+                                                ));
+                                            proof
+                                        })
+                                        .collect()
+                                });
 
                             trace_gen_sync.wait_for_turn(index);
 
-                            // Send the records to the phase 2 prover.
+                            // Send the records to the phase 2 collector.
                             let chunked_records = chunk_vec(records, opts.shard_batch_size);
-                            let chunked_trace_data = chunk_vec(trace_data, opts.shard_batch_size);
+                            let chunked_shard_proofs = chunk_vec(shard_proofs, opts.shard_batch_size);
                             chunked_records
                                 .into_iter()
-                                .zip(chunked_trace_data.into_iter())
-                                .for_each(|(records, trace_data)| {
+                                .zip(chunked_shard_proofs.into_iter())
+                                .for_each(|(records, shard_proofs)| {
                                     records_and_traces_tx
                                         .lock()
                                         .unwrap()
-                                        .send((records, trace_data))
+                                        .send((records, shard_proofs))
                                         .unwrap();
                                 });
 
@@ -478,22 +490,22 @@ pub fn prove_with_context(
         #[cfg(feature = "debug")]
         drop(all_records_tx);
 
-        // Spawn the phase 2 prover thread.
+        // Spawn the phase 2 collector thread: shard proofs are already fully produced (traces,
+        // jagged PCS commit, LogUp GKR, zerocheck, evaluation proof) by the workers above, so
+        // this just gathers them in order.
         //
-        // TODO(zkm-hypercube): this used to commit+open each shard via the old FRI PCS and
-        // produce a real MachineProof. Until slop-jagged commit/zerocheck/LogUp GKR proving is
-        // wired in here, this stage is a pass-through that just collects the per-shard
-        // TraceData produced above.
+        // TODO(zkm-hypercube): no MachineProof/MachineVerifier equivalent exists yet, so this
+        // returns the flat Vec<ShardProof> rather than a wrapped, verifiable machine proof.
         let p2_prover_span = tracing::Span::current().clone();
         let p2_prover_handle = s.spawn(move || {
             let _span = p2_prover_span.enter();
-            let mut all_trace_data = Vec::new();
-            tracing::debug_span!("phase 2 prover").in_scope(|| {
-                for (_records, trace_data) in p2_records_and_traces_rx.into_iter() {
-                    all_trace_data.extend(trace_data);
+            let mut all_shard_proofs = Vec::new();
+            tracing::debug_span!("phase 2 collector").in_scope(|| {
+                for (_records, shard_proofs) in p2_records_and_traces_rx.into_iter() {
+                    all_shard_proofs.extend(shard_proofs);
                 }
             });
-            all_trace_data
+            all_shard_proofs
         });
 
         // Wait until the checkpoint generator handle has fully finished.
@@ -504,8 +516,8 @@ pub fn prove_with_context(
             handle.join().unwrap()?;
         }
 
-        // Wait until the phase 2 prover has finished.
-        let all_trace_data = p2_prover_handle.join().unwrap();
+        // Wait until the phase 2 collector has finished.
+        let all_shard_proofs = p2_prover_handle.join().unwrap();
 
         // Log some of the `ExecutionReport` information.
         let report_aggregate = report_aggregate.lock().unwrap();
@@ -547,10 +559,10 @@ pub fn prove_with_context(
             cycles,
             proving_time,
             (cycles as f64 / (proving_time * 1000.0) as f64),
-            all_trace_data.len(),
+            all_shard_proofs.len(),
         );
 
-        Ok((all_trace_data, public_values_stream, cycles))
+        Ok((all_shard_proofs, public_values_stream, cycles))
     })
 }
 
