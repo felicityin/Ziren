@@ -8,11 +8,13 @@ pub mod debug;
 pub mod folder;
 pub mod logup_gkr;
 pub mod lookup;
+pub mod machine;
 pub mod prover;
 pub mod record;
 pub mod septic_curve;
 pub mod septic_digest;
 pub mod septic_extension;
+pub mod shard_context;
 pub mod word;
 pub mod zerocheck;
 
@@ -21,6 +23,8 @@ pub use config::*;
 pub use debug::*;
 pub use folder::*;
 pub use logup_gkr::*;
+pub use machine::*;
+pub use shard_context::*;
 pub use zerocheck::*;
 
 #[cfg(test)]
@@ -252,5 +256,21 @@ mod tests {
         assert_eq!(chip.sends().len(), 1);
         assert_eq!(chip.receives().len(), 0);
         assert_eq!(chip.sends()[0].kind, crate::lookup::LookupKind::Byte);
+    }
+
+    #[test]
+    fn machine_smallest_cluster_finds_containing_cluster() {
+        use std::collections::BTreeSet;
+
+        let chip = crate::chip::Chip::new(AddAir);
+        let all_chips = vec![chip.clone()];
+        let shape = crate::machine::MachineShape::all(&all_chips);
+        let machine = crate::machine::Machine::new(all_chips, PROOF_MAX_NUM_PVS, shape);
+
+        assert_eq!(machine.chips().len(), 1);
+
+        let requested: BTreeSet<_> = std::iter::once(chip).collect();
+        let cluster = machine.smallest_cluster(&requested).expect("cluster should exist");
+        assert_eq!(cluster.len(), 1);
     }
 }

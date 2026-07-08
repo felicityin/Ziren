@@ -41,6 +41,8 @@ thousands = "0.2.0"
 tracing = { workspace = true }
 rayon = "1.10"
 num_cpus = "1.16"
+zkm-zkvm = { workspace = true, default-features = false }
+derive-where = "1.2"
 zkm-derive = { workspace = true }
 
 [dev-dependencies]
