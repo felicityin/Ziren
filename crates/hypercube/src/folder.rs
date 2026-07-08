@@ -605,6 +605,13 @@ where
     }
 }
 
+impl<F, EF, PubVar, Var, Expr> crate::air::OperationSummaryAirBuilder
+    for GenericVerifierPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
+where
+    Self: slop_air::AirBuilder,
+{
+}
+
 impl<F, EF, PubVar, Var, Expr> AirBuilderWithPublicValues for GenericVerifierPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
 where
     F: Field,

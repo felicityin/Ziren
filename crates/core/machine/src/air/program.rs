@@ -1,9 +1,9 @@
 use std::iter::once;
 
-use p3_air::AirBuilder;
-use zkm_stark::{
+use slop_air::AirBuilder;
+use zkm_hypercube::{
     air::{AirLookup, BaseAirBuilder, LookupScope},
-    LookupKind,
+    lookup::LookupKind,
 };
 
 use crate::cpu::columns::InstructionCols;

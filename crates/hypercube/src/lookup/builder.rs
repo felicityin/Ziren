@@ -100,6 +100,8 @@ impl<F: Field> AirBuilderWithPublicValues for InteractionBuilder<F> {
     }
 }
 
+impl<F: Field> crate::air::OperationSummaryAirBuilder for InteractionBuilder<F> {}
+
 fn symbolic_to_virtual_pair<F: Field>(expression: &SymbolicExpression<F>) -> VirtualPairCol<F> {
     if expression.degree_multiple() > 1 {
         panic!("degree multiple is too high");

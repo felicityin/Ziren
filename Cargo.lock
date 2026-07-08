@@ -8235,6 +8235,8 @@ dependencies = [
  "serde",
  "serde_json",
  "size",
+ "slop-air",
+ "slop-algebra",
  "snowbridge-amcl",
  "static_assertions",
  "strum",
@@ -8251,6 +8253,7 @@ dependencies = [
  "zkm-core-executor",
  "zkm-curves",
  "zkm-derive",
+ "zkm-hypercube",
  "zkm-instruction-test-defs",
  "zkm-primitives 1.2.7",
  "zkm-stark",
@@ -8350,6 +8353,7 @@ dependencies = [
  "thousands",
  "tracing",
  "zkm-derive",
+ "zkm-stark",
  "zkm-zkvm",
 ]
 

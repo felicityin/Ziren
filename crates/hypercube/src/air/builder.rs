@@ -150,6 +150,121 @@ pub trait ByteAirBuilder: BaseAirBuilder {
     }
 }
 
+/// Optional hooks for builders that want to replace exact operation AIR with a summary.
+///
+/// Builders should return `true` only when they have emitted a semantically sound replacement for
+/// the exact constraints. Returning `false` tells the caller to proceed with exact lowering.
+pub trait OperationSummaryAirBuilder: AirBuilder {
+    /// Returns whether `expr` is known to be the constant one in the current
+    /// extraction context.
+    fn is_known_one(&self, _expr: &Self::Expr) -> bool {
+        false
+    }
+
+    fn try_emit_is_zero_summary(
+        &mut self,
+        _input: Self::Expr,
+        _result: Self::Expr,
+        _is_real: Self::Expr,
+    ) -> bool {
+        false
+    }
+
+    fn try_emit_is_zero_word_summary(
+        &mut self,
+        _input: Word<Self::Expr>,
+        _is_lower_half_zero: Self::Expr,
+        _is_upper_half_zero: Self::Expr,
+        _result: Self::Expr,
+        _is_real: Self::Expr,
+    ) -> bool {
+        false
+    }
+
+    /// Optional hook for replacing the exact `KoalaBearWordRangeChecker` AIR
+    /// with an equivalent semantic summary.
+    fn try_emit_koala_bear_word_range_summary(
+        &mut self,
+        _input: Word<Self::Expr>,
+        _is_real: Self::Expr,
+    ) -> bool {
+        false
+    }
+
+    /// Optional hook for replacing the exact memory timestamp ordering AIR
+    /// with a compact checker-style summary.
+    #[allow(clippy::too_many_arguments)]
+    fn try_emit_memory_timestamp_summary(
+        &mut self,
+        _do_check: Self::Expr,
+        _shard: Self::Expr,
+        _clk: Self::Expr,
+        _prev_shard: Self::Expr,
+        _prev_clk: Self::Expr,
+        _compare_clk: Self::Expr,
+        _diff_16bit_limb: Self::Expr,
+        _diff_8bit_limb: Self::Expr,
+    ) -> bool {
+        false
+    }
+
+    /// Optional hook for replacing a large exact operation AIR with a semantic
+    /// module call that exposes only projected inputs/outputs.
+    fn try_emit_projected_summary<F>(
+        &mut self,
+        _module_name: &str,
+        _projection_info: &zkm_stark::air::PicusProjectionInfo,
+        _current_inputs: &[Self::Expr],
+        _current_outputs: &[Self::Expr],
+        _source_width: usize,
+        _build_exact: F,
+    ) -> bool
+    where
+        F: FnOnce(&mut Self, &[Self::Var]),
+    {
+        false
+    }
+
+    /// Variant of [`Self::try_emit_projected_summary`] that lets the caller
+    /// pin selected hidden witness columns to constants inside the outlined
+    /// module.
+    #[allow(clippy::too_many_arguments)]
+    fn try_emit_projected_summary_with_hidden_consts<F>(
+        &mut self,
+        _module_name: &str,
+        _projection_info: &zkm_stark::air::PicusProjectionInfo,
+        _current_inputs: &[Self::Expr],
+        _current_outputs: &[Self::Expr],
+        _source_width: usize,
+        _hidden_consts: &[(usize, u64)],
+        _build_exact: F,
+    ) -> bool
+    where
+        F: FnOnce(&mut Self, &[Self::Var]),
+    {
+        false
+    }
+
+    /// Optional hook for replacing an embedded exact sub-AIR with a semantic
+    /// module call whose boundary is still described by a projection.
+    #[allow(clippy::too_many_arguments)]
+    fn try_emit_hidden_subair_summary<F>(
+        &mut self,
+        _module_name: &str,
+        _projection_info: &zkm_stark::air::PicusProjectionInfo,
+        _current_inputs: &[Self::Expr],
+        _current_outputs: &[Self::Expr],
+        _source_width: usize,
+        _source_local_only: bool,
+        _build_exact: F,
+    ) -> bool
+    where
+        F: FnOnce(&mut Self),
+    {
+        false
+    }
+}
+
 /// A trait which contains methods related to ALU/instruction lookups in an AIR.
 pub trait InstructionAirBuilder: BaseAirBuilder {
     #[allow(clippy::too_many_arguments)]
@@ -459,7 +574,10 @@ pub trait MachineAirBuilder:
 }
 
 /// A trait which contains all helper methods for building Ziren machine AIRs.
-pub trait ZKMAirBuilder: MachineAirBuilder + ByteAirBuilder + InstructionAirBuilder {}
+pub trait ZKMAirBuilder:
+    MachineAirBuilder + ByteAirBuilder + InstructionAirBuilder + OperationSummaryAirBuilder
+{
+}
 
 impl<AB: AirBuilder + MessageBuilder<M>, M> MessageBuilder<M> for FilteredAirBuilder<'_, AB> {
     fn send(&mut self, message: M, scope: LookupScope) {
@@ -477,6 +595,7 @@ impl<AB: BaseAirBuilder> InstructionAirBuilder for AB {}
 impl<AB: BaseAirBuilder> ExtensionAirBuilder for AB {}
 impl<AB: BaseAirBuilder> SepticExtensionAirBuilder for AB {}
 impl<AB: BaseAirBuilder + AirBuilderWithPublicValues> MachineAirBuilder for AB {}
-impl<AB: BaseAirBuilder + AirBuilderWithPublicValues> ZKMAirBuilder for AB {}
+impl<AB: BaseAirBuilder + AirBuilderWithPublicValues + OperationSummaryAirBuilder> ZKMAirBuilder for AB {}
+impl<AB: EmptyMessageBuilder + AirBuilderWithPublicValues> OperationSummaryAirBuilder for AB {}
 
 impl<F: Field> EmptyMessageBuilder for SymbolicAirBuilder<F> {}

@@ -31,6 +31,9 @@ zkm-derive = { workspace = true }
 zkm-primitives = { workspace = true }
 zkm-core-executor = { workspace = true, default-features = true }
 zkm-curves = { workspace = true }
+zkm-hypercube = { workspace = true }
+slop-air = { workspace = true }
+slop-algebra = { workspace = true }
 
 rayon = "1.10.0"
 rayon-scan = "0.1.1"

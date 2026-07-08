@@ -1,11 +1,11 @@
 use std::iter::once;
 
-use p3_air::AirBuilder;
 use p3_field::FieldAlgebra;
+use slop_air::AirBuilder;
 use zkm_core_executor::ByteOpcode;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{AirLookup, BaseAirBuilder, ByteAirBuilder, LookupScope, OperationSummaryAirBuilder},
-    LookupKind,
+    lookup::LookupKind,
 };
 
 use crate::{
