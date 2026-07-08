@@ -43,6 +43,7 @@ rayon = "1.10"
 num_cpus = "1.16"
 zkm-zkvm = { workspace = true, default-features = false }
 derive-where = "1.2"
+thiserror = "1.0"
 zkm-derive = { workspace = true }
 
 [dev-dependencies]

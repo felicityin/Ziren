@@ -15,6 +15,7 @@ pub mod septic_curve;
 pub mod septic_digest;
 pub mod septic_extension;
 pub mod shard_context;
+pub mod verifier;
 pub mod word;
 pub mod zerocheck;
 
@@ -25,6 +26,7 @@ pub use folder::*;
 pub use logup_gkr::*;
 pub use machine::*;
 pub use shard_context::*;
+pub use verifier::*;
 pub use zerocheck::*;
 
 #[cfg(test)]
@@ -150,8 +152,6 @@ mod tests {
     struct AddRecord;
 
     impl crate::record::MachineRecord for AddRecord {
-        type Config = ();
-
         fn stats(&self) -> hashbrown::HashMap<String, usize> {
             hashbrown::HashMap::new()
         }
@@ -159,6 +159,12 @@ mod tests {
         fn append(&mut self, _other: &mut Self) {}
 
         fn public_values<F: AbstractField>(&self) -> Vec<F> {
+            Vec::new()
+        }
+
+        fn eval_public_values<AB: crate::air::ZKMAirBuilder>(_builder: &mut AB) {}
+
+        fn lookups_in_public_values() -> Vec<crate::lookup::LookupKind> {
             Vec::new()
         }
     }
@@ -272,5 +278,20 @@ mod tests {
         let requested: BTreeSet<_> = std::iter::once(chip).collect();
         let cluster = machine.smallest_cluster(&requested).expect("cluster should exist");
         assert_eq!(cluster.len(), 1);
+    }
+
+    #[test]
+    fn shard_verifier_constructs_from_basefold_parameters_and_matches_machine() {
+        let chip = crate::chip::Chip::new(AddAir);
+        let all_chips = vec![chip];
+        let shape = crate::machine::MachineShape::all(&all_chips);
+        let machine = crate::machine::Machine::new(all_chips, PROOF_MAX_NUM_PVS, shape);
+
+        let verifier = crate::verifier::ShardVerifier::from_basefold_parameters(default_fri_config(), 4, 20, machine);
+
+        assert_eq!(verifier.max_log_row_count(), 20);
+        assert_eq!(verifier.machine().chips().len(), 1);
+        // Constructing a challenger should not panic.
+        let _challenger = verifier.challenger();
     }
 }

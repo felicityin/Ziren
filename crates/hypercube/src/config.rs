@@ -16,6 +16,12 @@ pub type ZkmPcsVerifier = JaggedPcsVerifier<ZkmGlobalContext, ZkmStackedPcs>;
 
 pub const NUM_ZKM_COMMITMENTS: usize = 2;
 
+/// The number of bits to grind in sampling the GKR randomness.
+pub const GKR_GRINDING_BITS: usize = 12;
+
+/// The digest size (in field elements) for Ziren's Poseidon2/KoalaBear hash.
+pub const DIGEST_SIZE: usize = 8;
+
 #[must_use]
 pub fn default_fri_config() -> FriConfig<<ZkmGlobalContext as IopCtx>::F> {
     let num_queries = std::env::var("FRI_QUERIES").ok().and_then(|v| v.parse().ok()).unwrap_or(84);
