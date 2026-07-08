@@ -17,6 +17,7 @@ members = [
     "crates/cuda",
     "crates/curves",
     "crates/derive",
+    "crates/hypercube",
     "crates/picus",
     "crates/primitives",
     "crates/prover",
@@ -91,6 +92,39 @@ p3-uni-stark = { git = "https://github.com/ProjectZKM/Plonky3" }
 # p3-bn254-fr = { path = "../patch/Plonky3/bn254-fr" }
 # p3-uni-stark = { path = "../patch/Plonky3/uni-stark" }
 
+# Not [workspace] members: these already belong to ../sp1's own workspace.
+slop-air = { path = "../sp1/slop/crates/air" }
+slop-algebra = { path = "../sp1/slop/crates/algebra" }
+slop-alloc = { path = "../sp1/slop/crates/alloc" }
+slop-baby-bear = { path = "../sp1/slop/crates/baby-bear" }
+slop-basefold = { path = "../sp1/slop/crates/basefold" }
+slop-basefold-prover = { path = "../sp1/slop/crates/basefold-prover" }
+slop-bn254 = { path = "../sp1/slop/crates/bn254" }
+slop-challenger = { path = "../sp1/slop/crates/challenger" }
+slop-commit = { path = "../sp1/slop/crates/commit" }
+slop-dft = { path = "../sp1/slop/crates/dft" }
+slop-fri = { path = "../sp1/slop/crates/fri" }
+slop-futures = { path = "../sp1/slop/crates/futures" }
+slop-jagged = { path = "../sp1/slop/crates/jagged" }
+slop-keccak-air = { path = "../sp1/slop/crates/keccak-air" }
+slop-koala-bear = { path = "../sp1/slop/crates/koala-bear" }
+slop-matrix = { path = "../sp1/slop/crates/matrix" }
+slop-maybe-rayon = { path = "../sp1/slop/crates/maybe-rayon" }
+slop-merkle-tree = { path = "../sp1/slop/crates/merkle-tree" }
+slop-multilinear = { path = "../sp1/slop/crates/multilinear" }
+slop-pgspcs = { path = "../sp1/slop/crates/pgspcs" }
+slop-primitives = { path = "../sp1/slop/crates/primitives" }
+slop-poseidon2 = { path = "../sp1/slop/crates/poseidon2" }
+slop-spartan = { path = "../sp1/slop/crates/spartan" }
+slop-stacked = { path = "../sp1/slop/crates/stacked" }
+slop-sumcheck = { path = "../sp1/slop/crates/sumcheck" }
+slop-symmetric = { path = "../sp1/slop/crates/symmetric" }
+slop-tensor = { path = "../sp1/slop/crates/tensor" }
+slop-uni-stark = { path = "../sp1/slop/crates/uni-stark" }
+slop-utils = { path = "../sp1/slop/crates/utils" }
+slop-veil = { path = "../sp1/slop/crates/veil" }
+slop-whir = { path = "../sp1/slop/crates/whir" }
+
 itertools = "0.13.0"
 tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.17" }
@@ -111,6 +145,7 @@ zkm-core-executor = { path = "crates/core/executor", default-features = false }
 zkm-instruction-test-defs = { path = "crates/core/instruction-test-defs" }
 zkm-core-machine = { path = "crates/core/machine", default-features = false }
 zkm-derive = { path = "crates/derive" }
+zkm-hypercube = { path = "crates/hypercube" }
 zkm-primitives = { path = "crates/primitives" }
 zkm-stark = { path = "crates/stark" }
 zkm-prover = { path = "crates/prover" }
