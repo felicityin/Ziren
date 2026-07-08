@@ -4408,6 +4408,9 @@ name = "p3-maybe-rayon"
 version = "0.4.3-succinct"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0641952b42da45e1dfa2d4a2a3163e330f944ad9740942f35026c0a71a605f1"
+dependencies = [
+ "rayon",
+]
 
 [[package]]
 name = "p3-mds"
@@ -6324,6 +6327,13 @@ name = "slop-matrix"
 version = "6.3.1"
 dependencies = [
  "p3-matrix 0.4.3-succinct",
+]
+
+[[package]]
+name = "slop-maybe-rayon"
+version = "6.3.1"
+dependencies = [
+ "p3-maybe-rayon 0.4.3-succinct",
 ]
 
 [[package]]
@@ -8523,7 +8533,11 @@ name = "zkm-hypercube"
 version = "1.2.7"
 dependencies = [
  "arrayref",
+ "hashbrown 0.14.5",
  "itertools 0.13.0",
+ "num-bigint 0.4.6",
+ "num-traits",
+ "rayon-scan",
  "serde",
  "slop-air",
  "slop-algebra",
@@ -8535,6 +8549,7 @@ dependencies = [
  "slop-jagged",
  "slop-koala-bear",
  "slop-matrix",
+ "slop-maybe-rayon",
  "slop-merkle-tree",
  "slop-multilinear",
  "slop-poseidon2",

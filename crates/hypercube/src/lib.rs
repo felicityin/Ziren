@@ -1,11 +1,19 @@
 pub mod air;
 pub mod config;
+pub mod debug;
 pub mod folder;
 pub mod lookup;
+pub mod record;
+pub mod septic_curve;
+pub mod septic_digest;
+pub mod septic_extension;
 pub mod word;
+pub mod zerocheck;
 
 pub use config::*;
+pub use debug::*;
 pub use folder::*;
+pub use zerocheck::*;
 
 #[cfg(test)]
 mod tests {
@@ -23,6 +31,7 @@ mod tests {
         let _verifier = zkm_pcs_verifier(default_fri_config(), 4, 20);
     }
 
+    #[derive(Debug)]
     struct AddAir;
 
     impl<F> BaseAir<F> for AddAir {
@@ -123,5 +132,63 @@ mod tests {
 
         assert_eq!(folder.sent.len(), 1);
         assert_eq!(folder.sent[0].kind, crate::lookup::LookupKind::Instruction);
+    }
+
+    #[derive(Debug, Default, Clone)]
+    struct AddRecord;
+
+    impl crate::record::MachineRecord for AddRecord {
+        type Config = ();
+
+        fn stats(&self) -> hashbrown::HashMap<String, usize> {
+            hashbrown::HashMap::new()
+        }
+
+        fn append(&mut self, _other: &mut Self) {}
+
+        fn public_values<F: AbstractField>(&self) -> Vec<F> {
+            Vec::new()
+        }
+    }
+
+    struct AddProgram;
+
+    impl crate::air::MachineProgram<KoalaBear> for AddProgram {
+        fn pc_start(&self) -> KoalaBear {
+            KoalaBear::zero()
+        }
+
+        fn initial_global_cumulative_sum(&self) -> crate::septic_digest::SepticDigest<KoalaBear> {
+            crate::septic_digest::SepticDigest::zero()
+        }
+    }
+
+    impl crate::air::MachineAir<KoalaBear> for AddAir {
+        type Record = AddRecord;
+        type Program = AddProgram;
+        type Error = std::io::Error;
+
+        fn name(&self) -> String {
+            "Add".to_string()
+        }
+
+        fn generate_trace(
+            &self,
+            _input: &Self::Record,
+            _output: &mut Self::Record,
+        ) -> slop_matrix::dense::RowMajorMatrix<KoalaBear> {
+            slop_matrix::dense::RowMajorMatrix::new(vec![KoalaBear::zero(); 3], 3)
+        }
+
+        fn included(&self, _shard: &Self::Record) -> bool {
+            true
+        }
+    }
+
+    fn assert_zerocheck_air<A: crate::ZerocheckAir<KoalaBear, crate::config::ZkmExtensionField>>() {}
+
+    #[test]
+    fn add_air_satisfies_zerocheck_air_bound() {
+        assert_zerocheck_air::<AddAir>();
     }
 }

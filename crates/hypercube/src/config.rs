@@ -6,6 +6,10 @@ use slop_stacked::StackedPcsVerifier;
 
 pub type ZkmGlobalContext = KoalaBearDegree4Duplex;
 
+pub type ZkmField = <ZkmGlobalContext as IopCtx>::F;
+
+pub type ZkmExtensionField = <ZkmGlobalContext as IopCtx>::EF;
+
 pub type ZkmStackedPcs = StackedPcsVerifier<ZkmGlobalContext>;
 
 pub type ZkmPcsVerifier = JaggedPcsVerifier<ZkmGlobalContext, ZkmStackedPcs>;

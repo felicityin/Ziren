@@ -10,6 +10,7 @@ use strum_macros::{Display, EnumIter};
 use crate::{
     air::{lookup::AirLookup, BinomialExtension},
     lookup::LookupKind,
+    septic_extension::SepticExtension,
     word::Word,
 };
 
@@ -442,8 +443,20 @@ pub trait ExtensionAirBuilder: BaseAirBuilder {
     }
 }
 
+/// A builder that can operate on septic extension elements.
+pub trait SepticExtensionAirBuilder: BaseAirBuilder {
+    fn assert_septic_ext_eq<I: Into<Self::Expr>>(&mut self, left: SepticExtension<I>, right: SepticExtension<I>) {
+        for (left, right) in left.0.into_iter().zip(right.0) {
+            self.assert_eq(left, right);
+        }
+    }
+}
+
 /// A trait that contains the common helper methods for building Ziren machine AIRs.
-pub trait MachineAirBuilder: BaseAirBuilder + ExtensionAirBuilder + AirBuilderWithPublicValues {}
+pub trait MachineAirBuilder:
+    BaseAirBuilder + ExtensionAirBuilder + SepticExtensionAirBuilder + AirBuilderWithPublicValues
+{
+}
 
 /// A trait which contains all helper methods for building Ziren machine AIRs.
 pub trait ZKMAirBuilder: MachineAirBuilder + ByteAirBuilder + InstructionAirBuilder {}
@@ -462,6 +475,7 @@ impl<AB: AirBuilder + MessageBuilder<AirLookup<AB::Expr>>> BaseAirBuilder for AB
 impl<AB: BaseAirBuilder> ByteAirBuilder for AB {}
 impl<AB: BaseAirBuilder> InstructionAirBuilder for AB {}
 impl<AB: BaseAirBuilder> ExtensionAirBuilder for AB {}
+impl<AB: BaseAirBuilder> SepticExtensionAirBuilder for AB {}
 impl<AB: BaseAirBuilder + AirBuilderWithPublicValues> MachineAirBuilder for AB {}
 impl<AB: BaseAirBuilder + AirBuilderWithPublicValues> ZKMAirBuilder for AB {}
 
