@@ -8543,6 +8543,7 @@ dependencies = [
  "itertools 0.13.0",
  "num-bigint 0.4.6",
  "num-traits",
+ "num_cpus",
  "rand 0.8.5",
  "rayon",
  "rayon-scan",

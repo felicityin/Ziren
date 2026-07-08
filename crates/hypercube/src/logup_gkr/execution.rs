@@ -10,8 +10,8 @@ use crate::{lookup::Lookup, prover::Traces};
 
 use super::{LogUpGkrCpuLayer, LogUpGkrOutput, LogupGkrCpuTraceGenerator};
 
-pub(crate) fn generate_interaction_vals<F: Field, EF: ExtensionField<F>>(
-    interaction: &Lookup<F>,
+pub(crate) fn generate_lookup_vals<F: Field, EF: ExtensionField<F>>(
+    lookup: &Lookup<F>,
     preprocessed_row: &[F],
     main_row: &[F],
     is_send: bool,
@@ -20,12 +20,12 @@ pub(crate) fn generate_interaction_vals<F: Field, EF: ExtensionField<F>>(
 ) -> (F, EF) {
     let mut denominator = alpha;
     let mut betas = betas.iter();
-    denominator += *betas.next().unwrap() * EF::from_canonical_usize(interaction.argument_index());
-    for (columns, beta) in interaction.values.iter().zip(betas) {
+    denominator += *betas.next().unwrap() * EF::from_canonical_usize(lookup.argument_index());
+    for (columns, beta) in lookup.values.iter().zip(betas) {
         let apply = columns.apply::<F, F>(preprocessed_row, main_row);
         denominator += *beta * apply;
     }
-    let mut mult = interaction.multiplicity.apply::<F, F>(preprocessed_row, main_row);
+    let mut mult = lookup.multiplicity.apply::<F, F>(preprocessed_row, main_row);
 
     if !is_send {
         mult = -mult;
@@ -149,7 +149,7 @@ impl<F: Field, EF: ExtensionField<F>, A> LogupGkrCpuTraceGenerator<F, EF, A> {
                                 interactions.iter().zip(numer_evals.iter_mut()).zip(denom_evals.iter_mut()).for_each(
                                     |(((interaction, is_send), numer_eval), denom_eval)| {
                                         let (numer, denom) =
-                                            generate_interaction_vals(interaction, prep_row, main_row, *is_send, alpha, &betas);
+                                            generate_lookup_vals(interaction, prep_row, main_row, *is_send, alpha, &betas);
                                         *numer_eval = numer;
                                         *denom_eval = denom;
                                     },
@@ -165,7 +165,7 @@ impl<F: Field, EF: ExtensionField<F>, A> LogupGkrCpuTraceGenerator<F, EF, A> {
                                 interactions.iter().zip(numer_evals.iter_mut()).zip(denom_evals.iter_mut()).for_each(
                                     |(((interaction, is_send), numer_eval), denom_eval)| {
                                         let (numer, denom) =
-                                            generate_interaction_vals(interaction, &[], main_row, *is_send, alpha, &betas);
+                                            generate_lookup_vals(interaction, &[], main_row, *is_send, alpha, &betas);
                                         *numer_eval = numer;
                                         *denom_eval = denom;
                                     },
