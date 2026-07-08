@@ -6,7 +6,9 @@ pub mod chip;
 pub mod config;
 pub mod debug;
 pub mod folder;
+pub mod logup_gkr;
 pub mod lookup;
+pub mod prover;
 pub mod record;
 pub mod septic_curve;
 pub mod septic_digest;
@@ -18,6 +20,7 @@ pub use chip::*;
 pub use config::*;
 pub use debug::*;
 pub use folder::*;
+pub use logup_gkr::*;
 pub use zerocheck::*;
 
 #[cfg(test)]

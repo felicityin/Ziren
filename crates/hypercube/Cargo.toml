@@ -39,6 +39,8 @@ slop-maybe-rayon = { workspace = true }
 hashbrown = { version = "0.14.5", features = ["serde", "inline-more"] }
 thousands = "0.2.0"
 tracing = { workspace = true }
+rayon = "1.10"
 zkm-derive = { workspace = true }
 
 [dev-dependencies]
+rand = { workspace = true }
