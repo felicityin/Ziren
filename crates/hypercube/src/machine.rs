@@ -82,20 +82,24 @@ where
     }
 
     /// Generates the dependencies of the given records.
-    #[allow(clippy::needless_for_each)]
-    pub fn generate_dependencies<'a>(&self, records: impl Iterator<Item = &'a mut A::Record>, chips_filter: Option<&[String]>) {
+    pub fn generate_dependencies<'a>(
+        &self,
+        records: impl Iterator<Item = &'a mut A::Record>,
+        chips_filter: Option<&[String]>,
+    ) -> Result<(), <A as MachineAir<F>>::Error> {
         let chips = self
             .chips
             .iter()
             .filter(|chip| if let Some(chips_filter) = chips_filter { chips_filter.contains(&chip.name()) } else { true })
             .collect::<Vec<_>>();
 
-        records.for_each(|record| {
-            chips.iter().for_each(|chip| {
+        for record in records {
+            for chip in chips.iter() {
                 let mut output = A::Record::default();
-                chip.generate_dependencies(record, &mut output);
+                chip.generate_dependencies(record, &mut output)?;
                 record.append(&mut output);
-            });
-        });
+            }
+        }
+        Ok(())
     }
 }

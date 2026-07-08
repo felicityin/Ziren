@@ -6,6 +6,8 @@ use slop_matrix::dense::RowMajorMatrix;
 
 use crate::{record::MachineRecord, septic_digest::SepticDigest};
 
+use super::LookupScope;
+
 /// An AIR that is part of a multi table AIR arithmetization.
 pub trait MachineAir<F: Field>: BaseAir<F> + 'static + Send + Sync {
     /// The execution record containing events for producing the air trace.
@@ -20,7 +22,7 @@ pub trait MachineAir<F: Field>: BaseAir<F> + 'static + Send + Sync {
     /// A unique identifier for this AIR as part of a machine.
     fn name(&self) -> String;
 
-    /// The number of rows in the trace
+    /// The number of rows in the trace.
     fn num_rows(&self, _input: &Self::Record) -> Option<usize> {
         None
     }
@@ -30,11 +32,12 @@ pub trait MachineAir<F: Field>: BaseAir<F> + 'static + Send + Sync {
     /// - `input` is the execution record containing the events to be written to the trace.
     /// - `output` is the execution record containing events that the `MachineAir` can add to the
     ///   record such as byte lookup requests.
-    fn generate_trace(&self, input: &Self::Record, output: &mut Self::Record) -> RowMajorMatrix<F>;
+    fn generate_trace(&self, input: &Self::Record, output: &mut Self::Record) -> Result<RowMajorMatrix<F>, Self::Error>;
 
     /// Generate the dependencies for a given execution record.
-    fn generate_dependencies(&self, input: &Self::Record, output: &mut Self::Record) {
-        self.generate_trace(input, output);
+    fn generate_dependencies(&self, input: &Self::Record, output: &mut Self::Record) -> Result<(), Self::Error> {
+        self.generate_trace(input, output)?;
+        Ok(())
     }
 
     /// Whether this execution record contains events for this air.
@@ -45,9 +48,29 @@ pub trait MachineAir<F: Field>: BaseAir<F> + 'static + Send + Sync {
         0
     }
 
+    /// The number of rows in the preprocessed trace.
+    fn preprocessed_num_rows(&self, _program: &Self::Program, _instrs_len: usize) -> Option<usize> {
+        None
+    }
+
     /// Generate the preprocessed trace given a specific program.
     fn generate_preprocessed_trace(&self, _program: &Self::Program) -> Option<RowMajorMatrix<F>> {
         None
+    }
+
+    /// Specifies whether its trace should be part of either the global or local commit.
+    fn commit_scope(&self) -> LookupScope {
+        LookupScope::Local
+    }
+
+    /// Specifies whether the air only uses the local row, and not the next row.
+    fn local_only(&self) -> bool {
+        false
+    }
+
+    /// Specifies whether a local-only AIR still depends on absolute row position.
+    fn local_only_row_sensitive(&self) -> bool {
+        false
     }
 }
 

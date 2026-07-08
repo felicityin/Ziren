@@ -34,7 +34,7 @@ mod tests {
     use slop_air::{Air, BaseAir};
     use slop_algebra::AbstractField;
     use slop_koala_bear::KoalaBear;
-    use slop_matrix::{dense::RowMajorMatrixView, Matrix};
+    use slop_matrix::{dense::{RowMajorMatrix, RowMajorMatrixView}, Matrix};
 
     use crate::air::{InstructionAirBuilder, LookupScope, MachineAir, ZKMAirBuilder};
 
@@ -194,8 +194,8 @@ mod tests {
             &self,
             _input: &Self::Record,
             _output: &mut Self::Record,
-        ) -> slop_matrix::dense::RowMajorMatrix<KoalaBear> {
-            slop_matrix::dense::RowMajorMatrix::new(vec![KoalaBear::zero(); 3], 3)
+        ) -> Result<RowMajorMatrix<KoalaBear>, Self::Error> {
+            Ok(RowMajorMatrix::new(vec![KoalaBear::zero(); 3], 3))
         }
 
         fn included(&self, _shard: &Self::Record) -> bool {
@@ -247,8 +247,8 @@ mod tests {
             &self,
             _input: &Self::Record,
             _output: &mut Self::Record,
-        ) -> slop_matrix::dense::RowMajorMatrix<KoalaBear> {
-            slop_matrix::dense::RowMajorMatrix::new(vec![KoalaBear::zero()], 1)
+        ) -> Result<RowMajorMatrix<KoalaBear>, Self::Error> {
+            Ok(RowMajorMatrix::new(vec![KoalaBear::zero()], 1))
         }
 
         fn included(&self, _shard: &Self::Record) -> bool {

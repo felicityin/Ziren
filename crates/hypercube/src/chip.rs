@@ -178,16 +178,32 @@ where
         <A as MachineAir<F>>::num_rows(&self.air, input)
     }
 
-    fn generate_trace(&self, input: &A::Record, output: &mut A::Record) -> RowMajorMatrix<F> {
+    fn generate_trace(&self, input: &A::Record, output: &mut A::Record) -> Result<RowMajorMatrix<F>, Self::Error> {
         self.air.generate_trace(input, output)
     }
 
-    fn generate_dependencies(&self, input: &A::Record, output: &mut A::Record) {
-        self.air.generate_dependencies(input, output);
+    fn generate_dependencies(&self, input: &A::Record, output: &mut A::Record) -> Result<(), Self::Error> {
+        self.air.generate_dependencies(input, output)
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
         self.air.included(shard)
+    }
+
+    fn commit_scope(&self) -> crate::air::LookupScope {
+        self.air.commit_scope()
+    }
+
+    fn local_only(&self) -> bool {
+        self.air.local_only()
+    }
+
+    fn local_only_row_sensitive(&self) -> bool {
+        self.air.local_only_row_sensitive()
+    }
+
+    fn preprocessed_num_rows(&self, program: &A::Program, instrs_len: usize) -> Option<usize> {
+        <A as MachineAir<F>>::preprocessed_num_rows(&self.air, program, instrs_len)
     }
 }
 
