@@ -34,6 +34,8 @@ zkm-curves = { workspace = true }
 zkm-hypercube = { workspace = true }
 slop-air = { workspace = true }
 slop-algebra = { workspace = true }
+slop-alloc = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 
 rayon = "1.10.0"
 rayon-scan = "0.1.1"

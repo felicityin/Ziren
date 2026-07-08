@@ -190,6 +190,17 @@ impl<F: PrimeField32> MipsAir<F> {
     //     StarkMachine::new(config, chips, ZKM_PROOF_NUM_PV_ELTS)
     // }
 
+    /// Builds the zkm-hypercube [`zkm_hypercube::Machine`] over all MIPS chips (a single cluster
+    /// containing every chip; no shard-shape splitting yet).
+    pub fn hypercube_machine() -> zkm_hypercube::Machine<F, Self>
+    where
+        F: slop_algebra::Field,
+    {
+        let chips = Self::chips();
+        let shape = zkm_hypercube::MachineShape::all(&chips);
+        zkm_hypercube::Machine::new(chips, zkm_hypercube::air::ZKM_PROOF_NUM_PV_ELTS, shape)
+    }
+
     /// Get all the different MIPS AIRs.
     pub fn chips() -> Vec<Chip<F, Self>> {
         let (chips, _) = Self::get_chips_and_costs();
