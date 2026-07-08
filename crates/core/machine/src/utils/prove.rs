@@ -144,9 +144,6 @@ pub fn prove_with_context(
     context: ZKMContext,
     shape_config: Option<&CoreShapeConfig<KoalaBear>>,
 ) -> Result<(Vec<ZkmShardProof>, Vec<u8>, u64), ZKMCoreProverError> {
-    // Build the zkm-hypercube machine, shard verifier, and CPU shard prover (jagged PCS +
-    // zerocheck + LogUp GKR), following the same setup/prove_shard split as SP1's
-    // prove_core/AirProver::setup_and_prove_shard.
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
     let max_log_row_count = opts.shard_size.ilog2() as usize;
     let shard_verifier = ShardVerifier::from_basefold_parameters(default_fri_config(), ZKM_LOG_STACKING_HEIGHT, max_log_row_count, machine);
@@ -165,7 +162,6 @@ pub fn prove_with_context(
         runtime.write_proof(proof, vk);
     }
 
-    // Setup the proving key once, up front; it's shared (via Arc) by every shard proved below.
     let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let program_arc = Arc::new(program.clone());
     let (preprocessed, _vk) = setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
@@ -248,8 +244,6 @@ pub fn prove_with_context(
             let machine = shard_prover.machine().clone();
             let pk = Arc::clone(&pk);
             let prover_permits = prover_permits.clone();
-            // A small single-worker tokio runtime, used only to block on the (rayon +
-            // tokio-semaphore backed) async trace generator from this raw std thread.
             let async_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
 
             let span = tracing::Span::current().clone();
@@ -440,10 +434,6 @@ pub fn prove_with_context(
                             #[cfg(feature = "debug")]
                             all_records_tx.send(records.clone()).unwrap();
 
-                            // Prove each record's shard directly (traces -> jagged PCS commit ->
-                            // LogUp GKR -> zerocheck -> evaluation proof), bridging the shard
-                            // prover's async API onto this raw thread with a small
-                            // single-worker tokio runtime.
                             let shard_proofs: Vec<ZkmShardProof> =
                                 tracing::debug_span!("prove shards", index).in_scope(|| {
                                     records
@@ -490,12 +480,7 @@ pub fn prove_with_context(
         #[cfg(feature = "debug")]
         drop(all_records_tx);
 
-        // Spawn the phase 2 collector thread: shard proofs are already fully produced (traces,
-        // jagged PCS commit, LogUp GKR, zerocheck, evaluation proof) by the workers above, so
-        // this just gathers them in order.
-        //
-        // TODO(zkm-hypercube): no MachineProof/MachineVerifier equivalent exists yet, so this
-        // returns the flat Vec<ShardProof> rather than a wrapped, verifiable machine proof.
+        // Spawn the phase 2 collector thread.
         let p2_prover_span = tracing::Span::current().clone();
         let p2_prover_handle = s.spawn(move || {
             let _span = p2_prover_span.enter();
