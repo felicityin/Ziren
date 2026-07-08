@@ -1,4 +1,8 @@
+/// The maximum number of public values a Ziren shard proof can have.
+pub const PROOF_MAX_NUM_PVS: usize = 231;
+
 pub mod air;
+pub mod chip;
 pub mod config;
 pub mod debug;
 pub mod folder;
@@ -10,6 +14,7 @@ pub mod septic_extension;
 pub mod word;
 pub mod zerocheck;
 
+pub use chip::*;
 pub use config::*;
 pub use debug::*;
 pub use folder::*;
@@ -22,7 +27,7 @@ mod tests {
     use slop_koala_bear::KoalaBear;
     use slop_matrix::{dense::RowMajorMatrixView, Matrix};
 
-    use crate::air::{InstructionAirBuilder, LookupScope, ZKMAirBuilder};
+    use crate::air::{InstructionAirBuilder, LookupScope, MachineAir, ZKMAirBuilder};
 
     use super::*;
 
@@ -190,5 +195,59 @@ mod tests {
     #[test]
     fn add_air_satisfies_zerocheck_air_bound() {
         assert_zerocheck_air::<AddAir>();
+    }
+
+    #[test]
+    fn chip_extracts_no_interactions_from_add_air() {
+        let chip = crate::chip::Chip::new(AddAir);
+        assert_eq!(chip.sends().len(), 0);
+        assert_eq!(chip.receives().len(), 0);
+        assert_eq!(chip.name(), "Add");
+    }
+
+    struct ByteSendingAir;
+
+    impl<F> BaseAir<F> for ByteSendingAir {
+        fn width(&self) -> usize {
+            1
+        }
+    }
+
+    impl<AB: ZKMAirBuilder> Air<AB> for ByteSendingAir {
+        fn eval(&self, builder: &mut AB) {
+            let main = builder.main();
+            let row = main.row_slice(0);
+            builder.send_byte(AB::Expr::one(), row[0], AB::Expr::zero(), AB::Expr::zero(), AB::Expr::one());
+        }
+    }
+
+    impl crate::air::MachineAir<KoalaBear> for ByteSendingAir {
+        type Record = AddRecord;
+        type Program = AddProgram;
+        type Error = std::io::Error;
+
+        fn name(&self) -> String {
+            "ByteSending".to_string()
+        }
+
+        fn generate_trace(
+            &self,
+            _input: &Self::Record,
+            _output: &mut Self::Record,
+        ) -> slop_matrix::dense::RowMajorMatrix<KoalaBear> {
+            slop_matrix::dense::RowMajorMatrix::new(vec![KoalaBear::zero()], 1)
+        }
+
+        fn included(&self, _shard: &Self::Record) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn chip_extracts_one_send_from_byte_sending_air() {
+        let chip = crate::chip::Chip::new(ByteSendingAir);
+        assert_eq!(chip.sends().len(), 1);
+        assert_eq!(chip.receives().len(), 0);
+        assert_eq!(chip.sends()[0].kind, crate::lookup::LookupKind::Byte);
     }
 }

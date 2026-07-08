@@ -37,6 +37,8 @@ num-traits = "0.2.19"
 rayon-scan = "0.1.1"
 slop-maybe-rayon = { workspace = true }
 hashbrown = { version = "0.14.5", features = ["serde", "inline-more"] }
+thousands = "0.2.0"
+tracing = { workspace = true }
 zkm-derive = { workspace = true }
 
 [dev-dependencies]

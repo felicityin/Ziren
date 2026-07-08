@@ -2,6 +2,13 @@ use core::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
+mod builder;
+#[allow(clippy::module_inception)]
+mod lookup;
+
+pub use builder::*;
+pub use lookup::*;
+
 /// The type of a lookup argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum LookupKind {
