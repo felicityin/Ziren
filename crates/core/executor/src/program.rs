@@ -19,7 +19,7 @@ use zkm_hypercube::lookup::LookupKind;
 use zkm_hypercube::septic_curve::{SepticCurve, SepticCurveComplete};
 use zkm_hypercube::septic_digest::SepticDigest;
 use zkm_hypercube::septic_extension::SepticExtension;
-use zkm_stark::shape::Shape;
+use zkm_hypercube::shape::Shape;
 
 use crate::{Instruction, MipsAirId, Register};
 

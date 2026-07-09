@@ -8,7 +8,8 @@ use zkm_hypercube::{
     record::MachineRecord,
     septic_digest::SepticDigest,
 };
-use zkm_stark::{shape::Shape, SplitOpts};
+use zkm_hypercube::shape::Shape;
+use zkm_stark::SplitOpts;
 
 use serde::{Deserialize, Serialize};
 use std::{borrow::Borrow, iter::once, mem::take, str::FromStr, sync::Arc};

@@ -14,6 +14,7 @@ pub mod record;
 pub mod septic_curve;
 pub mod septic_digest;
 pub mod septic_extension;
+pub mod shape;
 pub mod shard_context;
 pub mod verifier;
 pub mod word;

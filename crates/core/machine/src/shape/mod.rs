@@ -10,8 +10,8 @@ use p3_util::log2_ceil_usize;
 use thiserror::Error;
 
 use zkm_core_executor::{ExecutionRecord, MipsAirId, Program};
+use zkm_hypercube::shape::{OrderedShape, Shape, ShapeCluster};
 use zkm_hypercube::{air::MachineAir, record::MachineRecord};
-use zkm_stark::shape::{OrderedShape, Shape, ShapeCluster};
 
 use super::mips::mips_chips::{ByteChip, ProgramChip, SyscallChip};
 use crate::{
