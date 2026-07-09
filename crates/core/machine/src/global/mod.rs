@@ -44,7 +44,7 @@ const GLOBAL_COL_MAP: GlobalCols<usize> = make_col_map();
 
 pub const GLOBAL_INITIAL_DIGEST_POS: usize = GLOBAL_COL_MAP.accumulation.initial_digest[0].0[0];
 
-pub const GLOBAL_INITIAL_DIGEST_POS_COPY: usize = 64;
+pub const GLOBAL_INITIAL_DIGEST_POS_COPY: usize = 65;
 
 #[repr(C)]
 pub struct Ghost {
@@ -65,6 +65,9 @@ pub struct GlobalCols<T: Copy> {
     pub is_receive: T,
     pub is_send: T,
     pub is_real: T,
+    /// This row's position in the chip's own real-row accumulation sequence. Anchors the
+    /// `LookupKind::GlobalAccumulation` chain by value instead of physical row adjacency.
+    pub index: T,
     pub accumulation: GlobalAccumulationOperation<T, 1>,
 }
 
@@ -152,6 +155,7 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
                     let event: &GlobalLookupEvent = &events[idx];
                     cols.message = event.message.map(F::from_canonical_u32);
                     cols.kind = F::from_canonical_u8(event.kind);
+                    cols.index = F::from_canonical_u32(idx as u32);
                     cols.lookup.populate(
                         SepticBlock(event.message),
                         event.is_receive,
@@ -233,8 +237,6 @@ where
         let main = builder.main();
         let local = main.row_slice(0);
         let local: &GlobalCols<AB::Var> = (*local).borrow();
-        let next = main.row_slice(1);
-        let next: &GlobalCols<AB::Var> = (*next).borrow();
 
         // Receive the arguments, which consists of 7 message columns, `is_send`, `is_receive`, and `kind`.
         // In MemoryGlobal, MemoryLocal, Syscall chips, `is_send`, `is_receive`, `kind` are sent with correct constant values.
@@ -287,9 +289,8 @@ where
             builder,
             [local.lookup],
             [local.is_real],
-            [next.is_real],
+            local.index,
             local.accumulation,
-            next.accumulation,
         );
     }
 }

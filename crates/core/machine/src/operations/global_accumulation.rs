@@ -4,14 +4,15 @@ use p3_field::Field;
 use p3_field::FieldAlgebra;
 use p3_field::FieldExtensionAlgebra;
 use p3_field::PrimeField32;
+use std::iter::once;
 use zkm_derive::AlignedBorrow;
-use zkm_hypercube::air::BaseAirBuilder;
 use zkm_hypercube::air::SepticExtensionAirBuilder;
+use zkm_hypercube::air::{AirLookup, LookupScope};
+use zkm_hypercube::lookup::LookupKind;
 use zkm_hypercube::septic_curve::SepticCurveComplete;
 use zkm_hypercube::air::ZKMAirBuilder;
 use zkm_hypercube::{
     septic_curve::SepticCurve,
-    septic_digest::SepticDigest,
     septic_extension::{SepticBlock, SepticExtension},
 };
 
@@ -114,9 +115,8 @@ impl<F: Field, const N: usize> GlobalAccumulationOperation<F, N> {
         builder: &mut AB,
         global_lookup_cols: [GlobalLookupOperation<AB::Var>; N],
         local_is_real: [AB::Var; N],
-        next_is_real: [AB::Var; N],
+        index: AB::Var,
         local_accumulation: GlobalAccumulationOperation<AB::Var, N>,
-        next_accumulation: GlobalAccumulationOperation<AB::Var, N>,
     ) {
         // First, constrain the control flow regarding `is_real`.
         // Constrain that all `is_real` values are boolean.
@@ -129,9 +129,6 @@ impl<F: Field, const N: usize> GlobalAccumulationOperation<F, N> {
             // `is_real[i] == 0` implies `is_real[i + 1] == 0`.
             builder.when_not(local_is_real[i]).assert_zero(local_is_real[i + 1]);
         }
-
-        // Constrain that `is_real[N - 1] == 0` implies `next.is_real[0] == 0`
-        builder.when_transition().when_not(local_is_real[N - 1]).assert_zero(next_is_real[0]);
 
         // Next, constrain the accumulation.
         let initial_digest = SepticCurve::<AB::Expr> {
@@ -168,10 +165,21 @@ impl<F: Field, const N: usize> GlobalAccumulationOperation<F, N> {
             }),
         };
 
-        // Constrain that the first `initial_digest` is the zero digest.
-        let zero_digest = SepticDigest::<AB::Expr>::zero().0;
-        builder.when_first_row().assert_septic_ext_eq(initial_digest.x.clone(), zero_digest.x);
-        builder.when_first_row().assert_septic_ext_eq(initial_digest.y.clone(), zero_digest.y);
+        // Receive this row's own claimed initial digest at `index`, matched by value against
+        // whichever row sent it as its final digest at the same index -- or, for `index == 0`,
+        // against the phantom send in `ExecutionRecord::eval_public_values`, which is witnessed
+        // as the zero digest (replacing the old `when_first_row()` zero-digest anchor).
+        builder.receive(
+            AirLookup::new(
+                once(index.into())
+                    .chain(initial_digest.x.0.clone())
+                    .chain(initial_digest.y.0.clone())
+                    .collect(),
+                local_is_real[0].into(),
+                LookupKind::GlobalAccumulation,
+            ),
+            LookupScope::Local,
+        );
 
         // Defense-in-depth: every witnessed running digest must stay on-curve even if the
         // incomplete Weierstrass addition edge case is triggered.
@@ -216,21 +224,20 @@ impl<F: Field, const N: usize> GlobalAccumulationOperation<F, N> {
             builder.when_not(local_is_real[i]).assert_septic_ext_eq(current_sum.y, next_sum.y);
         }
 
-        // Constrain that the final digest is the next row's initial_digest.
+        // Send this row's own final digest at `index + 1`, for whichever row receives it as its
+        // initial digest at that index -- or, for the genuinely last real row, the phantom
+        // receive in `ExecutionRecord::eval_public_values`.
         let final_digest = ith_cumulative_sum(N - 1);
-
-        let next_initial_digest = SepticCurve::<AB::Expr> {
-            x: SepticExtension::<AB::Expr>::from_base_fn(|i| {
-                next_accumulation.initial_digest[0][i].into()
-            }),
-            y: SepticExtension::<AB::Expr>::from_base_fn(|i| {
-                next_accumulation.initial_digest[1][i].into()
-            }),
-        };
-
-        builder
-            .when_transition()
-            .assert_septic_ext_eq(final_digest.x.clone(), next_initial_digest.x.clone());
-        builder.when_transition().assert_septic_ext_eq(final_digest.y, next_initial_digest.y);
+        builder.send(
+            AirLookup::new(
+                once(index.into() + AB::Expr::one())
+                    .chain(final_digest.x.0.clone())
+                    .chain(final_digest.y.0.clone())
+                    .collect(),
+                local_is_real[N - 1].into(),
+                LookupKind::GlobalAccumulation,
+            ),
+            LookupScope::Local,
+        );
     }
 }

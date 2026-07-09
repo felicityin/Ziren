@@ -21,6 +21,11 @@ pub enum LookupKind {
     Global = 7,
     SyscallResult = 8,
     State = 9,
+    GlobalAccumulation = 10,
+    MemoryGlobalInitControl = 11,
+    MemoryGlobalFinalizeControl = 12,
+    ShaExtend = 13,
+    ShaCompress = 14,
 }
 
 impl LookupKind {
@@ -36,6 +41,11 @@ impl LookupKind {
             LookupKind::Global,
             LookupKind::SyscallResult,
             LookupKind::State,
+            LookupKind::GlobalAccumulation,
+            LookupKind::MemoryGlobalInitControl,
+            LookupKind::MemoryGlobalFinalizeControl,
+            LookupKind::ShaExtend,
+            LookupKind::ShaCompress,
         ]
     }
 }
@@ -52,6 +62,11 @@ impl Display for LookupKind {
             LookupKind::Global => write!(f, "Global"),
             LookupKind::SyscallResult => write!(f, "SyscallResult"),
             LookupKind::State => write!(f, "State"),
+            LookupKind::GlobalAccumulation => write!(f, "GlobalAccumulation"),
+            LookupKind::MemoryGlobalInitControl => write!(f, "MemoryGlobalInitControl"),
+            LookupKind::MemoryGlobalFinalizeControl => write!(f, "MemoryGlobalFinalizeControl"),
+            LookupKind::ShaExtend => write!(f, "ShaExtend"),
+            LookupKind::ShaCompress => write!(f, "ShaCompress"),
         }
     }
 }
