@@ -38,8 +38,6 @@ pub struct ShaCompressCols<T> {
     #[cfg_attr(feature = "picus", picus(transition_input))]
     pub h_ptr: T,
 
-    pub start: T,
-
     /// Which cycle within the octet we are currently processing.
     pub octet: [T; 8],
 
@@ -48,6 +46,10 @@ pub struct ShaCompressCols<T> {
     ///  - The next 8 octets are for compress.
     ///  - The last octet is for finalize.
     pub octet_num: [T; 10],
+
+    /// This row's position in the chip's own 0..80 sequence (`octet_num*8 + octet`). Anchors
+    /// the `LookupKind::ShaCompress` chain by value instead of physical row adjacency.
+    pub index: T,
 
     /// Memory access. During init and compression, this is read only. During finalize, this is
     /// used to write the result into memory.
@@ -124,7 +126,6 @@ pub struct ShaCompressCols<T> {
     pub is_compression: T,
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_finalize: T,
-    pub is_last_row: T,
 
     pub is_real: T,
 }

@@ -3,9 +3,9 @@ use core::borrow::Borrow;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
-use zkm_core_executor::syscalls::SyscallCode;
 use zkm_hypercube::{
-    air::{LookupScope, ZKMAirBuilder},
+    air::{AirLookup, LookupScope, ZKMAirBuilder},
+    lookup::LookupKind,
     word::Word,
 };
 
@@ -35,28 +35,16 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let (local, next) = (main.row_slice(0), main.row_slice(1));
+        let local = main.row_slice(0);
         let local: &ShaCompressCols<AB::Var> = (*local).borrow();
-        let next: &ShaCompressCols<AB::Var> = (*next).borrow();
 
-        self.eval_control_flow_flags(builder, local, next);
+        self.eval_control_flow_flags(builder, local);
 
         self.eval_memory(builder, local);
 
-        self.eval_compression_ops(builder, local, next);
+        self.eval_compression_ops(builder, local);
 
         self.eval_finalize_ops(builder, local);
-
-        builder.assert_eq(local.start, local.is_real * local.octet[0] * local.octet_num[0]);
-        builder.receive_syscall(
-            local.shard,
-            local.clk,
-            AB::F::from_canonical_u32(SyscallCode::SHA_COMPRESS.syscall_id()),
-            local.w_ptr,
-            local.h_ptr,
-            local.start,
-            LookupScope::Local,
-        );
     }
 }
 
@@ -65,77 +53,31 @@ impl ShaCompressChip {
         &self,
         builder: &mut AB,
         local: &ShaCompressCols<AB::Var>,
-        next: &ShaCompressCols<AB::Var>,
     ) {
-        // Verify that all of the octet columns are bool.
-        for i in 0..8 {
-            builder.assert_bool(local.octet[i]);
-        }
+        builder.assert_bool(local.is_real);
 
-        // Verify that exactly one of the octet columns is true.
+        let mut computed_index = AB::Expr::zero();
+
+        // Verify that all of the octet columns are bool, and exactly one is true.
         let mut octet_sum = AB::Expr::zero();
         for i in 0..8 {
+            builder.assert_bool(local.octet[i]);
             octet_sum = octet_sum.clone() + local.octet[i].into();
+            computed_index = computed_index.clone() + local.octet[i].into() * AB::Expr::from_canonical_u32(i as u32);
         }
         builder.assert_one(octet_sum);
 
-        // Verify that the first row's octet value is correct.
-        builder.when_first_row().assert_one(local.octet[0]);
-
-        // Verify correct transition for octet column.
-        for i in 0..8 {
-            builder.when_transition().when(local.octet[i]).assert_one(next.octet[(i + 1) % 8])
-        }
-
-        // Verify that all of the octet_num columns are bool.
-        for i in 0..10 {
-            builder.assert_bool(local.octet_num[i]);
-        }
-
-        // Verify that exactly one of the octet_num columns is true.
+        // Verify that all of the octet_num columns are bool, and exactly one is true.
         let mut octet_num_sum = AB::Expr::zero();
         for i in 0..10 {
+            builder.assert_bool(local.octet_num[i]);
             octet_num_sum = octet_num_sum.clone() + local.octet_num[i].into();
+            computed_index = computed_index.clone() + local.octet_num[i].into() * AB::Expr::from_canonical_u32(8 * i as u32);
         }
         builder.assert_one(octet_num_sum);
 
-        // The first row should have octet_num[0] = 1 if it's real.
-        builder.when_first_row().assert_one(local.octet_num[0]);
-
-        // If current row is not last of an octet and next row is real, octet_num should be the
-        // same.
-        for i in 0..10 {
-            builder
-                .when_transition()
-                .when_not(local.octet[7])
-                .assert_eq(local.octet_num[i], next.octet_num[i]);
-        }
-
-        // If current row is last of an octet and next row is real, octet_num should rotate by 1.
-        for i in 0..10 {
-            builder
-                .when_transition()
-                .when(local.octet[7])
-                .assert_eq(local.octet_num[i], next.octet_num[(i + 1) % 10]);
-        }
-
-        // Constrain A-H columns
-        let vars = [local.a, local.b, local.c, local.d, local.e, local.f, local.g, local.h];
-        let next_vars = [next.a, next.b, next.c, next.d, next.e, next.f, next.g, next.h];
-        for (i, var) in vars.iter().enumerate() {
-            // For all initialize and finalize cycles, A-H should be the same in the next row. The
-            // last cycle is an exception since the next row must be a new 80-cycle loop or nonreal.
-            builder
-                .when_transition()
-                .when(local.octet_num[0] + local.octet_num[9] * (AB::Expr::one() - local.octet[7]))
-                .assert_word_eq(*var, next_vars[i]);
-
-            // When column is read from memory during init, is should be equal to the memory value.
-            builder
-                .when_transition()
-                .when(local.octet_num[0] * local.octet[i])
-                .assert_word_eq(*var, *local.mem.value());
-        }
+        // Check that `local.index` matches the `octet`/`octet_num` one-hot flags.
+        builder.assert_eq(local.index, computed_index);
 
         // Assert that the is_initialize flag is correct.
         builder.assert_eq(local.is_initialize, local.octet_num[0] * local.is_real);
@@ -157,46 +99,49 @@ impl ShaCompressChip {
         // Assert that the is_finalize flag is correct.
         builder.assert_eq(local.is_finalize, local.octet_num[9] * local.is_real);
 
-        builder.assert_eq(local.is_last_row.into(), local.octet[7] * local.octet_num[9]);
+        // Chain this row's own `(shard, clk, w_ptr, h_ptr, index, a..h)` state against whichever
+        // row (or `ShaCompressControlChip`, which brackets the syscall at index 0 and 80) sent
+        // it, and this row's own successor state against whichever row (or the control chip)
+        // receives it -- replacing the old row-adjacency chaining of octet/octet_num, the A-H
+        // registers, and shard/clk/w_ptr/h_ptr invariance all at once.
+        let state = [local.a, local.b, local.c, local.d, local.e, local.f, local.g, local.h];
+        let receive_values = [local.shard.into(), local.clk.into(), local.w_ptr.into(), local.h_ptr.into(), local.index.into()]
+            .into_iter()
+            .chain(state.iter().flat_map(|word| word.0.iter().map(|&e| e.into())))
+            .collect::<Vec<_>>();
+        builder.receive(
+            AirLookup::new(receive_values, local.is_real.into(), LookupKind::ShaCompress),
+            LookupScope::Local,
+        );
 
-        // If this row is real and not the last cycle, then next row should have same inputs
-        builder
-            .when_transition()
-            .when(local.is_real)
-            .when_not(local.is_last_row)
-            .assert_eq(local.shard, next.shard);
-        builder
-            .when_transition()
-            .when(local.is_real)
-            .when_not(local.is_last_row)
-            .assert_eq(local.clk, next.clk);
-        builder
-            .when_transition()
-            .when(local.is_real)
-            .when_not(local.is_last_row)
-            .assert_eq(local.w_ptr, next.w_ptr);
-        builder
-            .when_transition()
-            .when(local.is_real)
-            .when_not(local.is_last_row)
-            .assert_eq(local.h_ptr, next.h_ptr);
+        // During initialize and finalize, the state passes through unchanged.
+        let pass_through_send_values =
+            [local.shard.into(), local.clk.into(), local.w_ptr.into(), local.h_ptr.into(), local.index.into() + AB::Expr::one()]
+                .into_iter()
+                .chain(state.iter().flat_map(|word| word.0.iter().map(|&e| e.into())))
+                .collect::<Vec<_>>();
+        builder.send(
+            AirLookup::new(
+                pass_through_send_values,
+                local.is_initialize + local.is_finalize,
+                LookupKind::ShaCompress,
+            ),
+            LookupScope::Local,
+        );
 
-        // Assert that is_real is a bool.
-        builder.assert_bool(local.is_real);
-
-        // If this row is real and not the last cycle, then next row should also be real.
-        builder
-            .when_transition()
-            .when(local.is_real)
-            .when_not(local.is_last_row)
-            .assert_one(next.is_real);
-
-        // Once the is_real flag is changed to false, it should not be changed back.
-        builder.when_transition().when_not(local.is_real).assert_zero(next.is_real);
-
-        // Assert that the table ends in nonreal columns. Since each compress syscall is 80 cycles and
-        // the table is padded to a power of 2, the last row of the table should always be padding.
-        builder.when_last_row().assert_zero(local.is_real);
+        // During compression, the registers rotate: h:=g, g:=f, f:=e, e:=d+temp1, d:=c, c:=b,
+        // b:=a, a:=temp1+temp2.
+        let rotated_state =
+            [local.temp1_add_temp2.value, local.a, local.b, local.c, local.d_add_temp1.value, local.e, local.f, local.g];
+        let compression_send_values =
+            [local.shard.into(), local.clk.into(), local.w_ptr.into(), local.h_ptr.into(), local.index.into() + AB::Expr::one()]
+                .into_iter()
+                .chain(rotated_state.iter().flat_map(|word| word.0.iter().map(|&e| e.into())))
+                .collect::<Vec<_>>();
+        builder.send(
+            AirLookup::new(compression_send_values, local.is_compression.into(), LookupKind::ShaCompress),
+            LookupScope::Local,
+        );
     }
 
     /// Constrains that memory address is correct and that memory is correctly written/read.
@@ -271,7 +216,6 @@ impl ShaCompressChip {
         &self,
         builder: &mut AB,
         local: &ShaCompressCols<AB::Var>,
-        next: &ShaCompressCols<AB::Var>,
     ) {
         // Constrain k column which loops over 64 constant values.
         for i in 0..64 {
@@ -446,29 +390,6 @@ impl ShaCompressChip {
             local.temp1_add_temp2,
             local.is_compression.into(),
         );
-
-        // h := g
-        // g := f
-        // f := e
-        // e := d + temp1
-        // d := c
-        // c := b
-        // b := a
-        // a := temp1 + temp2
-        builder.when_transition().when(local.is_compression).assert_word_eq(next.h, local.g);
-        builder.when_transition().when(local.is_compression).assert_word_eq(next.g, local.f);
-        builder.when_transition().when(local.is_compression).assert_word_eq(next.f, local.e);
-        builder
-            .when_transition()
-            .when(local.is_compression)
-            .assert_word_eq(next.e, local.d_add_temp1.value);
-        builder.when_transition().when(local.is_compression).assert_word_eq(next.d, local.c);
-        builder.when_transition().when(local.is_compression).assert_word_eq(next.c, local.b);
-        builder.when_transition().when(local.is_compression).assert_word_eq(next.b, local.a);
-        builder
-            .when_transition()
-            .when(local.is_compression)
-            .assert_word_eq(next.a, local.temp1_add_temp2.value);
     }
 
     fn eval_finalize_ops<AB: ZKMAirBuilder>(

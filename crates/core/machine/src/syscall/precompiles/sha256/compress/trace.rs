@@ -83,6 +83,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaCompressChip {
             let cols: &mut ShaCompressCols<F> = row.as_mut_slice().borrow_mut();
             cols.octet_num[octet_num] = F::ONE;
             cols.octet[octet] = F::ONE;
+            cols.index = F::from_canonical_usize(octet_num * 8 + octet);
 
             // If in the compression phase, set the k value.
             if octet_num != 0 && octet_num != 9 {
@@ -95,8 +96,6 @@ impl<F: PrimeField32> MachineAir<F> for ShaCompressChip {
             if octet == 0 {
                 octet_num = (octet_num + 1) % 10;
             }
-
-            cols.is_last_row = cols.octet[7] * cols.octet_num[9];
         }
 
         // Convert the trace to a row major matrix.
@@ -166,6 +165,7 @@ impl ShaCompressChip {
 
             cols.octet[j] = F::ONE;
             cols.octet_num[octet_num_idx] = F::ONE;
+            cols.index = F::from_canonical_usize(j);
             cols.is_initialize = F::ONE;
 
             cols.mem.populate_read(event.h_read_records[j], blu);
@@ -181,7 +181,6 @@ impl ShaCompressChip {
             cols.h = Word::from(event.h_read_records[7].value);
 
             cols.is_real = F::ONE;
-            cols.start = cols.is_real * cols.octet_num[0] * cols.octet[0];
             if rows.as_ref().is_some() {
                 rows.as_mut().unwrap().push(row);
             }
@@ -200,6 +199,7 @@ impl ShaCompressChip {
             cols.is_compression = F::ONE;
             cols.octet[j % 8] = F::ONE;
             cols.octet_num[octet_num_idx] = F::ONE;
+            cols.index = F::from_canonical_usize(8 + j);
 
             cols.shard = F::from_canonical_u32(event.shard);
             cols.clk = F::from_canonical_u32(event.clk);
@@ -265,7 +265,6 @@ impl ShaCompressChip {
             h_array[0] = temp1_add_temp2;
 
             cols.is_real = F::ONE;
-            cols.start = cols.is_real * cols.octet_num[0] * cols.octet[0];
 
             if rows.as_ref().is_some() {
                 rows.as_mut().unwrap().push(row);
@@ -287,6 +286,7 @@ impl ShaCompressChip {
 
             cols.octet[j] = F::ONE;
             cols.octet_num[octet_num_idx] = F::ONE;
+            cols.index = F::from_canonical_usize(72 + j);
             cols.is_finalize = F::ONE;
 
             cols.finalize_add.populate(blu, og_h[j], h_array[j]);
@@ -316,8 +316,6 @@ impl ShaCompressChip {
             };
 
             cols.is_real = F::ONE;
-            cols.is_last_row = cols.octet[7] * cols.octet_num[9];
-            cols.start = cols.is_real * cols.octet_num[0] * cols.octet[0];
 
             if rows.as_ref().is_some() {
                 rows.as_mut().unwrap().push(row);

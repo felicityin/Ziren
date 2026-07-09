@@ -805,9 +805,10 @@ mod tests {
     use super::*;
     use crate::programs::tests::simple_program;
 
-    // Blocked: MipsAir::hypercube_machine() still builds ShaExtendChip and 7 other chips that
-    // use 2-row transition constraints the zerocheck framework can't evaluate (CpuChip, fixed
-    // this session, no longer among them). Tracked separately; see memory
+    // Blocked: MipsAir::hypercube_machine() still builds KeccakSpongeChip and
+    // BooleanCircuitGarbleChip, which use 2-row transition constraints the zerocheck framework
+    // can't evaluate. CpuChip, GlobalChip, MemoryGlobalChip, ShaExtendChip, and ShaCompressChip
+    // are fixed and no longer among them. Tracked separately; see memory
     // zerocheck-row-local-transition-gap.md.
     #[test]
     #[ignore]
