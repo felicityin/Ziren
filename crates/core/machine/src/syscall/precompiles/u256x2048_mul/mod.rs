@@ -22,18 +22,11 @@ mod tests {
     //     air::MachineAir, koala_bear_poseidon2::KoalaBearPoseidon2, CpuProver, StarkGenericConfig,
     // };
 
-    use crate::{
-        // io::ZKMStdin,
-        utils::{
-            self,
-            // run_test_io,
-        },
-    };
-    // use crate::{
-    //     io::ZKMStdin,
-    //     utils::{self, run_test_io, uni_stark_prove as prove, uni_stark_verify as verify},
-    // };
     use crate::utils::words_to_bytes_le_vec;
+    use crate::{
+        io::ZKMStdin,
+        utils::{self, run_test_io},
+    };
     // use crate::{
     //     syscall::precompiles::u256x2048_mul::air::U256x2048MulChip, utils::words_to_bytes_le_vec,
     // };
@@ -182,11 +175,10 @@ mod tests {
         runtime.run().unwrap();
     }
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_uint256_mul() {
-        // utils::setup_logger();
-        // let program = Program::from(U256XU2048_MUL_ELF).unwrap();
-        // run_test_io::<CpuProver<_, _>>(program, ZKMStdin::new()).unwrap();
+        utils::setup_logger();
+        let program = Program::from(U256XU2048_MUL_ELF).unwrap();
+        run_test_io(program, ZKMStdin::new()).unwrap();
     }
 
     #[test]

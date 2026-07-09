@@ -28,13 +28,17 @@ use zkm_core_executor::{
     ExecutionError, ExecutionRecord, ExecutionReport, ExecutionState, Executor, Program,
     ZKMContext,
 };
+use zkm_primitives::io::ZKMPublicValues;
 
 use p3_maybe_rayon::prelude::*;
 use slop_challenger::IopCtx;
 use zkm_hypercube::{
     air::PublicValues,
     config::{default_fri_config, ZkmGlobalContext, ZkmStackedPcs},
-    prover::{AirProver, PcsProof, ProverSemaphore, ShardData, TraceGenerator, ZkmInnerPcsProver, ZkmShardProver},
+    prover::{
+        AirProver, PcsProof, ProverSemaphore, ShardData, TraceGenerator, ZkmInnerPcsProver,
+        ZkmShardProver,
+    },
     record::MachineRecord,
     ShardContextImpl, ShardProof, ShardVerifier, ZkmSC,
 };
@@ -45,7 +49,10 @@ const ZKM_LOG_STACKING_HEIGHT: u32 = 4;
 
 /// The concrete shard-proof type produced by Ziren's own (`KoalaBear`, jagged/basefold) shard
 /// prover.
-pub type ZkmShardProof = ShardProof<zkm_hypercube::config::ZkmGlobalContext, PcsProof<zkm_hypercube::config::ZkmGlobalContext, ZkmSC<MipsAir<KoalaBear>>>>;
+pub type ZkmShardProof = ShardProof<
+    zkm_hypercube::config::ZkmGlobalContext,
+    PcsProof<zkm_hypercube::config::ZkmGlobalContext, ZkmSC<MipsAir<KoalaBear>>>,
+>;
 
 /// The shard context used by Ziren's own core shard prover.
 type ZkmShardContext = ShardContextImpl<ZkmGlobalContext, ZkmStackedPcs, MipsAir<KoalaBear>>;
@@ -152,10 +159,18 @@ pub fn prove_with_context(
     opts: ZKMCoreOpts,
     context: ZKMContext,
     shape_config: Option<&CoreShapeConfig<KoalaBear>>,
-) -> Result<(Vec<ZkmShardProof>, Vec<u8>, u64, zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext>), ZKMCoreProverError> {
+) -> Result<
+    (Vec<ZkmShardProof>, Vec<u8>, u64, zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext>),
+    ZKMCoreProverError,
+> {
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
     let max_log_row_count = opts.shard_size.ilog2() as usize;
-    let shard_verifier = ShardVerifier::from_basefold_parameters(default_fri_config(), ZKM_LOG_STACKING_HEIGHT, max_log_row_count, machine);
+    let shard_verifier = ShardVerifier::from_basefold_parameters(
+        default_fri_config(),
+        ZKM_LOG_STACKING_HEIGHT,
+        max_log_row_count,
+        machine,
+    );
     let shard_prover = Arc::new(ZkmShardProver::<MipsAir<KoalaBear>>::new(shard_verifier));
     let prover_permits = ProverSemaphore::new(opts.trace_gen_workers.max(1));
 
@@ -173,7 +188,8 @@ pub fn prove_with_context(
 
     let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let program_arc = Arc::new(program.clone());
-    let (preprocessed, vk) = setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
+    let (preprocessed, vk) =
+        setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
     let pk = preprocessed.pk;
 
     #[cfg(feature = "debug")]
@@ -575,6 +591,25 @@ pub fn prove_with_context(
     .map(|(all_shard_proofs, public_values_stream, cycles)| (all_shard_proofs, public_values_stream, cycles, vk))
 }
 
+/// Runs a program and returns the public values stream.
+pub fn run_test_io(
+    mut program: Program,
+    inputs: ZKMStdin,
+) -> Result<ZKMPublicValues, ZKMCoreProverError> {
+    let shape_config = CoreShapeConfig::<KoalaBear>::default();
+    shape_config.fix_preprocessed_shape(&mut program).unwrap();
+    let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.write_vecs(&inputs.buffer);
+        runtime.run().unwrap();
+        runtime
+    });
+    let public_values = ZKMPublicValues::from(&runtime.state.public_values_stream);
+
+    let _ = run_test_core(runtime, inputs, Some(&shape_config))?;
+    Ok(public_values)
+}
+
 pub fn run_test(mut program: Program) -> Result<Vec<ZkmShardProof>, ZKMCoreProverError> {
     let shape_config = CoreShapeConfig::<KoalaBear>::default();
     shape_config.fix_preprocessed_shape(&mut program).unwrap();
@@ -601,8 +636,12 @@ pub fn run_test_core(
 
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
     let max_log_row_count = ZKMCoreOpts::default().shard_size.ilog2() as usize;
-    let shard_verifier =
-        ShardVerifier::from_basefold_parameters(default_fri_config(), ZKM_LOG_STACKING_HEIGHT, max_log_row_count, machine);
+    let shard_verifier = ShardVerifier::from_basefold_parameters(
+        default_fri_config(),
+        ZKM_LOG_STACKING_HEIGHT,
+        max_log_row_count,
+        machine,
+    );
 
     for proof in &shard_proofs {
         let mut challenger = ZkmGlobalContext::default_challenger();

@@ -30,11 +30,11 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_stark::air::Polynomial;
 use zkm_hypercube::{
     air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder},
     record::MachineRecord,
 };
+use zkm_stark::air::Polynomial;
 
 /// The number of columns in the U256x2048MulCols.
 const NUM_COLS: usize = size_of::<U256x2048MulCols<u8>>();
