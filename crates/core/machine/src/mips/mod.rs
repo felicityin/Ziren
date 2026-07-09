@@ -47,7 +47,7 @@ pub(crate) mod mips_chips {
             precompiles::{
                 edwards::{EdAddAssignChip, EdDecompressChip},
                 keccak_sponge::KeccakSpongeChip,
-                sha256::{ShaCompressChip, ShaExtendChip},
+                sha256::{ShaCompressChip, ShaExtendChip, ShaExtendControlChip},
                 sys_linux::SysLinuxChip,
                 u256x2048_mul::U256x2048MulChip,
                 uint256::Uint256MulChip,
@@ -127,6 +127,8 @@ pub enum MipsAir<F: PrimeField32> {
     SyscallPrecompile(SyscallChip),
     /// A table for all the global lookups.
     Global(GlobalChip),
+    /// Brackets a `SHA_EXTEND` syscall's worker chain (see [`Sha256Extend`]).
+    Sha256ExtendControl(ShaExtendControlChip),
     /// A precompile for sha256 extend.
     Sha256Extend(ShaExtendChip),
     /// A precompile for sha256 compress.
@@ -232,6 +234,11 @@ impl<F: PrimeField32> MipsAir<F> {
         let program = Chip::new(MipsAir::Program(ProgramChip::default()));
         costs.insert(program.name(), program.cost());
         chips.push(program);
+
+        let sha_extend_control =
+            Chip::new(MipsAir::Sha256ExtendControl(ShaExtendControlChip::default()));
+        costs.insert(sha_extend_control.name(), sha_extend_control.cost());
+        chips.push(sha_extend_control);
 
         let sha_extend = Chip::new(MipsAir::Sha256Extend(ShaExtendChip::default()));
         costs.insert(sha_extend.name(), 48 * sha_extend.cost());
@@ -666,6 +673,7 @@ impl<F: PrimeField32> MipsAir<F> {
             Self::Secp256r1Double(_) => SyscallCode::SECP256R1_DOUBLE,
             Self::Sha256Compress(_) => SyscallCode::SHA_COMPRESS,
             Self::Sha256Extend(_) => SyscallCode::SHA_EXTEND,
+            Self::Sha256ExtendControl(_) => SyscallCode::SHA_EXTEND,
             Self::Uint256Mul(_) => SyscallCode::UINT256_MUL,
             Self::U256x2048Mul(_) => SyscallCode::U256XU2048_MUL,
             Self::Bls12381Decompress(_) => SyscallCode::BLS12381_DECOMPRESS,

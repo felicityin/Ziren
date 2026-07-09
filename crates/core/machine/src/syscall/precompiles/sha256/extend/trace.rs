@@ -54,12 +54,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendChip {
         if padded_nb_rows == 2 || padded_nb_rows == 1 {
             padded_nb_rows = 4;
         }
-        for i in nb_rows..padded_nb_rows {
-            let mut row = [F::ZERO; NUM_SHA_EXTEND_COLS];
-            let cols: &mut ShaExtendCols<F> = row.as_mut_slice().borrow_mut();
-            cols.populate_flags(i);
-            rows.push(row);
-        }
+        rows.resize(padded_nb_rows, [F::ZERO; NUM_SHA_EXTEND_COLS]);
 
         // Convert the trace to a row major matrix.
         Ok(RowMajorMatrix::new(rows.into_iter().flatten().collect::<Vec<_>>(), NUM_SHA_EXTEND_COLS))
@@ -113,7 +108,7 @@ impl ShaExtendChip {
             let mut row = [F::ZERO; NUM_SHA_EXTEND_COLS];
             let cols: &mut ShaExtendCols<F> = row.as_mut_slice().borrow_mut();
             cols.is_real = F::ONE;
-            cols.populate_flags(j);
+            cols.i = F::from_canonical_usize(16 + j);
             cols.shard = F::from_canonical_u32(event.shard);
             cols.clk = F::from_canonical_u32(event.clk);
             cols.w_ptr = F::from_canonical_u32(event.w_ptr);

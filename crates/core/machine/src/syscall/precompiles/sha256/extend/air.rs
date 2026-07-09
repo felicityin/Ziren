@@ -1,8 +1,9 @@
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
-use zkm_core_executor::syscalls::SyscallCode;
-use zkm_hypercube::air::{LookupScope, ZKMAirBuilder};
+use zkm_core_executor::ByteOpcode;
+use zkm_hypercube::air::{AirLookup, LookupScope, ZKMAirBuilder};
+use zkm_hypercube::lookup::LookupKind;
 
 use super::{ShaExtendChip, ShaExtendCols, NUM_SHA_EXTEND_COLS};
 use crate::{
@@ -14,7 +15,6 @@ use crate::{
 };
 
 use core::borrow::Borrow;
-use zkm_hypercube::air::BaseAirBuilder;
 
 impl<F> BaseAir<F> for ShaExtendChip {
     fn width(&self) -> usize {
@@ -29,29 +29,47 @@ where
     fn eval(&self, builder: &mut AB) {
         // Initialize columns.
         let main = builder.main();
-        let (local, next) = (main.row_slice(0), main.row_slice(1));
+        let local = main.row_slice(0);
         let local: &ShaExtendCols<AB::Var> = (*local).borrow();
-        let next: &ShaExtendCols<AB::Var> = (*next).borrow();
 
         let i_start = AB::F::from_canonical_u32(16);
         let nb_bytes_in_word = AB::F::from_canonical_u32(4);
 
-        // Evaluate the control flags.
-        self.eval_flags(builder);
+        builder.assert_bool(local.is_real);
 
-        // Copy over the inputs until the result has been computed (every 48 rows).
-        builder
-            .when_transition()
-            .when_not(local.cycle_16_end.result * local.cycle_48[2])
-            .assert_eq(local.shard, next.shard);
-        builder
-            .when_transition()
-            .when_not(local.cycle_16_end.result * local.cycle_48[2])
-            .assert_eq(local.clk, next.clk);
-        builder
-            .when_transition()
-            .when_not(local.cycle_16_end.result * local.cycle_48[2])
-            .assert_eq(local.w_ptr, next.w_ptr);
+        // Bound `16 <= i < 64` so the `AddrAddOperation`-style pointer arithmetic below is safe.
+        builder.send_byte(
+            AB::Expr::from_canonical_u32(ByteOpcode::LTU as u32),
+            AB::Expr::one(),
+            local.i - i_start,
+            AB::Expr::from_canonical_u32(48),
+            local.is_real,
+        );
+
+        // Receive this row's own incoming `(shard, clk, w_ptr, i)`, and send the successor's --
+        // replacing the old row-adjacency chaining. The genuinely first (`i == 16`) and last
+        // (`i == 64`) links are closed by `ShaExtendControlChip`, which brackets the syscall.
+        builder.receive(
+            AirLookup::new(
+                vec![local.shard.into(), local.clk.into(), local.w_ptr.into(), local.i.into()],
+                local.is_real.into(),
+                LookupKind::ShaExtend,
+            ),
+            LookupScope::Local,
+        );
+        builder.send(
+            AirLookup::new(
+                vec![
+                    local.shard.into(),
+                    local.clk.into(),
+                    local.w_ptr.into(),
+                    local.i.into() + AB::Expr::one(),
+                ],
+                local.is_real.into(),
+                LookupKind::ShaExtend,
+            ),
+            LookupScope::Local,
+        );
 
         // Read w[i-15].
         builder.eval_memory_access(
@@ -194,29 +212,5 @@ where
         );
 
         builder.assert_word_eq(*local.w_i.value(), local.s2.value);
-
-        // Receive syscall event in first row of 48-cycle.
-        builder.receive_syscall(
-            local.shard,
-            local.clk,
-            AB::F::from_canonical_u32(SyscallCode::SHA_EXTEND.syscall_id()),
-            local.w_ptr,
-            AB::Expr::zero(),
-            local.cycle_48_start,
-            LookupScope::Local,
-        );
-
-        // Assert that is_real is a bool.
-        builder.assert_bool(local.is_real);
-
-        // Ensure that all rows in a 48 row cycle has the same `is_real` values.
-        builder
-            .when_transition()
-            .when_not(local.cycle_48_end)
-            .assert_eq(local.is_real, next.is_real);
-
-        // Assert that the table ends in nonreal columns. Since each extend syscall is 48 cycles and
-        // the table is padded to a power of 2, the last row of the table should always be padding.
-        builder.when_last_row().assert_zero(local.is_real);
     }
 }
