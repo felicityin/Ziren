@@ -32,8 +32,7 @@ use crate::{
     state::{ExecutionState, ForkState},
     subproof::SubproofVerifier,
     syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext},
-    ExecutionReport, Instruction, MaximalShapes, MipsAirId, Opcode, Program, Register,
-    NUM_REGISTERS,
+    ExecutionReport, Instruction, MipsAirId, Opcode, Program, Register, NUM_REGISTERS,
 };
 
 /// The maximum number of instructions in a program.
@@ -149,19 +148,13 @@ pub struct Executor<'a> {
     /// Registry of hooks, to be invoked by writing to certain file descriptors.
     pub hook_registry: HookRegistry<'a>,
 
-    /// The maximal shapes for the program.
-    pub maximal_shapes: Option<MaximalShapes>,
-
     /// The costs of the program.
     pub costs: HashMap<MipsAirId, u64>,
 
     /// The frequency to check the stopping condition.
     pub shape_check_frequency: u64,
 
-    /// Early exit if the estimate LDE size is too big.
-    pub lde_size_check: bool,
-
-    /// The maximum LDE size to allow.
+    /// The maximum estimated LDE size to allow before a shard is stopped early to avoid OOM.
     pub lde_size_threshold: u64,
 }
 
@@ -352,11 +345,9 @@ impl<'a> Executor<'a> {
             memory_checkpoint: Memory::default(),
             uninitialized_memory_checkpoint: Memory::default(),
             local_memory_access: HashMap::new(),
-            maximal_shapes: None,
             costs: costs.into_iter().map(|(k, v)| (k, v as u64)).collect(),
             shape_check_frequency: opts.shape_check_frequency,
-            lde_size_check: false,
-            lde_size_threshold: 0,
+            lde_size_threshold: opts.lde_size_threshold,
         }
     }
 
@@ -2459,9 +2450,9 @@ impl<'a> Executor<'a> {
         // If there's not enough cycles left for another instruction, move to the next shard.
         let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
 
-        // Every N cycles, check if there exists at least one shape that fits.
+        // Every N cycles, check if the estimated LDE size is still under the safety threshold.
         //
-        // If we're close to not fitting, early stop the shard to ensure we don't OOM.
+        // If we're close to exceeding it, early stop the shard to ensure we don't OOM.
         let mut shape_match_found = true;
         if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
             // Estimate the number of events in the trace.
@@ -2473,75 +2464,15 @@ impl<'a> Executor<'a> {
             );
 
             // Check if the LDE size is too large.
-            if self.lde_size_check {
-                let padded_event_counts =
-                    pad_mips_event_counts(event_counts, self.shape_check_frequency);
-                let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &self.costs);
-                if padded_lde_size > self.lde_size_threshold {
-                    tracing::warn!(
-                        "stopping shard early due to lde size: {} Gib",
-                        (padded_lde_size as f64) / (1 << 9) as f64,
-                    );
-                    shape_match_found = false;
-                }
-            } else if let Some(maximal_shapes) = &self.maximal_shapes {
-                // Check if we're too "close" to a maximal shape.
-
-                let distance = |threshold: usize, count: usize| {
-                    if count != 0 {
-                        threshold - count
-                    } else {
-                        usize::MAX
-                    }
-                };
-
+            let padded_event_counts =
+                pad_mips_event_counts(event_counts, self.shape_check_frequency);
+            let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &self.costs);
+            if padded_lde_size > self.lde_size_threshold {
+                tracing::warn!(
+                    "stopping shard early due to lde size: {} Gib",
+                    (padded_lde_size as f64) / (1 << 9) as f64,
+                );
                 shape_match_found = false;
-
-                for shape in maximal_shapes.iter() {
-                    let cpu_threshold = shape[MipsAirId::Cpu];
-                    if self.state.clk > ((1 << cpu_threshold) << 2) {
-                        continue;
-                    }
-
-                    let mut l_infinity = usize::MAX;
-                    let mut shape_too_small = false;
-                    for air in MipsAirId::core() {
-                        if air == MipsAirId::Cpu {
-                            continue;
-                        }
-
-                        let threshold = 1 << shape[air];
-                        let count = event_counts[air] as usize;
-                        if count > threshold {
-                            shape_too_small = true;
-                            break;
-                        }
-
-                        if distance(threshold, count) < l_infinity {
-                            l_infinity = distance(threshold, count);
-                        }
-                    }
-
-                    if shape_too_small {
-                        continue;
-                    }
-
-                    if l_infinity >= 32 * (self.shape_check_frequency as usize) {
-                        shape_match_found = true;
-                        break;
-                    }
-                }
-
-                if !shape_match_found {
-                    self.record.counts = Some(event_counts);
-                    tracing::debug!(
-                        "stopping shard early due to no shapes fitting: \
-                        clk: {},
-                        clk_usage: {}",
-                        (self.state.clk / 5).next_power_of_two().ilog2(),
-                        ((self.state.clk / 5) as f64).log2(),
-                    );
-                }
             }
         }
 

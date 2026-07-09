@@ -66,13 +66,10 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
     }
 
     fn generate_preprocessed_trace(&self, program: &Self::Program) -> Option<RowMajorMatrix<F>> {
-        debug_assert!(
-            !program.instructions.is_empty() || program.preprocessed_shape.is_some(),
-            "empty program"
-        );
+        debug_assert!(!program.instructions.is_empty(), "empty program");
         // Generate the trace rows for each event.
         let nb_rows = program.instructions.len();
-        let size_log2 = program.fixed_log2_rows::<F, _>(self);
+        let size_log2 = None;
         let padded_nb_rows = next_power_of_two(
             nb_rows,
             size_log2,
@@ -147,7 +144,7 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
         pad_rows_fixed(
             &mut rows,
             || [F::ZERO; NUM_PROGRAM_MULT_COLS],
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <ProgramChip as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -215,7 +212,6 @@ mod tests {
                 instructions,
                 pc_start: 0,
                 pc_base: 0,
-                preprocessed_shape: None,
                 ..Default::default()
             }),
             ..Default::default()

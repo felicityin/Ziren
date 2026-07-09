@@ -1,25 +1,19 @@
 use crate::{
     global::GlobalChip,
-    memory::{MemoryChipType, MemoryLocalChip, NUM_LOCAL_MEMORY_ENTRIES_PER_ROW},
+    memory::{MemoryChipType, MemoryLocalChip},
     syscall::precompiles::{
         fptower::{Fp2AddSubAssignChip, Fp2MulAssignChip, FpOpChip},
         poseidon2::Poseidon2PermuteChip,
     },
 };
 use core::fmt;
-use hashbrown::{HashMap, HashSet};
-use itertools::Itertools;
+use hashbrown::HashMap;
 pub use mips_chips::*;
 use p3_field::PrimeField32;
 use strum_macros::{EnumDiscriminants, EnumIter};
-use zkm_core_executor::events::PrecompileEvent;
-use zkm_core_executor::{
-    events::PrecompileLocalMemory, syscalls::SyscallCode, ExecutionRecord, MipsAirId, Program,
-};
 use zkm_curves::weierstrass::{bls12_381::Bls12381BaseField, bn254::Bn254BaseField};
 use zkm_hypercube::{
     air::{LookupScope, MachineAir, PicusInfo},
-    lookup::LookupKind,
     Chip,
 };
 // TODO(zkm-hypercube): `StarkGenericConfig`/`StarkMachine`/`ZKM_PROOF_NUM_PV_ELTS` have no
@@ -46,7 +40,9 @@ pub(crate) mod mips_chips {
             precompiles::{
                 edwards::{EdAddAssignChip, EdDecompressChip},
                 keccak_sponge::KeccakSpongeChip,
-                sha256::{ShaCompressChip, ShaCompressControlChip, ShaExtendChip, ShaExtendControlChip},
+                sha256::{
+                    ShaCompressChip, ShaCompressControlChip, ShaExtendChip, ShaExtendControlChip,
+                },
                 sys_linux::SysLinuxChip,
                 u256x2048_mul::U256x2048MulChip,
                 uint256::Uint256MulChip,
@@ -468,229 +464,6 @@ impl<F: PrimeField32> MipsAir<F> {
         chips.push(movcond_instrs);
 
         (chips, costs)
-    }
-
-    /// Get the heights of the preprocessed chips for a given program.
-    pub(crate) fn preprocessed_heights(program: &Program) -> Vec<(MipsAirId, usize)> {
-        vec![(MipsAirId::Program, program.instructions.len()), (MipsAirId::Byte, 1 << 16)]
-    }
-
-    /// Get the heights of the chips for a given execution record.
-    pub fn core_heights(record: &ExecutionRecord) -> Vec<(MipsAirId, usize)> {
-        vec![
-            (MipsAirId::Cpu, record.cpu_events.len()),
-            (MipsAirId::Branch, record.branch_events.len()),
-            (MipsAirId::Jump, record.jump_events.len()),
-            (MipsAirId::MovCond, record.movcond_events.len()),
-            (MipsAirId::MiscInstrs, record.misc_events.len()),
-            (MipsAirId::MemoryInstrs, record.memory_instr_events.len()),
-            (MipsAirId::SyscallInstrs, record.syscall_events.len()),
-            (MipsAirId::DivRem, record.divrem_events.len()),
-            (MipsAirId::AddSub, record.add_sub_events.len()),
-            (MipsAirId::Bitwise, record.bitwise_events.len()),
-            (MipsAirId::Mul, record.mul_events.len()),
-            (MipsAirId::ShiftRight, record.shift_right_events.len()),
-            (MipsAirId::ShiftLeft, record.shift_left_events.len()),
-            (MipsAirId::Lt, record.lt_events.len()),
-            (
-                MipsAirId::MemoryLocal,
-                record
-                    .get_local_mem_events()
-                    .chunks(NUM_LOCAL_MEMORY_ENTRIES_PER_ROW)
-                    .into_iter()
-                    .count(),
-            ),
-            (MipsAirId::CloClz, record.cloclz_events.len()),
-            (
-                MipsAirId::Global,
-                2 * record.get_local_mem_events().count() + 2 * record.syscall_events.len(),
-            ),
-            (MipsAirId::SyscallCore, record.syscall_events.len()),
-        ]
-    }
-
-    pub(crate) fn precompile_heights(
-        &self,
-        record: &ExecutionRecord,
-    ) -> Option<(usize, usize, usize)> {
-        record
-            .precompile_events
-            .get_events(self.syscall_code())
-            .filter(|events| !events.is_empty())
-            .map(|events| {
-                let events_len = match self {
-                    Self::KeccakSponge(_) => self.keccak_permutation_in_record(record),
-                    _ => events.len(),
-                };
-                let num_rows = events_len * self.rows_per_event();
-                (
-                    num_rows,
-                    events.get_local_mem_events().into_iter().count(),
-                    record.global_lookup_events.len(),
-                )
-            })
-    }
-
-    pub(crate) fn memory_heights(record: &ExecutionRecord) -> Vec<(MipsAirId, usize)> {
-        vec![
-            (MipsAirId::MemoryGlobalInit, record.global_memory_initialize_events.len()),
-            (MipsAirId::MemoryGlobalFinalize, record.global_memory_finalize_events.len()),
-            (
-                MipsAirId::Global,
-                record.global_memory_finalize_events.len()
-                    + record.global_memory_initialize_events.len(),
-            ),
-        ]
-    }
-
-    pub(crate) fn get_all_core_airs() -> Vec<Self> {
-        vec![
-            MipsAir::Cpu(CpuChip::default()),
-            MipsAir::Add(AddSubChip::default()),
-            MipsAir::Bitwise(BitwiseChip::default()),
-            MipsAir::Mul(MulChip::default()),
-            MipsAir::DivRem(DivRemChip::default()),
-            MipsAir::Lt(LtChip::default()),
-            MipsAir::CloClz(CloClzChip::default()),
-            MipsAir::ShiftLeft(ShiftLeft::default()),
-            MipsAir::ShiftRight(ShiftRightChip::default()),
-            MipsAir::Branch(BranchChip::default()),
-            MipsAir::Jump(JumpChip::default()),
-            MipsAir::SyscallInstrs(SyscallInstrsChip::default()),
-            MipsAir::MemoryInstrs(MemoryInstructionsChip::default()),
-            MipsAir::MovCond(MovCondChip::default()),
-            MipsAir::MiscInstrs(MiscInstrsChip::default()),
-            MipsAir::MemoryLocal(MemoryLocalChip::new()),
-            MipsAir::Global(GlobalChip),
-            MipsAir::SyscallCore(SyscallChip::core()),
-        ]
-    }
-
-    pub(crate) fn memory_init_final_airs() -> Vec<Self> {
-        vec![
-            MipsAir::MemoryGlobalInit(MemoryGlobalChip::new(MemoryChipType::Initialize)),
-            MipsAir::MemoryGlobalFinal(MemoryGlobalChip::new(MemoryChipType::Finalize)),
-            MipsAir::Global(GlobalChip),
-        ]
-    }
-
-    pub(crate) fn precompile_airs_with_memory_events_per_row() -> Vec<(Self, usize)> {
-        let mut airs: HashSet<_> = Self::get_airs_and_costs().0.into_iter().collect();
-
-        for core_air in Self::get_all_core_airs() {
-            airs.remove(&core_air);
-        }
-
-        for memory_air in Self::memory_init_final_airs() {
-            airs.remove(&memory_air);
-        }
-
-        airs.remove(&Self::SyscallPrecompile(SyscallChip::precompile()));
-
-        // Remove the preprocessed chips.
-        airs.remove(&Self::Program(ProgramChip::default()));
-        airs.remove(&Self::ByteLookup(ByteChip::default()));
-
-        airs.into_iter()
-            .map(|air| {
-                let chip = Chip::new(air);
-                let local_mem_events: usize = chip
-                    .sends()
-                    .iter()
-                    .chain(chip.receives())
-                    .filter(|lookup| {
-                        lookup.kind == LookupKind::Memory && lookup.scope == LookupScope::Local
-                    })
-                    .count();
-
-                (chip.into_inner().unwrap(), local_mem_events)
-            })
-            .collect()
-    }
-
-    pub(crate) fn rows_per_event(&self) -> usize {
-        match self {
-            Self::Sha256Compress(_) => 80,
-            Self::Sha256Extend(_) => 48,
-            Self::KeccakSponge(_) => 24,
-            _ => 1,
-        }
-    }
-
-    fn keccak_permutation_in_record(&self, record: &ExecutionRecord) -> usize {
-        record
-            .precompile_events
-            .get_events(SyscallCode::KECCAK_SPONGE)
-            .map(|events| {
-                events
-                    .iter()
-                    .map(|(_, pre_e)| {
-                        if let PrecompileEvent::KeccakSponge(event) = pre_e {
-                            event.num_blocks()
-                        } else {
-                            unreachable!()
-                        }
-                    })
-                    .sum::<usize>()
-            })
-            .unwrap_or(0)
-    }
-
-    pub(crate) fn syscall_code(&self) -> SyscallCode {
-        match self {
-            Self::Bls12381Add(_) => SyscallCode::BLS12381_ADD,
-            Self::Bn254Add(_) => SyscallCode::BN254_ADD,
-            Self::Bn254Double(_) => SyscallCode::BN254_DOUBLE,
-            Self::Bn254Fp(_) => SyscallCode::BN254_FP_ADD,
-            Self::Bn254Fp2AddSub(_) => SyscallCode::BN254_FP2_ADD,
-            Self::Bn254Fp2Mul(_) => SyscallCode::BN254_FP2_MUL,
-            Self::Ed25519Add(_) => SyscallCode::ED_ADD,
-            Self::Ed25519Decompress(_) => SyscallCode::ED_DECOMPRESS,
-            Self::Secp256k1Add(_) => SyscallCode::SECP256K1_ADD,
-            Self::Secp256k1Double(_) => SyscallCode::SECP256K1_DOUBLE,
-            Self::Secp256r1Add(_) => SyscallCode::SECP256R1_ADD,
-            Self::Secp256r1Double(_) => SyscallCode::SECP256R1_DOUBLE,
-            Self::Sha256Compress(_) => SyscallCode::SHA_COMPRESS,
-            Self::Sha256CompressControl(_) => SyscallCode::SHA_COMPRESS,
-            Self::Sha256Extend(_) => SyscallCode::SHA_EXTEND,
-            Self::Sha256ExtendControl(_) => SyscallCode::SHA_EXTEND,
-            Self::Uint256Mul(_) => SyscallCode::UINT256_MUL,
-            Self::U256x2048Mul(_) => SyscallCode::U256XU2048_MUL,
-            Self::Bls12381Decompress(_) => SyscallCode::BLS12381_DECOMPRESS,
-            Self::K256Decompress(_) => SyscallCode::SECP256K1_DECOMPRESS,
-            Self::P256Decompress(_) => SyscallCode::SECP256R1_DECOMPRESS,
-            Self::Bls12381Double(_) => SyscallCode::BLS12381_DOUBLE,
-            Self::Bls12381Fp(_) => SyscallCode::BLS12381_FP_ADD,
-            Self::Bls12381Fp2Mul(_) => SyscallCode::BLS12381_FP2_MUL,
-            Self::Bls12381Fp2AddSub(_) => SyscallCode::BLS12381_FP2_ADD,
-            Self::Poseidon2Permute(_) => SyscallCode::POSEIDON2_PERMUTE,
-            Self::KeccakSponge(_) => SyscallCode::KECCAK_SPONGE,
-            Self::SysLinux(_) => SyscallCode::SYS_LINUX,
-            Self::Add(_) => unreachable!("Invalid for core chip"),
-            Self::Bitwise(_) => unreachable!("Invalid for core chip"),
-            Self::DivRem(_) => unreachable!("Invalid for core chip"),
-            Self::Cpu(_) => unreachable!("Invalid for core chip"),
-            Self::MemoryGlobalInit(_) => unreachable!("Invalid for memory init/final"),
-            Self::MemoryGlobalFinal(_) => unreachable!("Invalid for memory init/final"),
-            Self::MemoryLocal(_) => unreachable!("Invalid for memory local"),
-            Self::Global(_) => unreachable!("Invalid for global chip"),
-            // Self::ProgramMemory(_) => unreachable!("Invalid for memory program"),
-            Self::Program(_) => unreachable!("Invalid for core chip"),
-            Self::Mul(_) => unreachable!("Invalid for core chip"),
-            Self::Lt(_) => unreachable!("Invalid for core chip"),
-            Self::CloClz(_) => unreachable!("Invalid for core chip"),
-            Self::ShiftRight(_) => unreachable!("Invalid for core chip"),
-            Self::ShiftLeft(_) => unreachable!("Invalid for core chip"),
-            Self::ByteLookup(_) => unreachable!("Invalid for core chip"),
-            Self::SyscallCore(_) => unreachable!("Invalid for core chip"),
-            Self::SyscallPrecompile(_) => unreachable!("Invalid for syscall precompile chip"),
-            Self::Branch(_) => unreachable!("Invalid for core chip"),
-            Self::Jump(_) => unreachable!("Invalid for core chip"),
-            Self::SyscallInstrs(_) => unreachable!("Invalid for core chip"),
-            Self::MemoryInstrs(_) => unreachable!("Invalid for core chip"),
-            Self::MiscInstrs(_) => unreachable!("Invalid for core chip"),
-            Self::MovCond(_) => unreachable!("Invalid for core chip"),
-        }
     }
 }
 
@@ -1169,35 +942,35 @@ pub mod tests {
 
     // #[test]
     // fn test_key_serde() {
-        // let program = ssz_withdrawals_program();
-        // let config = KoalaBearPoseidon2::new();
-        // let machine = MipsAir::machine(config);
-        // let (pk, vk) = machine.setup(&program);
-        //
-        // let serialized_pk = bincode::serialize(&pk).unwrap();
-        // let deserialized_pk: StarkProvingKey<KoalaBearPoseidon2> =
-        //     bincode::deserialize(&serialized_pk).unwrap();
-        // assert_eq!(pk.commit, deserialized_pk.commit);
-        // assert_eq!(pk.pc_start, deserialized_pk.pc_start);
-        // assert_eq!(pk.traces, deserialized_pk.traces);
-        // assert_eq!(pk.data.root(), deserialized_pk.data.root());
-        // assert_eq!(pk.chip_ordering, deserialized_pk.chip_ordering);
-        // assert_eq!(pk.local_only, deserialized_pk.local_only);
-        //
-        // let serialized_vk = bincode::serialize(&vk).unwrap();
-        // let deserialized_vk: StarkVerifyingKey<KoalaBearPoseidon2> =
-        //     bincode::deserialize(&serialized_vk).unwrap();
-        // assert_eq!(vk.commit, deserialized_vk.commit);
-        // assert_eq!(vk.pc_start, deserialized_vk.pc_start);
-        // assert_eq!(vk.chip_information.len(), deserialized_vk.chip_information.len());
-        // for (a, b) in vk.chip_information.iter().zip(deserialized_vk.chip_information.iter()) {
-        //     assert_eq!(a.0, b.0);
-        //     assert_eq!(a.1.log_n, b.1.log_n);
-        //     assert_eq!(a.1.shift, b.1.shift);
-        //     assert_eq!(a.2.height, b.2.height);
-        //     assert_eq!(a.2.width, b.2.width);
-        // }
-        // assert_eq!(vk.chip_ordering, deserialized_vk.chip_ordering);
+    // let program = ssz_withdrawals_program();
+    // let config = KoalaBearPoseidon2::new();
+    // let machine = MipsAir::machine(config);
+    // let (pk, vk) = machine.setup(&program);
+    //
+    // let serialized_pk = bincode::serialize(&pk).unwrap();
+    // let deserialized_pk: StarkProvingKey<KoalaBearPoseidon2> =
+    //     bincode::deserialize(&serialized_pk).unwrap();
+    // assert_eq!(pk.commit, deserialized_pk.commit);
+    // assert_eq!(pk.pc_start, deserialized_pk.pc_start);
+    // assert_eq!(pk.traces, deserialized_pk.traces);
+    // assert_eq!(pk.data.root(), deserialized_pk.data.root());
+    // assert_eq!(pk.chip_ordering, deserialized_pk.chip_ordering);
+    // assert_eq!(pk.local_only, deserialized_pk.local_only);
+    //
+    // let serialized_vk = bincode::serialize(&vk).unwrap();
+    // let deserialized_vk: StarkVerifyingKey<KoalaBearPoseidon2> =
+    //     bincode::deserialize(&serialized_vk).unwrap();
+    // assert_eq!(vk.commit, deserialized_vk.commit);
+    // assert_eq!(vk.pc_start, deserialized_vk.pc_start);
+    // assert_eq!(vk.chip_information.len(), deserialized_vk.chip_information.len());
+    // for (a, b) in vk.chip_information.iter().zip(deserialized_vk.chip_information.iter()) {
+    //     assert_eq!(a.0, b.0);
+    //     assert_eq!(a.1.log_n, b.1.log_n);
+    //     assert_eq!(a.1.shift, b.1.shift);
+    //     assert_eq!(a.2.height, b.2.height);
+    //     assert_eq!(a.2.width, b.2.width);
+    // }
+    // assert_eq!(vk.chip_ordering, deserialized_vk.chip_ordering);
     // }
 
     // -----------------------------------------------------------------------

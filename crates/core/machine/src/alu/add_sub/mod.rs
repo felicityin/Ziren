@@ -83,7 +83,7 @@ impl<F: PrimeField32> MachineAir<F> for AddSubChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_power_of_two(
             input.add_sub_events.len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <AddSubChip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -150,11 +150,7 @@ impl<F: PrimeField32> MachineAir<F> for AddSubChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.add_sub_events.is_empty()
-        }
+        !shard.add_sub_events.is_empty()
     }
 
     fn local_only(&self) -> bool {
@@ -271,7 +267,7 @@ mod tests {
     use p3_matrix::dense::RowMajorMatrix;
     #[cfg(feature = "sys")]
     use p3_maybe_rayon::prelude::ParallelIterator;
-    use rand::{thread_rng, Rng};
+
     use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode};
     use zkm_hypercube::air::MachineAir;
     // use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig};

@@ -28,7 +28,6 @@ pub mod operations;
 pub mod program;
 #[cfg(test)]
 pub mod programs;
-pub mod shape;
 #[cfg(feature = "sys")]
 pub mod sys;
 pub mod syscall;

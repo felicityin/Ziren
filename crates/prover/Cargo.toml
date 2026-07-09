@@ -62,24 +62,8 @@ name = "post_trusted_setup"
 path = "scripts/post_trusted_setup.rs"
 
 [[bin]]
-name = "find_maximal_shapes"
-path = "scripts/find_maximal_shapes.rs"
-
-[[bin]]
-name = "find_small_shapes"
-path = "scripts/find_small_shapes.rs"
-
-[[bin]]
-name = "find_oom_shapes"
-path = "scripts/find_oom_shapes.rs"
-
-[[bin]]
 name = "find_recursion_shapes"
 path = "scripts/find_recursion_shapes.rs"
-
-[[bin]]
-name = "test_shape_fixing"
-path = "scripts/test_shape_fixing.rs"
 
 [features]
 default = ["native-gnark"]

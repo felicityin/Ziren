@@ -13,6 +13,10 @@ const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = 1;
 /// The threshold for splitting deferred events.
 pub const MAX_DEFERRED_SPLIT_THRESHOLD: usize = 1 << 15;
 
+/// The default maximum estimated LDE size (in bytes) before a shard is stopped early to avoid
+/// OOM during proving.
+pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 14_000_000_000;
+
 /// Options to configure the Ziren prover for core and recursive proofs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZKMProverOpts {
@@ -128,6 +132,8 @@ pub struct ZKMCoreOpts {
     pub records_and_traces_channel_capacity: usize,
     /// The frequency for shape checks.
     pub shape_check_frequency: u64,
+    /// The maximum estimated LDE size (in bytes) before a shard is stopped early to avoid OOM.
+    pub lde_size_threshold: u64,
 }
 
 impl Default for ZKMCoreOpts {
@@ -161,6 +167,10 @@ impl Default for ZKMCoreOpts {
                 ),
             shape_check_frequency: env::var("SHAPE_CHECK_FREQUENCY")
                 .map_or_else(|_| 16, |s| s.parse::<u64>().unwrap_or(16)),
+            lde_size_threshold: env::var("LDE_SIZE_THRESHOLD").map_or_else(
+                |_| DEFAULT_LDE_SIZE_THRESHOLD,
+                |s| s.parse::<u64>().unwrap_or(DEFAULT_LDE_SIZE_THRESHOLD),
+            ),
             reconstruct_commitments: true,
         };
 
@@ -225,6 +235,10 @@ impl ZKMCoreOpts {
                 ),
             shape_check_frequency: env::var("SHAPE_CHECK_FREQUENCY")
                 .map_or_else(|_| 16, |s| s.parse::<u64>().unwrap_or(16)),
+            lde_size_threshold: env::var("LDE_SIZE_THRESHOLD").map_or_else(
+                |_| DEFAULT_LDE_SIZE_THRESHOLD,
+                |s| s.parse::<u64>().unwrap_or(DEFAULT_LDE_SIZE_THRESHOLD),
+            ),
             reconstruct_commitments: true,
         }
     }

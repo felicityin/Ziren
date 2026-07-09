@@ -98,11 +98,7 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::KECCAK_SPONGE).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::KECCAK_SPONGE).is_empty()
     }
 }
 

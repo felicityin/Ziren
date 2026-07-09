@@ -161,7 +161,7 @@ impl<F: PrimeField32, E: EllipticCurve + EdwardsParameters> MachineAir<F> for Ed
                 );
                 row
             },
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <EdAddAssignChip<E> as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -201,11 +201,7 @@ impl<F: PrimeField32, E: EllipticCurve + EdwardsParameters> MachineAir<F> for Ed
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::ED_ADD).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::ED_ADD).is_empty()
     }
 
     fn local_only(&self) -> bool {

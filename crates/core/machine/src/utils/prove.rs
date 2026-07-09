@@ -17,7 +17,6 @@ use zkm_stark::koala_bear_poseidon2::KoalaBearPoseidon2;
 use p3_field::PrimeField32;
 use p3_koala_bear::KoalaBear;
 
-use crate::shape::CoreShapeConfig;
 use crate::{
     io::ZKMStdin,
     utils::{chunk_vec, concurrency::TurnBasedSync},
@@ -81,84 +80,11 @@ pub enum ZKMCoreProverError {
     DependenciesGenerationError,
 }
 
-// TODO(zkm-hypercube): needs a ShardProver-equivalent (setup/prove/challenger) before this can
-// be rebuilt; prove_with_context below is the first step (trace generation only).
-// pub fn prove_simple<SC: StarkGenericConfig, P: MachineProver<SC, MipsAir<SC::Val>>>(
-//     config: SC,
-//     mut runtime: Executor,
-// ) -> Result<(MachineProof<SC>, u64), ZKMCoreProverError>
-// where
-//     SC::Challenger: Clone,
-//     OpeningProof<SC>: Send + Sync,
-//     Com<SC>: Send + Sync,
-//     PcsProverData<SC>: Send + Sync,
-//     // ShardMainData<SC>: Serialize + DeserializeOwned,
-//     <SC as StarkGenericConfig>::Val: PrimeField32,
-// {
-//     // Setup the machine.
-//     let machine = MipsAir::machine(config);
-//     let prover = P::new(machine);
-//     let (pk, _) = prover.setup(runtime.program.as_ref());
-//
-//     // Set the shard numbers.
-//     runtime.records.iter_mut().enumerate().for_each(|(i, shard)| {
-//         shard.public_values.shard = (i + 1) as u32;
-//     });
-//
-//     // Prove the program.
-//     let mut challenger = prover.config().challenger();
-//     let proving_start = Instant::now();
-//     let proof =
-//         prover.prove(&pk, runtime.records, &mut challenger, ZKMCoreOpts::default()).unwrap();
-//     let proving_duration = proving_start.elapsed().as_millis();
-//     let nb_bytes = bincode::serialize(&proof).unwrap().len();
-//
-//     // Print the summary.
-//     tracing::info!(
-//         "summary: cycles={}, e2e={}, khz={:.2}, proofSize={}",
-//         runtime.state.global_clk,
-//         proving_duration,
-//         (runtime.state.global_clk as f64 / proving_duration as f64),
-//         Size::from_bytes(nb_bytes),
-//     );
-//
-//     Ok((proof, runtime.state.global_clk))
-// }
-//
-// pub fn prove<SC: StarkGenericConfig, P: MachineProver<SC, MipsAir<SC::Val>>>(
-//     program: Program,
-//     stdin: &ZKMStdin,
-//     config: SC,
-//     opts: ZKMCoreOpts,
-//     shape_config: Option<&CoreShapeConfig<SC::Val>>,
-// ) -> Result<(MachineProof<SC>, Vec<u8>, u64), ZKMCoreProverError>
-// where
-//     SC::Challenger: 'static + Clone + Send,
-//     <SC as StarkGenericConfig>::Val: PrimeField32,
-//     OpeningProof<SC>: Send,
-//     Com<SC>: Send + Sync,
-//     PcsProverData<SC>: Send + Sync,
-// {
-//     let machine = MipsAir::machine(config);
-//     let prover = P::new(machine);
-//     let (pk, _) = prover.setup(&program);
-//     prove_with_context::<SC, _>(
-//         &prover,
-//         &pk,
-//         program,
-//         stdin,
-//         opts,
-//         Default::default(),
-//         shape_config,
-//     )
-// }
-
 pub fn prove_with_context(
     program: Program,
     stdin: &ZKMStdin,
     opts: ZKMCoreOpts,
     context: ZKMContext,
-    shape_config: Option<&CoreShapeConfig<KoalaBear>>,
 ) -> Result<
     (Vec<ZkmShardProof>, Vec<u8>, u64, zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext>),
     ZKMCoreProverError,
@@ -176,9 +102,6 @@ pub fn prove_with_context(
 
     // Setup the runtime.
     let mut runtime = Executor::with_context(program.clone(), opts, context);
-    runtime.maximal_shapes = shape_config.map(|config| {
-        config.maximal_core_shapes(opts.shard_size.ilog2() as usize).into_iter().collect()
-    });
 
     runtime.write_vecs(&stdin.buffer);
     for proof in stdin.proofs.iter() {
@@ -294,7 +217,6 @@ pub fn prove_with_context(
                                         program.clone(),
                                         execution_state,
                                         opts,
-                                        shape_config,
                                     )
                                 });
                             log::debug!("generated {} records", records.len());
@@ -391,16 +313,7 @@ pub fn prove_with_context(
                                 // Let another worker update the state.
                                 record_gen_sync.advance_turn();
 
-                                // Fix the shape of the records.
-                                let mut fixed_shape = true;
-                                if let Some(shape_config) = shape_config {
-                                    for record in records_clone.iter_mut() {
-                                        if shape_config.fix_shape(record).is_err() {
-                                            fixed_shape = false;
-                                        }
-                                    }
-                                }
-                                fixed_shape.then_some(records_clone)
+                                Some(records_clone)
                             } else {
                                 None
                             };
@@ -453,12 +366,6 @@ pub fn prove_with_context(
                                 // Let another worker update the state.
                                 record_gen_sync.advance_turn();
 
-                                // Fix the shape of the records.
-                                if let Some(shape_config) = shape_config {
-                                    for record in records.iter_mut() {
-                                        shape_config.fix_shape(record).unwrap();
-                                    }
-                                }
                                 shape_fixed_records = Some(records);
                             }
 
@@ -593,11 +500,9 @@ pub fn prove_with_context(
 
 /// Runs a program and returns the public values stream.
 pub fn run_test_io(
-    mut program: Program,
+    program: Program,
     inputs: ZKMStdin,
 ) -> Result<ZKMPublicValues, ZKMCoreProverError> {
-    let shape_config = CoreShapeConfig::<KoalaBear>::default();
-    shape_config.fix_preprocessed_shape(&mut program).unwrap();
     let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.write_vecs(&inputs.buffer);
@@ -606,32 +511,28 @@ pub fn run_test_io(
     });
     let public_values = ZKMPublicValues::from(&runtime.state.public_values_stream);
 
-    let _ = run_test_core(runtime, inputs, Some(&shape_config))?;
+    let _ = run_test_core(runtime, inputs)?;
     Ok(public_values)
 }
 
-pub fn run_test(mut program: Program) -> Result<Vec<ZkmShardProof>, ZKMCoreProverError> {
-    let shape_config = CoreShapeConfig::<KoalaBear>::default();
-    shape_config.fix_preprocessed_shape(&mut program).unwrap();
+pub fn run_test(program: Program) -> Result<Vec<ZkmShardProof>, ZKMCoreProverError> {
     let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.run().unwrap();
         runtime
     });
-    run_test_core(runtime, ZKMStdin::new(), Some(&shape_config))
+    run_test_core(runtime, ZKMStdin::new())
 }
 
 pub fn run_test_core(
     runtime: Executor,
     inputs: ZKMStdin,
-    shape_config: Option<&CoreShapeConfig<KoalaBear>>,
 ) -> Result<Vec<ZkmShardProof>, ZKMCoreProverError> {
     let (shard_proofs, _public_values_stream, _cycles, vk) = prove_with_context(
         Program::clone(&runtime.program),
         &inputs,
         ZKMCoreOpts::default(),
         ZKMContext::default(),
-        shape_config,
     )?;
 
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
@@ -723,7 +624,6 @@ pub fn trace_checkpoint<SC: StarkGenericConfig>(
     program: Program,
     state: ExecutionState,
     opts: ZKMCoreOpts,
-    shape_config: Option<&CoreShapeConfig<SC::Val>>,
 ) -> (Vec<ExecutionRecord>, ExecutionReport)
 where
     <SC as StarkGenericConfig>::Val: PrimeField32,
@@ -731,9 +631,6 @@ where
     let noop = NoOpSubproofVerifier;
 
     let mut runtime = Executor::recover(program, state, opts);
-    runtime.maximal_shapes = shape_config.map(|config| {
-        config.maximal_core_shapes(opts.shard_size.ilog2() as usize).into_iter().collect()
-    });
 
     // We already passed the deferred proof verifier when creating checkpoints, so the proofs were
     // already verified. So here we use a noop verifier to not print any warnings.
@@ -826,6 +723,6 @@ mod tests {
     fn run_test_core_smoke() {
         let program = simple_program();
         let runtime = Executor::new(program, ZKMCoreOpts::default());
-        run_test_core(runtime, ZKMStdin::new(), None).unwrap();
+        run_test_core(runtime, ZKMStdin::new()).unwrap();
     }
 }

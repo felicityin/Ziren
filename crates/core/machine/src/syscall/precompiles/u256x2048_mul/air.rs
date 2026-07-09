@@ -243,7 +243,7 @@ impl<F: PrimeField32> MachineAir<F> for U256x2048MulChip {
 
                 row
             },
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <U256x2048MulChip as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -252,11 +252,7 @@ impl<F: PrimeField32> MachineAir<F> for U256x2048MulChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::U256XU2048_MUL).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::U256XU2048_MUL).is_empty()
     }
 
     fn local_only(&self) -> bool {

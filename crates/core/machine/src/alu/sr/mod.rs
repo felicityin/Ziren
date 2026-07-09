@@ -60,10 +60,10 @@ use zkm_core_executor::{
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
-use zkm_primitives::consts::WORD_SIZE;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
+use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
     air::ZKMCoreAirBuilder,
@@ -160,7 +160,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_power_of_two(
             input.shift_right_events.len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <ShiftRightChip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -225,11 +225,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.shift_right_events.is_empty()
-        }
+        !shard.shift_right_events.is_empty()
     }
 
     fn local_only(&self) -> bool {

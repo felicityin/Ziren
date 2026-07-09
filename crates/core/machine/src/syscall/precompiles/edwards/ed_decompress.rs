@@ -252,7 +252,7 @@ impl<F: PrimeField32, E: EdwardsParameters> MachineAir<F> for EdDecompressChip<E
                     .map_err(CoreChipError::CurveError)?;
                 Ok(row)
             },
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <EdDecompressChip<E> as MachineAir<F>>::name(self).as_str(),
         )?;
 
@@ -263,11 +263,7 @@ impl<F: PrimeField32, E: EdwardsParameters> MachineAir<F> for EdDecompressChip<E
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::ED_DECOMPRESS).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::ED_DECOMPRESS).is_empty()
     }
 
     fn local_only(&self) -> bool {

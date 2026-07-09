@@ -26,8 +26,8 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_stark::air::Polynomial;
 use zkm_hypercube::air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder};
+use zkm_stark::air::Polynomial;
 
 use crate::{
     memory::{value_as_limbs, MemoryReadCols, MemoryWriteCols},
@@ -184,7 +184,7 @@ impl<F: PrimeField32, P: FpOpField> MachineAir<F> for Fp2AddSubAssignChip<P> {
                 );
                 row
             },
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <Fp2AddSubAssignChip<P> as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -205,16 +205,10 @@ impl<F: PrimeField32, P: FpOpField> MachineAir<F> for Fp2AddSubAssignChip<P> {
                 && shard.get_precompile_events(SyscallCode::BLS12381_FP_SUB).is_empty()
         );
 
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            match P::FIELD_TYPE {
-                FieldType::Bn254 => {
-                    !shard.get_precompile_events(SyscallCode::BN254_FP2_ADD).is_empty()
-                }
-                FieldType::Bls12381 => {
-                    !shard.get_precompile_events(SyscallCode::BLS12381_FP2_ADD).is_empty()
-                }
+        match P::FIELD_TYPE {
+            FieldType::Bn254 => !shard.get_precompile_events(SyscallCode::BN254_FP2_ADD).is_empty(),
+            FieldType::Bls12381 => {
+                !shard.get_precompile_events(SyscallCode::BLS12381_FP2_ADD).is_empty()
             }
         }
     }

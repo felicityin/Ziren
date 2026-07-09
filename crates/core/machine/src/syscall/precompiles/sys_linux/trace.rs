@@ -61,7 +61,7 @@ impl<F: PrimeField32> MachineAir<F> for SysLinuxChip {
         pad_rows_fixed(
             &mut rows,
             || [F::ZERO; NUM_SYS_LINUX_COLS],
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <SysLinuxChip as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -99,11 +99,7 @@ impl<F: PrimeField32> MachineAir<F> for SysLinuxChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::SYS_LINUX).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::SYS_LINUX).is_empty()
     }
 
     fn local_only(&self) -> bool {

@@ -35,13 +35,7 @@ impl<F: PrimeField32> MachineAir<F> for CpuChip {
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let n_real_rows = input.cpu_events.len();
-        let padded_nb_rows = if let Some(shape) = &input.shape {
-            shape.height(&self.id()).unwrap()
-        } else if n_real_rows < 16 {
-            16
-        } else {
-            n_real_rows.next_power_of_two()
-        };
+        let padded_nb_rows = if n_real_rows < 16 { 16 } else { n_real_rows.next_power_of_two() };
         Some(padded_nb_rows)
     }
 
@@ -110,11 +104,7 @@ impl<F: PrimeField32> MachineAir<F> for CpuChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            shard.contains_cpu()
-        }
+        shard.contains_cpu()
     }
 }
 

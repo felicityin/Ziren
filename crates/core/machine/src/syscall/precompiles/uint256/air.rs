@@ -211,7 +211,7 @@ impl<F: PrimeField32> MachineAir<F> for Uint256MulChip {
 
                 row
             },
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <Uint256MulChip as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -220,11 +220,7 @@ impl<F: PrimeField32> MachineAir<F> for Uint256MulChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::UINT256_MUL).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::UINT256_MUL).is_empty()
     }
 
     fn local_only(&self) -> bool {

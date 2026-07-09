@@ -89,7 +89,7 @@ impl<F: PrimeField32> MachineAir<F> for BitwiseChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_power_of_two(
             input.bitwise_events.len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <BitwiseChip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -116,7 +116,7 @@ impl<F: PrimeField32> MachineAir<F> for BitwiseChip {
         pad_rows_fixed(
             &mut rows,
             || [F::ZERO; NUM_BITWISE_COLS],
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <BitwiseChip as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -150,11 +150,7 @@ impl<F: PrimeField32> MachineAir<F> for BitwiseChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.bitwise_events.is_empty()
-        }
+        !shard.bitwise_events.is_empty()
     }
 
     fn local_only(&self) -> bool {

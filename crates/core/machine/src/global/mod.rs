@@ -118,14 +118,19 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
         output.public_values.global_count += events.len() as u32;
         let mut acc = SepticCurveComplete::Affine(SepticDigest::<F>::zero().0);
         for event in events.iter() {
-            let (point, _offset) =
-                GlobalLookupOperation::<F>::get_digest(SepticBlock(event.message), event.is_receive, event.kind);
+            let (point, _offset) = GlobalLookupOperation::<F>::get_digest(
+                SepticBlock(event.message),
+                event.is_receive,
+                event.kind,
+            );
             acc = acc + SepticCurveComplete::Affine(point);
         }
         let final_digest = acc.point();
         for i in 0..7 {
-            output.public_values.global_cumulative_sum_x[i] += final_digest.x.0[i].as_canonical_u32();
-            output.public_values.global_cumulative_sum_y[i] += final_digest.y.0[i].as_canonical_u32();
+            output.public_values.global_cumulative_sum_x[i] +=
+                final_digest.x.0[i].as_canonical_u32();
+            output.public_values.global_cumulative_sum_y[i] +=
+                final_digest.y.0[i].as_canonical_u32();
         }
 
         Ok(())
@@ -134,7 +139,7 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let events = &input.global_lookup_events;
         let nb_rows = events.len();
-        let size_log2 = input.fixed_log2_rows::<F, _>(self);
+        let size_log2 = None;
         let padded_nb_rows = next_power_of_two(
             nb_rows,
             size_log2,

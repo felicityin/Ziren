@@ -118,7 +118,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
             MemoryChipType::Finalize => &input.global_memory_finalize_events,
         };
         let nb_rows = events.len();
-        let size_log2 = input.fixed_log2_rows::<F, Self>(self);
+        let size_log2 = None;
         let padded_nb_rows = next_power_of_two(
             nb_rows,
             size_log2,
@@ -201,13 +201,9 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            match self.kind {
-                MemoryChipType::Initialize => !shard.global_memory_initialize_events.is_empty(),
-                MemoryChipType::Finalize => !shard.global_memory_finalize_events.is_empty(),
-            }
+        match self.kind {
+            MemoryChipType::Initialize => !shard.global_memory_initialize_events.is_empty(),
+            MemoryChipType::Finalize => !shard.global_memory_finalize_events.is_empty(),
         }
     }
 
@@ -423,15 +419,26 @@ where
             .map(|(i, bit)| (*bit).into() * AB::F::from_wrapped_u32(1 << i))
             .sum::<AB::Expr>();
 
-        IsZeroOperation::<AB::F>::eval(builder, prev_addr, local.is_prev_addr_zero, local.is_real.into());
-        IsZeroOperation::<AB::F>::eval(builder, local.index.into(), local.is_index_zero, local.is_real.into());
+        IsZeroOperation::<AB::F>::eval(
+            builder,
+            prev_addr,
+            local.is_prev_addr_zero,
+            local.is_real.into(),
+        );
+        IsZeroOperation::<AB::F>::eval(
+            builder,
+            local.index.into(),
+            local.is_index_zero,
+            local.is_real.into(),
+        );
 
         // `is_comp` is false only when both `prev_addr == 0` and `index == 0`, i.e. this is the
         // sole initialization of address 0 -- the one case with no valid comparison to make.
         builder.assert_eq(
             local.is_comp,
             local.is_real.into()
-                * (AB::Expr::one() - local.is_prev_addr_zero.result.into() * local.is_index_zero.result.into()),
+                * (AB::Expr::one()
+                    - local.is_prev_addr_zero.result.into() * local.is_index_zero.result.into()),
         );
         builder.assert_bool(local.is_comp);
 

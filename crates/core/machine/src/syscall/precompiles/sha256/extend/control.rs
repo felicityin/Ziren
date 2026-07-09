@@ -4,9 +4,7 @@ use std::mem::size_of;
 use p3_air::{Air, BaseAir};
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
-use zkm_core_executor::{
-    events::PrecompileEvent, syscalls::SyscallCode, ExecutionRecord, Program,
-};
+use zkm_core_executor::{events::PrecompileEvent, syscalls::SyscallCode, ExecutionRecord, Program};
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::{
     air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
@@ -81,7 +79,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
             .collect::<Vec<_>>();
 
         let nb_rows = rows.len();
-        let size_log2 = input.fixed_log2_rows::<F, Self>(self);
+        let size_log2 = None;
         let padded_nb_rows =
             next_power_of_two(nb_rows, size_log2, <Self as MachineAir<F>>::name(self).as_str());
         rows.resize(padded_nb_rows, [F::ZERO; NUM_SHA_EXTEND_CONTROL_COLS]);
@@ -92,16 +90,16 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
         ))
     }
 
-    fn generate_dependencies(&self, _input: &Self::Record, _output: &mut Self::Record) -> Result<(), Self::Error> {
+    fn generate_dependencies(
+        &self,
+        _input: &Self::Record,
+        _output: &mut Self::Record,
+    ) -> Result<(), Self::Error> {
         Ok(())
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::SHA_EXTEND).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::SHA_EXTEND).is_empty()
     }
 }
 

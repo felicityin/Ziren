@@ -1,18 +1,18 @@
-use enum_map::EnumMap;
 use hashbrown::HashMap;
 use itertools::{EitherOrBoth, Itertools};
-use p3_field::{Field, FieldAlgebra};
+use p3_field::FieldAlgebra;
 use zkm_hypercube::{
-    air::{AirLookup, LookupScope, MachineAir, PublicValues, DEFAULT_PC_INC, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    air::{
+        AirLookup, LookupScope, PublicValues, ZKMAirBuilder, DEFAULT_PC_INC, ZKM_PROOF_NUM_PV_ELTS,
+    },
     lookup::LookupKind,
     record::MachineRecord,
     septic_digest::SepticDigest,
 };
-use zkm_hypercube::shape::Shape;
 use zkm_stark::SplitOpts;
 
 use serde::{Deserialize, Serialize};
-use std::{borrow::Borrow, iter::once, mem::take, str::FromStr, sync::Arc};
+use std::{borrow::Borrow, iter::once, mem::take, sync::Arc};
 
 use crate::{
     events::{
@@ -22,7 +22,7 @@ use crate::{
         PrecompileEvents, SyscallEvent,
     },
     syscalls::{precompiles::keccak::sponge::GENERAL_BLOCK_SIZE_U32S, SyscallCode},
-    MipsAirId, Program,
+    Program,
 };
 
 /// A record of the execution of a program.
@@ -77,10 +77,6 @@ pub struct ExecutionRecord {
     pub global_lookup_events: Vec<GlobalLookupEvent>,
     /// The public values.
     pub public_values: PublicValues<u32, u32>,
-    /// The shape of the proof.
-    pub shape: Option<Shape<MipsAirId>>,
-    /// The predicted counts of the proof.
-    pub counts: Option<EnumMap<MipsAirId, u64>>,
 }
 
 impl ExecutionRecord {
@@ -259,16 +255,6 @@ impl ExecutionRecord {
         shards
     }
 
-    /// Return the number of rows needed for a chip, according to the proof shape specified in the
-    /// struct.
-    pub fn fixed_log2_rows<F: Field, A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
-        self.shape.as_ref().map(|shape| {
-            shape
-                .log2_height(&MipsAirId::from_str(&air.name()).unwrap())
-                .unwrap_or_else(|| panic!("Chip {} not found in specified shape", air.name()))
-        })
-    }
-
     /// Determines whether the execution record contains CPU events.
     #[must_use]
     pub fn contains_cpu(&self) -> bool {
@@ -399,8 +385,10 @@ impl MachineRecord for ExecutionRecord {
         // `global/mod.rs::generate_dependencies`).
         self.public_values.global_count += other.public_values.global_count;
         for i in 0..7 {
-            self.public_values.global_cumulative_sum_x[i] += other.public_values.global_cumulative_sum_x[i];
-            self.public_values.global_cumulative_sum_y[i] += other.public_values.global_cumulative_sum_y[i];
+            self.public_values.global_cumulative_sum_x[i] +=
+                other.public_values.global_cumulative_sum_x[i];
+            self.public_values.global_cumulative_sum_y[i] +=
+                other.public_values.global_cumulative_sum_y[i];
         }
     }
 
@@ -463,7 +451,9 @@ impl MachineRecord for ExecutionRecord {
         builder.send(
             AirLookup::new(
                 once(AB::Expr::zero())
-                    .chain(public_values.previous_finalize_addr_bits.iter().cloned().map(Into::into))
+                    .chain(
+                        public_values.previous_finalize_addr_bits.iter().cloned().map(Into::into),
+                    )
                     .chain(once(AB::Expr::one()))
                     .collect(),
                 AB::Expr::one(),
