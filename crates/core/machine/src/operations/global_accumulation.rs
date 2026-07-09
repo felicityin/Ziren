@@ -185,6 +185,10 @@ impl<F: Field, const N: usize> GlobalAccumulationOperation<F, N> {
         // incomplete Weierstrass addition edge case is triggered.
         assert_on_curve(builder, initial_digest.clone());
 
+        // Defense-in-depth: every witnessed running digest must stay on-curve even if the
+        // incomplete Weierstrass addition edge case is triggered.
+        assert_on_curve(builder, initial_digest.clone());
+
         // Constrain that when `is_real = 1`, addition is being carried out, and when `is_real = 0`, the sum remains the same.
         for i in 0..N {
             let current_sum =

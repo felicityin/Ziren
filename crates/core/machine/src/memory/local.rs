@@ -22,7 +22,6 @@ use zkm_hypercube::{
 
 use crate::{
     air::{MemoryAirBuilder, WordAirBuilder},
-    operations::KoalaBearBitDecomposition,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -35,10 +34,6 @@ pub(crate) const NUM_MEMORY_LOCAL_INIT_COLS: usize = size_of::<MemoryLocalCols<u
 pub struct SingleMemoryLocal<T: Copy> {
     /// The address of the memory access.
     pub addr: T,
-
-    /// The bit decomposition of `addr`, used to range check that `addr` is a valid KoalaBear
-    /// field element (i.e. strictly less than the modulus `0x7F000001`).
-    pub addr_bits: KoalaBearBitDecomposition<T>,
 
     /// The initial shard of the memory access.
     pub initial_shard: T,
@@ -220,7 +215,6 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
                         let final_clk = event.final_mem_access.timestamp;
 
                         cols.addr = F::from_canonical_u32(event.addr);
-                        cols.addr_bits.populate(event.addr);
                         cols.initial_shard = F::from_canonical_u32(initial_shard);
                         cols.final_shard = F::from_canonical_u32(final_shard);
                         cols.initial_clk = F::from_canonical_u32(initial_clk);
@@ -285,15 +279,6 @@ where
             // Defense-in-depth: byte range check all eight value limbs via the byte lookup table.
             builder.slice_range_check_u8(&local.initial_value.0, local.is_real);
             builder.slice_range_check_u8(&local.final_value.0, local.is_real);
-
-            // Defense-in-depth: range check `addr` to be a valid KoalaBear field element
-            // (strictly less than the modulus `0x7F000001`).
-            KoalaBearBitDecomposition::<AB::F>::range_check(
-                builder,
-                local.addr,
-                local.addr_bits,
-                local.is_real.into(),
-            );
 
             // Defense-in-depth: range check shards to 16 bits and clocks to 24 bits.
             builder

@@ -9,23 +9,6 @@ namespace zkm_core_machine_sys::memory_local {
     __ZKM_HOSTDEV__ void event_to_row(const MemoryLocalEvent* event, SingleMemoryLocal<F>* cols) {
         cols->addr = F::from_canonical_u32(event->addr);
 
-        // Bit decomposition of `addr` for the KoalaBear field-element range check.
-        for (uintptr_t i = 0; i < 32; i++) {
-            cols->addr_bits.bits[i] = F::from_canonical_u32(((event->addr) >> i) & 1);
-        }
-        cols->addr_bits.and_most_sig_byte_decomp_0_to_2 =
-            cols->addr_bits.bits[24] * cols->addr_bits.bits[25];
-        cols->addr_bits.and_most_sig_byte_decomp_0_to_3 =
-            cols->addr_bits.and_most_sig_byte_decomp_0_to_2 * cols->addr_bits.bits[26];
-        cols->addr_bits.and_most_sig_byte_decomp_0_to_4 =
-            cols->addr_bits.and_most_sig_byte_decomp_0_to_3 * cols->addr_bits.bits[27];
-        cols->addr_bits.and_most_sig_byte_decomp_0_to_5 =
-            cols->addr_bits.and_most_sig_byte_decomp_0_to_4 * cols->addr_bits.bits[28];
-        cols->addr_bits.and_most_sig_byte_decomp_0_to_6 =
-            cols->addr_bits.and_most_sig_byte_decomp_0_to_5 * cols->addr_bits.bits[29];
-        cols->addr_bits.and_most_sig_byte_decomp_0_to_7 =
-            cols->addr_bits.and_most_sig_byte_decomp_0_to_6 * cols->addr_bits.bits[30];
-
         cols->initial_shard = F::from_canonical_u32(event->initial_mem_access.shard);
         cols->initial_clk = F::from_canonical_u32(event->initial_mem_access.timestamp);
         write_word_from_u32_v2<F>(cols->initial_value, event->initial_mem_access.value);

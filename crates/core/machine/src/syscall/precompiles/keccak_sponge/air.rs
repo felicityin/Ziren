@@ -147,6 +147,10 @@ impl KeccakSpongeChip {
         let first_step = local.keccak.step_flags[0];
         let final_step = local.keccak.step_flags[NUM_ROUNDS - 1];
 
+        // Defensive constraints for the summarized Keccak sub-AIR boundary:
+        // enforce booleanity and mutual exclusion of first/final step flags.
+        // This prevents degenerate witnesses where a single row is both
+        // first-round and final-round when summary internals are hidden.
         builder.assert_bool(first_block);
         builder.assert_bool(final_block);
         builder.assert_bool(local.read_block);
