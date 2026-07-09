@@ -71,8 +71,21 @@ pub struct PublicValues<W, T> {
     /// `LookupKind::MemoryGlobalFinalizeControl` chain (indices `0..global_finalize_count`).
     pub global_finalize_count: T,
 
+    /// The number of `LookupKind::Global` events accumulated into `GlobalChip`'s septic-curve
+    /// digest in this shard. The upper bound of its `LookupKind::GlobalAccumulation` chain
+    /// (indices `0..global_count`), mirroring `global_init_count`.
+    pub global_count: T,
+
+    /// The x-coordinate of the final accumulated `GlobalChip` digest in this shard, closing the
+    /// `LookupKind::GlobalAccumulation` chain's end (the chain's start is always the constant
+    /// zero digest, needing no public value).
+    pub global_cumulative_sum_x: [T; 7],
+
+    /// The y-coordinate of the final accumulated `GlobalChip` digest in this shard.
+    pub global_cumulative_sum_y: [T; 7],
+
     /// This field is here to ensure that the size of the public values struct is a multiple of 8.
-    pub empty: [T; 7],
+    pub empty: [T; 0],
 }
 
 impl PublicValues<u32, u32> {
@@ -155,6 +168,9 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_timestamp,
             global_init_count,
             global_finalize_count,
+            global_count,
+            global_cumulative_sum_x,
+            global_cumulative_sum_y,
             ..
         } = value;
 
@@ -177,6 +193,9 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let last_timestamp = F::from_canonical_u32(last_timestamp);
         let global_init_count = F::from_canonical_u32(global_init_count);
         let global_finalize_count = F::from_canonical_u32(global_finalize_count);
+        let global_count = F::from_canonical_u32(global_count);
+        let global_cumulative_sum_x = global_cumulative_sum_x.map(F::from_canonical_u32);
+        let global_cumulative_sum_y = global_cumulative_sum_y.map(F::from_canonical_u32);
 
         Self {
             committed_value_digest,
@@ -194,6 +213,9 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_timestamp,
             global_init_count,
             global_finalize_count,
+            global_count,
+            global_cumulative_sum_x,
+            global_cumulative_sum_y,
             empty: core::array::from_fn(|_| F::zero()),
         }
     }

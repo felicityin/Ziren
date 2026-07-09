@@ -110,6 +110,24 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
             .collect::<Vec<_>>();
 
         output.add_byte_lookup_events(blu_batches.into_iter().flatten().collect());
+
+        // Populate the public-values boundary that closes the `LookupKind::GlobalAccumulation`
+        // chain's end (its start is always the constant zero digest, needing no public value;
+        // see `ExecutionRecord::eval_public_values`). Mirrors `MemoryGlobalChip`'s
+        // `global_init_count`/`global_finalize_count`.
+        output.public_values.global_count += events.len() as u32;
+        let mut acc = SepticCurveComplete::Affine(SepticDigest::<F>::zero().0);
+        for event in events.iter() {
+            let (point, _offset) =
+                GlobalLookupOperation::<F>::get_digest(SepticBlock(event.message), event.is_receive, event.kind);
+            acc = acc + SepticCurveComplete::Affine(point);
+        }
+        let final_digest = acc.point();
+        for i in 0..7 {
+            output.public_values.global_cumulative_sum_x[i] += final_digest.x.0[i].as_canonical_u32();
+            output.public_values.global_cumulative_sum_y[i] += final_digest.y.0[i].as_canonical_u32();
+        }
+
         Ok(())
     }
 

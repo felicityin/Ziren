@@ -166,9 +166,9 @@ impl<F: Field, const N: usize> GlobalAccumulationOperation<F, N> {
         };
 
         // Receive this row's own claimed initial digest at `index`, matched by value against
-        // whichever row sent it as its final digest at the same index -- or, for `index == 0`,
-        // against the phantom send in `ExecutionRecord::eval_public_values`, which is witnessed
-        // as the zero digest (replacing the old `when_first_row()` zero-digest anchor).
+        // whichever row sent it as its final digest at the same index -- or, for `index == 0`
+        // and the genuinely last real row's `index + 1`, against the phantom send/receive pair
+        // in `ExecutionRecord::eval_public_values` (mirrors SP1's `eval_global_sum`).
         builder.receive(
             AirLookup::new(
                 once(index.into())

@@ -805,12 +805,17 @@ mod tests {
     use super::*;
     use crate::programs::tests::simple_program;
 
-    // Blocked: MipsAir::hypercube_machine() still builds BooleanCircuitGarbleChip, which uses
-    // 2-row transition constraints the zerocheck framework can't evaluate. CpuChip, GlobalChip,
-    // MemoryGlobalChip, ShaExtendChip, ShaCompressChip, and KeccakSpongeChip are fixed and no
-    // longer among them. Tracked separately; see memory zerocheck-row-local-transition-gap.md.
+    // Passes end-to-end (trace-gen, full chip AIR eval, LogUp-GKR prove+verify) as of 2026-07-09,
+    // but only when built with the real zkVM toolchain (`source ~/.zkm-toolchain/env`), since it
+    // needs an actual guest ELF for `simple_program()`, not the ZKM_SKIP_PROGRAM_BUILD placeholder
+    // used by the rest of this crate's tests -- kept #[ignore]d so default `cargo test` runs (and
+    // CI without that toolchain) don't fail to build. MipsAir::hypercube_machine() still builds
+    // BooleanCircuitGarbleChip, which uses 2-row transition constraints the zerocheck framework
+    // can't evaluate, but that chip is never exercised by any program without a boolean-circuit-
+    // garble syscall, so it doesn't block this test. See memory
+    // zerocheck-row-local-transition-gap.md.
     #[test]
-    #[ignore]
+    #[ignore = "needs the real zkVM toolchain (source ~/.zkm-toolchain/env) to build simple_program()'s guest ELF"]
     fn run_test_core_smoke() {
         let program = simple_program();
         let runtime = Executor::new(program, ZKMCoreOpts::default());

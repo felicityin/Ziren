@@ -6,6 +6,7 @@ use zkm_hypercube::{
     air::{AirLookup, LookupScope, MachineAir, PublicValues, DEFAULT_PC_INC, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
     lookup::LookupKind,
     record::MachineRecord,
+    septic_digest::SepticDigest,
 };
 use zkm_stark::{shape::Shape, SplitOpts};
 
@@ -392,6 +393,14 @@ impl MachineRecord for ExecutionRecord {
         // dropped when `other` goes out of scope.
         self.public_values.global_init_count += other.public_values.global_init_count;
         self.public_values.global_finalize_count += other.public_values.global_finalize_count;
+
+        // Same story for `GlobalChip`'s `global_count`/`global_cumulative_sum_{x,y}` (see
+        // `global/mod.rs::generate_dependencies`).
+        self.public_values.global_count += other.public_values.global_count;
+        for i in 0..7 {
+            self.public_values.global_cumulative_sum_x[i] += other.public_values.global_cumulative_sum_x[i];
+            self.public_values.global_cumulative_sum_y[i] += other.public_values.global_cumulative_sum_y[i];
+        }
     }
 
     /// Retrieves the public values.  This method is needed for the `MachineRecord` trait, since
@@ -472,6 +481,34 @@ impl MachineRecord for ExecutionRecord {
             ),
             LookupScope::Local,
         );
+
+        // Anchor `GlobalChip`'s `LookupKind::GlobalAccumulation` chain: the start (`index == 0`)
+        // is always the constant zero digest (not a cross-shard value, so it's witnessed as a
+        // constant here rather than threaded through a `previous_*` field), and the end (at
+        // `index == global_count`) is this shard's own accumulated digest.
+        let zero_digest = SepticDigest::<AB::F>::zero().0;
+        builder.send(
+            AirLookup::new(
+                once(AB::Expr::zero())
+                    .chain(zero_digest.x.0.into_iter().map(Into::into))
+                    .chain(zero_digest.y.0.into_iter().map(Into::into))
+                    .collect(),
+                AB::Expr::one(),
+                LookupKind::GlobalAccumulation,
+            ),
+            LookupScope::Local,
+        );
+        builder.receive(
+            AirLookup::new(
+                once(public_values.global_count.into())
+                    .chain(public_values.global_cumulative_sum_x.iter().cloned().map(Into::into))
+                    .chain(public_values.global_cumulative_sum_y.iter().cloned().map(Into::into))
+                    .collect(),
+                AB::Expr::one(),
+                LookupKind::GlobalAccumulation,
+            ),
+            LookupScope::Local,
+        );
     }
 
     fn lookups_in_public_values() -> Vec<LookupKind> {
@@ -479,6 +516,7 @@ impl MachineRecord for ExecutionRecord {
             LookupKind::State,
             LookupKind::MemoryGlobalInitControl,
             LookupKind::MemoryGlobalFinalizeControl,
+            LookupKind::GlobalAccumulation,
         ]
     }
 }
