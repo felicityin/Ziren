@@ -384,6 +384,14 @@ impl MachineRecord for ExecutionRecord {
         self.global_memory_finalize_events.append(&mut other.global_memory_finalize_events);
         self.cpu_local_memory_access.append(&mut other.cpu_local_memory_access);
         self.global_lookup_events.append(&mut other.global_lookup_events);
+
+        // `Machine::generate_dependencies` calls each chip's `generate_dependencies` with a
+        // fresh, per-chip `other` record and merges it in via this method -- `MemoryGlobalChip`
+        // writes its shard-local event count into `other.public_values.global_{init,finalize}_count`
+        // (see `memory/global.rs`), which must be carried into `self` here or it's silently
+        // dropped when `other` goes out of scope.
+        self.public_values.global_init_count += other.public_values.global_init_count;
+        self.public_values.global_finalize_count += other.public_values.global_finalize_count;
     }
 
     /// Retrieves the public values.  This method is needed for the `MachineRecord` trait, since

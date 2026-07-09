@@ -21,8 +21,12 @@ pub enum MipsAirId {
     Cpu = 0,
     /// The program chip.
     Program = 1,
+    /// The SHA-256 extend control chip.
+    ShaExtendControl = 12,
     /// The SHA-256 extend chip.
     ShaExtend = 2,
+    /// The SHA-256 compress control chip.
+    ShaCompressControl = 50,
     /// The SHA-256 compress chip.
     ShaCompress = 3,
     /// The Edwards add assign chip.
@@ -150,6 +154,8 @@ impl MipsAirId {
             Self::Program => "Program",
             Self::ShaExtend => "ShaExtend",
             Self::ShaCompress => "ShaCompress",
+            Self::ShaExtendControl => "ShaExtendControl",
+            Self::ShaCompressControl => "ShaCompressControl",
             Self::EdAddAssign => "EdAddAssign",
             Self::EdDecompress => "EdDecompress",
             Self::Secp256k1Decompress => "Secp256k1Decompress",
