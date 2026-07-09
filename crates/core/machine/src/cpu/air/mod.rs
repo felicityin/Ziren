@@ -26,9 +26,8 @@ where
     #[inline(never)]
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let (local, next) = (main.row_slice(0), main.row_slice(1));
+        let local = main.row_slice(0);
         let local: &CpuCols<AB::Var> = (*local).borrow();
-        let next: &CpuCols<AB::Var> = (*next).borrow();
 
         let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
             core::array::from_fn(|i| builder.public_values()[i]);
@@ -76,17 +75,14 @@ where
             local.is_real,
         );
 
-        // Check that the shard and clk is updated correctly.
-        self.eval_shard_clk(builder, local, next, clk.clone());
+        // Check that the shard and clk are well-formed.
+        self.eval_shard_clk(builder, local, clk.clone(), public_values);
 
-        // Check public values constraints.
-        self.eval_pc(builder, local, next, public_values);
+        // Chain this row's state against its predecessor and successor instructions.
+        self.eval_state_chain(builder, local, clk);
 
         // Check control flag consistency.
         self.eval_control_flags(builder, local);
-
-        // Check that the is_real flag is correct.
-        self.eval_is_real(builder, local, next);
 
         let not_real = AB::Expr::one() - local.is_real;
         builder.when(not_real.clone()).assert_zero(AB::Expr::one() - local.instruction.imm_b);
@@ -107,6 +103,7 @@ impl CpuChip {
         builder: &mut AB,
         local: &CpuCols<AB::Var>,
     ) {
+        builder.assert_bool(local.is_real);
         builder.when(local.is_real).assert_bool(local.is_rw_a);
         builder.when(local.is_real).assert_bool(local.is_check_memory);
         builder.when(local.is_real).assert_bool(local.is_halt);
@@ -118,20 +115,20 @@ impl CpuChip {
 
     /// Constraints related to the shard and clk.
     ///
-    /// This method ensures that all of the shard values are the same and that the clk starts at 0
-    /// and is transitioned appropriately.  It will also check that shard values are within 16 bits
-    /// and clk values are within 24 bits.  Those range checks are needed for the memory access
-    /// timestamp check, which assumes those values are within 2^24.  See
+    /// This method checks that `local.shard` matches the shard's public value (the only other
+    /// per-row use of `local.shard` is [`Self::eval_registers`]'s memory-consistency check, which
+    /// needs the true shard number to order accesses correctly), and range checks that the shard
+    /// value is within 16 bits and the clk value is within 24 bits. Those range checks are needed
+    /// for the memory access timestamp check, which assumes those values are within 2^24. See
     /// [`MemoryAirBuilder::verify_mem_access_ts`].
     pub(crate) fn eval_shard_clk<AB: ZKMAirBuilder>(
         &self,
         builder: &mut AB,
         local: &CpuCols<AB::Var>,
-        next: &CpuCols<AB::Var>,
         clk: AB::Expr,
+        public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar>,
     ) {
-        // Verify that all shard values are the same.
-        builder.when_transition().when(next.is_real).assert_eq(local.shard, next.shard);
+        builder.when(local.is_real).assert_eq(public_values.execution_shard, local.shard);
 
         // Verify that the shard value is within 16 bits.
         builder.send_byte(
@@ -142,18 +139,6 @@ impl CpuChip {
             local.is_real,
         );
 
-        // Verify that the first row has a clk value of 0.
-        builder.when_first_row().assert_zero(clk.clone());
-
-        // We already assert that `local.clk < 2^24`. `num_extra_cycles` is an entry of a word and
-        // therefore less than `2^8`, this means that the sum cannot overflow in a 31 bit field.
-        let expected_next_clk =
-            clk.clone() + AB::Expr::from_canonical_u32(5) + local.num_extra_cycles;
-
-        let next_clk =
-            AB::Expr::from_canonical_u32(1u32 << 16) * next.clk_8bit_limb + next.clk_16bit_limb;
-        builder.when_transition().when(next.is_real).assert_eq(expected_next_clk, next_clk);
-
         // Range check that the clk is within 24 bits using it's limb values.
         builder.eval_range_check_24bits(
             clk,
@@ -163,80 +148,46 @@ impl CpuChip {
         );
     }
 
-    /// Constraints related to the public values.
-    pub(crate) fn eval_pc<AB: ZKMAirBuilder>(
+    /// Chains this row's own `(clk, pc, next_pc)` state to whichever instruction precedes and
+    /// follows it, replacing the old row-adjacency chaining with a value-matched
+    /// `LookupKind::State` interaction (the zerocheck framework's constraint-evaluation contexts
+    /// never expose a "next row"). Every real row unconditionally receives its own incoming state
+    /// and sends its successor's -- a genuinely first/last row of a shard has an unmatched
+    /// receive/send, closed against public values in [`crate::record::eval_public_values`]
+    /// (`ExecutionRecord::eval_public_values`) instead of `when_first_row()`/`when_last_row()`,
+    /// which this framework's builders don't support.
+    ///
+    /// `next_pc` is always this row's own `pc + 4` (the delay slot always follows immediately in
+    /// program order); `next_next_pc` is the pc that actually runs after the delay slot, and for a
+    /// sequential (non-branch/jump) row that's just `next_pc + 4`. A row whose true successor
+    /// doesn't match the state it sent (e.g. a branch/jump row ending a shard, whose target has no
+    /// single-pc public value to be exported into) simply fails to find a match, so the shard's
+    /// `LookupKind::State` local sum won't close -- this is what replaces the old explicit
+    /// "shard boundary must be sequential" assertion.
+    pub(crate) fn eval_state_chain<AB: ZKMAirBuilder>(
         &self,
         builder: &mut AB,
         local: &CpuCols<AB::Var>,
-        next: &CpuCols<AB::Var>,
-        public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar>,
+        clk: AB::Expr,
     ) {
-        // Verify the public value's shard.
-        builder.when(local.is_real).assert_eq(public_values.execution_shard, local.shard);
+        builder.receive_state(clk.clone(), local.pc, local.next_pc, local.is_real);
 
-        // Verify the public value's start pc.
-        builder.when_first_row().assert_eq(public_values.start_pc, local.pc);
+        // We already assert that `local.clk < 2^24`. `num_extra_cycles` is an entry of a word and
+        // therefore less than `2^8`, this means that the sum cannot overflow in a 31 bit field.
+        let expected_next_clk = clk + AB::Expr::from_canonical_u32(5) + local.num_extra_cycles;
+        builder.send_state(expected_next_clk, local.next_pc, local.next_next_pc, local.is_real);
 
-        // Verify the relationship between initial start pc and initial next pc.
+        // A non-halting row's own delay slot is always at `pc + 4`.
         builder
-            .when_first_row()
+            .when(local.is_real)
             .when_not(local.is_halt)
             .assert_eq(local.pc + AB::Expr::from_canonical_u32(4), local.next_pc);
 
-        // Verify the pc, next_pc, and next_next_pc
-        builder.when_transition().when(next.is_real).assert_eq(local.next_pc, next.pc);
-        builder
-            .when_transition()
-            .when(next.is_real)
-            .when_not(next.is_halt)
-            .assert_eq(local.next_next_pc, next.next_pc);
-
+        // A sequential row's post-delay-slot pc is just its delay slot's fall-through.
         builder
             .when(local.is_real)
             .when(local.is_sequential)
             .assert_eq(local.next_next_pc, local.next_pc + AB::Expr::from_canonical_u32(4));
-
-        // Verify the public value's next pc.  We need to handle two cases:
-        // 1. The last real row is a transition row.
-        // 2. The last real row is the last row.
-
-        // If the last real row is a transition row, verify the public value's next pc.
-        builder
-            .when_transition()
-            .when(local.is_real - next.is_real)
-            .assert_eq(public_values.next_pc, local.next_pc);
-
-        // If the last real row is the last row, verify the public value's next pc.
-        builder.when_last_row().when(local.is_real).assert_eq(public_values.next_pc, local.next_pc);
-
-        // A branch or jump row carries its post-delay-slot target in `next_next_pc`.
-        // Since shard public values only export `next_pc`, such rows must not be
-        // the last real row of a shard; otherwise the target is dropped at the
-        // boundary and the next shard can rederive fall-through.
-        builder
-            .when_transition()
-            .when(local.is_real - next.is_real)
-            .assert_one(local.is_sequential + local.is_halt);
-        builder.when_last_row().when(local.is_real).assert_one(local.is_sequential + local.is_halt);
-    }
-
-    /// Constraints related to the is_real column.
-    ///
-    /// This method checks that the is_real column is a boolean.  It also checks that the first row
-    /// is 1 and once its 0, it never changes value.
-    pub(crate) fn eval_is_real<AB: ZKMAirBuilder>(
-        &self,
-        builder: &mut AB,
-        local: &CpuCols<AB::Var>,
-        next: &CpuCols<AB::Var>,
-    ) {
-        // Check the is_real flag.  It should be 1 for the first row.  Once its 0, it should never
-        // change value.
-        builder.assert_bool(local.is_real);
-        builder.when_first_row().assert_one(local.is_real);
-        builder.when_transition().when_not(local.is_real).assert_zero(next.is_real);
-        // If we're halting and it's a transition, then the next.is_real should be 0.
-        builder.when_transition().when(local.is_halt).assert_zero(next.is_real);
     }
 }
 

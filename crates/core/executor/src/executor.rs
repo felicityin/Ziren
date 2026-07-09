@@ -1122,8 +1122,21 @@ impl<'a> Executor<'a> {
         record: MemoryAccessRecord,
         exit_code: u32,
         syscall_code: u32,
+        num_extra_cycles: u32,
     ) {
-        self.emit_cpu(clk, pc, next_pc, next_next_pc, a, b, c, hi_or_prev_a, record, exit_code);
+        self.emit_cpu(
+            clk,
+            pc,
+            next_pc,
+            next_next_pc,
+            a,
+            b,
+            c,
+            hi_or_prev_a,
+            record,
+            exit_code,
+            num_extra_cycles,
+        );
 
         if instruction.is_alu_instruction() {
             self.emit_alu_event(clk, instruction.opcode, hi_or_prev_a, a, b, c, record.hi);
@@ -1169,6 +1182,7 @@ impl<'a> Executor<'a> {
         hi_or_prev_a: Option<u32>,
         record: MemoryAccessRecord,
         exit_code: u32,
+        num_extra_cycles: u32,
     ) {
         self.record.cpu_events.push(CpuEvent {
             clk,
@@ -1185,6 +1199,7 @@ impl<'a> Executor<'a> {
             hi_record: record.hi,
             memory_record: record.memory,
             exit_code,
+            num_extra_cycles,
         });
     }
 
@@ -1480,6 +1495,7 @@ impl<'a> Executor<'a> {
         let mut c = 0;
         let mut hi_or_prev_a = None;
         let mut syscall_code = 0u32;
+        let mut num_extra_cycles = 0u32;
 
         self.state.next_is_delayslot = false;
 
@@ -1646,6 +1662,7 @@ impl<'a> Executor<'a> {
             next_pc = precompile_next_pc;
             next_next_pc = precompile_next_pc + 4;
             self.state.clk += precompile_cycles;
+            num_extra_cycles = precompile_cycles;
             exit_code = returned_exit_code;
             hi_or_prev_a = Some(prev_a);
         } else if instruction.opcode == Opcode::UNIMPL {
@@ -1675,6 +1692,7 @@ impl<'a> Executor<'a> {
                 self.memory_accesses,
                 exit_code,
                 syscall_code,
+                num_extra_cycles,
             );
         };
 

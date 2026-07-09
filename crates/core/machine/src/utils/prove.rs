@@ -294,8 +294,14 @@ pub fn prove_with_context(
                             for record in records.iter_mut() {
                                 state.shard += 1;
                                 state.execution_shard = record.public_values.execution_shard;
-                                state.start_pc = record.public_values.start_pc;
-                                state.next_pc = record.public_values.next_pc;
+                                if let (Some(first), Some(last)) =
+                                    (record.cpu_events.first(), record.cpu_events.last())
+                                {
+                                    state.start_pc = first.pc;
+                                    state.next_pc = last.next_pc;
+                                    state.initial_timestamp = first.clk;
+                                    state.last_timestamp = last.clk + 5 + last.num_extra_cycles;
+                                }
                                 state.committed_value_digest =
                                     record.public_values.committed_value_digest;
                                 state.deferred_proofs_digest =
@@ -342,6 +348,7 @@ pub fn prove_with_context(
                                     state.last_finalize_addr_bits =
                                         record.public_values.last_finalize_addr_bits;
                                     state.start_pc = state.next_pc;
+                                    state.initial_timestamp = state.last_timestamp;
                                     record.public_values = *state;
                                 }
                                 records_clone.append(&mut deferred);
@@ -403,6 +410,7 @@ pub fn prove_with_context(
                                     state.last_finalize_addr_bits =
                                         record.public_values.last_finalize_addr_bits;
                                     state.start_pc = state.next_pc;
+                                    state.initial_timestamp = state.last_timestamp;
                                     record.public_values = *state;
                                 }
                                 records.append(&mut deferred);
@@ -797,8 +805,10 @@ mod tests {
     use super::*;
     use crate::programs::tests::simple_program;
 
-    // Blocked: CpuChip's `when_transition`/`row_slice(1)` constraints panic against the
-    // zerocheck framework's single-row constraint-evaluation contexts.
+    // Blocked: MipsAir::hypercube_machine() still builds ShaExtendChip and 7 other chips that
+    // use 2-row transition constraints the zerocheck framework can't evaluate (CpuChip, fixed
+    // this session, no longer among them). Tracked separately; see memory
+    // zerocheck-row-local-transition-gap.md.
     #[test]
     #[ignore]
     fn run_test_core_smoke() {

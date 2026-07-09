@@ -300,6 +300,7 @@ mod tests {
                 hi_record: None,
                 memory_record: Some(MemoryRecordEnum::Read(MemoryReadRecord::new(5, 0, 3, 0, 0))),
                 exit_code: 0,
+                num_extra_cycles: 0,
             };
             ExecutionRecord {
                 program: Arc::new(zkm_core_executor::Program::new(

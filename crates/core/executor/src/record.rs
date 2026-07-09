@@ -2,11 +2,15 @@ use enum_map::EnumMap;
 use hashbrown::HashMap;
 use itertools::{EitherOrBoth, Itertools};
 use p3_field::{Field, FieldAlgebra};
-use zkm_hypercube::{air::{MachineAir, PublicValues, ZKMAirBuilder}, lookup::LookupKind, record::MachineRecord};
+use zkm_hypercube::{
+    air::{MachineAir, PublicValues, DEFAULT_PC_INC, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    lookup::LookupKind,
+    record::MachineRecord,
+};
 use zkm_stark::{shape::Shape, SplitOpts};
 
 use serde::{Deserialize, Serialize};
-use std::{mem::take, str::FromStr, sync::Arc};
+use std::{borrow::Borrow, mem::take, str::FromStr, sync::Arc};
 
 use crate::{
     events::{
@@ -410,11 +414,34 @@ impl MachineRecord for ExecutionRecord {
         self.public_values.to_vec()
     }
 
-    // STUB: does not constrain public values against the LogUp GKR global sum yet.
-    fn eval_public_values<AB: ZKMAirBuilder>(_builder: &mut AB) {}
+    fn eval_public_values<AB: ZKMAirBuilder>(builder: &mut AB) {
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<zkm_hypercube::word::Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
+
+        // Anchor the CPU's `LookupKind::State` local interaction chain at the shard's boundary:
+        // the shard's first real CPU row has nothing in-shard to receive its incoming state from,
+        // and the last real row has nothing in-shard to receive its outgoing state -- these two
+        // sends/receives close that chain against public values instead. A shard boundary is only
+        // ever sequential (see `CpuChip::eval_pc`), so the paired pc is always `pc + 4`.
+        let pc_inc = AB::Expr::from_canonical_u32(DEFAULT_PC_INC);
+        builder.send_state(
+            public_values.initial_timestamp,
+            public_values.start_pc,
+            public_values.start_pc.into() + pc_inc.clone(),
+            AB::Expr::one(),
+        );
+        builder.receive_state(
+            public_values.last_timestamp,
+            public_values.next_pc,
+            public_values.next_pc.into() + pc_inc,
+            AB::Expr::one(),
+        );
+    }
 
     fn lookups_in_public_values() -> Vec<LookupKind> {
-        Vec::new()
+        vec![LookupKind::State]
     }
 }
 

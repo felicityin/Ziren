@@ -20,6 +20,7 @@ pub enum LookupKind {
     Syscall = 6,
     Global = 7,
     SyscallResult = 8,
+    State = 9,
 }
 
 impl LookupKind {
@@ -34,6 +35,7 @@ impl LookupKind {
             LookupKind::Syscall,
             LookupKind::Global,
             LookupKind::SyscallResult,
+            LookupKind::State,
         ]
     }
 }
@@ -49,6 +51,7 @@ impl Display for LookupKind {
             LookupKind::Syscall => write!(f, "Syscall"),
             LookupKind::Global => write!(f, "Global"),
             LookupKind::SyscallResult => write!(f, "SyscallResult"),
+            LookupKind::State => write!(f, "State"),
         }
     }
 }

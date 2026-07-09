@@ -41,6 +41,8 @@ pub struct CpuEvent {
     pub memory_record: Option<MemoryRecordEnum>,
     /// The exit code.
     pub exit_code: u32,
+    /// Extra clock cycles consumed by this instruction (nonzero only for syscalls).
+    pub num_extra_cycles: u32,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -74,6 +76,8 @@ pub struct CpuEventFfi {
     pub memory_record: OptionMemoryRecordEnum,
     /// The exit code.
     pub exit_code: u32,
+    /// Extra clock cycles consumed by this instruction (nonzero only for syscalls).
+    pub num_extra_cycles: u32,
 }
 
 impl From<&CpuEvent> for CpuEventFfi {
@@ -93,6 +97,7 @@ impl From<&CpuEvent> for CpuEventFfi {
             hi_record: event.hi_record.into(),
             memory_record: event.memory_record.into(),
             exit_code: event.exit_code,
+            num_extra_cycles: event.num_extra_cycles,
         }
     }
 }

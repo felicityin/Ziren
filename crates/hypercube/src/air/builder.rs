@@ -365,6 +365,40 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         self.receive(AirLookup::new(values, multiplicity.into(), LookupKind::Instruction), LookupScope::Local);
     }
 
+    /// Sends this row's own `(clk, pc, next_pc)` as the incoming CPU state for whichever row
+    /// receives it, and separately receives this row's own incoming `(clk, pc, next_pc)` via
+    /// [`Self::receive_state`] -- together these replace the old row-adjacency `shard`/`clk`/`pc`
+    /// chaining, matched by value instead of physical row position. `next_pc` here is the pc two
+    /// steps ahead (MIPS has a branch-delay slot, so successor state carries two forward pcs, not
+    /// one): the row-local pc always advances by [`DEFAULT_PC_INC`] to reach the delay slot, and
+    /// `next_pc` is the (possibly branch/jump-resolved) pc after the delay slot.
+    fn send_state(
+        &mut self,
+        clk: impl Into<Self::Expr>,
+        pc: impl Into<Self::Expr>,
+        next_pc: impl Into<Self::Expr>,
+        multiplicity: impl Into<Self::Expr>,
+    ) {
+        self.send(
+            AirLookup::new(vec![clk.into(), pc.into(), next_pc.into()], multiplicity.into(), LookupKind::State),
+            LookupScope::Local,
+        );
+    }
+
+    /// See [`Self::send_state`].
+    fn receive_state(
+        &mut self,
+        clk: impl Into<Self::Expr>,
+        pc: impl Into<Self::Expr>,
+        next_pc: impl Into<Self::Expr>,
+        multiplicity: impl Into<Self::Expr>,
+    ) {
+        self.receive(
+            AirLookup::new(vec![clk.into(), pc.into(), next_pc.into()], multiplicity.into(), LookupKind::State),
+            LookupScope::Local,
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn send_alu(
         &mut self,

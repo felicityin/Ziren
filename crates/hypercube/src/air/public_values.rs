@@ -55,8 +55,16 @@ pub struct PublicValues<W, T> {
     /// The bits of the largest address that is witnessed for finalization in the current shard.
     pub last_finalize_addr_bits: [T; 32],
 
+    /// The clk of the shard's first real CPU row. Anchors the `LookupKind::State` local
+    /// interaction chain at the shard's start, mirroring `start_pc`.
+    pub initial_timestamp: T,
+
+    /// The expected clk of the next shard's first real CPU row. Anchors the `LookupKind::State`
+    /// local interaction chain at the shard's end, mirroring `next_pc`.
+    pub last_timestamp: T,
+
     /// This field is here to ensure that the size of the public values struct is a multiple of 8.
-    pub empty: [T; 3],
+    pub empty: [T; 1],
 }
 
 impl PublicValues<u32, u32> {
@@ -80,6 +88,8 @@ impl PublicValues<u32, u32> {
         copy.execution_shard = 0;
         copy.start_pc = 0;
         copy.next_pc = 0;
+        copy.initial_timestamp = 0;
+        copy.last_timestamp = 0;
         copy.previous_init_addr_bits = [0; 32];
         copy.last_init_addr_bits = [0; 32];
         copy.previous_finalize_addr_bits = [0; 32];
@@ -133,6 +143,8 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_init_addr_bits,
             previous_finalize_addr_bits,
             last_finalize_addr_bits,
+            initial_timestamp,
+            last_timestamp,
             ..
         } = value;
 
@@ -151,6 +163,8 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let last_init_addr_bits = last_init_addr_bits.map(F::from_canonical_u32);
         let previous_finalize_addr_bits = previous_finalize_addr_bits.map(F::from_canonical_u32);
         let last_finalize_addr_bits = last_finalize_addr_bits.map(F::from_canonical_u32);
+        let initial_timestamp = F::from_canonical_u32(initial_timestamp);
+        let last_timestamp = F::from_canonical_u32(last_timestamp);
 
         Self {
             committed_value_digest,
@@ -164,7 +178,9 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_init_addr_bits,
             previous_finalize_addr_bits,
             last_finalize_addr_bits,
-            empty: [F::zero(), F::zero(), F::zero()],
+            initial_timestamp,
+            last_timestamp,
+            empty: [F::zero()],
         }
     }
 }
