@@ -940,38 +940,51 @@ pub mod tests {
         run_test(program).unwrap();
     }
 
-    // #[test]
-    // fn test_key_serde() {
-    // let program = ssz_withdrawals_program();
-    // let config = KoalaBearPoseidon2::new();
-    // let machine = MipsAir::machine(config);
-    // let (pk, vk) = machine.setup(&program);
-    //
-    // let serialized_pk = bincode::serialize(&pk).unwrap();
-    // let deserialized_pk: StarkProvingKey<KoalaBearPoseidon2> =
-    //     bincode::deserialize(&serialized_pk).unwrap();
-    // assert_eq!(pk.commit, deserialized_pk.commit);
-    // assert_eq!(pk.pc_start, deserialized_pk.pc_start);
-    // assert_eq!(pk.traces, deserialized_pk.traces);
-    // assert_eq!(pk.data.root(), deserialized_pk.data.root());
-    // assert_eq!(pk.chip_ordering, deserialized_pk.chip_ordering);
-    // assert_eq!(pk.local_only, deserialized_pk.local_only);
-    //
-    // let serialized_vk = bincode::serialize(&vk).unwrap();
-    // let deserialized_vk: StarkVerifyingKey<KoalaBearPoseidon2> =
-    //     bincode::deserialize(&serialized_vk).unwrap();
-    // assert_eq!(vk.commit, deserialized_vk.commit);
-    // assert_eq!(vk.pc_start, deserialized_vk.pc_start);
-    // assert_eq!(vk.chip_information.len(), deserialized_vk.chip_information.len());
-    // for (a, b) in vk.chip_information.iter().zip(deserialized_vk.chip_information.iter()) {
-    //     assert_eq!(a.0, b.0);
-    //     assert_eq!(a.1.log_n, b.1.log_n);
-    //     assert_eq!(a.1.shift, b.1.shift);
-    //     assert_eq!(a.2.height, b.2.height);
-    //     assert_eq!(a.2.width, b.2.width);
-    // }
-    // assert_eq!(vk.chip_ordering, deserialized_vk.chip_ordering);
-    // }
+    #[test]
+    fn test_key_serde() {
+        use std::sync::Arc;
+
+        use serde::{Deserialize, Serialize};
+        use zkm_hypercube::{
+            config::{default_fri_config, ZkmGlobalContext},
+            prover::{AirProver, ProverSemaphore, ZkmShardProver},
+            ShardVerifier,
+        };
+        use zkm_stark::ZKMCoreOpts;
+
+        use crate::utils::ZKM_LOG_STACKING_HEIGHT;
+
+        fn roundtrip<T: Serialize + for<'de> Deserialize<'de>>(value: &T) -> T {
+            let bytes = bincode::serialize(value).unwrap();
+            bincode::deserialize(&bytes).unwrap()
+        }
+
+        let program = ssz_withdrawals_program();
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let max_log_row_count = ZKMCoreOpts::default().shard_size.ilog2() as usize;
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            ZKM_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        let shard_prover = ZkmShardProver::<MipsAir<KoalaBear>>::new(shard_verifier);
+
+        let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (preprocessed, vk) =
+            setup_rt.block_on(shard_prover.setup(Arc::new(program), ProverSemaphore::new(1)));
+        let pk = preprocessed.pk;
+
+        let deserialized_pk = roundtrip(pk.as_ref());
+        assert_eq!(pk.vk, deserialized_pk.vk);
+        assert_eq!(
+            bincode::serialize(&pk.preprocessed_data).unwrap(),
+            bincode::serialize(&deserialized_pk.preprocessed_data).unwrap(),
+        );
+
+        let deserialized_vk: zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext> = roundtrip(&vk);
+        assert_eq!(vk, deserialized_vk);
+    }
 
     // -----------------------------------------------------------------------
     // Syscall soundness regression tests

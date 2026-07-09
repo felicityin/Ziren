@@ -89,6 +89,13 @@ pub trait AirProver<GC: IopCtx, SC: ShardContext<GC>>: 'static + Send + Sync + S
 }
 
 /// A proving key for an AIR prover.
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "MachineVerifyingKey<GC>: Serialize, Prover::PreprocessedData: Serialize"
+))]
+#[serde(bound(
+    deserialize = "MachineVerifyingKey<GC>: Deserialize<'de>, Prover::PreprocessedData: Deserialize<'de>"
+))]
 pub struct ProvingKey<GC: IopCtx, SC: ShardContext<GC>, Prover: AirProver<GC, SC>> {
     /// The verifying key.
     pub vk: MachineVerifyingKey<GC>,

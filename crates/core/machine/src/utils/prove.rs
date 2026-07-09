@@ -44,7 +44,7 @@ use zkm_hypercube::{
 
 /// The log2 of the number of rows each stacked-PCS column is grouped into. Matches the value
 /// used by `zkm-hypercube`'s own basic construction tests.
-const ZKM_LOG_STACKING_HEIGHT: u32 = 4;
+pub(crate) const ZKM_LOG_STACKING_HEIGHT: u32 = 4;
 
 /// The concrete shard-proof type produced by Ziren's own (`KoalaBear`, jagged/basefold) shard
 /// prover.
