@@ -29,12 +29,14 @@ use zkm_core_executor::{
     ZKMContext,
 };
 
+use p3_maybe_rayon::prelude::*;
+use slop_challenger::IopCtx;
 use zkm_hypercube::{
     air::PublicValues,
-    config::default_fri_config,
-    prover::{AirProver, PcsProof, ProverSemaphore, ZkmShardProver},
+    config::{default_fri_config, ZkmGlobalContext, ZkmStackedPcs},
+    prover::{AirProver, PcsProof, ProverSemaphore, ShardData, TraceGenerator, ZkmInnerPcsProver, ZkmShardProver},
     record::MachineRecord,
-    ShardProof, ShardVerifier, ZkmSC,
+    ShardContextImpl, ShardProof, ShardVerifier, ZkmSC,
 };
 
 /// The log2 of the number of rows each stacked-PCS column is grouped into. Matches the value
@@ -44,6 +46,13 @@ const ZKM_LOG_STACKING_HEIGHT: u32 = 4;
 /// The concrete shard-proof type produced by Ziren's own (`KoalaBear`, jagged/basefold) shard
 /// prover.
 pub type ZkmShardProof = ShardProof<zkm_hypercube::config::ZkmGlobalContext, PcsProof<zkm_hypercube::config::ZkmGlobalContext, ZkmSC<MipsAir<KoalaBear>>>>;
+
+/// The shard context used by Ziren's own core shard prover.
+type ZkmShardContext = ShardContextImpl<ZkmGlobalContext, ZkmStackedPcs, MipsAir<KoalaBear>>;
+
+/// The main-trace data (plus proving key) needed to prove a single shard, without having proved
+/// it yet.
+type ZkmShardData = ShardData<ZkmGlobalContext, ZkmShardContext, ZkmInnerPcsProver>;
 
 // Com/MachineAir/MachineProver/OpeningProof/PcsProverData/StarkVerifyingKey are used by the
 // commented-out run_test*/run_test_machine* functions below.
@@ -223,7 +232,7 @@ pub fn prove_with_context(
         let p2_trace_gen_sync = Arc::new(TurnBasedSync::new());
         let checkpoints_rx = Arc::new(Mutex::new(checkpoints_rx));
         let (p2_records_and_traces_tx, p2_records_and_traces_rx) =
-            sync_channel::<(Vec<ExecutionRecord>, Vec<ZkmShardProof>)>(opts.records_and_traces_channel_capacity);
+            sync_channel::<(Vec<ExecutionRecord>, Vec<ZkmShardData>)>(opts.records_and_traces_channel_capacity);
         let p2_records_and_traces_tx = Arc::new(Mutex::new(p2_records_and_traces_tx));
 
         let report_aggregate = Arc::new(Mutex::new(ExecutionReport::default()));
@@ -434,35 +443,35 @@ pub fn prove_with_context(
                             #[cfg(feature = "debug")]
                             all_records_tx.send(records.clone()).unwrap();
 
-                            let shard_proofs: Vec<ZkmShardProof> =
-                                tracing::debug_span!("prove shards", index).in_scope(|| {
+                            let main_trace_data: Vec<ZkmShardData> =
+                                tracing::debug_span!("generate main traces", index).in_scope(|| {
                                     records
                                         .iter()
                                         .map(|record| {
-                                            let (proof, _permit) =
-                                                async_rt.block_on(shard_prover.prove_shard_with_pk(
-                                                    Arc::clone(&pk),
+                                            let main_trace_data =
+                                                async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
                                                     record.clone(),
+                                                    shard_prover.max_log_row_count(),
                                                     prover_permits.clone(),
                                                 ));
-                                            proof
+                                            ZkmShardData { pk: Arc::clone(&pk), main_trace_data }
                                         })
                                         .collect()
                                 });
 
                             trace_gen_sync.wait_for_turn(index);
 
-                            // Send the records to the phase 2 collector.
+                            // Send the records to the phase 2 prover.
                             let chunked_records = chunk_vec(records, opts.shard_batch_size);
-                            let chunked_shard_proofs = chunk_vec(shard_proofs, opts.shard_batch_size);
+                            let chunked_main_trace_data = chunk_vec(main_trace_data, opts.shard_batch_size);
                             chunked_records
                                 .into_iter()
-                                .zip(chunked_shard_proofs.into_iter())
-                                .for_each(|(records, shard_proofs)| {
+                                .zip(chunked_main_trace_data.into_iter())
+                                .for_each(|(records, main_trace_data)| {
                                     records_and_traces_tx
                                         .lock()
                                         .unwrap()
-                                        .send((records, shard_proofs))
+                                        .send((records, main_trace_data))
                                         .unwrap();
                                 });
 
@@ -480,14 +489,20 @@ pub fn prove_with_context(
         #[cfg(feature = "debug")]
         drop(all_records_tx);
 
-        // Spawn the phase 2 collector thread.
+        // Spawn the phase 2 prover thread.
         let p2_prover_span = tracing::Span::current().clone();
+        let p2_shard_prover = Arc::clone(&shard_prover);
         let p2_prover_handle = s.spawn(move || {
             let _span = p2_prover_span.enter();
             let mut all_shard_proofs = Vec::new();
-            tracing::debug_span!("phase 2 collector").in_scope(|| {
-                for (_records, shard_proofs) in p2_records_and_traces_rx.into_iter() {
-                    all_shard_proofs.extend(shard_proofs);
+            tracing::debug_span!("phase 2 prover").in_scope(|| {
+                for (_records, shard_data) in p2_records_and_traces_rx.into_iter() {
+                    all_shard_proofs.par_extend(shard_data.into_par_iter().map(|data| {
+                        let mut challenger = ZkmGlobalContext::default_challenger();
+                        data.pk.vk.observe_into(&mut challenger);
+                        let (proof, _permit) = p2_shard_prover.prove_shard_with_data(data, challenger);
+                        proof
+                    }));
                 }
             });
             all_shard_proofs

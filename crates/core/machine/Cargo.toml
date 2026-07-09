@@ -35,6 +35,7 @@ zkm-hypercube = { workspace = true }
 slop-air = { workspace = true }
 slop-algebra = { workspace = true }
 slop-alloc = { workspace = true }
+slop-challenger = { workspace = true }
 tokio = { workspace = true, features = ["rt"] }
 
 rayon = "1.10.0"

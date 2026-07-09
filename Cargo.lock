@@ -8238,6 +8238,7 @@ dependencies = [
  "slop-air",
  "slop-algebra",
  "slop-alloc",
+ "slop-challenger",
  "snowbridge-amcl",
  "static_assertions",
  "strum",
