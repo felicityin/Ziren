@@ -33,14 +33,13 @@ pub mod extend_tests {
     use p3_koala_bear::KoalaBear;
 
     use p3_matrix::dense::RowMajorMatrix;
-    // use test_artifacts::{SHA2_ELF, SHA_EXTEND_ELF};
+    use test_artifacts::{SHA2_ELF, SHA_EXTEND_ELF};
     use zkm_core_executor::{
         events::AluEvent, syscalls::SyscallCode, ExecutionRecord, Instruction, Opcode, Program,
     };
     use zkm_hypercube::air::MachineAir;
-    // use zkm_stark::CpuProver;
 
-    // use crate::utils::{self, run_test};
+    use crate::utils::{run_test, setup_logger};
 
     use super::ShaExtendChip;
 
@@ -73,26 +72,23 @@ pub mod extend_tests {
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_sha_prove() {
-        // utils::setup_logger();
-        // let program = sha_extend_program();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = sha_extend_program();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_sha256_program() {
-        // utils::setup_logger();
-        // let program = Program::from(SHA2_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(SHA2_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_sha_extend_program() {
-        // utils::setup_logger();
-        // let program = Program::from(SHA_EXTEND_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(SHA_EXTEND_ELF).unwrap();
+        run_test(program).unwrap();
     }
 }

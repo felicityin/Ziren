@@ -15,9 +15,8 @@ impl SysLinuxChip {
 pub mod sys_linux_tests {
 
     use zkm_core_executor::{syscalls::SyscallCode, Instruction, Opcode, Program};
-    // use zkm_stark::CpuProver;
 
-    // use crate::utils::{run_test, setup_logger};
+    use crate::utils::{run_test, setup_logger};
 
     pub fn sys_linux_program() -> Program {
         let w_ptr = 100;
@@ -179,10 +178,9 @@ pub mod sys_linux_tests {
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn prove_koalabear() {
-        // setup_logger();
-        // let program = sys_linux_program();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = sys_linux_program();
+        run_test(program).unwrap();
     }
 }

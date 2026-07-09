@@ -274,9 +274,7 @@ mod tests {
     use rand::{thread_rng, Rng};
     use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode};
     use zkm_hypercube::air::MachineAir;
-    // use zkm_stark::{
-    //     air::MachineAir, koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig,
-    // };
+    // use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig};
 
     use super::AddSubChip;
     #[cfg(feature = "sys")]
@@ -298,7 +296,7 @@ mod tests {
     fn prove_koala_bear() {
         // let config = KoalaBearPoseidon2::new();
         // let mut challenger = config.challenger();
-        //
+
         // let mut shard = ExecutionRecord::default();
         // for i in 0..255 {
         //     let operand_1 = thread_rng().gen_range(0..u32::MAX);
@@ -324,12 +322,12 @@ mod tests {
         //         operand_2,
         //     ));
         // }
-        //
+
         // let chip = AddSubChip::default();
         // let trace: RowMajorMatrix<KoalaBear> =
         //     chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();
         // let proof = prove::<KoalaBearPoseidon2, _>(&config, &chip, &mut challenger, trace);
-        //
+
         // let mut challenger = config.challenger();
         // verify(&config, &chip, &mut challenger, &proof).unwrap();
     }

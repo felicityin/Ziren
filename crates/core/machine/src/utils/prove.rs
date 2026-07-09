@@ -575,39 +575,17 @@ pub fn prove_with_context(
     .map(|(all_shard_proofs, public_values_stream, cycles)| (all_shard_proofs, public_values_stream, cycles, vk))
 }
 
-// TODO(zkm-hypercube): these call run_test_core::<P> with the old MachineProver-generic
-// signature; rebuild against the non-generic run_test_core below.
-// /// Runs a program and returns the public values stream.
-// pub fn run_test_io<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
-//     mut program: Program,
-//     inputs: ZKMStdin,
-// ) -> Result<ZKMPublicValues, MachineVerificationError<KoalaBearPoseidon2>> {
-//     let shape_config = CoreShapeConfig::<KoalaBear>::default();
-//     shape_config.fix_preprocessed_shape(&mut program).unwrap();
-//     let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
-//         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-//         runtime.write_vecs(&inputs.buffer);
-//         runtime.run().unwrap();
-//         runtime
-//     });
-//     let public_values = ZKMPublicValues::from(&runtime.state.public_values_stream);
-//
-//     let _ = run_test_core::<P>(runtime, inputs, Some(&shape_config))?;
-//     Ok(public_values)
-// }
-//
-// pub fn run_test<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
-//     mut program: Program,
-// ) -> Result<MachineProof<KoalaBearPoseidon2>, MachineVerificationError<KoalaBearPoseidon2>> {
-//     let shape_config = CoreShapeConfig::default();
-//     shape_config.fix_preprocessed_shape(&mut program).unwrap();
-//     let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
-//         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-//         runtime.run().unwrap();
-//         runtime
-//     });
-//     run_test_core::<P>(runtime, ZKMStdin::new(), Some(&shape_config))
-// }
+pub fn run_test(mut program: Program) -> Result<Vec<ZkmShardProof>, ZKMCoreProverError> {
+    let shape_config = CoreShapeConfig::<KoalaBear>::default();
+    shape_config.fix_preprocessed_shape(&mut program).unwrap();
+    let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
+        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+        runtime.run().unwrap();
+        runtime
+    });
+    run_test_core(runtime, ZKMStdin::new(), Some(&shape_config))
+}
+
 pub fn run_test_core(
     runtime: Executor,
     inputs: ZKMStdin,
@@ -805,17 +783,7 @@ mod tests {
     use super::*;
     use crate::programs::tests::simple_program;
 
-    // Passes end-to-end (trace-gen, full chip AIR eval, LogUp-GKR prove+verify) as of 2026-07-09,
-    // but only when built with the real zkVM toolchain (`source ~/.zkm-toolchain/env`), since it
-    // needs an actual guest ELF for `simple_program()`, not the ZKM_SKIP_PROGRAM_BUILD placeholder
-    // used by the rest of this crate's tests -- kept #[ignore]d so default `cargo test` runs (and
-    // CI without that toolchain) don't fail to build. MipsAir::hypercube_machine() still builds
-    // BooleanCircuitGarbleChip, which uses 2-row transition constraints the zerocheck framework
-    // can't evaluate, but that chip is never exercised by any program without a boolean-circuit-
-    // garble syscall, so it doesn't block this test. See memory
-    // zerocheck-row-local-transition-gap.md.
     #[test]
-    #[ignore = "needs the real zkVM toolchain (source ~/.zkm-toolchain/env) to build simple_program()'s guest ELF"]
     fn run_test_core_smoke() {
         let program = simple_program();
         let runtime = Executor::new(program, ZKMCoreOpts::default());

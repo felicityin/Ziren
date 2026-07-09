@@ -445,76 +445,67 @@ impl<E: EllipticCurve> WeierstrassAddAssignChip<E> {
 #[cfg(test)]
 mod tests {
 
-    // use test_artifacts::{
-    //     BLS12381_ADD_ELF, BLS12381_DOUBLE_ELF, BLS12381_MUL_ELF, BN254_ADD_ELF, BN254_MUL_ELF,
-    //     SECP256K1_ADD_ELF, SECP256K1_MUL_ELF, SECP256R1_ADD_ELF,
-    // };
-    // use zkm_core_executor::Program;
-    // use zkm_stark::CpuProver;
+    use test_artifacts::{
+        BLS12381_ADD_ELF, BLS12381_DOUBLE_ELF, BLS12381_MUL_ELF, BN254_ADD_ELF, BN254_MUL_ELF,
+        SECP256K1_ADD_ELF, SECP256K1_MUL_ELF, SECP256R1_ADD_ELF,
+    };
+    use zkm_core_executor::Program;
 
-    // use crate::utils::{run_test, setup_logger};
+    use crate::utils::{run_test, setup_logger};
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_secp256k1_add_simple() {
-        // setup_logger();
-        // let program = Program::from(SECP256K1_ADD_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(SECP256K1_ADD_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_secp256r1_add_simple() {
-        // setup_logger();
-        // let program = Program::from(SECP256R1_ADD_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(SECP256R1_ADD_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_bn254_add_simple() {
-        // setup_logger();
-        // let program = Program::from(BN254_ADD_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(BN254_ADD_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_bn254_mul_simple() {
-        // setup_logger();
-        // let program = Program::from(BN254_MUL_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(BN254_MUL_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_secp256k1_mul_simple() {
-        // setup_logger();
-        // let program = Program::from(SECP256K1_MUL_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(SECP256K1_MUL_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_bls12381_add_simple() {
-        // setup_logger();
-        // let program = Program::from(BLS12381_ADD_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(BLS12381_ADD_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_bls12381_double_simple() {
-        // setup_logger();
-        // let program = Program::from(BLS12381_DOUBLE_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(BLS12381_DOUBLE_ELF).unwrap();
+        run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_bls12381_mul_simple() {
-        // setup_logger();
-        // let program = Program::from(BLS12381_MUL_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(BLS12381_MUL_ELF).unwrap();
+        run_test(program).unwrap();
     }
 }

@@ -19,15 +19,13 @@ impl KeccakSpongeChip {
 }
 #[cfg(test)]
 pub mod sponge_tests {
-    // use crate::utils::{self, run_test};
-    // use test_artifacts::KECCAK_SPONGE_ELF;
-    // use zkm_core_executor::Program;
-    // use zkm_stark::CpuProver;
+    use crate::utils::{run_test, setup_logger};
+    use test_artifacts::KECCAK_SPONGE_ELF;
+    use zkm_core_executor::Program;
     #[test]
-    #[ignore = "no zkm-hypercube shard prove/verify driver yet (old FRI-backed run_test/CpuProver removed)"]
     fn test_keccak_sponge_program_prove() {
-        // utils::setup_logger();
-        // let program = Program::from(KECCAK_SPONGE_ELF).unwrap();
-        // run_test::<CpuProver<_, _>>(program).unwrap();
+        setup_logger();
+        let program = Program::from(KECCAK_SPONGE_ELF).unwrap();
+        run_test(program).unwrap();
     }
 }
