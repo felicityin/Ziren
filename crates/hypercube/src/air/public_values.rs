@@ -63,8 +63,16 @@ pub struct PublicValues<W, T> {
     /// local interaction chain at the shard's end, mirroring `next_pc`.
     pub last_timestamp: T,
 
+    /// The number of memory-initialize events in this shard. The upper bound of the shard's own
+    /// `LookupKind::MemoryGlobalInitControl` chain (indices `0..global_init_count`).
+    pub global_init_count: T,
+
+    /// The number of memory-finalize events in this shard. The upper bound of the shard's own
+    /// `LookupKind::MemoryGlobalFinalizeControl` chain (indices `0..global_finalize_count`).
+    pub global_finalize_count: T,
+
     /// This field is here to ensure that the size of the public values struct is a multiple of 8.
-    pub empty: [T; 1],
+    pub empty: [T; 7],
 }
 
 impl PublicValues<u32, u32> {
@@ -145,6 +153,8 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_finalize_addr_bits,
             initial_timestamp,
             last_timestamp,
+            global_init_count,
+            global_finalize_count,
             ..
         } = value;
 
@@ -165,6 +175,8 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let last_finalize_addr_bits = last_finalize_addr_bits.map(F::from_canonical_u32);
         let initial_timestamp = F::from_canonical_u32(initial_timestamp);
         let last_timestamp = F::from_canonical_u32(last_timestamp);
+        let global_init_count = F::from_canonical_u32(global_init_count);
+        let global_finalize_count = F::from_canonical_u32(global_finalize_count);
 
         Self {
             committed_value_digest,
@@ -180,7 +192,9 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_finalize_addr_bits,
             initial_timestamp,
             last_timestamp,
-            empty: [F::zero()],
+            global_init_count,
+            global_finalize_count,
+            empty: core::array::from_fn(|_| F::zero()),
         }
     }
 }

@@ -3,14 +3,14 @@ use hashbrown::HashMap;
 use itertools::{EitherOrBoth, Itertools};
 use p3_field::{Field, FieldAlgebra};
 use zkm_hypercube::{
-    air::{MachineAir, PublicValues, DEFAULT_PC_INC, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    air::{AirLookup, LookupScope, MachineAir, PublicValues, DEFAULT_PC_INC, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
     lookup::LookupKind,
     record::MachineRecord,
 };
 use zkm_stark::{shape::Shape, SplitOpts};
 
 use serde::{Deserialize, Serialize};
-use std::{borrow::Borrow, mem::take, str::FromStr, sync::Arc};
+use std::{borrow::Borrow, iter::once, mem::take, str::FromStr, sync::Arc};
 
 use crate::{
     events::{
@@ -438,10 +438,63 @@ impl MachineRecord for ExecutionRecord {
             public_values.next_pc.into() + pc_inc,
             AB::Expr::one(),
         );
+
+        // Anchor `MemoryGlobalChip`'s (Init and Finalize instantiations) `index`-keyed
+        // sorted-address chains the same way: the shard's first real row's `prev_addr_bits`
+        // receive has nothing in-shard to match, and the last real row's `addr_bits` send (at
+        // `index + 1 == global_*_count`) has nothing in-shard to match either.
+        builder.send(
+            AirLookup::new(
+                once(AB::Expr::zero())
+                    .chain(public_values.previous_init_addr_bits.iter().cloned().map(Into::into))
+                    .chain(once(AB::Expr::one()))
+                    .collect(),
+                AB::Expr::one(),
+                LookupKind::MemoryGlobalInitControl,
+            ),
+            LookupScope::Local,
+        );
+        builder.receive(
+            AirLookup::new(
+                once(public_values.global_init_count.into())
+                    .chain(public_values.last_init_addr_bits.iter().cloned().map(Into::into))
+                    .chain(once(AB::Expr::one()))
+                    .collect(),
+                AB::Expr::one(),
+                LookupKind::MemoryGlobalInitControl,
+            ),
+            LookupScope::Local,
+        );
+        builder.send(
+            AirLookup::new(
+                once(AB::Expr::zero())
+                    .chain(public_values.previous_finalize_addr_bits.iter().cloned().map(Into::into))
+                    .chain(once(AB::Expr::one()))
+                    .collect(),
+                AB::Expr::one(),
+                LookupKind::MemoryGlobalFinalizeControl,
+            ),
+            LookupScope::Local,
+        );
+        builder.receive(
+            AirLookup::new(
+                once(public_values.global_finalize_count.into())
+                    .chain(public_values.last_finalize_addr_bits.iter().cloned().map(Into::into))
+                    .chain(once(AB::Expr::one()))
+                    .collect(),
+                AB::Expr::one(),
+                LookupKind::MemoryGlobalFinalizeControl,
+            ),
+            LookupScope::Local,
+        );
     }
 
     fn lookups_in_public_values() -> Vec<LookupKind> {
-        vec![LookupKind::State]
+        vec![
+            LookupKind::State,
+            LookupKind::MemoryGlobalInitControl,
+            LookupKind::MemoryGlobalFinalizeControl,
+        ]
     }
 }
 
