@@ -26,6 +26,8 @@ pub enum LookupKind {
     MemoryGlobalFinalizeControl = 12,
     ShaExtend = 13,
     ShaCompress = 14,
+    KeccakPermuteRound = 15,
+    KeccakSpongeBlock = 16,
 }
 
 impl LookupKind {
@@ -46,6 +48,8 @@ impl LookupKind {
             LookupKind::MemoryGlobalFinalizeControl,
             LookupKind::ShaExtend,
             LookupKind::ShaCompress,
+            LookupKind::KeccakPermuteRound,
+            LookupKind::KeccakSpongeBlock,
         ]
     }
 }
@@ -67,6 +71,8 @@ impl Display for LookupKind {
             LookupKind::MemoryGlobalFinalizeControl => write!(f, "MemoryGlobalFinalizeControl"),
             LookupKind::ShaExtend => write!(f, "ShaExtend"),
             LookupKind::ShaCompress => write!(f, "ShaCompress"),
+            LookupKind::KeccakPermuteRound => write!(f, "KeccakPermuteRound"),
+            LookupKind::KeccakSpongeBlock => write!(f, "KeccakSpongeBlock"),
         }
     }
 }

@@ -1,23 +1,24 @@
 use crate::air::{MemoryAirBuilder, WordAirBuilder};
 use crate::memory::MemoryCols;
-use crate::operations::XorOperation;
-#[cfg(feature = "picus")]
-use crate::syscall::precompiles::keccak_sponge::columns::KeccakPermutationProjection;
+use crate::operations::{IsZeroOperation, XorOperation};
 use crate::syscall::precompiles::keccak_sponge::columns::{
     KeccakSpongeCols, NUM_KECCAK_SPONGE_COLS,
 };
+use crate::syscall::precompiles::keccak_sponge::constants::rc_value_bit;
 use crate::syscall::precompiles::keccak_sponge::{
-    KeccakSpongeChip, KECCAK_GENERAL_OUTPUT_U32S, KECCAK_GENERAL_RATE_U32S, KECCAK_STATE_U32S,
+    KeccakSpongeChip, BITS_PER_LIMB, KECCAK_GENERAL_OUTPUT_U32S, KECCAK_GENERAL_RATE_U32S,
+    KECCAK_STATE_U32S,
 };
 
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::FieldAlgebra;
-use p3_keccak_air::{KeccakAir, NUM_KECCAK_COLS, NUM_ROUNDS, U64_LIMBS};
+use p3_keccak_air::{NUM_ROUNDS, U64_LIMBS};
 use p3_matrix::Matrix;
 use std::borrow::Borrow;
+use std::iter::once;
 use zkm_core_executor::syscalls::SyscallCode;
-use zkm_hypercube::air::{LookupScope, ZKMAirBuilder};
-use zkm_stark::SubAirBuilder;
+use zkm_hypercube::air::{AirLookup, LookupScope, ZKMAirBuilder};
+use zkm_hypercube::lookup::LookupKind;
 
 impl<F> BaseAir<F> for KeccakSpongeChip {
     fn width(&self) -> usize {
@@ -31,22 +32,22 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let (local, next) = (main.row_slice(0), main.row_slice(1));
+        let local = main.row_slice(0);
         let local: &KeccakSpongeCols<AB::Var> = (*local).borrow();
-        let next: &KeccakSpongeCols<AB::Var> = (*next).borrow();
-
-        let first_block = local.is_first_input_block;
-        let final_block = local.is_final_input_block;
-        let final_step = local.keccak.step_flags[NUM_ROUNDS - 1];
-        let not_final_step = AB::Expr::one() - final_step;
-        let not_final_sponge = AB::Expr::one() - local.write_output;
 
         // Constrain flags
         self.eval_flags(builder, local);
         // Constrain memory
         self.eval_memory_access(builder, local);
-        // Constrain the state
-        self.eval_state_keccakf(builder, local, next);
+        // Constrain the state bridging between `original_state`/memory and the permutation's
+        // own `a`/`a'''` lanes at the start/end of one block's Keccak-f invocation.
+        self.eval_state_keccakf(builder, local);
+        // Constrain the Keccak-f round math and chain the 24 rounds of one permutation
+        // invocation together via an index-keyed interaction.
+        self.eval_keccakf_round(builder, local);
+        // Chain one block's ending state into the next block's starting state via a second,
+        // block-scoped interaction (replaces the old row-adjacent absorbed-state continuity).
+        self.eval_sponge_chain(builder, local);
 
         // Receive syscall
         builder.receive_syscall(
@@ -58,38 +59,6 @@ where
             local.receive_syscall,
             LookupScope::Local,
         );
-
-        // The first block flag is fixed on the first row and then held steady
-        // within the block. Once a non-final block ends, the next block must
-        // reset this flag to zero.
-        builder.when(local.receive_syscall).assert_one(first_block);
-        builder
-            .when_transition()
-            .when(not_final_step.clone())
-            .assert_eq(next.is_first_input_block, first_block);
-        builder.when(local.is_absorbed).assert_zero(next.is_first_input_block);
-
-        // The final block flag stays low on all non-final blocks and is fixed
-        // to one on the final block's write-output row. Within a block it stays
-        // constant across Keccak rounds.
-        builder.when(local.write_output).assert_one(final_block);
-        builder.when(local.is_absorbed).assert_zero(final_block);
-        builder
-            .when_transition()
-            .when(not_final_step.clone())
-            .assert_eq(next.is_final_input_block, final_block);
-
-        // Constrain that the inputs stay the same throughout the rows of each cycle
-        let mut transition_builder = builder.when_transition();
-        let mut transition_not_final_builder = transition_builder.when(not_final_sponge.clone());
-        transition_not_final_builder.assert_eq(local.shard, next.shard);
-        transition_not_final_builder.assert_eq(local.clk, next.clk);
-        transition_not_final_builder.assert_eq(local.is_real, next.is_real);
-        transition_not_final_builder.assert_eq(local.input_len, next.input_len);
-        transition_not_final_builder.assert_eq(local.output_address, next.output_address);
-        // The final row must be nonreal because NUM_ROUNDS is not a power of 2. This constraint
-        // ensures that the table does not end abruptly.
-        builder.when_last_row().assert_zero(local.is_real);
 
         // Xor
         let not_read_block = AB::Expr::one() - local.read_block;
@@ -113,8 +82,7 @@ where
 
         // Range-constrain the sponge state bytes.
         //
-        // `original_state` is interpreted as bytes when building u16/u64 limbs
-        // (including for `next.original_state` in absorbed-state transitions).
+        // `original_state` is interpreted as bytes when building u16/u64 limbs.
         // Enforce each byte is in [0, 255] to prevent unconstrained field limbs
         // from satisfying packed equalities spuriously.
         let mut original_state_bytes = Vec::with_capacity(KECCAK_STATE_U32S * 4);
@@ -152,138 +120,25 @@ where
         }
         builder.slice_range_check_u8(&output_mem_bytes, local.write_output);
 
-        // Constrain the absorbed bytes
-        builder
-            .when_transition()
-            .when(not_final_step.clone())
-            .assert_eq(local.already_absorbed_u32s, next.already_absorbed_u32s);
-        builder
-            .when_transition()
-            .when(not_final_step)
-            .assert_eq(local.input_address, next.input_address);
         // If this is the first block, absorbed bytes should be 0
-        builder.when(first_block).assert_eq(local.already_absorbed_u32s, AB::Expr::zero());
+        builder
+            .when(local.is_first_input_block)
+            .assert_eq(local.already_absorbed_u32s, AB::Expr::zero());
         // If this is the first block, the sponge state must start from the
         // fixed all-zero Keccak IV.
-        let mut first_block_builder = builder.when(first_block);
+        let mut first_block_builder = builder.when(local.is_first_input_block);
         for i in 0..KECCAK_STATE_U32S {
             first_block_builder.assert_word_zero(local.original_state[i]);
         }
         // If this is the final block, absorbed bytes should be equal to the input length - KECCAK_GENERAL_RATE_U32S
-        builder.when(final_block).assert_eq(
+        builder.when(local.is_final_input_block).assert_eq(
             local.already_absorbed_u32s,
             local.input_len - AB::Expr::from_canonical_u32(KECCAK_GENERAL_RATE_U32S as u32),
         );
-        // If local is real and not the final block, absorbed bytes in next block should be
-        // equal to the previous absorbed bytes + KECCAK_GENERAL_RATE_U32S
-        builder.when(local.is_absorbed).assert_eq(
-            local.already_absorbed_u32s,
-            next.already_absorbed_u32s
-                - AB::Expr::from_canonical_u32(KECCAK_GENERAL_RATE_U32S as u32),
-        );
-        // check the input address
-        builder.when(local.is_absorbed).assert_eq(
-            local.input_address,
-            next.input_address - AB::Expr::from_canonical_u32(KECCAK_GENERAL_RATE_U32S as u32 * 4),
-        );
-
-        // Outside the absorbed-edge transition, keep `original_state` stable
-        // across rows. Exclude the final output row because its successor is a
-        // padding row.
-        let keep_original_state =
-            (AB::Expr::one() - local.is_absorbed) * (AB::Expr::one() - local.write_output);
-        let mut keep_transition_builder = builder.when_transition();
-        let mut keep_state_builder = keep_transition_builder.when(keep_original_state);
-        for i in 0..KECCAK_STATE_U32S {
-            keep_state_builder.assert_word_eq(local.original_state[i], next.original_state[i]);
-        }
-
-        // Eval the plonky3 keccak air. Picus can hide the full sub-AIR behind a
-        // semantic boundary; other builders continue to inline the exact
-        // `SubAirBuilder` path.
-        #[cfg(feature = "picus")]
-        let current_inputs = self.keccak_summary_inputs::<AB>(local);
-        #[cfg(feature = "picus")]
-        let current_outputs = self.keccak_summary_outputs::<AB>(local);
-        #[cfg(feature = "picus")]
-        if !builder.try_emit_hidden_subair_summary(
-            "KeccakAir",
-            &KeccakPermutationProjection::picus_projection_info(),
-            &current_inputs,
-            &current_outputs,
-            NUM_KECCAK_COLS,
-            false,
-            |nested_builder| self.p3_keccak.eval(nested_builder),
-        ) {
-            let mut sub_builder =
-                SubAirBuilder::<AB, KeccakAir, AB::Var>::new(builder, 0..NUM_KECCAK_COLS);
-            self.p3_keccak.eval(&mut sub_builder);
-        }
-        #[cfg(not(feature = "picus"))]
-        {
-            let mut sub_builder =
-                SubAirBuilder::<AB, KeccakAir, AB::Var>::new(builder, 0..NUM_KECCAK_COLS);
-            self.p3_keccak.eval(&mut sub_builder);
-        }
     }
 }
 
 impl KeccakSpongeChip {
-    /// Flatten the visible Keccak-f input state from the embedded sub-AIR.
-    ///
-    /// The surrounding sponge AIR ties these lanes to memory/original-state
-    /// data, so they must remain visible caller inputs even when the full
-    /// Keccak round system is summarized as a hidden submodule.
-    #[cfg(feature = "picus")]
-    fn keccak_summary_inputs<AB: ZKMAirBuilder>(
-        &self,
-        local: &KeccakSpongeCols<AB::Var>,
-    ) -> Vec<AB::Expr> {
-        let mut inputs = Vec::with_capacity(25 * U64_LIMBS);
-        for y in 0..5 {
-            for x in 0..5 {
-                for limb in 0..U64_LIMBS {
-                    inputs.push(local.keccak.a[y][x][limb].into());
-                }
-            }
-        }
-        inputs
-    }
-
-    /// Flatten the caller-visible outputs of the embedded Keccak-f sub-AIR.
-    ///
-    /// The sponge AIR depends on the round-position flags as well as the
-    /// post-round `A'''` state. The `(0, 0)` lane is stored separately from the
-    /// remaining 24 lanes, so the flattened order mirrors the projection
-    /// metadata exactly:
-    /// 1. `first_step`
-    /// 2. `final_step`
-    /// 3. `A'''[0, 0]`
-    /// 4. the remaining 24 `A'''` lanes in witness layout order
-    #[cfg(feature = "picus")]
-    fn keccak_summary_outputs<AB: ZKMAirBuilder>(
-        &self,
-        local: &KeccakSpongeCols<AB::Var>,
-    ) -> Vec<AB::Expr> {
-        let mut outputs = Vec::with_capacity(2 + 25 * U64_LIMBS);
-        outputs.push(local.keccak.step_flags[0].into());
-        outputs.push(local.keccak.step_flags[NUM_ROUNDS - 1].into());
-        for limb in 0..U64_LIMBS {
-            outputs.push(local.keccak.a_prime_prime_prime(0, 0, limb).into());
-        }
-        for y in 0..5 {
-            for x in 0..5 {
-                if y == 0 && x == 0 {
-                    continue;
-                }
-                for limb in 0..U64_LIMBS {
-                    outputs.push(local.keccak.a_prime_prime_prime(y, x, limb).into());
-                }
-            }
-        }
-        outputs
-    }
-
     fn eval_flags<AB: ZKMAirBuilder>(&self, builder: &mut AB, local: &KeccakSpongeCols<AB::Var>) {
         let first_block = local.is_first_input_block;
         let final_block = local.is_final_input_block;
@@ -292,16 +147,34 @@ impl KeccakSpongeChip {
         let first_step = local.keccak.step_flags[0];
         let final_step = local.keccak.step_flags[NUM_ROUNDS - 1];
 
-        // Defensive constraints for the summarized Keccak sub-AIR boundary:
-        // enforce booleanity and mutual exclusion of first/final step flags.
-        // This prevents degenerate witnesses where a single row is both
-        // first-round and final-round when summary internals are hidden.
         builder.assert_bool(first_block);
         builder.assert_bool(final_block);
         builder.assert_bool(local.read_block);
         builder.when(local.is_real).assert_bool(first_step);
         builder.when(local.is_real).assert_bool(final_step);
         builder.when(local.is_real).assert_zero(first_step * final_step);
+
+        // `is_first_input_block`/`is_final_input_block` are combinatorial functions of
+        // `already_absorbed_u32s`/`input_len`, checked row-locally, rather than values
+        // propagated from row to row. This replaces the old `next`-row "flag holds constant
+        // across a block, resets between blocks" checks.
+        IsZeroOperation::<AB::F>::eval(
+            builder,
+            local.already_absorbed_u32s.into(),
+            local.is_absorbed_zero,
+            local.is_real.into(),
+        );
+        let final_diff = local.already_absorbed_u32s.into()
+            - (local.input_len.into()
+                - AB::Expr::from_canonical_u32(KECCAK_GENERAL_RATE_U32S as u32));
+        IsZeroOperation::<AB::F>::eval(
+            builder,
+            final_diff,
+            local.is_final_block_zero,
+            local.is_real.into(),
+        );
+        builder.when(local.is_real).assert_eq(first_block, local.is_absorbed_zero.result);
+        builder.when(local.is_real).assert_eq(final_block, local.is_final_block_zero.result);
 
         // receive syscall
         builder.assert_eq(first_block * first_step * local.is_real, local.receive_syscall);
@@ -367,11 +240,15 @@ impl KeccakSpongeChip {
             );
         }
     }
+
+    /// Bridges `original_state`/memory to the permutation's own `a`/`a'''` lanes at the two
+    /// row-local edges of one block: round 0's input (`first_step`) and the final output write
+    /// (`write_output`). The block-to-block continuity in between is handled entirely by
+    /// `eval_sponge_chain`'s interaction, not here.
     fn eval_state_keccakf<AB: ZKMAirBuilder>(
         &self,
         builder: &mut AB,
         local: &KeccakSpongeCols<AB::Var>,
-        next: &KeccakSpongeCols<AB::Var>,
     ) {
         let first_step = local.keccak.step_flags[0];
         // constrain the state
@@ -390,29 +267,12 @@ impl KeccakSpongeChip {
                 most_sig_word[0] + most_sig_word[1] * expr_2_pow_8.clone(),
                 most_sig_word[2] + most_sig_word[3] * expr_2_pow_8.clone(),
             ];
-            // On a first round, verify memory matches with local.p3_keccak_cols.a
+            // On a first round, verify memory matches with local.keccak.a
             let a_value_limbs = local.keccak.a[y_idx as usize][x_idx as usize];
             for j in 0..U64_LIMBS {
                 builder
                     .when(first_step * local.is_real)
                     .assert_eq(memory_limbs[j].clone(), a_value_limbs[j]);
-            }
-
-            // On a final round, verify memory matches with
-            // local.p3_keccak_cols.a_prime_prime_prime (except for the final block)
-            let least_sig_word = next.original_state[(i * 2) as usize];
-            let most_sig_word = next.original_state[(i * 2 + 1) as usize];
-            let memory_limbs = [
-                least_sig_word[0] + least_sig_word[1] * expr_2_pow_8.clone(),
-                least_sig_word[2] + least_sig_word[3] * expr_2_pow_8.clone(),
-                most_sig_word[0] + most_sig_word[1] * expr_2_pow_8.clone(),
-                most_sig_word[2] + most_sig_word[3] * expr_2_pow_8.clone(),
-            ];
-            for j in 0..U64_LIMBS {
-                builder.when(local.is_absorbed).assert_eq(
-                    memory_limbs[j].clone(),
-                    local.keccak.a_prime_prime_prime(y_idx as usize, x_idx as usize, j),
-                )
             }
         }
 
@@ -434,25 +294,10 @@ impl KeccakSpongeChip {
                     .when(first_step * local.is_real)
                     .assert_eq(memory_limbs[j].clone(), a_value_limbs[j]);
             }
-
-            let least_sig_word = next.original_state[(i * 2) as usize];
-            let most_sig_word = next.original_state[(i * 2 + 1) as usize];
-            let memory_limbs = [
-                least_sig_word[0] + least_sig_word[1] * expr_2_pow_8.clone(),
-                least_sig_word[2] + least_sig_word[3] * expr_2_pow_8.clone(),
-                most_sig_word[0] + most_sig_word[1] * expr_2_pow_8.clone(),
-                most_sig_word[2] + most_sig_word[3] * expr_2_pow_8.clone(),
-            ];
-            for j in 0..U64_LIMBS {
-                builder.when(local.is_absorbed).assert_eq(
-                    memory_limbs[j].clone(),
-                    local.keccak.a_prime_prime_prime(y_idx as usize, x_idx as usize, j),
-                )
-            }
         }
 
         // if this is the final round of the final block, verify output memory with
-        // local.p3_keccak_cols.a_prime_prime_prime
+        // local.keccak.a_prime_prime_prime
         for i in 0..(KECCAK_GENERAL_OUTPUT_U32S / 2) as u32 {
             let y_idx = i / 5;
             let x_idx = i % 5;
@@ -472,5 +317,265 @@ impl KeccakSpongeChip {
                 )
             }
         }
+    }
+
+    /// The Keccak-f round math, ported from `p3_keccak_air::KeccakAir::eval` (which is itself
+    /// row-adjacent -- it reads `next` and uses `when_transition` -- and therefore incompatible
+    /// with this framework's single-row constraint evaluation). Checked unconditionally on every
+    /// row, relying on trace-gen to populate a self-consistent dummy Keccak-f witness on padding
+    /// rows, exactly as the vendored sub-AIR itself did.
+    ///
+    /// The 24 rounds of one permutation invocation are chained together via an index-keyed
+    /// interaction covering the 23 *internal* round-to-round transitions; round 0's input and
+    /// round `NUM_ROUNDS - 1`'s output are bridged elsewhere (`eval_state_keccakf` and
+    /// `eval_sponge_chain`/`write_output`), so this interaction excludes both endpoints.
+    fn eval_keccakf_round<AB: ZKMAirBuilder>(
+        &self,
+        builder: &mut AB,
+        local: &KeccakSpongeCols<AB::Var>,
+    ) {
+        let andn_gen = |a: AB::Expr, b: AB::Expr| b.clone() - a * b;
+        let xor_gen = |a: AB::Expr, b: AB::Expr| a.clone() + b.clone() - a * b.double();
+        let xor3_gen = |a: AB::Expr, b: AB::Expr, c: AB::Expr| xor_gen(a, xor_gen(b, c));
+
+        // Flag constraints.
+        let mut sum_flags = AB::Expr::zero();
+        let mut computed_index = AB::Expr::zero();
+        for i in 0..NUM_ROUNDS {
+            builder.assert_bool(local.keccak.step_flags[i]);
+            sum_flags = sum_flags.clone() + local.keccak.step_flags[i];
+            computed_index = computed_index.clone()
+                + AB::Expr::from_canonical_u32(i as u32) * local.keccak.step_flags[i];
+        }
+        builder.assert_one(sum_flags);
+        builder.when(local.is_real).assert_eq(computed_index, local.round_index);
+
+        // C'[x, z] = xor(C[x, z], C[x - 1, z], C[x + 1, z - 1]).
+        for x in 0..5 {
+            for z in 0..64 {
+                builder.assert_bool(local.keccak.c[x][z]);
+                let xor = xor3_gen(
+                    local.keccak.c[x][z].into(),
+                    local.keccak.c[(x + 4) % 5][z].into(),
+                    local.keccak.c[(x + 1) % 5][(z + 63) % 64].into(),
+                );
+                let c_prime = local.keccak.c_prime[x][z];
+                builder.assert_eq(c_prime, xor);
+            }
+        }
+
+        // Check that the input limbs are consistent with A' and D.
+        // A[x, y, z] = xor(A'[x, y, z], D[x, y, z])
+        //            = xor(A'[x, y, z], C[x - 1, z], C[x + 1, z - 1])
+        //            = xor(A'[x, y, z], C[x, z], C'[x, z]).
+        // The last step is valid based on the identity we checked above.
+        // It isn't required, but makes this check a bit cleaner.
+        for y in 0..5 {
+            for x in 0..5 {
+                let get_bit = |z| {
+                    let a_prime: AB::Var = local.keccak.a_prime[y][x][z];
+                    let c: AB::Var = local.keccak.c[x][z];
+                    let c_prime: AB::Var = local.keccak.c_prime[x][z];
+                    xor3_gen(a_prime.into(), c.into(), c_prime.into())
+                };
+
+                for limb in 0..U64_LIMBS {
+                    let a_limb = local.keccak.a[y][x][limb];
+                    let computed_limb = (limb * BITS_PER_LIMB..(limb + 1) * BITS_PER_LIMB)
+                        .rev()
+                        .fold(AB::Expr::zero(), |acc, z| {
+                            builder.assert_bool(local.keccak.a_prime[y][x][z]);
+                            acc.double() + get_bit(z)
+                        });
+                    builder.assert_eq(computed_limb, a_limb);
+                }
+            }
+        }
+
+        // xor_{i=0}^4 A'[x, i, z] = C'[x, z], so for each x, z,
+        // diff * (diff - 2) * (diff - 4) = 0, where
+        // diff = sum_{i=0}^4 A'[x, i, z] - C'[x, z]
+        for x in 0..5 {
+            for z in 0..64 {
+                let sum: AB::Expr = (0..5).map(|y| local.keccak.a_prime[y][x][z].into()).sum();
+                let diff = sum - local.keccak.c_prime[x][z];
+                let four = AB::Expr::from_canonical_u8(4);
+                builder
+                    .assert_zero(diff.clone() * (diff.clone() - AB::Expr::two()) * (diff - four));
+            }
+        }
+
+        // A''[x, y] = xor(B[x, y], andn(B[x + 1, y], B[x + 2, y])).
+        for y in 0..5 {
+            for x in 0..5 {
+                let get_bit = |z| {
+                    let andn = andn_gen(
+                        local.keccak.b((x + 1) % 5, y, z).into(),
+                        local.keccak.b((x + 2) % 5, y, z).into(),
+                    );
+                    xor_gen(local.keccak.b(x, y, z).into(), andn)
+                };
+
+                for limb in 0..U64_LIMBS {
+                    let computed_limb = (limb * BITS_PER_LIMB..(limb + 1) * BITS_PER_LIMB)
+                        .rev()
+                        .fold(AB::Expr::zero(), |acc, z| acc.double() + get_bit(z));
+                    builder.assert_eq(computed_limb, local.keccak.a_prime_prime[y][x][limb]);
+                }
+            }
+        }
+
+        // A'''[0, 0] = A''[0, 0] XOR RC
+        for limb in 0..U64_LIMBS {
+            let computed_a_prime_prime_0_0_limb = (limb * BITS_PER_LIMB
+                ..(limb + 1) * BITS_PER_LIMB)
+                .rev()
+                .fold(AB::Expr::zero(), |acc, z| {
+                    builder.assert_bool(local.keccak.a_prime_prime_0_0_bits[z]);
+                    acc.double() + local.keccak.a_prime_prime_0_0_bits[z]
+                });
+            let a_prime_prime_0_0_limb = local.keccak.a_prime_prime[0][0][limb];
+            builder.assert_eq(computed_a_prime_prime_0_0_limb, a_prime_prime_0_0_limb);
+        }
+
+        let get_xored_bit = |i| {
+            let mut rc_bit_i = AB::Expr::zero();
+            for r in 0..NUM_ROUNDS {
+                let this_round = local.keccak.step_flags[r];
+                let this_round_constant = AB::Expr::from_canonical_u8(rc_value_bit(r, i));
+                rc_bit_i = rc_bit_i.clone() + this_round * this_round_constant;
+            }
+
+            xor_gen(local.keccak.a_prime_prime_0_0_bits[i].into(), rc_bit_i)
+        };
+
+        for limb in 0..U64_LIMBS {
+            let a_prime_prime_prime_0_0_limb = local.keccak.a_prime_prime_prime_0_0_limbs[limb];
+            let computed_a_prime_prime_prime_0_0_limb = (limb * BITS_PER_LIMB
+                ..(limb + 1) * BITS_PER_LIMB)
+                .rev()
+                .fold(AB::Expr::zero(), |acc, z| acc.double() + get_xored_bit(z));
+            builder.assert_eq(computed_a_prime_prime_prime_0_0_limb, a_prime_prime_prime_0_0_limb);
+        }
+
+        let base = [
+            local.shard.into(),
+            local.clk.into(),
+            local.output_address.into(),
+            local.input_len.into(),
+            local.already_absorbed_u32s.into(),
+        ];
+
+        let receive_values = base
+            .iter()
+            .cloned()
+            .chain(once(local.round_index.into()))
+            .chain((0..5).flat_map(|y| {
+                (0..5).flat_map(move |x| {
+                    (0..U64_LIMBS).map(move |limb| local.keccak.a[y][x][limb].into())
+                })
+            }))
+            .collect::<Vec<_>>();
+        // Gate = `is_real * (1 - first_step)`, rewritten as the affine combination
+        // `is_real - read_block` (since `read_block == first_step * is_real` exactly) --
+        // interaction arguments must be degree <= 1 in the trace columns, so a literal product
+        // of two columns isn't allowed here.
+        builder.receive(
+            AirLookup::new(
+                receive_values,
+                local.is_real.into() - local.read_block.into(),
+                LookupKind::KeccakPermuteRound,
+            ),
+            LookupScope::Local,
+        );
+
+        let send_values = base
+            .iter()
+            .cloned()
+            .chain(once(local.round_index.into() + AB::Expr::one()))
+            .chain((0..5).flat_map(|y| {
+                (0..5).flat_map(move |x| {
+                    (0..U64_LIMBS)
+                        .map(move |limb| local.keccak.a_prime_prime_prime(y, x, limb).into())
+                })
+            }))
+            .collect::<Vec<_>>();
+        // Gate = `is_real * (1 - final_step)`, rewritten as the affine combination
+        // `is_real - (is_absorbed + write_output)`: since `not_final_block + final_block == 1`,
+        // `is_absorbed + write_output == final_step * not_final_block * is_real
+        // + final_step * final_block * is_real == final_step * is_real` exactly.
+        builder.send(
+            AirLookup::new(
+                send_values,
+                local.is_real.into() - (local.is_absorbed.into() + local.write_output.into()),
+                LookupKind::KeccakPermuteRound,
+            ),
+            LookupScope::Local,
+        );
+    }
+
+    /// Chains one block's ending permutation state (last round of a non-final block) into the
+    /// next block's starting permutation state (round 0 of a non-first block), replacing the old
+    /// row-adjacent `already_absorbed_u32s`/`input_address`/`original_state` continuity checks.
+    /// The two true chain boundaries -- the first block's zero IV and the final block's output
+    /// write -- don't need this interaction at all, since they're already row-local constant
+    /// anchors (see the top-level `eval` and `eval_state_keccakf`).
+    fn eval_sponge_chain<AB: ZKMAirBuilder>(
+        &self,
+        builder: &mut AB,
+        local: &KeccakSpongeCols<AB::Var>,
+    ) {
+        let base = [
+            local.shard.into(),
+            local.clk.into(),
+            local.output_address.into(),
+            local.input_len.into(),
+        ];
+
+        let send_values = base
+            .iter()
+            .cloned()
+            .chain(once(
+                local.already_absorbed_u32s.into()
+                    + AB::Expr::from_canonical_u32(KECCAK_GENERAL_RATE_U32S as u32),
+            ))
+            .chain(once(
+                local.input_address.into()
+                    + AB::Expr::from_canonical_u32(KECCAK_GENERAL_RATE_U32S as u32 * 4),
+            ))
+            .chain((0..5).flat_map(|y| {
+                (0..5).flat_map(move |x| {
+                    (0..U64_LIMBS)
+                        .map(move |limb| local.keccak.a_prime_prime_prime(y, x, limb).into())
+                })
+            }))
+            .collect::<Vec<_>>();
+        builder.send(
+            AirLookup::new(send_values, local.is_absorbed.into(), LookupKind::KeccakSpongeBlock),
+            LookupScope::Local,
+        );
+
+        let receive_values = base
+            .iter()
+            .cloned()
+            .chain(once(local.already_absorbed_u32s.into()))
+            .chain(once(local.input_address.into()))
+            .chain((0..5).flat_map(|y| {
+                (0..5).flat_map(move |x| {
+                    (0..U64_LIMBS).map(move |limb| local.keccak.a[y][x][limb].into())
+                })
+            }))
+            .collect::<Vec<_>>();
+        // Gate = `(1 - first_block) * first_step * is_real`, rewritten as the affine combination
+        // `read_block - receive_syscall` (since `read_block == first_step * is_real` and
+        // `receive_syscall == first_block * first_step * is_real` exactly).
+        builder.receive(
+            AirLookup::new(
+                receive_values,
+                local.read_block.into() - local.receive_syscall.into(),
+                LookupKind::KeccakSpongeBlock,
+            ),
+            LookupScope::Local,
+        );
     }
 }

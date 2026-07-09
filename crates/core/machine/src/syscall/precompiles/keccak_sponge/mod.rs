@@ -1,21 +1,20 @@
-use p3_keccak_air::KeccakAir;
-
 mod air;
 mod columns;
+mod constants;
 mod trace;
 mod utils;
 
 pub const KECCAK_GENERAL_RATE_U32S: usize = 36;
 pub const KECCAK_STATE_U32S: usize = 50;
 pub const KECCAK_GENERAL_OUTPUT_U32S: usize = 16;
+pub const BITS_PER_LIMB: usize = 64 / p3_keccak_air::U64_LIMBS;
 
-pub struct KeccakSpongeChip {
-    p3_keccak: KeccakAir,
-}
+#[derive(Default)]
+pub struct KeccakSpongeChip;
 
 impl KeccakSpongeChip {
     pub const fn new() -> Self {
-        Self { p3_keccak: KeccakAir {} }
+        Self {}
     }
 }
 #[cfg(test)]

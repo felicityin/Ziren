@@ -1,5 +1,3 @@
-#[cfg(feature = "picus")]
-use crate::syscall::precompiles::keccak_sponge::columns::KeccakPermutationProjection;
 use crate::syscall::precompiles::keccak_sponge::columns::{
     KeccakSpongeCols, NUM_KECCAK_SPONGE_COLS,
 };
@@ -29,27 +27,6 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
 
     fn name(&self) -> String {
         "KeccakSponge".to_string()
-    }
-
-    #[cfg(feature = "picus")]
-    fn picus_info(&self) -> zkm_hypercube::air::PicusInfo {
-        let mut info = KeccakSpongeCols::<u8>::picus_info();
-        #[cfg(feature = "picus")]
-        {
-            let projection = KeccakPermutationProjection::picus_projection_info();
-
-            // Expose the embedded Keccak permutation input state on the parent
-            // module interface so Picus cannot vary it existentially when checking
-            // boundary/transition phases.
-            info.transition_input_ranges.extend(
-                projection
-                    .input_ranges
-                    .into_iter()
-                    .map(|(start, end, name)| (start, end, format!("keccak_{name}"))),
-            );
-        }
-
-        info
     }
 
     fn generate_dependencies(
@@ -162,7 +139,15 @@ impl KeccakSpongeChip {
                 // all real rows are satisfied consistently.
                 cols.input_length_mem.access.value = Word::from(event.input_length_record.value);
                 blu.add_u8_range_checks(&event.input_length_record.value.to_le_bytes());
+                cols.round_index = F::from_canonical_usize(round);
                 cols.already_absorbed_u32s = F::from_canonical_u32(already_absorbed_u32s);
+                cols.is_absorbed_zero.populate(already_absorbed_u32s);
+                cols.is_final_block_zero.populate_from_field_element(
+                    F::from_canonical_u32(already_absorbed_u32s)
+                        - F::from_canonical_u32(
+                            event.input_len_u32s - KECCAK_GENERAL_RATE_U32S as u32,
+                        ),
+                );
                 cols.is_absorbed =
                     F::from_bool((round == (NUM_ROUNDS - 1)) && (i != (block_num - 1)));
                 cols.is_first_input_block = F::from_bool(i == 0);
