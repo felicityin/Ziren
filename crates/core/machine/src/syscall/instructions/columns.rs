@@ -6,7 +6,7 @@ use zkm_hypercube::{air::PV_DIGEST_NUM_WORDS, word::Word};
 
 use crate::operations::{IsZeroOperation, KoalaBearWordRangeChecker};
 #[cfg(feature = "picus")]
-use zkm_stark::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 
 pub const NUM_SYSCALL_INSTR_COLS: usize = size_of::<SyscallInstrColumns<u8>>();
 

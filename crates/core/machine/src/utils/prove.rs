@@ -152,7 +152,7 @@ pub fn prove_with_context(
     opts: ZKMCoreOpts,
     context: ZKMContext,
     shape_config: Option<&CoreShapeConfig<KoalaBear>>,
-) -> Result<(Vec<ZkmShardProof>, Vec<u8>, u64), ZKMCoreProverError> {
+) -> Result<(Vec<ZkmShardProof>, Vec<u8>, u64, zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext>), ZKMCoreProverError> {
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
     let max_log_row_count = opts.shard_size.ilog2() as usize;
     let shard_verifier = ShardVerifier::from_basefold_parameters(default_fri_config(), ZKM_LOG_STACKING_HEIGHT, max_log_row_count, machine);
@@ -173,7 +173,7 @@ pub fn prove_with_context(
 
     let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let program_arc = Arc::new(program.clone());
-    let (preprocessed, _vk) = setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
+    let (preprocessed, vk) = setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
     let pk = preprocessed.pk;
 
     #[cfg(feature = "debug")]
@@ -564,11 +564,11 @@ pub fn prove_with_context(
 
         Ok((all_shard_proofs, public_values_stream, cycles))
     })
+    .map(|(all_shard_proofs, public_values_stream, cycles)| (all_shard_proofs, public_values_stream, cycles, vk))
 }
 
-// TODO(zkm-hypercube): these all call prove_with_context/MipsAir::machine with the old
-// MachineProver/StarkGenericConfig shape, superseded above. Rebuild once a ShardProver
-// equivalent exists.
+// TODO(zkm-hypercube): these call run_test_core::<P> with the old MachineProver-generic
+// signature; rebuild against the non-generic run_test_core below.
 // /// Runs a program and returns the public values stream.
 // pub fn run_test_io<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
 //     mut program: Program,
@@ -600,37 +600,32 @@ pub fn prove_with_context(
 //     });
 //     run_test_core::<P>(runtime, ZKMStdin::new(), Some(&shape_config))
 // }
-//
-// #[allow(unused_variables)]
-// pub fn run_test_core<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
-//     runtime: Executor,
-//     inputs: ZKMStdin,
-//     shape_config: Option<&CoreShapeConfig<KoalaBear>>,
-// ) -> Result<MachineProof<KoalaBearPoseidon2>, MachineVerificationError<KoalaBearPoseidon2>> {
-//     let config = KoalaBearPoseidon2::new();
-//     let machine = MipsAir::machine(config);
-//     let prover = P::new(machine);
-//
-//     let (pk, _) = prover.setup(runtime.program.as_ref());
-//     let (proof, output, _) = prove_with_context(
-//         &prover,
-//         &pk,
-//         Program::clone(&runtime.program),
-//         &inputs,
-//         ZKMCoreOpts::default(),
-//         ZKMContext::default(),
-//         shape_config,
-//     )
-//     .unwrap();
-//
-//     let config = KoalaBearPoseidon2::new();
-//     let machine = MipsAir::machine(config);
-//     let (pk, vk) = machine.setup(runtime.program.as_ref());
-//     let mut challenger = machine.config().challenger();
-//     machine.verify(&vk, &proof, &mut challenger).unwrap();
-//
-//     Ok(proof)
-// }
+pub fn run_test_core(
+    runtime: Executor,
+    inputs: ZKMStdin,
+    shape_config: Option<&CoreShapeConfig<KoalaBear>>,
+) -> Result<Vec<ZkmShardProof>, ZKMCoreProverError> {
+    let (shard_proofs, _public_values_stream, _cycles, vk) = prove_with_context(
+        Program::clone(&runtime.program),
+        &inputs,
+        ZKMCoreOpts::default(),
+        ZKMContext::default(),
+        shape_config,
+    )?;
+
+    let machine = MipsAir::<KoalaBear>::hypercube_machine();
+    let max_log_row_count = ZKMCoreOpts::default().shard_size.ilog2() as usize;
+    let shard_verifier =
+        ShardVerifier::from_basefold_parameters(default_fri_config(), ZKM_LOG_STACKING_HEIGHT, max_log_row_count, machine);
+
+    for proof in &shard_proofs {
+        let mut challenger = ZkmGlobalContext::default_challenger();
+        vk.observe_into(&mut challenger);
+        shard_verifier.verify_shard(&vk, proof, &mut challenger).unwrap();
+    }
+
+    Ok(shard_proofs)
+}
 //
 // #[allow(unused_variables)]
 // pub fn run_test_machine_with_prover<SC, A, P: MachineProver<SC, A>>(
@@ -796,3 +791,16 @@ where
 use p3_air::Air;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_uni_stark::Proof;
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+    use crate::programs::tests::simple_program;
+
+    #[test]
+    fn run_test_core_smoke() {
+        let program = simple_program();
+        let runtime = Executor::new(program, ZKMCoreOpts::default());
+        run_test_core(runtime, ZKMStdin::new(), None).unwrap();
+    }
+}

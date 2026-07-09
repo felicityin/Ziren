@@ -29,7 +29,7 @@ impl<F: PrimeField32> MachineAir<F> for CpuChip {
     }
 
     #[cfg(feature = "picus")]
-    fn picus_info(&self) -> zkm_stark::PicusInfo {
+    fn picus_info(&self) -> zkm_hypercube::air::PicusInfo {
         CpuCols::<u8>::picus_info()
     }
 

@@ -10,7 +10,7 @@ use zkm_hypercube::word::Word;
 
 use crate::memory::{MemoryCols, MemoryReadCols, MemoryReadWriteCols};
 #[cfg(feature = "picus")]
-use zkm_stark::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 
 pub const NUM_CPU_COLS: usize = size_of::<CpuCols<u8>>();
 

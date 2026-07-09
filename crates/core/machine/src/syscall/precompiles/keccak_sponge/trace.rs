@@ -32,7 +32,7 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
     }
 
     #[cfg(feature = "picus")]
-    fn picus_info(&self) -> zkm_stark::PicusInfo {
+    fn picus_info(&self) -> zkm_hypercube::air::PicusInfo {
         let mut info = KeccakSpongeCols::<u8>::picus_info();
         #[cfg(feature = "picus")]
         {

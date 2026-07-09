@@ -11,7 +11,7 @@ use zkm_core_executor::{
     ExecutionRecord, Program,
 };
 #[cfg(feature = "picus")]
-use zkm_stark::air::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
 
 use super::{

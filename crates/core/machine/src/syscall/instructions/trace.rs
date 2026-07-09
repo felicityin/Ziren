@@ -12,7 +12,7 @@ use zkm_core_executor::{
 };
 use zkm_hypercube::air::MachineAir;
 #[cfg(feature = "picus")]
-use zkm_stark::air::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 
 use crate::{
     utils::{next_power_of_two, zeroed_f_vec},

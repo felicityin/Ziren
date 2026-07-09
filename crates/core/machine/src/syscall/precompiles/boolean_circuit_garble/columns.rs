@@ -6,7 +6,7 @@ use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
 #[cfg(feature = "picus")]
-use zkm_stark::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 /// BooleanCircuitGarbleCols is the column layout for the Boolean Circuit Garble.
 /// The number of rows equal to the number of gates
 #[derive(AlignedBorrow)]

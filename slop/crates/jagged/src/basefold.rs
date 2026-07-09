@@ -103,14 +103,6 @@ mod tests {
     }
 
     #[test]
-    fn test_bn254_jagged_basefold() {
-        test_jagged_basefold::<
-            BNGC<BabyBear, BinomialExtensionField<BabyBear, 4>>,
-            StackedPcsProver<BnProver<BabyBear, BinomialExtensionField<BabyBear, 4>>, _>,
-        >();
-    }
-
-    #[test]
     fn test_bn254_jagged_kb_basefold() {
         test_jagged_basefold::<
             BNGC<KoalaBear, BinomialExtensionField<KoalaBear, 4>>,

@@ -14,7 +14,7 @@ use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
-use zkm_stark::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{
     air::{
         AirLookup, BaseAirBuilder, LookupScope, MachineAir, PublicValues, ZKMAirBuilder,
@@ -65,7 +65,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
     }
 
     #[cfg(feature = "picus")]
-    fn picus_info(&self) -> zkm_stark::PicusInfo {
+    fn picus_info(&self) -> zkm_hypercube::air::PicusInfo {
         MemoryInitCols::<u8>::picus_info()
     }
 

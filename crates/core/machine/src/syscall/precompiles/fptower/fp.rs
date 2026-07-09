@@ -25,7 +25,7 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 use zkm_stark::air::Polynomial;
 #[cfg(feature = "picus")]
-use zkm_stark::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder};
 
 use crate::{

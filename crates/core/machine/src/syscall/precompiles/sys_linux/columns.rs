@@ -10,7 +10,7 @@ use crate::{
     operations::{AddOperation, GtColsBytes, IsZeroOperation},
 };
 #[cfg(feature = "picus")]
-use zkm_stark::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 
 pub const NUM_SYS_LINUX_COLS: usize = size_of::<SysLinuxCols<u8>>();
 

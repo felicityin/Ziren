@@ -16,7 +16,7 @@ use zkm_derive::PicusProjection;
 use zkm_hypercube::word::Word;
 
 #[cfg(feature = "picus")]
-use zkm_stark::PicusInfo;
+use zkm_hypercube::air::PicusInfo;
 /// KeccakSpongeCols is the column layout for the keccak sponge.
 /// The number of rows equal to the number of block.
 #[derive(AlignedBorrow)]

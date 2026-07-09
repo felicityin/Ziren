@@ -33,7 +33,7 @@ impl<F: PrimeField32> MachineAir<F> for MiscInstrsChip {
     }
 
     #[cfg(feature = "picus")]
-    fn picus_info(&self) -> zkm_stark::PicusInfo {
+    fn picus_info(&self) -> zkm_hypercube::air::PicusInfo {
         MiscInstrColumns::<u8>::picus_info()
     }
 
