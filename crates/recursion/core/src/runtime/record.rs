@@ -2,7 +2,12 @@ use std::{array, sync::Arc};
 
 use hashbrown::HashMap;
 use p3_field::{Field, FieldAlgebra, PrimeField32};
-use zkm_stark::{air::MachineAir, MachineRecord, ZKMCoreOpts, PROOF_MAX_NUM_PVS};
+use zkm_hypercube::{
+    air::{MachineAir, ZKMAirBuilder},
+    lookup::LookupKind,
+    record::MachineRecord,
+    PROOF_MAX_NUM_PVS,
+};
 
 use super::{
     BaseAluEvent, BatchFRIEvent, CommitPublicValuesEvent, ExpReverseBitsEvent, ExtAluEvent,
@@ -31,8 +36,6 @@ pub struct ExecutionRecord<F> {
 }
 
 impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
-    type Config = ZKMCoreOpts;
-
     fn stats(&self) -> hashbrown::HashMap<String, usize> {
         let mut stats = HashMap::new();
         stats.insert("base_alu_events".to_string(), self.base_alu_events.len());
@@ -87,6 +90,15 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
         });
 
         ret.to_vec()
+    }
+
+    // Recursion programs execute as a single unsharded record, so there is no cross-shard
+    // boundary state to chain here (unlike `zkm_core_executor::ExecutionRecord`, which anchors
+    // memory/global accumulation lookups across shards).
+    fn eval_public_values<AB: ZKMAirBuilder>(_builder: &mut AB) {}
+
+    fn lookups_in_public_values() -> Vec<LookupKind> {
+        vec![]
     }
 }
 

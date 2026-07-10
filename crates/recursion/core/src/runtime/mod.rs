@@ -35,8 +35,8 @@ use p3_symmetric::{CryptographicPermutation, Permutation};
 use p3_util::reverse_bits_len;
 use thiserror::Error;
 
-use zkm_stark::septic_curve::SepticCurve;
-use zkm_stark::septic_extension::SepticExtension;
+use zkm_hypercube::septic_curve::SepticCurve;
+use zkm_hypercube::septic_extension::SepticExtension;
 
 use crate::air::{Block, RECURSIVE_PROOF_NUM_PV_ELTS};
 

@@ -28,6 +28,10 @@ pub enum LookupKind {
     ShaCompress = 14,
     KeccakPermuteRound = 15,
     KeccakSpongeBlock = 16,
+    BatchFRIAccumulation = 17,
+    FriFoldConstant = 18,
+    ExpReverseBitsChain = 19,
+    Poseidon2SkinnyState = 20,
 }
 
 impl LookupKind {
@@ -50,6 +54,10 @@ impl LookupKind {
             LookupKind::ShaCompress,
             LookupKind::KeccakPermuteRound,
             LookupKind::KeccakSpongeBlock,
+            LookupKind::BatchFRIAccumulation,
+            LookupKind::FriFoldConstant,
+            LookupKind::ExpReverseBitsChain,
+            LookupKind::Poseidon2SkinnyState,
         ]
     }
 }
@@ -73,6 +81,10 @@ impl Display for LookupKind {
             LookupKind::ShaCompress => write!(f, "ShaCompress"),
             LookupKind::KeccakPermuteRound => write!(f, "KeccakPermuteRound"),
             LookupKind::KeccakSpongeBlock => write!(f, "KeccakSpongeBlock"),
+            LookupKind::BatchFRIAccumulation => write!(f, "BatchFRIAccumulation"),
+            LookupKind::FriFoldConstant => write!(f, "FriFoldConstant"),
+            LookupKind::ExpReverseBitsChain => write!(f, "ExpReverseBitsChain"),
+            LookupKind::Poseidon2SkinnyState => write!(f, "Poseidon2SkinnyState"),
         }
     }
 }

@@ -1,9 +1,9 @@
 use core::iter::once;
 use p3_air::{AirBuilder, AirBuilderWithPublicValues};
 use p3_field::FieldAlgebra;
-use zkm_stark::{
+use zkm_hypercube::{
     air::{AirLookup, BaseAirBuilder, LookupScope, MachineAirBuilder, OperationSummaryAirBuilder},
-    LookupKind,
+    lookup::LookupKind,
 };
 
 use super::{

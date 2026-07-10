@@ -7,14 +7,14 @@ use p3_koala_bear::KoalaBear;
 use std::borrow::BorrowMut;
 use tracing::instrument;
 use zkm_core_machine::utils::{next_power_of_two, pad_rows_fixed};
-use zkm_stark::air::{BinomialExtension, MachineAir};
+use zkm_hypercube::air::{AirLookup, BinomialExtension, LookupScope, MachineAir};
+use zkm_hypercube::lookup::LookupKind;
 
 use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
-#[cfg(feature = "sys")]
 use p3_field::FieldAlgebra;
 use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
-use zkm_stark::air::{BaseAirBuilder, ExtensionAirBuilder};
+use zkm_hypercube::air::ExtensionAirBuilder;
 
 use zkm_derive::AlignedBorrow;
 
@@ -22,7 +22,7 @@ use zkm_derive::AlignedBorrow;
 use crate::FriFoldEvent;
 use crate::{
     air::Block, builder::ZKMRecursionAirBuilder, runtime::Instruction, runtime::RecursionProgram,
-    ExecutionRecord, FriFoldInstr,
+    runtime::D, ExecutionRecord, FriFoldInstr,
 };
 
 use super::mem::MemoryAccessColsChips;
@@ -47,6 +47,11 @@ impl<const DEGREE: usize> Default for FriFoldChip<DEGREE> {
 #[repr(C)]
 pub struct FriFoldPreprocessedCols<T: Copy> {
     pub is_first: T,
+    pub is_last: T,
+    /// A shard-wide row counter, used to chain `x`/`z`/`alpha` across rows of the same
+    /// invocation via an index-keyed lookup instead of physical row adjacency (which the
+    /// zerocheck prover's single-row constraint-eval contexts don't support).
+    pub index: T,
 
     // Memory accesses for the single fields.
     pub z_mem: MemoryAccessColsChips<T>,
@@ -72,6 +77,12 @@ pub struct FriFoldCols<T: Copy> {
     pub z: Block<T>,
     pub alpha: Block<T>,
     pub x: T,
+
+    /// `z`/`alpha`/`x` of the previous row in this invocation. Only read by the AIR when this
+    /// row isn't the first of its invocation.
+    pub prev_z: Block<T>,
+    pub prev_alpha: Block<T>,
+    pub prev_x: T,
 
     pub p_at_x: Block<T>,
     pub p_at_z: Block<T>,
@@ -115,6 +126,7 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for FriFoldChip<DEGREE>
     #[cfg(not(feature = "sys"))]
     fn generate_preprocessed_trace(&self, program: &Self::Program) -> Option<RowMajorMatrix<F>> {
         let mut rows: Vec<[F; NUM_FRI_FOLD_PREPROCESSED_COLS]> = Vec::new();
+        let mut global_index: u32 = 0;
         program
             .instructions
             .iter()
@@ -133,12 +145,15 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for FriFoldChip<DEGREE>
                     alpha_pow_mults,
                     ro_mults,
                 } = instruction.as_ref();
-                let mut row_add =
-                    vec![[F::ZERO; NUM_FRI_FOLD_PREPROCESSED_COLS]; ext_vec_addrs.ps_at_z.len()];
+                let len = ext_vec_addrs.ps_at_z.len();
+                let mut row_add = vec![[F::ZERO; NUM_FRI_FOLD_PREPROCESSED_COLS]; len];
 
                 row_add.iter_mut().enumerate().for_each(|(i, row)| {
                     let row: &mut FriFoldPreprocessedCols<F> = row.as_mut_slice().borrow_mut();
                     row.is_first = F::from_bool(i == 0);
+                    row.is_last = F::from_bool(i == len - 1);
+                    row.index = F::from_canonical_u32(global_index);
+                    global_index += 1;
 
                     // Only need to read z, x, and alpha on the first iteration, hence the
                     // multiplicities are i==0.
@@ -278,6 +293,9 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for FriFoldChip<DEGREE>
         input: &ExecutionRecord<F>,
         _: &mut ExecutionRecord<F>,
     ) -> Result<RowMajorMatrix<F>, Self::Error> {
+        let mut prev_x = F::ZERO;
+        let mut prev_z = Block::from([F::ZERO; D]);
+        let mut prev_alpha = Block::from([F::ZERO; D]);
         let mut rows = input
             .fri_fold_events
             .iter()
@@ -289,6 +307,16 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for FriFoldChip<DEGREE>
                 cols.x = event.base_single.x;
                 cols.z = event.ext_single.z;
                 cols.alpha = event.ext_single.alpha;
+
+                // Only read by the AIR when this row isn't the first of its invocation (see
+                // `FriFoldPreprocessedCols::is_first`); harmless otherwise since the flat event
+                // list is laid out one invocation after another.
+                cols.prev_x = prev_x;
+                cols.prev_z = prev_z;
+                cols.prev_alpha = prev_alpha;
+                prev_x = cols.x;
+                prev_z = cols.z;
+                prev_alpha = cols.alpha;
 
                 cols.p_at_z = event.ext_vec.ps_at_z;
                 cols.p_at_x = event.ext_vec.mat_opening;
@@ -378,39 +406,54 @@ impl<const DEGREE: usize> FriFoldChip<DEGREE> {
         &self,
         builder: &mut AB,
         local: &FriFoldCols<AB::Var>,
-        next: &FriFoldCols<AB::Var>,
         local_prepr: &FriFoldPreprocessedCols<AB::Var>,
-        next_prepr: &FriFoldPreprocessedCols<AB::Var>,
     ) {
         // Constrain mem read for x.  Read at the first fri fold row.
         builder.send_single(local_prepr.x_mem.addr, local.x, local_prepr.x_mem.mult);
 
-        // Ensure that the x value is the same for all rows within a fri fold invocation.
-        builder
-            .when_transition()
-            .when(next_prepr.is_real)
-            .when_not(next_prepr.is_first)
-            .assert_eq(local.x, next.x);
-
         // Constrain mem read for z.  Read at the first fri fold row.
         builder.send_block(local_prepr.z_mem.addr, local.z, local_prepr.z_mem.mult);
-
-        // Ensure that the z value is the same for all rows within a fri fold invocation.
-        builder
-            .when_transition()
-            .when(next_prepr.is_real)
-            .when_not(next_prepr.is_first)
-            .assert_ext_eq(local.z.as_extension::<AB>(), next.z.as_extension::<AB>());
 
         // Constrain mem read for alpha.  Read at the first fri fold row.
         builder.send_block(local_prepr.alpha_mem.addr, local.alpha, local_prepr.alpha_mem.mult);
 
-        // Ensure that the alpha value is the same for all rows within a fri fold invocation.
+        // Ensure that x/z/alpha are the same for all rows within a fri fold invocation: every
+        // non-last row sends its own x/z/alpha forward to `index + 1`; every non-first row
+        // receives its predecessor's x/z/alpha as prev_x/prev_z/prev_alpha from `index`, and
+        // that received value is asserted (below) to equal this row's own x/z/alpha.
+        let not_last: AB::Expr = local_prepr.is_real.into() - local_prepr.is_last.into();
+        let not_first: AB::Expr = local_prepr.is_real.into() - local_prepr.is_first.into();
+        builder.send(
+            AirLookup::new(
+                std::iter::once(local_prepr.index.into() + AB::Expr::one())
+                    .chain(std::iter::once(local.x.into()))
+                    .chain(local.z.0.iter().map(|x| (*x).into()))
+                    .chain(local.alpha.0.iter().map(|x| (*x).into()))
+                    .collect(),
+                not_last,
+                LookupKind::FriFoldConstant,
+            ),
+            LookupScope::Local,
+        );
+        builder.receive(
+            AirLookup::new(
+                std::iter::once(local_prepr.index.into())
+                    .chain(std::iter::once(local.prev_x.into()))
+                    .chain(local.prev_z.0.iter().map(|x| (*x).into()))
+                    .chain(local.prev_alpha.0.iter().map(|x| (*x).into()))
+                    .collect(),
+                not_first.clone(),
+                LookupKind::FriFoldConstant,
+            ),
+            LookupScope::Local,
+        );
+        builder.when(not_first.clone()).assert_eq(local.x, local.prev_x);
         builder
-            .when_transition()
-            .when(next_prepr.is_real)
-            .when_not(next_prepr.is_first)
-            .assert_ext_eq(local.alpha.as_extension::<AB>(), next.alpha.as_extension::<AB>());
+            .when(not_first.clone())
+            .assert_ext_eq(local.z.as_extension::<AB>(), local.prev_z.as_extension::<AB>());
+        builder
+            .when(not_first)
+            .assert_ext_eq(local.alpha.as_extension::<AB>(), local.prev_alpha.as_extension::<AB>());
 
         // Constrain read for alpha_pow_input.
         builder.send_block(
@@ -478,20 +521,18 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let (local, next) = (main.row_slice(0), main.row_slice(1));
+        let local = main.row_slice(0);
         let local: &FriFoldCols<AB::Var> = (*local).borrow();
-        let next: &FriFoldCols<AB::Var> = (*next).borrow();
         let prepr = builder.preprocessed();
-        let (prepr_local, prepr_next) = (prepr.row_slice(0), prepr.row_slice(1));
+        let prepr_local = prepr.row_slice(0);
         let prepr_local: &FriFoldPreprocessedCols<AB::Var> = (*prepr_local).borrow();
-        let prepr_next: &FriFoldPreprocessedCols<AB::Var> = (*prepr_next).borrow();
 
         // Dummy constraints to normalize to DEGREE.
         let lhs = (0..DEGREE).map(|_| prepr_local.is_real.into()).product::<AB::Expr>();
         let rhs = (0..DEGREE).map(|_| prepr_local.is_real.into()).product::<AB::Expr>();
         builder.assert_eq(lhs, rhs);
 
-        self.eval_fri_fold::<AB>(builder, local, next, prepr_local, prepr_next);
+        self.eval_fri_fold::<AB>(builder, local, prepr_local);
     }
 }
 
@@ -501,7 +542,8 @@ mod tests {
     use rand::{rngs::StdRng, Rng, SeedableRng};
     use std::mem::size_of;
     use zkm_core_machine::utils::setup_logger;
-    use zkm_stark::{air::MachineAir, StarkGenericConfig};
+    use zkm_hypercube::air::MachineAir;
+    use zkm_stark::StarkGenericConfig;
 
     use p3_field::FieldAlgebra;
     use p3_koala_bear::KoalaBear;

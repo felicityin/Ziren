@@ -8,7 +8,7 @@ use p3_maybe_rayon::prelude::*;
 use std::borrow::BorrowMut;
 use zkm_core_machine::utils::next_power_of_two;
 use zkm_derive::AlignedBorrow;
-use zkm_stark::air::MachineAir;
+use zkm_hypercube::air::MachineAir;
 
 use crate::{builder::ZKMRecursionAirBuilder, *};
 

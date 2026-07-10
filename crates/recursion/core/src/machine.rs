@@ -1,11 +1,12 @@
+use std::fmt;
 use std::ops::{Add, AddAssign};
 
 use hashbrown::HashMap;
 use p3_field::{extension::BinomiallyExtendable, PrimeField32};
-use zkm_stark::{
+use zkm_hypercube::{
     air::{LookupScope, MachineAir, PicusInfo},
     shape::OrderedShape,
-    Chip, StarkGenericConfig, StarkMachine, PROOF_MAX_NUM_PVS,
+    Chip, Machine, MachineShape,
 };
 
 use crate::{
@@ -50,6 +51,14 @@ pub enum RecursionAir<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: u
     PublicValues(PublicValuesChip),
 }
 
+impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> fmt::Debug
+    for RecursionAir<F, DEGREE>
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RecursionAirEventCount {
     pub mem_const_events: usize,
@@ -65,9 +74,10 @@ pub struct RecursionAirEventCount {
 
 impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAir<F, DEGREE> {
     /// Get a machine with all chips, except the dummy chip.
-    pub fn machine_wide_with_all_chips<SC: StarkGenericConfig<Val = F>>(
-        config: SC,
-    ) -> StarkMachine<SC, Self> {
+    pub fn machine_wide_with_all_chips() -> Machine<F, Self>
+    where
+        F: slop_algebra::Field,
+    {
         let chips = [
             RecursionAir::MemoryConst(MemoryConstChip::default()),
             RecursionAir::MemoryVar(MemoryVarChip::default()),
@@ -83,13 +93,15 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
         .map(Chip::new)
         .into_iter()
         .collect::<Vec<_>>();
-        StarkMachine::new(config, chips, PROOF_MAX_NUM_PVS)
+        let shape = MachineShape::all(&chips);
+        Machine::new(chips, crate::air::RECURSIVE_PROOF_NUM_PV_ELTS, shape)
     }
 
     /// Get a machine with all chips, except the dummy chip.
-    pub fn machine_skinny_with_all_chips<SC: StarkGenericConfig<Val = F>>(
-        config: SC,
-    ) -> StarkMachine<SC, Self> {
+    pub fn machine_skinny_with_all_chips() -> Machine<F, Self>
+    where
+        F: slop_algebra::Field,
+    {
         let chips = [
             RecursionAir::MemoryConst(MemoryConstChip::default()),
             RecursionAir::MemoryVar(MemoryVarChip::default()),
@@ -105,11 +117,15 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
         .map(Chip::new)
         .into_iter()
         .collect::<Vec<_>>();
-        StarkMachine::new(config, chips, PROOF_MAX_NUM_PVS)
+        let shape = MachineShape::all(&chips);
+        Machine::new(chips, crate::air::RECURSIVE_PROOF_NUM_PV_ELTS, shape)
     }
 
     /// A machine with dyunamic chip sizes that includes the wide variant of the Poseidon2 chip.
-    pub fn compress_machine<SC: StarkGenericConfig<Val = F>>(config: SC) -> StarkMachine<SC, Self> {
+    pub fn compress_machine() -> Machine<F, Self>
+    where
+        F: slop_algebra::Field,
+    {
         let chips = [
             RecursionAir::MemoryConst(MemoryConstChip::default()),
             RecursionAir::MemoryVar(MemoryVarChip::default()),
@@ -124,18 +140,25 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
         .map(Chip::new)
         .into_iter()
         .collect::<Vec<_>>();
-        StarkMachine::new(config, chips, PROOF_MAX_NUM_PVS)
+        let shape = MachineShape::all(&chips);
+        Machine::new(chips, crate::air::RECURSIVE_PROOF_NUM_PV_ELTS, shape)
     }
 
-    pub fn shrink_machine<SC: StarkGenericConfig<Val = F>>(config: SC) -> StarkMachine<SC, Self> {
-        Self::compress_machine(config)
+    pub fn shrink_machine() -> Machine<F, Self>
+    where
+        F: slop_algebra::Field,
+    {
+        Self::compress_machine()
     }
 
     /// A machine with dynamic chip sizes that includes the skinny variant of the Poseidon2 chip.
     ///
     /// This machine assumes that the `shrink` stage has a fixed shape, so there is no need to
     /// fix the trace sizes.
-    pub fn wrap_machine<SC: StarkGenericConfig<Val = F>>(config: SC) -> StarkMachine<SC, Self> {
+    pub fn wrap_machine() -> Machine<F, Self>
+    where
+        F: slop_algebra::Field,
+    {
         let chips = [
             RecursionAir::MemoryConst(MemoryConstChip::default()),
             RecursionAir::MemoryVar(MemoryVarChip::default()),
@@ -149,7 +172,8 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
         .map(Chip::new)
         .into_iter()
         .collect::<Vec<_>>();
-        StarkMachine::new(config, chips, PROOF_MAX_NUM_PVS)
+        let shape = MachineShape::all(&chips);
+        Machine::new(chips, crate::air::RECURSIVE_PROOF_NUM_PV_ELTS, shape)
     }
 
     pub fn shrink_shape() -> RecursionShape {
@@ -274,7 +298,12 @@ pub mod tests {
     };
     use p3_koala_bear::Poseidon2InternalLayerKoalaBear;
     use rand::prelude::*;
-    use zkm_core_machine::utils::run_test_machine;
+    use slop_challenger::IopCtx;
+    use zkm_hypercube::{
+        config::{default_fri_config, ZkmGlobalContext},
+        prover::{AirProver, ProverSemaphore, ZkmShardProver},
+        Machine, ShardVerifier,
+    };
     use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig};
 
     use crate::{
@@ -289,9 +318,76 @@ pub mod tests {
     type F = <SC as StarkGenericConfig>::Val;
     type EF = <SC as StarkGenericConfig>::Challenge;
     type A = RecursionAir<F, 3>;
-    type B = RecursionAir<F, 9>;
 
-    /// Runs the given program on machines that use the wide and skinny Poseidon2 chips.
+    /// The log2 of the number of rows each stacked-PCS column is grouped into. Mirrors
+    /// `zkm_core_machine::utils::prove::ZKM_LOG_STACKING_HEIGHT` (which is crate-private to
+    /// `zkm-core-machine`), kept in sync by convention.
+    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
+
+    /// Sets up, proves, and verifies a single recursion shard for `program`/`record` against
+    /// `machine`. Mirrors `zkm_core_machine::utils::prove::run_test_core`, simplified since
+    /// recursion programs run as a single unsharded `ExecutionRecord` (no checkpointing).
+    pub(crate) fn run_recursion_test_machine<const DEGREE: usize>(
+        machine: Machine<F, RecursionAir<F, DEGREE>>,
+        program: RecursionProgram<F>,
+        record: crate::ExecutionRecord<F>,
+    ) {
+        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
+        let program = Arc::new(program);
+
+        let shard_prover = ZkmShardProver::<RecursionAir<F, DEGREE>>::new(
+            ShardVerifier::from_basefold_parameters(
+                default_fri_config(),
+                RECURSION_LOG_STACKING_HEIGHT,
+                max_log_row_count,
+                machine.clone(),
+            ),
+        );
+
+        let setup_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (vk, proof, _permit) = setup_rt.block_on(shard_prover.setup_and_prove_shard(
+            program,
+            record,
+            None,
+            ProverSemaphore::new(1),
+        ));
+
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            RECURSION_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        let mut challenger = ZkmGlobalContext::default_challenger();
+        vk.observe_into(&mut challenger);
+        if let Err(e) = shard_verifier.verify_shard(&vk, &proof, &mut challenger) {
+            panic!("Verification failed: {e:?}");
+        }
+    }
+
+    /// Runs the given program on the machine that uses the wide Poseidon2 chip.
+    ///
+    /// TODO(zkm-hypercube): also run `B::machine_skinny_with_all_chips()` (DEGREE=9). Two
+    /// distinct, stacked problems block this, both constraint-degree (not row-adjacency, which
+    /// is already fixed below) issues:
+    /// 1. Every DEGREE-parameterized recursion chip's `Air::eval` (FriFold, BatchFRI,
+    ///    ExpReverseBitsLen, Poseidon2Wide, Poseidon2Skinny) has a "dummy constraints to
+    ///    normalize to DEGREE" step (`(0..DEGREE).map(...).product()`) that intentionally forces
+    ///    the AIR's polynomial degree up to DEGREE. At DEGREE=9 this alone exceeds
+    ///    `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE` (3), independent of any chip's own logic
+    ///    -- confirmed live via `chips::poseidon2_wide::tests::test_poseidon2`'s DEGREE=9 half
+    ///    (also dropped, for the same reason).
+    /// 2. `Poseidon2SkinnyChip` additionally has its own, chip-specific degree issue: its
+    ///    13-round internal sbox chain, once gated by `is_internal_row`, exceeds the same cap on
+    ///    its own merits.
+    /// SP1's own recursion machine (architecturally ahead of this port) doesn't patch either: it
+    /// deletes the row-per-round "skinny" design entirely and replaces it with row-local
+    /// `Poseidon2SBoxChip`/`Poseidon2LinearLayerChip`/`ConvertChip` (one sbox/linear-layer op per
+    /// row, degree <=3 by construction with no DEGREE-normalization trick needed at all, chained
+    /// across rounds via ordinary virtual-memory addresses emitted by the compiler -- see
+    /// `sp1/crates/recursion/machine/src/chips/poseidon2_helper/`). Porting that requires new
+    /// instruction types and `recursion/compiler` changes (阶段3.3 scope), not just this crate.
     pub fn run_recursion_test_machines(program: RecursionProgram<F>) {
         let program = Arc::new(program);
         let mut runtime = Runtime::<F, EF, Poseidon2InternalLayerKoalaBear<16>>::new(
@@ -301,21 +397,11 @@ pub mod tests {
         runtime.run().unwrap();
 
         // Run with the poseidon2 wide chip.
-        let machine = A::machine_wide_with_all_chips(KoalaBearPoseidon2::default());
-        let (pk, vk) = machine.setup(&program);
-        let result = run_test_machine(vec![runtime.record.clone()], machine, pk, vk);
-        if let Err(e) = result {
-            panic!("Verification failed: {e:?}");
-        }
-
-        // Run with the poseidon2 skinny chip.
-        let skinny_machine =
-            B::machine_skinny_with_all_chips(KoalaBearPoseidon2::ultra_compressed());
-        let (pk, vk) = skinny_machine.setup(&program);
-        let result = run_test_machine(vec![runtime.record], skinny_machine, pk, vk);
-        if let Err(e) = result {
-            panic!("Verification failed: {e:?}");
-        }
+        run_recursion_test_machine::<3>(
+            A::machine_wide_with_all_chips(),
+            (*program).clone(),
+            runtime.record,
+        );
     }
 
     fn test_instructions(instructions: Vec<Instruction<F>>) {

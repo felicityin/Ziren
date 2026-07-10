@@ -6,7 +6,7 @@ use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use std::{borrow::BorrowMut, iter::zip, marker::PhantomData};
 use zkm_core_machine::utils::pad_rows_fixed;
 use zkm_derive::AlignedBorrow;
-use zkm_stark::air::MachineAir;
+use zkm_hypercube::air::MachineAir;
 
 use crate::{builder::ZKMRecursionAirBuilder, *};
 
@@ -164,20 +164,21 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use machine::{tests::run_recursion_test_machines, RecursionAir};
+    use machine::{
+        tests::{run_recursion_test_machine, run_recursion_test_machines},
+        RecursionAir,
+    };
     use p3_field::FieldAlgebra;
     use p3_koala_bear::{KoalaBear, Poseidon2InternalLayerKoalaBear};
     use p3_matrix::dense::RowMajorMatrix;
 
-    use crate::stark::KoalaBearPoseidon2Outer;
-    use zkm_core_machine::utils::run_test_machine;
     use zkm_stark::{KoalaBearPoseidon2Inner, StarkGenericConfig};
 
     use super::*;
 
     use crate::runtime::instruction as instr;
 
-    type SC = KoalaBearPoseidon2Outer;
+    type SC = KoalaBearPoseidon2Inner;
     type F = <SC as StarkGenericConfig>::Val;
     type EF = <SC as StarkGenericConfig>::Challenge;
     type A = RecursionAir<F, 3>;
@@ -186,17 +187,15 @@ mod tests {
         let program = Arc::new(program);
         let mut runtime = Runtime::<F, EF, Poseidon2InternalLayerKoalaBear<16>>::new(
             program.clone(),
-            KoalaBearPoseidon2Inner::new().perm,
+            SC::new().perm,
         );
         runtime.run().unwrap();
 
-        let config = SC::new();
-        let machine = A::compress_machine(config);
-        let (pk, vk) = machine.setup(&program);
-        let result = run_test_machine(vec![runtime.record], machine, pk, vk);
-        if let Err(e) = result {
-            panic!("Verification failed: {e:?}");
-        }
+        run_recursion_test_machine::<3>(
+            A::compress_machine(),
+            (*program).clone(),
+            runtime.record,
+        );
     }
 
     #[test]

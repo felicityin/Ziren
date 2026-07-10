@@ -6,6 +6,9 @@ use p3_air::{Air, AirBuilder, BaseAir, PairBuilder};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 
+use zkm_hypercube::air::{AirLookup, LookupScope};
+use zkm_hypercube::lookup::LookupKind;
+
 use crate::{builder::ZKMRecursionAirBuilder, chips::poseidon2_skinny::columns::Poseidon2};
 
 use super::{
@@ -31,9 +34,8 @@ where
         assert!(DEGREE >= 9);
 
         let main = builder.main();
-        let (local_row, next_row) = (main.row_slice(0), main.row_slice(1));
+        let local_row = main.row_slice(0);
         let local_row: &Poseidon2<_> = (*local_row).borrow();
-        let next_row: &Poseidon2<_> = (*next_row).borrow();
         let prepr = builder.preprocessed();
         let prep_local = prepr.row_slice(0);
         let prep_local: &Poseidon2PreprocessedCols<_> = (*prep_local).borrow();
@@ -52,14 +54,46 @@ where
             )
         });
 
-        self.eval_input_round(builder, local_row, prep_local, next_row);
+        // Chain the round state across rows of the same permutation invocation: every row but
+        // the output row (the round-counter flags being all-zero doesn't distinguish an output
+        // row from padding, hence the separate `is_real`) sends its `computed_next_state`
+        // forward to `index + 1`; every row but the input row receives its predecessor's
+        // `computed_next_state` as its own `state_var` from `index`. This replaces a physical
+        // `next` row reference, which the zerocheck prover's single-row constraint-eval contexts
+        // don't support.
+        let round_counters = &prep_local.round_counters_preprocessed;
+        let not_output: AB::Expr = round_counters.is_input_round.into()
+            + round_counters.is_external_round.into()
+            + round_counters.is_internal_round.into();
+        let not_input: AB::Expr = prep_local.is_real.into() - round_counters.is_input_round.into();
+        builder.send(
+            AirLookup::new(
+                std::iter::once(prep_local.index.into() + AB::Expr::one())
+                    .chain(local_row.computed_next_state.iter().map(|x| (*x).into()))
+                    .collect(),
+                not_output,
+                LookupKind::Poseidon2SkinnyState,
+            ),
+            LookupScope::Local,
+        );
+        builder.receive(
+            AirLookup::new(
+                std::iter::once(prep_local.index.into())
+                    .chain(local_row.state_var.iter().map(|x| (*x).into()))
+                    .collect(),
+                not_input,
+                LookupKind::Poseidon2SkinnyState,
+            ),
+            LookupScope::Local,
+        );
 
-        self.eval_external_round(builder, local_row, prep_local, next_row);
+        self.eval_input_round(builder, local_row, prep_local);
+
+        self.eval_external_round(builder, local_row, prep_local);
 
         self.eval_internal_rounds(
             builder,
             local_row,
-            next_row,
             prep_local.round_counters_preprocessed.round_constants,
             prep_local.round_counters_preprocessed.is_internal_round,
         );
@@ -72,19 +106,16 @@ impl<const DEGREE: usize> Poseidon2SkinnyChip<DEGREE> {
         builder: &mut AB,
         local_row: &Poseidon2<AB::Var>,
         prep_local: &Poseidon2PreprocessedCols<AB::Var>,
-        next_row: &Poseidon2<AB::Var>,
     ) {
         let mut state: [AB::Expr; WIDTH] = array::from_fn(|i| local_row.state_var[i].into());
 
         // Apply the linear layer.
         external_linear_layer(&mut state);
 
-        let next_state = next_row.state_var;
         for i in 0..WIDTH {
             builder
-                .when_transition()
                 .when(prep_local.round_counters_preprocessed.is_input_round)
-                .assert_eq(next_state[i], state[i].clone());
+                .assert_eq(local_row.computed_next_state[i], state[i].clone());
         }
     }
 
@@ -93,7 +124,6 @@ impl<const DEGREE: usize> Poseidon2SkinnyChip<DEGREE> {
         builder: &mut AB,
         local_row: &Poseidon2<AB::Var>,
         prep_local: &Poseidon2PreprocessedCols<AB::Var>,
-        next_row: &Poseidon2<AB::Var>,
     ) {
         let local_state = local_row.state_var;
 
@@ -114,12 +144,10 @@ impl<const DEGREE: usize> Poseidon2SkinnyChip<DEGREE> {
         let mut state = sbox_deg_3;
         external_linear_layer(&mut state);
 
-        let next_state = next_row.state_var;
         for i in 0..WIDTH {
             builder
-                .when_transition()
                 .when(prep_local.round_counters_preprocessed.is_external_round)
-                .assert_eq(next_state[i], state[i].clone());
+                .assert_eq(local_row.computed_next_state[i], state[i].clone());
         }
     }
 
@@ -127,7 +155,6 @@ impl<const DEGREE: usize> Poseidon2SkinnyChip<DEGREE> {
         &self,
         builder: &mut AB,
         local_row: &Poseidon2<AB::Var>,
-        next_row: &Poseidon2<AB::Var>,
         round_constants: [AB::Var; WIDTH],
         is_internal_row: AB::Var,
     ) {
@@ -155,9 +182,8 @@ impl<const DEGREE: usize> Poseidon2SkinnyChip<DEGREE> {
             }
         }
 
-        let next_state = next_row.state_var;
         for i in 0..WIDTH {
-            builder.when(is_internal_row).assert_eq(next_state[i], state[i].clone())
+            builder.when(is_internal_row).assert_eq(local_row.computed_next_state[i], state[i].clone())
         }
     }
 }

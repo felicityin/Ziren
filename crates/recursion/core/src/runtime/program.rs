@@ -2,8 +2,8 @@ use backtrace::Backtrace;
 use p3_field::Field;
 use serde::{Deserialize, Serialize};
 use shape::RecursionShape;
-use zkm_stark::air::{MachineAir, MachineProgram};
-use zkm_stark::septic_digest::SepticDigest;
+use zkm_hypercube::air::{MachineAir, MachineProgram};
+use zkm_hypercube::septic_digest::SepticDigest;
 
 use crate::*;
 

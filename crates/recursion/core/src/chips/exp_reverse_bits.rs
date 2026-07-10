@@ -10,10 +10,10 @@ use std::borrow::BorrowMut;
 use tracing::instrument;
 use zkm_core_machine::utils::pad_rows_fixed;
 use zkm_derive::AlignedBorrow;
-use zkm_stark::{
-    air::{BaseAirBuilder, ExtensionAirBuilder, MachineAir},
-    ZKMAirBuilder,
+use zkm_hypercube::air::{
+    AirLookup, BaseAirBuilder, ExtensionAirBuilder, LookupScope, MachineAir, ZKMAirBuilder,
 };
+use zkm_hypercube::lookup::LookupKind;
 
 #[cfg(feature = "sys")]
 use crate::ExpReverseBitsEvent;
@@ -42,6 +42,10 @@ pub struct ExpReverseBitsLenPreprocessedCols<T: Copy> {
     pub is_first: T,
     pub is_last: T,
     pub is_real: T,
+    /// A shard-wide row counter, used to chain `x`/`accum_squared` across rows of the same
+    /// invocation via an index-keyed lookup instead of physical row adjacency (which the
+    /// zerocheck prover's single-row constraint-eval contexts don't support).
+    pub index: T,
 }
 
 #[derive(AlignedBorrow, Debug, Clone, Copy)]
@@ -49,6 +53,10 @@ pub struct ExpReverseBitsLenPreprocessedCols<T: Copy> {
 pub struct ExpReverseBitsLenCols<T: Copy> {
     /// The base of the exponentiation.
     pub x: T,
+
+    /// `x` of the previous row in this invocation. Only read by the AIR when this row isn't the
+    /// first of its invocation (`x` itself is unconstrained-in-effect on the first row).
+    pub prev_x: T,
 
     /// The current bit of the exponent. This is read from memory.
     pub current_bit: T,
@@ -102,6 +110,7 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for ExpReverseBitsLenCh
     #[cfg(not(feature = "sys"))]
     fn generate_preprocessed_trace(&self, program: &Self::Program) -> Option<RowMajorMatrix<F>> {
         let mut rows: Vec<[F; NUM_EXP_REVERSE_BITS_LEN_PREPROCESSED_COLS]> = Vec::new();
+        let mut global_index: u32 = 0;
         program
             .instructions
             .iter()
@@ -123,6 +132,8 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for ExpReverseBitsLenCh
                     row.is_first = F::from_bool(i == 0);
                     row.is_last = F::from_bool(i == addrs.exp.len() - 1);
                     row.is_real = F::ONE;
+                    row.index = F::from_canonical_u32(global_index);
+                    global_index += 1;
                     row.x_mem =
                         MemoryAccessColsChips { addr: addrs.base, mult: -F::from_bool(i == 0) };
                     row.exponent_mem =
@@ -238,6 +249,9 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for ExpReverseBitsLenCh
                     * if event.exp[i] == F::ONE { event.base } else { F::ONE };
 
                 cols.x = event.base;
+                // `x` is constant across every row of one invocation, so the previous row's `x`
+                // (read by the AIR via `prev_x` on non-first rows) is always just `event.base`.
+                cols.prev_x = event.base;
                 cols.current_bit = event.exp[i];
                 cols.accum = accum;
                 cols.accum_squared = accum * accum;
@@ -366,8 +380,6 @@ impl<const DEGREE: usize> ExpReverseBitsLenChip<DEGREE> {
         builder: &mut AB,
         local: &ExpReverseBitsLenCols<AB::Var>,
         local_prepr: &ExpReverseBitsLenPreprocessedCols<AB::Var>,
-        next: &ExpReverseBitsLenCols<AB::Var>,
-        next_prepr: &ExpReverseBitsLenPreprocessedCols<AB::Var>,
     ) {
         // Dummy constraints to normalize to DEGREE when DEGREE > 3.
         if DEGREE > 3 {
@@ -379,13 +391,6 @@ impl<const DEGREE: usize> ExpReverseBitsLenChip<DEGREE> {
         // Constrain mem read for x.  The read mult is one for only the first row, and zero for all
         // others.
         builder.send_single(local_prepr.x_mem.addr, local.x, local_prepr.x_mem.mult);
-
-        // Ensure that the value at the x memory access is unchanged when not `is_last`.
-        builder
-            .when_transition()
-            .when(next_prepr.is_real)
-            .when_not(local_prepr.is_last)
-            .assert_eq(local.x, next.x);
 
         // Constrain mem read for exponent's bits.  The read mult is one for all real rows.
         builder.send_single(
@@ -422,11 +427,33 @@ impl<const DEGREE: usize> ExpReverseBitsLenChip<DEGREE> {
         // Constrain the accum_squared column.
         builder.when(local_prepr.is_real).assert_eq(local.accum_squared, local.accum * local.accum);
 
-        builder
-            .when_transition()
-            .when(next_prepr.is_real)
-            .when_not(local_prepr.is_last)
-            .assert_eq(next.prev_accum_squared, local.accum_squared);
+        // Ensure that `x` is unchanged, and that `accum_squared` carries forward as
+        // `prev_accum_squared`, across every row of an invocation: every non-last row sends its
+        // own `x`/`accum_squared` forward to `index + 1`; every non-first row receives its
+        // predecessor's values as `prev_x`/`prev_accum_squared` from `index`.
+        let not_last: AB::Expr = local_prepr.is_real.into() - local_prepr.is_last.into();
+        let not_first: AB::Expr = local_prepr.is_real.into() - local_prepr.is_first.into();
+        builder.send(
+            AirLookup::new(
+                vec![
+                    local_prepr.index.into() + AB::Expr::one(),
+                    local.x.into(),
+                    local.accum_squared.into(),
+                ],
+                not_last,
+                LookupKind::ExpReverseBitsChain,
+            ),
+            LookupScope::Local,
+        );
+        builder.receive(
+            AirLookup::new(
+                vec![local_prepr.index.into(), local.prev_x.into(), local.prev_accum_squared.into()],
+                not_first.clone(),
+                LookupKind::ExpReverseBitsChain,
+            ),
+            LookupScope::Local,
+        );
+        builder.when(not_first).assert_eq(local.x, local.prev_x);
 
         // Constrain mem write for the result.
         builder.send_single(local_prepr.result_mem.addr, local.accum, local_prepr.result_mem.mult);
@@ -445,14 +472,12 @@ where
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
-        let (local, next) = (main.row_slice(0), main.row_slice(1));
+        let local = main.row_slice(0);
         let local: &ExpReverseBitsLenCols<AB::Var> = (*local).borrow();
-        let next: &ExpReverseBitsLenCols<AB::Var> = (*next).borrow();
         let prep = builder.preprocessed();
-        let (prep_local, prep_next) = (prep.row_slice(0), prep.row_slice(1));
+        let prep_local = prep.row_slice(0);
         let prep_local: &ExpReverseBitsLenPreprocessedCols<_> = (*prep_local).borrow();
-        let prep_next: &ExpReverseBitsLenPreprocessedCols<_> = (*prep_next).borrow();
-        self.eval_exp_reverse_bits_len::<AB>(builder, local, prep_local, next, prep_next);
+        self.eval_exp_reverse_bits_len::<AB>(builder, local, prep_local);
     }
 }
 
@@ -463,7 +488,8 @@ mod tests {
     use rand::{rngs::StdRng, Rng, SeedableRng};
     use std::iter::once;
     use zkm_core_machine::utils::setup_logger;
-    use zkm_stark::{air::MachineAir, StarkGenericConfig};
+    use zkm_hypercube::air::MachineAir;
+    use zkm_stark::StarkGenericConfig;
 
     use p3_field::{FieldAlgebra, PrimeField32};
     use p3_koala_bear::KoalaBear;

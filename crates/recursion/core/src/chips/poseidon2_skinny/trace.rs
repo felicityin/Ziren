@@ -13,7 +13,7 @@ use tracing::instrument;
 use zkm_core_machine::utils::next_power_of_two;
 #[cfg(not(feature = "sys"))]
 use zkm_primitives::RC_16_30_U32;
-use zkm_stark::air::MachineAir;
+use zkm_hypercube::air::MachineAir;
 
 #[cfg(not(feature = "sys"))]
 use crate::chips::mem::MemoryAccessColsChips;
@@ -98,10 +98,14 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for Poseidon2SkinnyChip
                 let (first_row, second_row) = &mut row_add[0..2].split_at_mut(1);
                 let input_cols: &mut Poseidon2Cols<F> = first_row[0].as_mut_slice().borrow_mut();
                 input_cols.state_var = event.input;
+                let mut linearized_input = event.input;
+                external_linear_layer(&mut linearized_input);
+                // The value this (input) row computes for its successor, sent forward via the
+                // index-keyed state chain rather than a physical `next` row reference.
+                input_cols.computed_next_state = linearized_input;
 
                 let next_cols: &mut Poseidon2Cols<F> = second_row[0].as_mut_slice().borrow_mut();
-                next_cols.state_var = event.input;
-                external_linear_layer(&mut next_cols.state_var);
+                next_cols.state_var = linearized_input;
             }
 
             // For each external round, and once for all the internal rounds at the same time, apply
@@ -112,12 +116,14 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for Poseidon2SkinnyChip
                     let cols: &mut Poseidon2Cols<F> = row_add[i].as_mut_slice().borrow_mut();
                     let state = cols.state_var;
 
-                    if i != INTERNAL_ROUND_IDX {
+                    let next_state_var = if i != INTERNAL_ROUND_IDX {
                         self.populate_external_round(&state, i - 1)
                     } else {
                         // Populate the internal rounds.
                         self.populate_internal_rounds(&state, &mut cols.internal_rounds_s0)
-                    }
+                    };
+                    cols.computed_next_state = next_state_var;
+                    next_state_var
                 };
                 let next_row_cols: &mut Poseidon2Cols<F> =
                     row_add[i + 1].as_mut_slice().borrow_mut();
@@ -223,11 +229,16 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for Poseidon2SkinnyChip
         // Iterate over the instructions and take NUM_EXTERNAL_ROUNDS + 3 rows for each instruction.
         // We have one extra round for the internal rounds, one extra round for the input,
         // and one extra round for the output.
+        let mut global_index: u32 = 0;
         instructions.zip_eq(&rows.iter_mut().chunks(NUM_EXTERNAL_ROUNDS + 3)).for_each(
             |(instruction, row_add)| {
                 row_add.into_iter().enumerate().for_each(|(i, row)| {
                     let cols: &mut Poseidon2PreprocessedCols<_> =
                         (*row).as_mut_slice().borrow_mut();
+
+                    cols.is_real = F::ONE;
+                    cols.index = F::from_canonical_u32(global_index);
+                    global_index += 1;
 
                     // Set the round-counter columns.
                     cols.round_counters_preprocessed.is_input_round =
@@ -421,7 +432,8 @@ mod tests {
     use p3_matrix::dense::RowMajorMatrix;
     use p3_symmetric::Permutation;
     use zkhash::ark_ff::UniformRand;
-    use zkm_stark::{air::MachineAir, inner_perm};
+    use zkm_hypercube::air::MachineAir;
+    use zkm_stark::inner_perm;
 
     use crate::{
         chips::poseidon2_skinny::{Poseidon2SkinnyChip, WIDTH},
