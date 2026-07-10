@@ -24,6 +24,7 @@ pub mod constraints;
 pub mod domain;
 pub mod fri;
 pub mod hash;
+pub mod jagged;
 pub mod logup_gkr;
 pub mod machine;
 pub mod merkle_tree;

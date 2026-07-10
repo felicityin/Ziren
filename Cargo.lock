@@ -8510,6 +8510,7 @@ dependencies = [
  "slop-basefold",
  "slop-challenger",
  "slop-commit",
+ "slop-jagged",
  "slop-matrix",
  "slop-merkle-tree",
  "slop-multilinear",
