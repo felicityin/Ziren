@@ -28,6 +28,7 @@ pub mod jagged;
 pub mod logup_gkr;
 pub mod machine;
 pub mod merkle_tree;
+pub mod shard;
 pub mod stark;
 pub mod sumcheck;
 mod symbolic;
