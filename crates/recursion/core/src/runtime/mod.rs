@@ -98,6 +98,8 @@ pub struct Runtime<'a, F: PrimeField32, EF: ExtensionField<F>, Diffusion> {
 
     pub nb_batch_fri: usize,
 
+    pub nb_prefix_sum_checks: usize,
+
     pub nb_print_f: usize,
 
     pub nb_print_e: usize,
@@ -205,6 +207,7 @@ where
             nb_branch_ops: 0,
             nb_fri_fold: 0,
             nb_batch_fri: 0,
+            nb_prefix_sum_checks: 0,
             nb_print_f: 0,
             nb_print_e: 0,
             clk: F::ZERO,
@@ -231,6 +234,7 @@ where
         tracing::debug!("Select Operations: {}", self.nb_select);
         tracing::debug!("Extension Operations: {}", self.nb_ext_ops);
         tracing::debug!("BatchFRI Operations: {}", self.nb_batch_fri);
+        tracing::debug!("PrefixSumChecks Operations: {}", self.nb_prefix_sum_checks);
         tracing::debug!("Memory Operations: {}", self.nb_memory_ops);
         tracing::debug!("Branch Operations: {}", self.nb_branch_ops);
         for (name, entry) in self.cycle_tracker.iter().sorted_by_key(|(name, _)| *name) {
@@ -573,6 +577,54 @@ where
                         Block::from(acc.as_base_slice()),
                         acc_mult,
                     );
+                }
+                Instruction::PrefixSumChecks(instr) => {
+                    let PrefixSumChecksInstr {
+                        addrs: PrefixSumChecksIo { zero, one, x1, x2, accs, field_accs },
+                        acc_mults,
+                        field_acc_mults,
+                    } = *instr;
+
+                    let zero_val = self.memory.mr(zero).val[0];
+                    let one_val: EF = self.memory.mr(one).val.ext();
+                    let x1_vals =
+                        x1.iter().map(|addr| self.memory.mr(*addr).val[0]).collect_vec();
+                    let x2_vals: Vec<EF> =
+                        x2.iter().map(|addr| self.memory.mr(*addr).val.ext()).collect_vec();
+
+                    self.nb_prefix_sum_checks += x1_vals.len();
+
+                    let mut acc = one_val;
+                    let mut field_acc = zero_val;
+                    for m in 0..x1_vals.len() {
+                        let product = EF::from_base(x1_vals[m]) * x2_vals[m];
+                        let lagrange_term =
+                            EF::ONE - EF::from_base(x1_vals[m]) - x2_vals[m] + product + product;
+                        let new_acc = acc * lagrange_term;
+                        let new_field_acc = x1_vals[m] + field_acc * F::from_canonical_u32(2);
+
+                        self.record.prefix_sum_checks_events.push(PrefixSumChecksEvent {
+                            x1: x1_vals[m],
+                            x2: Block::from(x2_vals[m].as_base_slice()),
+                            zero: zero_val,
+                            one: Block::from(one_val.as_base_slice()),
+                            acc: Block::from(acc.as_base_slice()),
+                            new_acc: Block::from(new_acc.as_base_slice()),
+                            field_acc,
+                            new_field_acc,
+                        });
+
+                        acc = new_acc;
+                        field_acc = new_field_acc;
+
+                        let _ = self.memory.mw(
+                            accs[m],
+                            Block::from(acc.as_base_slice()),
+                            acc_mults[m],
+                        );
+                        let _ =
+                            self.memory.mw(field_accs[m], Block::from(field_acc), field_acc_mults[m]);
+                    }
                 }
                 Instruction::CommitPublicValues(instr) => {
                     let pv_addrs = instr.pv_addrs.as_array();

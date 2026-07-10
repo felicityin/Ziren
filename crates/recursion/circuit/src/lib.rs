@@ -151,6 +151,15 @@ pub trait CircuitConfig: Config {
         p_at_xs: Vec<Felt<Self::F>>,
     ) -> Ext<Self::F, Self::EF>;
 
+    /// Evaluates `eq(x1, x2)` and reconstructs the integer value of the first half of `x1`'s
+    /// bits as a felt. See `CircuitV2Builder::prefix_sum_checks_v2` for the exact contract on
+    /// `x1`/`x2`'s shape.
+    fn prefix_sum_checks(
+        builder: &mut Builder<Self>,
+        x1: Vec<Felt<Self::F>>,
+        x2: Vec<Ext<Self::F, Self::EF>>,
+    ) -> (Ext<Self::F, Self::EF>, Felt<Self::F>);
+
     fn num2bits(
         builder: &mut Builder<Self>,
         num: Felt<<Self as Config>::F>,
@@ -231,6 +240,14 @@ impl CircuitConfig for InnerConfig {
         p_at_xs: Vec<Felt<<Self as Config>::F>>,
     ) -> Ext<<Self as Config>::F, <Self as Config>::EF> {
         builder.batch_fri_v2(alpha_pows, p_at_zs, p_at_xs)
+    }
+
+    fn prefix_sum_checks(
+        builder: &mut Builder<Self>,
+        x1: Vec<Felt<<Self as Config>::F>>,
+        x2: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
+    ) -> (Ext<<Self as Config>::F, <Self as Config>::EF>, Felt<<Self as Config>::F>) {
+        builder.prefix_sum_checks_v2(x1, x2)
     }
 
     fn num2bits(
@@ -359,6 +376,14 @@ impl CircuitConfig for WrapConfig {
         p_at_xs: Vec<Felt<<Self as Config>::F>>,
     ) -> Ext<<Self as Config>::F, <Self as Config>::EF> {
         builder.batch_fri_v2(alpha_pows, p_at_zs, p_at_xs)
+    }
+
+    fn prefix_sum_checks(
+        builder: &mut Builder<Self>,
+        x1: Vec<Felt<<Self as Config>::F>>,
+        x2: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
+    ) -> (Ext<<Self as Config>::F, <Self as Config>::EF>, Felt<<Self as Config>::F>) {
+        builder.prefix_sum_checks_v2(x1, x2)
     }
 
     fn num2bits(
@@ -490,6 +515,68 @@ impl CircuitConfig for OuterConfig {
             acc = temp_3;
         }
         acc
+    }
+
+    fn prefix_sum_checks(
+        builder: &mut Builder<Self>,
+        x1: Vec<Felt<<Self as Config>::F>>,
+        x2: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
+    ) -> (Ext<<Self as Config>::F, <Self as Config>::EF>, Felt<<Self as Config>::F>) {
+        assert_eq!(x1.len(), x2.len());
+        let len = x1.len();
+        assert!(len > 0 && len % 2 == 0);
+
+        let mut acc: Ext<_, _> = builder.uninit();
+        builder.push_op(DslIr::ImmE(acc, <Self as Config>::EF::ONE));
+        let mut field_acc: Felt<_> = builder.uninit();
+        builder.push_op(DslIr::ImmF(field_acc, <Self as Config>::F::ZERO));
+        let mut half_result = None;
+
+        for (i, (x1_i, x2_i)) in izip!(x1, x2).enumerate() {
+            // Boolean check: x1_i * (x1_i - 1) == 0.
+            let x1_minus_one: Felt<_> = builder.uninit();
+            builder.push_op(DslIr::SubFI(x1_minus_one, x1_i, <Self as Config>::F::ONE));
+            let bool_check: Felt<_> = builder.uninit();
+            builder.push_op(DslIr::MulF(bool_check, x1_i, x1_minus_one));
+            builder.assert_felt_eq(bool_check, <Self as Config>::F::ZERO);
+
+            // lagrange_term = 1 - x1_i - x2_i + 2 * x1_i * x2_i.
+            let product: Ext<_, _> = builder.uninit();
+            builder.push_op(DslIr::MulEF(product, x2_i, x1_i));
+            let two_product: Ext<_, _> = builder.uninit();
+            builder.push_op(DslIr::AddE(two_product, product, product));
+            let one: Ext<_, _> = builder.uninit();
+            builder.push_op(DslIr::ImmE(one, <Self as Config>::EF::ONE));
+            let one_minus_x2: Ext<_, _> = builder.uninit();
+            builder.push_op(DslIr::SubE(one_minus_x2, one, x2_i));
+            let one_minus_x1_minus_x2: Ext<_, _> = builder.uninit();
+            builder.push_op(DslIr::SubEF(one_minus_x1_minus_x2, one_minus_x2, x1_i));
+            let lagrange_term: Ext<_, _> = builder.uninit();
+            builder.push_op(DslIr::AddE(lagrange_term, one_minus_x1_minus_x2, two_product));
+
+            // acc *= lagrange_term.
+            let new_acc: Ext<_, _> = builder.uninit();
+            builder.push_op(DslIr::MulE(new_acc, acc, lagrange_term));
+            acc = new_acc;
+
+            // field_acc = x1_i + 2 * field_acc, only meaningful for the first half of `x1`.
+            if i < len / 2 {
+                let doubled: Felt<_> = builder.uninit();
+                builder.push_op(DslIr::MulFI(
+                    doubled,
+                    field_acc,
+                    <Self as Config>::F::from_canonical_u32(2),
+                ));
+                let new_field_acc: Felt<_> = builder.uninit();
+                builder.push_op(DslIr::AddF(new_field_acc, x1_i, doubled));
+                field_acc = new_field_acc;
+                if i == len / 2 - 1 {
+                    half_result = Some(field_acc);
+                }
+            }
+        }
+
+        (acc, half_result.unwrap())
     }
 
     fn num2bits(

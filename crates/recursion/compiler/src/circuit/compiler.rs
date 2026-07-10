@@ -389,6 +389,39 @@ where
         }))
     }
 
+    fn prefix_sum_checks(
+        &mut self,
+        zero: Felt<C::F>,
+        one: Ext<C::F, C::EF>,
+        accs: Vec<Ext<C::F, C::EF>>,
+        field_accs: Vec<Felt<C::F>>,
+        x1: Vec<Felt<C::F>>,
+        x2: Vec<Ext<C::F, C::EF>>,
+    ) -> Instruction<C::F> {
+        // First, write to the addresses in `accs`/`field_accs`.
+        let acc_write_addrs: Vec<_> = accs.clone().into_iter().map(|r| r.write(self)).collect();
+        let field_acc_write_addrs: Vec<_> =
+            field_accs.clone().into_iter().map(|r| r.write(self)).collect();
+        // Then, read from all but the last address in `accs`/`field_accs`: the chip's own next
+        // row consumes each intermediate accumulator (this is what makes the AIR row-local, see
+        // `PrefixSumChecksChip`), while the final address is this instruction's true output,
+        // consumed by whatever DSL code comes after.
+        let _: Vec<_> = accs.iter().take(accs.len() - 1).map(|r| r.read(self)).collect();
+        let _: Vec<_> = field_accs.iter().take(field_accs.len() - 1).map(|r| r.read(self)).collect();
+        Instruction::PrefixSumChecks(Box::new(PrefixSumChecksInstr {
+            addrs: PrefixSumChecksIo {
+                zero: zero.read(self),
+                one: one.read(self),
+                x1: x1.into_iter().map(|r| r.read(self)).collect(),
+                x2: x2.into_iter().map(|r| r.read(self)).collect(),
+                accs: acc_write_addrs,
+                field_accs: field_acc_write_addrs,
+            },
+            acc_mults: vec![C::F::ZERO; accs.len()],
+            field_acc_mults: vec![C::F::ZERO; field_accs.len()],
+        }))
+    }
+
     fn commit_public_values(
         &mut self,
         public_values: &RecursionPublicValues<Felt<C::F>>,
@@ -536,6 +569,9 @@ where
             }
             DslIr::CircuitV2FriFold(data) => f(self.fri_fold(data.0, data.1)),
             DslIr::CircuitV2BatchFRI(data) => f(self.batch_fri(data.0, data.1, data.2, data.3)),
+            DslIr::CircuitV2PrefixSumChecks(data) => {
+                f(self.prefix_sum_checks(data.0, data.1, data.2, data.3, data.4, data.5))
+            }
             DslIr::CircuitV2CommitPublicValues(public_values) => {
                 f(self.commit_public_values(&public_values))
             }
@@ -685,6 +721,15 @@ where
                         } = instr.as_mut();
                         backfill((acc_mult, acc));
                     }
+                    Instruction::PrefixSumChecks(instr) => {
+                        let PrefixSumChecksInstr {
+                            addrs: PrefixSumChecksIo { ref accs, ref field_accs, .. },
+                            acc_mults,
+                            field_acc_mults,
+                        } = instr.as_mut();
+                        acc_mults.iter_mut().zip(accs).for_each(&mut backfill);
+                        field_acc_mults.iter_mut().zip(field_accs).for_each(&mut backfill);
+                    }
                     Instruction::HintExt2Felts(HintExt2FeltsInstr {
                         output_addrs_mults, ..
                     }) => {
@@ -753,6 +798,7 @@ const fn instr_name<F>(instr: &Instruction<F>) -> &'static str {
         Instruction::HintBits(_) => "HintBits",
         Instruction::FriFold(_) => "FriFold",
         Instruction::BatchFRI(_) => "BatchFRI",
+        Instruction::PrefixSumChecks(_) => "PrefixSumChecks",
         Instruction::Print(_) => "Print",
         Instruction::HintExt2Felts(_) => "HintExt2Felts",
         Instruction::Hint(_) => "Hint",

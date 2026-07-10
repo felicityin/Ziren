@@ -26,6 +26,11 @@ pub trait CircuitV2Builder<C: Config> {
         p_at_zs: Vec<Ext<C::F, C::EF>>,
         p_at_xs: Vec<Felt<C::F>>,
     ) -> Ext<C::F, C::EF>;
+    fn prefix_sum_checks_v2(
+        &mut self,
+        x1: Vec<Felt<C::F>>,
+        x2: Vec<Ext<C::F, C::EF>>,
+    ) -> (Ext<C::F, C::EF>, Felt<C::F>);
     fn poseidon2_permute_v2(&mut self, state: [Felt<C::F>; WIDTH]) -> [Felt<C::F>; WIDTH];
     fn poseidon2_hash_v2(&mut self, array: &[Felt<C::F>]) -> [Felt<C::F>; DIGEST_SIZE];
     fn poseidon2_compress_v2(
@@ -138,6 +143,38 @@ impl<C: Config<F = KoalaBear>> CircuitV2Builder<C> for Builder<C> {
         let output: Ext<_, _> = self.uninit();
         self.push_op(DslIr::CircuitV2BatchFRI(Box::new((output, alpha_pows, p_at_zs, p_at_xs))));
         output
+    }
+
+    /// Evaluates `eq(x1, x2)` (the multilinear extension of the equality indicator between the
+    /// bit-string `x1` and the point `x2`) using the PrefixSumChecks precompile, and
+    /// simultaneously reconstructs the integer value of the first half of `x1`'s bits as a felt.
+    /// `x1`/`x2` must have equal, even length: `x1` is the concatenation of two equal-length
+    /// prefix-sum bit-strings, and only the first half's bit-to-integer reconstruction is
+    /// returned.
+    fn prefix_sum_checks_v2(
+        &mut self,
+        x1: Vec<Felt<C::F>>,
+        x2: Vec<Ext<C::F, C::EF>>,
+    ) -> (Ext<C::F, C::EF>, Felt<C::F>) {
+        let len = x1.len();
+        assert_eq!(x1.len(), x2.len());
+        assert_eq!(len % 2, 0);
+        let output: Vec<Ext<_, _>> = std::iter::from_fn(|| Some(self.uninit())).take(len).collect();
+        let field_accs: Vec<Felt<_>> =
+            std::iter::from_fn(|| Some(self.uninit())).take(len).collect();
+        let one: Ext<_, _> = self.uninit();
+        let zero: Felt<_> = self.uninit();
+        self.push_op(DslIr::ImmE(one, C::EF::ONE));
+        self.push_op(DslIr::ImmF(zero, C::F::ZERO));
+        self.push_op(DslIr::CircuitV2PrefixSumChecks(Box::new((
+            zero,
+            one,
+            output.clone(),
+            field_accs.clone(),
+            x1,
+            x2,
+        ))));
+        (output[len - 1], field_accs[len / 2 - 1])
     }
 
     /// Applies the Poseidon2 permutation to the given array.

@@ -22,6 +22,7 @@ use crate::{
         },
         poseidon2_skinny::Poseidon2SkinnyChip,
         poseidon2_wide::Poseidon2WideChip,
+        prefix_sum_checks::PrefixSumChecksChip,
         public_values::{PublicValuesChip, PUB_VALUES_LOG_HEIGHT},
         select::SelectChip,
     },
@@ -48,6 +49,7 @@ pub enum RecursionAir<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: u
     FriFold(FriFoldChip<DEGREE>),
     BatchFRI(BatchFRIChip<DEGREE>),
     ExpReverseBitsLen(ExpReverseBitsLenChip<DEGREE>),
+    PrefixSumChecks(PrefixSumChecksChip),
     PublicValues(PublicValuesChip),
 }
 
@@ -70,6 +72,7 @@ pub struct RecursionAirEventCount {
     pub batch_fri_events: usize,
     pub select_events: usize,
     pub exp_reverse_bits_len_events: usize,
+    pub prefix_sum_checks_events: usize,
 }
 
 impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAir<F, DEGREE> {
@@ -88,6 +91,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::BatchFRI(BatchFRIChip::<DEGREE>),
             RecursionAir::Select(SelectChip),
             RecursionAir::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>),
+            RecursionAir::PrefixSumChecks(PrefixSumChecksChip),
             RecursionAir::PublicValues(PublicValuesChip),
         ]
         .map(Chip::new)
@@ -135,6 +139,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::BatchFRI(BatchFRIChip::<DEGREE>),
             RecursionAir::Select(SelectChip),
             RecursionAir::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>),
+            RecursionAir::PrefixSumChecks(PrefixSumChecksChip),
             RecursionAir::PublicValues(PublicValuesChip),
         ]
         .map(Chip::new)
@@ -224,6 +229,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
                 Self::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>),
                 heights.exp_reverse_bits_len_events,
             ),
+            (Self::PrefixSumChecks(PrefixSumChecksChip), heights.prefix_sum_checks_events),
             (Self::PublicValues(PublicValuesChip), PUB_VALUES_LOG_HEIGHT),
         ]
         .map(|(chip, log_height)| (chip.name(), log_height))
@@ -255,6 +261,9 @@ impl<F> AddAssign<&Instruction<F>> for RecursionAirEventCount {
             Instruction::FriFold(_) => self.fri_fold_events += 1,
             Instruction::BatchFRI(instr) => {
                 self.batch_fri_events += instr.base_vec_addrs.p_at_x.len()
+            }
+            Instruction::PrefixSumChecks(instr) => {
+                self.prefix_sum_checks_events += instr.addrs.x1.len()
             }
             Instruction::HintAddCurve(HintAddCurveInstr {
                 output_x_addrs_mults,

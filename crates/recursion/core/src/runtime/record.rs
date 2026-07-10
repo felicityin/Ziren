@@ -11,7 +11,8 @@ use zkm_hypercube::{
 
 use super::{
     BaseAluEvent, BatchFRIEvent, CommitPublicValuesEvent, ExpReverseBitsEvent, ExtAluEvent,
-    FriFoldEvent, MemEvent, Poseidon2Event, RecursionProgram, RecursionPublicValues, SelectEvent,
+    FriFoldEvent, MemEvent, Poseidon2Event, PrefixSumChecksEvent, RecursionProgram,
+    RecursionPublicValues, SelectEvent,
 };
 
 #[derive(Clone, Default, Debug)]
@@ -32,6 +33,7 @@ pub struct ExecutionRecord<F> {
     pub exp_reverse_bits_len_events: Vec<ExpReverseBitsEvent<F>>,
     pub fri_fold_events: Vec<FriFoldEvent<F>>,
     pub batch_fri_events: Vec<BatchFRIEvent<F>>,
+    pub prefix_sum_checks_events: Vec<PrefixSumChecksEvent<F>>,
     pub commit_pv_hash_events: Vec<CommitPublicValuesEvent<F>>,
 }
 
@@ -64,6 +66,7 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
             exp_reverse_bits_len_events,
             fri_fold_events,
             batch_fri_events,
+            prefix_sum_checks_events,
             commit_pv_hash_events,
         } = self;
         base_alu_events.append(&mut other.base_alu_events);
@@ -75,6 +78,7 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
         exp_reverse_bits_len_events.append(&mut other.exp_reverse_bits_len_events);
         fri_fold_events.append(&mut other.fri_fold_events);
         batch_fri_events.append(&mut other.batch_fri_events);
+        prefix_sum_checks_events.append(&mut other.prefix_sum_checks_events);
         commit_pv_hash_events.append(&mut other.commit_pv_hash_events);
     }
 
