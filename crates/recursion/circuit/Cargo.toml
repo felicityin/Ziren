@@ -25,11 +25,20 @@ p3-koala-bear = { workspace = true }
 zkm-core-machine = { workspace = true }
 zkm-core-executor = { workspace = true }
 zkm-stark = { workspace = true }
+zkm-hypercube = { workspace = true }
 zkm-derive = { workspace = true }
 zkm-recursion-core = { workspace = true }
 zkm-recursion-compiler = { workspace = true }
 zkm-primitives = { workspace = true }
 zkm-recursion-gnark-ffi = { workspace = true }
+
+slop-air = { workspace = true }
+slop-algebra = { workspace = true }
+slop-alloc = { workspace = true }
+slop-matrix = { workspace = true }
+slop-multilinear = { workspace = true }
+slop-sumcheck = { workspace = true }
+slop-tensor = { workspace = true }
 
 itertools = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

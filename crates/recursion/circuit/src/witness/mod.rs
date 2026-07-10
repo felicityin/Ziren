@@ -130,6 +130,22 @@ impl<C: CircuitConfig, T: Witnessable<C>> Witnessable<C> for Vec<T> {
     }
 }
 
+impl<C: CircuitConfig, K: Clone + Ord, V: Witnessable<C>> Witnessable<C>
+    for std::collections::BTreeMap<K, V>
+{
+    type WitnessVariable = std::collections::BTreeMap<K, V::WitnessVariable>;
+
+    fn read(&self, builder: &mut Builder<C>) -> Self::WitnessVariable {
+        self.iter().map(|(k, v)| (k.clone(), v.read(builder))).collect()
+    }
+
+    fn write(&self, witness: &mut impl WitnessWriter<C>) {
+        for v in self.values() {
+            v.write(witness);
+        }
+    }
+}
+
 impl<C: CircuitConfig<F = InnerVal, EF = InnerChallenge>, SC: KoalaBearFriConfigVariable<C>>
     Witnessable<C> for ShardProof<SC>
 where

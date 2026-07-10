@@ -23,11 +23,15 @@ pub mod constraints;
 pub mod domain;
 pub mod fri;
 pub mod hash;
+pub mod logup_gkr;
 pub mod machine;
 pub mod merkle_tree;
 pub mod stark;
+pub mod sumcheck;
+mod symbolic;
 pub(crate) mod utils;
 pub mod witness;
+pub mod zerocheck;
 
 pub use types::*;
 use zkm_stark::{

@@ -1,5 +1,6 @@
 use p3_field::{Field, FieldAlgebra};
 use p3_koala_bear::KoalaBear;
+use slop_multilinear::Point;
 use zkm_recursion_compiler::{
     circuit::CircuitV2Builder,
     ir::{DslIr, Var},
@@ -11,6 +12,8 @@ use zkm_recursion_core::{
     stark::{OUTER_MULTI_FIELD_CHALLENGER_DIGEST_SIZE, OUTER_MULTI_FIELD_CHALLENGER_RATE},
     NUM_BITS,
 };
+
+use crate::CircuitConfig;
 
 // Constants for the Multifield challenger.
 pub const POSEIDON_2_BB_RATE: usize = 16;
@@ -51,6 +54,51 @@ pub trait FieldChallengerVariable<C: Config, Bit>:
     fn check_witness(&mut self, builder: &mut Builder<C>, nb_bits: usize, witness: Felt<C::F>);
 
     fn duplexing(&mut self, builder: &mut Builder<C>);
+
+    fn sample_point(
+        &mut self,
+        builder: &mut Builder<C>,
+        dimension: u32,
+    ) -> Point<Ext<C::F, C::EF>> {
+        (0..dimension).map(|_| self.sample_ext(builder)).collect()
+    }
+
+    fn observe_variable_length_slice(&mut self, builder: &mut Builder<C>, values: &[Felt<C::F>]) {
+        let len = values.len();
+        let len_felt = builder.constant(C::F::from_canonical_usize(len));
+        self.observe(builder, len_felt);
+        self.observe_slice(builder, values.iter().cloned());
+    }
+
+    fn observe_ext_element(&mut self, builder: &mut Builder<C>, element: Ext<C::F, C::EF>)
+    where
+        C: CircuitConfig,
+    {
+        let felts = C::ext2felt(builder, element);
+        self.observe_slice(builder, felts);
+    }
+
+    fn observe_ext_element_slice(&mut self, builder: &mut Builder<C>, elements: &[Ext<C::F, C::EF>])
+    where
+        C: CircuitConfig,
+    {
+        for &element in elements {
+            self.observe_ext_element(builder, element);
+        }
+    }
+
+    fn observe_variable_length_extension_slice(
+        &mut self,
+        builder: &mut Builder<C>,
+        elements: &[Ext<C::F, C::EF>],
+    ) where
+        C: CircuitConfig,
+    {
+        let len = elements.len();
+        let len_felt = builder.constant(C::F::from_canonical_usize(len));
+        self.observe(builder, len_felt);
+        self.observe_ext_element_slice(builder, elements);
+    }
 }
 
 pub trait CanSampleBitsVariable<C: Config, V> {
