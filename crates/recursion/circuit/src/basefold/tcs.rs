@@ -5,7 +5,9 @@ use std::marker::PhantomData;
 use zkm_recursion_compiler::ir::{Builder, Felt};
 
 use crate::{
-    hash::FieldHasherVariable, merkle_tree::verify, stark::MerkleProofVariable, CircuitConfig,
+    hash::FieldHasherVariable,
+    merkle_tree::{verify, MerkleProofVariable},
+    CircuitConfig,
 };
 
 /// An opening of a tensor commitment scheme.

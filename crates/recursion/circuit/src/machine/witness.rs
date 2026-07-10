@@ -16,8 +16,7 @@ use zkm_recursion_compiler::ir::Felt;
 use crate::{
     challenger::DuplexChallengerVariable,
     hash::{FieldHasher, FieldHasherVariable},
-    merkle_tree::MerkleProof,
-    stark::MerkleProofVariable,
+    merkle_tree::{MerkleProof, MerkleProofVariable},
     witness::{WitnessWriter, Witnessable},
     CircuitConfig, FriProofVariable, KoalaBearFriConfigVariable, VerifyingKeyVariable,
 };

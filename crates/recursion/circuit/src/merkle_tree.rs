@@ -10,7 +10,6 @@ use zkm_recursion_compiler::ir::Builder;
 
 use crate::{
     hash::{FieldHasher, FieldHasherVariable},
-    stark::MerkleProofVariable,
     CircuitConfig,
 };
 
@@ -133,6 +132,12 @@ impl<F: Field, HV: FieldHasher<F>> MerkleTree<F, HV> {
     }
 }
 
+#[derive(Clone)]
+pub struct MerkleProofVariable<C: CircuitConfig, HV: FieldHasherVariable<C>> {
+    pub index: Vec<C::Bit>,
+    pub path: Vec<HV::DigestVariable>,
+}
+
 pub fn verify<C: CircuitConfig, HV: FieldHasherVariable<C>>(
     builder: &mut Builder<C>,
     proof: MerkleProofVariable<C, HV>,
@@ -166,8 +171,7 @@ mod tests {
     use zkm_stark::koala_bear_poseidon2::KoalaBearPoseidon2;
 
     use crate::{
-        merkle_tree::{verify, MerkleTree},
-        stark::MerkleProofVariable,
+        merkle_tree::{verify, MerkleProofVariable, MerkleTree},
         utils::tests::run_test_recursion,
         CircuitConfig,
     };

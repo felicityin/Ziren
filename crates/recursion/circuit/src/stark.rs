@@ -201,12 +201,6 @@ fn dummy_opened_values<F: Field, EF: ExtensionField<F>, A: MachineAir<F>>(
     }
 }
 
-#[derive(Clone)]
-pub struct MerkleProofVariable<C: CircuitConfig, HV: FieldHasherVariable<C>> {
-    pub index: Vec<C::Bit>,
-    pub path: Vec<HV::DigestVariable>,
-}
-
 pub const EMPTY: usize = 0x_1111_1111;
 
 #[derive(Debug, Clone, Copy)]

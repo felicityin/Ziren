@@ -17,8 +17,7 @@ use crate::{
     challenger::DuplexChallengerVariable,
     constraints::RecursiveVerifierConstraintFolder,
     hash::{FieldHasher, FieldHasherVariable},
-    merkle_tree::{verify, MerkleProof},
-    stark::MerkleProofVariable,
+    merkle_tree::{verify, MerkleProof, MerkleProofVariable},
     witness::{WitnessWriter, Witnessable},
     CircuitConfig, FriProofVariable, KoalaBearFriConfig, KoalaBearFriConfigVariable,
 };
