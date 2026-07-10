@@ -16,6 +16,7 @@ use zkm_recursion_core::{stark::KoalaBearPoseidon2Outer, DIGEST_SIZE};
 use zkm_recursion_core::{HASH_RATE, PERMUTATION_WIDTH};
 use zkm_stark::inner_perm;
 use zkm_stark::koala_bear_poseidon2::KoalaBearPoseidon2;
+use zkm_hypercube::config::ZkmGlobalContext;
 
 use crate::{
     challenger::{reduce_32, POSEIDON_2_BB_RATE},
@@ -102,6 +103,82 @@ impl<C: CircuitConfig> Poseidon2KoalaBearHasherVariable<C> for KoalaBearPoseidon
 
 impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> FieldHasherVariable<C>
     for KoalaBearPoseidon2
+{
+    type DigestVariable = [Felt<KoalaBear>; DIGEST_SIZE];
+
+    fn hash(builder: &mut Builder<C>, input: &[Felt<<C as Config>::F>]) -> Self::DigestVariable {
+        <Self as Poseidon2KoalaBearHasherVariable<C>>::poseidon2_hash(builder, input)
+    }
+
+    fn compress(
+        builder: &mut Builder<C>,
+        input: [Self::DigestVariable; 2],
+    ) -> Self::DigestVariable {
+        builder.poseidon2_compress_v2(input.into_iter().flatten())
+    }
+
+    fn assert_digest_eq(
+        builder: &mut Builder<C>,
+        a: Self::DigestVariable,
+        b: Self::DigestVariable,
+    ) {
+        zip(a, b).for_each(|(e1, e2)| builder.assert_felt_eq(e1, e2));
+    }
+
+    fn select_chain_digest(
+        builder: &mut Builder<C>,
+        should_swap: <C as CircuitConfig>::Bit,
+        input: [Self::DigestVariable; 2],
+    ) -> [Self::DigestVariable; 2] {
+        let result0: [Felt<KoalaBear>; DIGEST_SIZE] = core::array::from_fn(|_| builder.uninit());
+        let result1: [Felt<KoalaBear>; DIGEST_SIZE] = core::array::from_fn(|_| builder.uninit());
+
+        (0..DIGEST_SIZE).for_each(|i| {
+            builder.push_op(DslIr::Select(
+                should_swap,
+                result0[i],
+                result1[i],
+                input[0][i],
+                input[1][i],
+            ));
+        });
+
+        [result0, result1]
+    }
+
+    fn print_digest(builder: &mut Builder<C>, digest: Self::DigestVariable) {
+        for d in digest.iter() {
+            builder.print_f(*d);
+        }
+    }
+}
+
+// `ZkmGlobalContext`'s Merkle hasher/compressor and the in-circuit `poseidon2_permute_v2` gate
+// (`KoalaBearPoseidon2`'s impl above) now share the same round constants (both ultimately
+// `slop_koala_bear::my_kb_16_perm`, see `zkm_primitives::poseidon2_init`), so this impl is
+// structurally identical to `KoalaBearPoseidon2`'s, just targeting the new backend's context type.
+impl FieldHasher<KoalaBear> for ZkmGlobalContext {
+    type Digest = [KoalaBear; DIGEST_SIZE];
+
+    fn constant_compress(input: [Self::Digest; 2]) -> Self::Digest {
+        let mut pre_iter = input.into_iter().flatten().chain(repeat(KoalaBear::ZERO));
+        let mut pre = core::array::from_fn(move |_| pre_iter.next().unwrap());
+        (inner_perm()).permute_mut(&mut pre);
+        pre[..DIGEST_SIZE].try_into().unwrap()
+    }
+}
+
+impl<C: CircuitConfig<F = KoalaBear>> Poseidon2KoalaBearHasherVariable<C> for ZkmGlobalContext {
+    fn poseidon2_permute(
+        builder: &mut Builder<C>,
+        input: [Felt<<C>::F>; PERMUTATION_WIDTH],
+    ) -> [Felt<<C>::F>; PERMUTATION_WIDTH] {
+        builder.poseidon2_permute_v2(input)
+    }
+}
+
+impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> FieldHasherVariable<C>
+    for ZkmGlobalContext
 {
     type DigestVariable = [Felt<KoalaBear>; DIGEST_SIZE];
 

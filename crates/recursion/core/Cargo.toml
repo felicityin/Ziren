@@ -12,6 +12,7 @@ links = "zkm-recursion-core-sys"
 
 [dependencies]
 slop-algebra = { workspace = true }
+slop-koala-bear = { workspace = true }
 p3-field = { workspace = true }
 p3-util = { workspace = true }
 p3-koala-bear = { workspace = true }

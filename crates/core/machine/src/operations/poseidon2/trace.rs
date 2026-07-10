@@ -1,7 +1,7 @@
 use std::borrow::Borrow;
 
 use p3_field::PrimeField32;
-use zkm_primitives::RC_16_30_U32;
+use slop_koala_bear::{KoalaBear_BEGIN_EXT_CONSTS, KoalaBear_END_EXT_CONSTS, KoalaBear_PARTIAL_CONSTS};
 
 use super::{
     air::{external_linear_layer, external_linear_layer_mut, internal_linear_layer_mut},
@@ -88,10 +88,13 @@ pub fn populate_external_round<F: PrimeField32, const DEGREE: usize>(
         // Optimization: Since adding a constant is a degree 1 operation, we can avoid adding
         // columns for it, and instead include it in the constraint for the x^3 part of the
         // sbox.
-        let round = if r < NUM_EXTERNAL_ROUNDS / 2 { r } else { r + NUM_INTERNAL_ROUNDS };
         let mut add_rc = *round_state;
         for i in 0..WIDTH {
-            add_rc[i] += F::from_wrapped_u32(RC_16_30_U32[round][i]);
+            add_rc[i] += F::from_canonical_u32(if r < NUM_EXTERNAL_ROUNDS / 2 {
+                KoalaBear_BEGIN_EXT_CONSTS[r][i].as_canonical_u32()
+            } else {
+                KoalaBear_END_EXT_CONSTS[r - NUM_EXTERNAL_ROUNDS / 2][i].as_canonical_u32()
+            });
         }
 
         // Apply the sboxes.
@@ -126,8 +129,7 @@ pub fn populate_internal_rounds<F: PrimeField32>(
         // Add the round constant to the 0th state element.
         // Optimization: Since adding a constant is a degree 1 operation, we can avoid adding
         // columns for it, just like for external rounds.
-        let round = r + NUM_EXTERNAL_ROUNDS / 2;
-        let add_rc = state[0] + F::from_wrapped_u32(RC_16_30_U32[round][0]);
+        let add_rc = state[0] + F::from_canonical_u32(KoalaBear_PARTIAL_CONSTS[r].as_canonical_u32());
 
         // Apply the sboxes.
         // Optimization: since the linear layer that comes after the sbox is degree 1, we can

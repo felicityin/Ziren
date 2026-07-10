@@ -3,9 +3,9 @@
 use std::{array, borrow::Borrow};
 
 use p3_air::{Air, BaseAir, PairBuilder};
-use p3_field::FieldAlgebra;
+use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::Matrix;
-use zkm_primitives::RC_16_30_U32;
+use slop_koala_bear::{KoalaBear_BEGIN_EXT_CONSTS, KoalaBear_END_EXT_CONSTS, KoalaBear_PARTIAL_CONSTS};
 
 use crate::builder::ZKMRecursionAirBuilder;
 
@@ -97,9 +97,15 @@ impl<const DEGREE: usize> Poseidon2WideChip<DEGREE> {
         }
 
         // Add the round constants.
-        let round = if r < NUM_EXTERNAL_ROUNDS / 2 { r } else { r + NUM_INTERNAL_ROUNDS };
         let add_rc: [AB::Expr; WIDTH] = array::from_fn(|i| {
-            local_state[i].clone() + AB::F::from_wrapped_u32(RC_16_30_U32[round][i])
+            local_state[i].clone()
+                + if r < NUM_EXTERNAL_ROUNDS / 2 {
+                    AB::Expr::from_canonical_u32(KoalaBear_BEGIN_EXT_CONSTS[r][i].as_canonical_u32())
+                } else {
+                    AB::Expr::from_canonical_u32(
+                        KoalaBear_END_EXT_CONSTS[r - NUM_EXTERNAL_ROUNDS / 2][i].as_canonical_u32(),
+                    )
+                }
         });
 
         // Apply the sboxes.
@@ -146,9 +152,8 @@ impl<const DEGREE: usize> Poseidon2WideChip<DEGREE> {
         let mut state: [AB::Expr; WIDTH] = core::array::from_fn(|i| state[i].into());
         for r in 0..NUM_INTERNAL_ROUNDS {
             // Add the round constant.
-            let round = r + NUM_EXTERNAL_ROUNDS / 2;
             let add_rc = if r == 0 { state[0].clone() } else { s0[r - 1].into() }
-                + AB::Expr::from_wrapped_u32(RC_16_30_U32[round][0]);
+                + AB::Expr::from_canonical_u32(KoalaBear_PARTIAL_CONSTS[r].as_canonical_u32());
 
             let mut sbox_deg_3 = add_rc.clone() * add_rc.clone() * add_rc.clone();
             if let Some(internal_sbox) = local_row.internal_rounds_sbox() {

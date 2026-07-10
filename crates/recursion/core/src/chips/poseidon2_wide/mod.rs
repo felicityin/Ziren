@@ -19,7 +19,9 @@ pub const WIDTH: usize = 16;
 pub const RATE: usize = WIDTH / 2;
 
 pub const NUM_EXTERNAL_ROUNDS: usize = 8;
-pub const NUM_INTERNAL_ROUNDS: usize = 13;
+// Must match `poseidon2_init()` in zkm-primitives (KoalaBear/α=3 reference R_P = 20). Native
+// (poseidon2_skinny) and circuit chips must stay equal or the equivalence test breaks.
+pub const NUM_INTERNAL_ROUNDS: usize = 20;
 pub const NUM_ROUNDS: usize = NUM_EXTERNAL_ROUNDS + NUM_INTERNAL_ROUNDS;
 
 /// A chip that implements addition for the opcode Poseidon2Wide.

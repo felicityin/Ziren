@@ -8239,6 +8239,7 @@ dependencies = [
  "slop-algebra",
  "slop-alloc",
  "slop-challenger",
+ "slop-koala-bear",
  "snowbridge-amcl",
  "static_assertions",
  "strum",
@@ -8440,6 +8441,7 @@ dependencies = [
  "p3-symmetric",
  "serde",
  "sha2",
+ "slop-koala-bear",
 ]
 
 [[package]]
@@ -8588,6 +8590,7 @@ dependencies = [
  "serde",
  "slop-algebra",
  "slop-challenger",
+ "slop-koala-bear",
  "smallvec",
  "static_assertions",
  "thiserror 1.0.69",

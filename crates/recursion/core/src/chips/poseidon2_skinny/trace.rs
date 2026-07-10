@@ -12,7 +12,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use tracing::instrument;
 use zkm_core_machine::utils::next_power_of_two;
 #[cfg(not(feature = "sys"))]
-use zkm_primitives::RC_16_30_U32;
+use slop_koala_bear::{KoalaBear_BEGIN_EXT_CONSTS, KoalaBear_END_EXT_CONSTS, KoalaBear_PARTIAL_CONSTS};
 use zkm_hypercube::air::MachineAir;
 
 #[cfg(not(feature = "sys"))]
@@ -23,6 +23,8 @@ use crate::chips::poseidon2_skinny::external_linear_layer;
 use crate::chips::poseidon2_skinny::internal_linear_layer;
 #[cfg(not(feature = "sys"))]
 use crate::chips::poseidon2_skinny::NUM_INTERNAL_ROUNDS;
+#[cfg(not(feature = "sys"))]
+use crate::chips::poseidon2_skinny::NUM_ROUND_CONSTANTS;
 #[cfg(not(feature = "sys"))]
 use crate::chips::poseidon2_skinny::WIDTH;
 use crate::{
@@ -250,18 +252,24 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for Poseidon2SkinnyChip
                     cols.round_counters_preprocessed.is_internal_round =
                         F::from_bool(i == INTERNAL_ROUND_IDX);
 
-                    (0..WIDTH).for_each(|j| {
-                        cols.round_counters_preprocessed.round_constants[j] = if is_external_round {
+                    // The shared `round_constants` column holds `WIDTH` per-lane constants on
+                    // external rows and `NUM_INTERNAL_ROUNDS` constants on the single internal row,
+                    // so iterate over the full column width and fill each kind in its own range.
+                    (0..NUM_ROUND_CONSTANTS).for_each(|j| {
+                        cols.round_counters_preprocessed.round_constants[j] = if is_external_round
+                            && j < WIDTH
+                        {
                             let r = i - 1;
-                            let round = if i < INTERNAL_ROUND_IDX {
-                                r
+                            if i < INTERNAL_ROUND_IDX {
+                                F::from_canonical_u32(KoalaBear_BEGIN_EXT_CONSTS[r][j].as_canonical_u32())
                             } else {
-                                r + NUM_INTERNAL_ROUNDS - 1
-                            };
-
-                            F::from_wrapped_u32(RC_16_30_U32[round][j])
-                        } else if i == INTERNAL_ROUND_IDX {
-                            F::from_wrapped_u32(RC_16_30_U32[NUM_EXTERNAL_ROUNDS / 2 + j][0])
+                                F::from_canonical_u32(
+                                    KoalaBear_END_EXT_CONSTS[r - INTERNAL_ROUND_IDX][j]
+                                        .as_canonical_u32(),
+                                )
+                            }
+                        } else if i == INTERNAL_ROUND_IDX && j < NUM_INTERNAL_ROUNDS {
+                            F::from_canonical_u32(KoalaBear_PARTIAL_CONSTS[j].as_canonical_u32())
                         } else {
                             F::ZERO
                         };
@@ -367,9 +375,14 @@ impl<const DEGREE: usize> Poseidon2SkinnyChip<DEGREE> {
             // Optimization: Since adding a constant is a degree 1 operation, we can avoid adding
             // columns for it, and instead include it in the constraint for the x^3 part of the
             // sbox.
-            let round = if r < NUM_EXTERNAL_ROUNDS / 2 { r } else { r + NUM_INTERNAL_ROUNDS - 1 };
             let mut add_rc = *round_state;
-            (0..WIDTH).for_each(|i| add_rc[i] += F::from_wrapped_u32(RC_16_30_U32[round][i]));
+            (0..WIDTH).for_each(|i| {
+                add_rc[i] += F::from_canonical_u32(if r < NUM_EXTERNAL_ROUNDS / 2 {
+                    KoalaBear_BEGIN_EXT_CONSTS[r][i].as_canonical_u32()
+                } else {
+                    KoalaBear_END_EXT_CONSTS[r - NUM_EXTERNAL_ROUNDS / 2][i].as_canonical_u32()
+                });
+            });
 
             // Apply the sboxes.
             // Optimization: since the linear layer that comes after the sbox is degree 1, we can
@@ -398,8 +411,7 @@ impl<const DEGREE: usize> Poseidon2SkinnyChip<DEGREE> {
             // Add the round constant to the 0th state element.
             // Optimization: Since adding a constant is a degree 1 operation, we can avoid adding
             // columns for it, just like for external rounds.
-            let round = r + NUM_EXTERNAL_ROUNDS / 2;
-            let add_rc = new_state[0] + F::from_wrapped_u32(RC_16_30_U32[round][0]);
+            let add_rc = new_state[0] + F::from_canonical_u32(KoalaBear_PARTIAL_CONSTS[r].as_canonical_u32());
 
             // Apply the sboxes.
             // Optimization: since the linear layer that comes after the sbox is degree 1, we can

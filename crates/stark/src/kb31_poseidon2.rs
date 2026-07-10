@@ -159,10 +159,8 @@ pub mod koala_bear_poseidon2 {
     use p3_fri::{FriConfig, TwoAdicFriPcs};
     use p3_koala_bear::{KoalaBear, Poseidon2KoalaBear};
     use p3_merkle_tree::MerkleTreeMmcs;
-    use p3_poseidon2::ExternalLayerConstants;
     use p3_symmetric::{Hash, PaddingFreeSponge, TruncatedPermutation};
     use serde::{Deserialize, Serialize};
-    use zkm_primitives::RC_16_30;
 
     use crate::{Com, StarkGenericConfig, ZeroCommitment, DIGEST_SIZE};
 
@@ -182,20 +180,7 @@ pub mod koala_bear_poseidon2 {
 
     #[must_use]
     pub fn my_perm() -> Perm {
-        const ROUNDS_F: usize = 8;
-        const ROUNDS_P: usize = 13;
-        let mut round_constants = RC_16_30.to_vec();
-        let internal_start = ROUNDS_F / 2;
-        let internal_end = (ROUNDS_F / 2) + ROUNDS_P;
-        let internal_round_constants = round_constants
-            .drain(internal_start..internal_end)
-            .map(|vec| vec[0])
-            .collect::<Vec<_>>();
-        let external_round_constants = ExternalLayerConstants::new(
-            round_constants[..ROUNDS_F / 2].to_vec(),
-            round_constants[ROUNDS_F / 2..ROUNDS_F].to_vec(),
-        );
-        Perm::new(external_round_constants, internal_round_constants)
+        super::inner_perm()
     }
 
     #[must_use]
