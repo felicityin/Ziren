@@ -22,6 +22,7 @@ pub mod basefold;
 pub mod challenger;
 pub mod constraints;
 pub mod domain;
+pub mod dummy;
 pub mod fri;
 pub mod hash;
 pub mod jagged;

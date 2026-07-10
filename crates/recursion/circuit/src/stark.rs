@@ -25,7 +25,6 @@ use zkm_stark::{air::MachineAir, StarkGenericConfig, StarkMachine, StarkVerifyin
 use crate::{
     challenger::CanObserveVariable,
     fri::{dummy_hash, dummy_pcs_proof, PolynomialBatchShape, PolynomialShape},
-    hash::FieldHasherVariable,
     CircuitConfig, FriProofVariable, KoalaBearFriConfig, TwoAdicPcsMatsVariable,
 };
 

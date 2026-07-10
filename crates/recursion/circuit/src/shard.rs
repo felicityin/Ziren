@@ -11,8 +11,9 @@ use slop_multilinear::{Evaluations, MleEval};
 use slop_sumcheck::PartialSumcheckProof;
 use zkm_hypercube::{
     air::MachineAir, septic_curve::SepticCurve, septic_digest::SepticDigest,
-    septic_extension::SepticExtension, verifier::ShardProof, LogupGkrProof, Machine,
-    ShardOpenedValues,
+    septic_extension::SepticExtension,
+    verifier::{MachineVerifyingKey, ShardProof},
+    LogupGkrProof, Machine, ShardOpenedValues,
 };
 use zkm_recursion_compiler::{
     circuit::CircuitV2Builder,
@@ -415,6 +416,29 @@ impl<C: CircuitConfig<F = InnerVal, EF = InnerChallenge>> Witnessable<C>
     fn write(&self, witness: &mut impl WitnessWriter<C>) {
         self.0.x.0.write(witness);
         self.0.y.0.write(witness);
+    }
+}
+
+impl<C, GC> Witnessable<C> for MachineVerifyingKey<GC>
+where
+    C: CircuitConfig<F = InnerVal, EF = InnerChallenge>,
+    GC: IopCtx<F = C::F, EF = C::EF> + FieldHasherVariable<C>,
+    <GC as IopCtx>::Digest:
+        Witnessable<C, WitnessVariable = <GC as FieldHasherVariable<C>>::DigestVariable>,
+{
+    type WitnessVariable = MachineVerifyingKeyVariable<C, GC>;
+
+    fn read(&self, builder: &mut Builder<C>) -> Self::WitnessVariable {
+        let pc_start = self.pc_start.read(builder);
+        let initial_global_cumulative_sum = self.initial_global_cumulative_sum.read(builder);
+        let preprocessed_commit = self.preprocessed_commit.read(builder);
+        MachineVerifyingKeyVariable { pc_start, initial_global_cumulative_sum, preprocessed_commit }
+    }
+
+    fn write(&self, witness: &mut impl WitnessWriter<C>) {
+        self.pc_start.write(witness);
+        self.initial_global_cumulative_sum.write(witness);
+        self.preprocessed_commit.write(witness);
     }
 }
 
