@@ -35,8 +35,14 @@ zkm-recursion-gnark-ffi = { workspace = true }
 slop-air = { workspace = true }
 slop-algebra = { workspace = true }
 slop-alloc = { workspace = true }
+slop-basefold = { workspace = true }
+slop-challenger = { workspace = true }
+slop-commit = { workspace = true }
 slop-matrix = { workspace = true }
+slop-merkle-tree = { workspace = true }
 slop-multilinear = { workspace = true }
+slop-primitives = { workspace = true }
+slop-stacked = { workspace = true }
 slop-sumcheck = { workspace = true }
 slop-tensor = { workspace = true }
 

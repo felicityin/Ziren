@@ -130,6 +130,20 @@ impl<C: CircuitConfig, T: Witnessable<C>> Witnessable<C> for Vec<T> {
     }
 }
 
+impl<C: CircuitConfig, T: Witnessable<C>> Witnessable<C> for slop_commit::Rounds<T> {
+    type WitnessVariable = slop_commit::Rounds<T::WitnessVariable>;
+
+    fn read(&self, builder: &mut Builder<C>) -> Self::WitnessVariable {
+        self.iter().map(|x| x.read(builder)).collect()
+    }
+
+    fn write(&self, witness: &mut impl WitnessWriter<C>) {
+        for x in self.iter() {
+            x.write(witness);
+        }
+    }
+}
+
 impl<C: CircuitConfig, K: Clone + Ord, V: Witnessable<C>> Witnessable<C>
     for std::collections::BTreeMap<K, V>
 {

@@ -34,6 +34,15 @@ pub enum SymbolicExt<F: Field, EF: Field> {
     Val(Ext<F, EF>),
 }
 
+impl<F: Field, EF: Field> SymbolicExt<F, EF> {
+    pub fn as_ext(&self) -> Option<Ext<F, EF>> {
+        match self {
+            SymbolicExt::Val(e) => Some(*e),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum SymbolicUsize<N: Field> {
     Const(usize),

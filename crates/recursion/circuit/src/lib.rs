@@ -18,6 +18,7 @@ use zkm_recursion_compiler::{
 
 mod types;
 
+pub mod basefold;
 pub mod challenger;
 pub mod constraints;
 pub mod domain;
@@ -133,6 +134,15 @@ pub trait CircuitConfig: Config {
         builder: &mut Builder<Self>,
         ext: Ext<<Self as Config>::F, <Self as Config>::EF>,
     ) -> [Felt<<Self as Config>::F>; D];
+
+    /// Reconstructs an extension field element from its base-field limbs (the inverse of
+    /// `ext2felt`).
+    fn felt2ext(
+        builder: &mut Builder<Self>,
+        felt: [Felt<<Self as Config>::F>; D],
+    ) -> Ext<<Self as Config>::F, <Self as Config>::EF> {
+        builder.ext_from_base_slice(&felt)
+    }
 
     fn exp_reverse_bits(
         builder: &mut Builder<Self>,

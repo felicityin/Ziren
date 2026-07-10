@@ -407,7 +407,8 @@ where
         // `PrefixSumChecksChip`), while the final address is this instruction's true output,
         // consumed by whatever DSL code comes after.
         let _: Vec<_> = accs.iter().take(accs.len() - 1).map(|r| r.read(self)).collect();
-        let _: Vec<_> = field_accs.iter().take(field_accs.len() - 1).map(|r| r.read(self)).collect();
+        let _: Vec<_> =
+            field_accs.iter().take(field_accs.len() - 1).map(|r| r.read(self)).collect();
         Instruction::PrefixSumChecks(Box::new(PrefixSumChecksInstr {
             addrs: PrefixSumChecksIo {
                 zero: zero.read(self),
