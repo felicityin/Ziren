@@ -1,14 +1,8 @@
 //! Copied from [`zkm_recursion_program`].
 
-use challenger::{
-    CanCopyChallenger, CanObserveVariable, DuplexChallengerVariable, FieldChallengerVariable,
-    MultiField32ChallengerVariable, SpongeChallengerShape,
-};
-use hash::{FieldHasherVariable, Poseidon2KoalaBearHasherVariable};
+use hash::FieldHasherVariable;
 use itertools::izip;
-use p3_bn254_fr::Bn254Fr;
 use p3_field::FieldAlgebra;
-use p3_matrix::dense::RowMajorMatrix;
 use std::iter::{repeat, zip};
 use zkm_recursion_compiler::{
     circuit::CircuitV2Builder,
@@ -16,109 +10,24 @@ use zkm_recursion_compiler::{
     ir::{Builder, Config, DslIr, Ext, Felt, SymbolicFelt, Var, Variable},
 };
 
-mod types;
-
 pub mod basefold;
 pub mod challenger;
-pub mod constraints;
-pub mod domain;
 pub mod dummy;
-pub mod fri;
 pub mod hash;
 pub mod jagged;
 pub mod logup_gkr;
 pub mod machine;
 pub mod merkle_tree;
 pub mod shard;
-pub mod stark;
 pub mod sumcheck;
 mod symbolic;
 pub(crate) mod utils;
 pub mod witness;
 pub mod zerocheck;
 
-pub use types::*;
-use zkm_stark::{
-    koala_bear_poseidon2::{KoalaBearPoseidon2, ValMmcs},
-    StarkGenericConfig,
-};
-
-use p3_challenger::{CanObserve, CanSample, FieldChallenger, GrindingChallenger};
-use p3_commit::{ExtensionMmcs, Mmcs};
-use p3_dft::Radix2DitParallel;
-use p3_fri::{FriConfig, TwoAdicFriPcs};
-use zkm_recursion_core::{
-    air::RecursionPublicValues,
-    stark::{KoalaBearPoseidon2Outer, OuterValMmcs},
-    D,
-};
-
-use p3_koala_bear::KoalaBear;
-use utils::{felt_bytes_to_bn254_var, felts_to_bn254_var, words_to_bytes};
-
-type EF = <KoalaBearPoseidon2 as StarkGenericConfig>::Challenge;
-
-pub type PcsConfig<C> = FriConfig<
-    ExtensionMmcs<
-        <C as StarkGenericConfig>::Val,
-        <C as StarkGenericConfig>::Challenge,
-        <C as KoalaBearFriConfig>::ValMmcs,
-    >,
->;
+use zkm_recursion_core::D;
 
 pub type Digest<C, SC> = <SC as FieldHasherVariable<C>>::DigestVariable;
-
-pub type FriMmcs<C> = ExtensionMmcs<KoalaBear, EF, <C as KoalaBearFriConfig>::ValMmcs>;
-
-pub trait KoalaBearFriConfig:
-    StarkGenericConfig<
-    Val = KoalaBear,
-    Challenge = EF,
-    Challenger = Self::FriChallenger,
-    Pcs = TwoAdicFriPcs<
-        KoalaBear,
-        Radix2DitParallel<KoalaBear>,
-        Self::ValMmcs,
-        ExtensionMmcs<KoalaBear, EF, Self::ValMmcs>,
-    >,
->
-{
-    type ValMmcs: Mmcs<KoalaBear, ProverData<RowMajorMatrix<KoalaBear>> = Self::RowMajorProverData>
-        + Send
-        + Sync;
-    type RowMajorProverData: Clone + Send + Sync;
-    type FriChallenger: CanObserve<<Self::ValMmcs as Mmcs<KoalaBear>>::Commitment>
-        + CanSample<EF>
-        + GrindingChallenger<Witness = KoalaBear>
-        + FieldChallenger<KoalaBear>;
-
-    fn fri_config(&self) -> &FriConfig<FriMmcs<Self>>;
-
-    fn challenger_shape(challenger: &Self::FriChallenger) -> SpongeChallengerShape;
-}
-
-pub trait KoalaBearFriConfigVariable<C: CircuitConfig<F = KoalaBear>>:
-    KoalaBearFriConfig + FieldHasherVariable<C> + Poseidon2KoalaBearHasherVariable<C>
-{
-    type FriChallengerVariable: FieldChallengerVariable<C, <C as CircuitConfig>::Bit>
-        + CanObserveVariable<C, <Self as FieldHasherVariable<C>>::DigestVariable>
-        + CanCopyChallenger<C>;
-
-    /// Get a new challenger corresponding to the given config.
-    fn challenger_variable(&self, builder: &mut Builder<C>) -> Self::FriChallengerVariable;
-
-    fn commit_recursion_public_values(
-        builder: &mut Builder<C>,
-        public_values: RecursionPublicValues<Felt<C::F>>,
-    );
-
-    fn commit_recursion_public_values_imm_wrap_vk(
-        builder: &mut Builder<C>,
-        public_values: RecursionPublicValues<Felt<C::F>>,
-        vk_commitment: <Self as FieldHasherVariable<C>>::DigestVariable,
-        pc_start: Felt<<C as Config>::F>,
-    );
-}
 
 pub trait CircuitConfig: Config {
     type Bit: Copy + Variable<Self>;
@@ -160,13 +69,6 @@ pub trait CircuitConfig: Config {
         power_bits: &[Self::Bit],
         two_adic_powers_of_x: &[Felt<Self::F>],
     ) -> Felt<Self::F>;
-
-    fn batch_fri(
-        builder: &mut Builder<Self>,
-        alpha_pows: Vec<Ext<Self::F, Self::EF>>,
-        p_at_zs: Vec<Ext<Self::F, Self::EF>>,
-        p_at_xs: Vec<Felt<Self::F>>,
-    ) -> Ext<Self::F, Self::EF>;
 
     /// Evaluates `eq(x1, x2)` and reconstructs the integer value of the first half of `x1`'s
     /// bits as a felt. See `CircuitV2Builder::prefix_sum_checks_v2` for the exact contract on
@@ -247,16 +149,18 @@ impl CircuitConfig for InnerConfig {
         input: Felt<<Self as Config>::F>,
         power_bits: Vec<Felt<<Self as Config>::F>>,
     ) -> Felt<<Self as Config>::F> {
-        builder.exp_reverse_bits_v2(input, power_bits)
-    }
+        let mut result = builder.constant(Self::F::ONE);
+        let mut power_f = input;
+        let bit_len = power_bits.len();
 
-    fn batch_fri(
-        builder: &mut Builder<Self>,
-        alpha_pows: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
-        p_at_zs: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
-        p_at_xs: Vec<Felt<<Self as Config>::F>>,
-    ) -> Ext<<Self as Config>::F, <Self as Config>::EF> {
-        builder.batch_fri_v2(alpha_pows, p_at_zs, p_at_xs)
+        for i in 1..=bit_len {
+            let index = bit_len - i;
+            let bit = power_bits[index];
+            let prod: Felt<_> = builder.eval(result * power_f);
+            result = builder.eval(bit * prod + (SymbolicFelt::ONE - bit) * result);
+            power_f = builder.eval(power_f * power_f);
+        }
+        result
     }
 
     fn prefix_sum_checks(
@@ -371,7 +275,6 @@ impl CircuitConfig for WrapConfig {
         input: Felt<<Self as Config>::F>,
         power_bits: Vec<Felt<<Self as Config>::F>>,
     ) -> Felt<<Self as Config>::F> {
-        // builder.exp_reverse_bits_v2(input, power_bits)
         let mut result = builder.constant(Self::F::ONE);
         let mut power_f = input;
         let bit_len = power_bits.len();
@@ -384,15 +287,6 @@ impl CircuitConfig for WrapConfig {
             power_f = builder.eval(power_f * power_f);
         }
         result
-    }
-
-    fn batch_fri(
-        builder: &mut Builder<Self>,
-        alpha_pows: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
-        p_at_zs: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
-        p_at_xs: Vec<Felt<<Self as Config>::F>>,
-    ) -> Ext<<Self as Config>::F, <Self as Config>::EF> {
-        builder.batch_fri_v2(alpha_pows, p_at_zs, p_at_xs)
     }
 
     fn prefix_sum_checks(
@@ -512,26 +406,6 @@ impl CircuitConfig for OuterConfig {
             builder.assign(power_f, power_f * power_f);
         }
         result
-    }
-
-    fn batch_fri(
-        builder: &mut Builder<Self>,
-        alpha_pows: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
-        p_at_zs: Vec<Ext<<Self as Config>::F, <Self as Config>::EF>>,
-        p_at_xs: Vec<Felt<<Self as Config>::F>>,
-    ) -> Ext<<Self as Config>::F, <Self as Config>::EF> {
-        let mut acc: Ext<_, _> = builder.uninit();
-        builder.push_op(DslIr::ImmE(acc, <Self as Config>::EF::ZERO));
-        for (alpha_pow, p_at_z, p_at_x) in izip!(alpha_pows, p_at_zs, p_at_xs) {
-            let temp_1: Ext<_, _> = builder.uninit();
-            builder.push_op(DslIr::SubEF(temp_1, p_at_z, p_at_x));
-            let temp_2: Ext<_, _> = builder.uninit();
-            builder.push_op(DslIr::MulE(temp_2, alpha_pow, temp_1));
-            let temp_3: Ext<_, _> = builder.uninit();
-            builder.push_op(DslIr::AddE(temp_3, acc, temp_2));
-            acc = temp_3;
-        }
-        acc
     }
 
     fn prefix_sum_checks(
@@ -665,109 +539,5 @@ impl CircuitConfig for OuterConfig {
             result = builder.eval(multiplier * result);
         }
         result
-    }
-}
-
-impl KoalaBearFriConfig for KoalaBearPoseidon2 {
-    type ValMmcs = ValMmcs;
-    type FriChallenger = <Self as StarkGenericConfig>::Challenger;
-    type RowMajorProverData = <ValMmcs as Mmcs<KoalaBear>>::ProverData<RowMajorMatrix<KoalaBear>>;
-
-    fn fri_config(&self) -> &FriConfig<FriMmcs<Self>> {
-        self.pcs().fri_config()
-    }
-
-    fn challenger_shape(challenger: &Self::FriChallenger) -> SpongeChallengerShape {
-        SpongeChallengerShape {
-            input_buffer_len: challenger.input_buffer.len(),
-            output_buffer_len: challenger.output_buffer.len(),
-        }
-    }
-}
-
-impl KoalaBearFriConfig for KoalaBearPoseidon2Outer {
-    type ValMmcs = OuterValMmcs;
-    type FriChallenger = <Self as StarkGenericConfig>::Challenger;
-
-    type RowMajorProverData =
-        <OuterValMmcs as Mmcs<KoalaBear>>::ProverData<RowMajorMatrix<KoalaBear>>;
-
-    fn fri_config(&self) -> &FriConfig<FriMmcs<Self>> {
-        self.pcs().fri_config()
-    }
-
-    fn challenger_shape(_challenger: &Self::FriChallenger) -> SpongeChallengerShape {
-        unimplemented!("Shape not supported for outer fri challenger");
-    }
-}
-
-impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> KoalaBearFriConfigVariable<C>
-    for KoalaBearPoseidon2
-{
-    type FriChallengerVariable = DuplexChallengerVariable<C>;
-
-    fn challenger_variable(&self, builder: &mut Builder<C>) -> Self::FriChallengerVariable {
-        DuplexChallengerVariable::new(builder)
-    }
-
-    fn commit_recursion_public_values(
-        builder: &mut Builder<C>,
-        public_values: RecursionPublicValues<Felt<<C>::F>>,
-    ) {
-        builder.commit_public_values_v2(public_values);
-    }
-
-    fn commit_recursion_public_values_imm_wrap_vk(
-        _builder: &mut Builder<C>,
-        _public_values: RecursionPublicValues<Felt<<C>::F>>,
-        _vk_commitment: <Self as FieldHasherVariable<C>>::DigestVariable,
-        _pc_start: Felt<<C as Config>::F>,
-    ) {
-        unreachable!("commit_recursion_public_values_imm_wrap_vk not implemented");
-    }
-}
-
-impl<C: CircuitConfig<F = KoalaBear, N = Bn254Fr, Bit = Var<Bn254Fr>>> KoalaBearFriConfigVariable<C>
-    for KoalaBearPoseidon2Outer
-{
-    type FriChallengerVariable = MultiField32ChallengerVariable<C>;
-
-    fn challenger_variable(&self, builder: &mut Builder<C>) -> Self::FriChallengerVariable {
-        MultiField32ChallengerVariable::new(builder)
-    }
-
-    fn commit_recursion_public_values(
-        builder: &mut Builder<C>,
-        public_values: RecursionPublicValues<Felt<<C>::F>>,
-    ) {
-        let committed_values_digest_bytes_felts: [Felt<_>; 32] =
-            words_to_bytes(&public_values.committed_value_digest).try_into().unwrap();
-        let committed_values_digest_bytes: Var<_> =
-            felt_bytes_to_bn254_var(builder, &committed_values_digest_bytes_felts);
-        builder.commit_committed_values_digest_circuit(committed_values_digest_bytes);
-
-        let vkey_hash = felts_to_bn254_var(builder, &public_values.zkm_vk_digest);
-        builder.commit_vkey_hash_circuit(vkey_hash);
-    }
-
-    fn commit_recursion_public_values_imm_wrap_vk(
-        builder: &mut Builder<C>,
-        public_values: RecursionPublicValues<Felt<<C>::F>>,
-        vk_commitment: <Self as FieldHasherVariable<C>>::DigestVariable,
-        pc_start: Felt<<C as Config>::F>,
-    ) {
-        let committed_values_digest_bytes_felts: [Felt<_>; 32] =
-            words_to_bytes(&public_values.committed_value_digest).try_into().unwrap();
-        let committed_values_digest_bytes: Var<_> =
-            felt_bytes_to_bn254_var(builder, &committed_values_digest_bytes_felts);
-        builder.commit_committed_values_digest_circuit(committed_values_digest_bytes);
-
-        let vkey_hash = felts_to_bn254_var(builder, &public_values.zkm_vk_digest);
-        let vk_commitment_var: Var<_> = vk_commitment[0];
-        let pc_start_var: Var<_> = builder.felt2var_circuit(pc_start);
-        let state: [Var<_>; 3] = [vkey_hash, vk_commitment_var, pc_start_var];
-        builder.push_op(DslIr::CircuitPoseidon2Permute(state));
-        let vkey_hash = state[0];
-        builder.commit_vkey_hash_circuit(vkey_hash);
     }
 }

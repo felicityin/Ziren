@@ -1,10 +1,7 @@
 use zkm_recursion_core::air::RecursionPublicValues;
-use zkm_stark::septic_curve::SepticCurve;
+use zkm_hypercube::septic_curve::SepticCurve;
 
-use super::{
-    Array, CircuitV2FriFoldInput, CircuitV2FriFoldOutput, Config, Ext, Felt, FriFoldInput,
-    MemIndex, Ptr, TracedVec, Usize, Var,
-};
+use super::{Array, Config, Ext, Felt, MemIndex, Ptr, TracedVec, Usize, Var};
 
 /// An intermeddiate instruction set for implementing programs.
 ///
@@ -283,19 +280,6 @@ pub enum DslIr<C: Config> {
         SepticCurve<Felt<C::F>>,
     ),
 
-    // FRI specific instructions.
-    /// Executes a FRI fold operation. 1st field is the size of the fri fold input array.  2nd
-    /// field is the fri fold input array.  See [`FriFoldInput`] for more details.
-    FriFold(Var<C::N>, Array<C, FriFoldInput<C>>),
-    // FRI specific instructions.
-    /// Executes a FRI fold operation. Input is the fri fold input array.  See [`FriFoldInput`] for
-    /// more details.
-    CircuitV2FriFold(Box<(CircuitV2FriFoldOutput<C>, CircuitV2FriFoldInput<C>)>),
-    // FRI specific instructions.
-    /// Executes a Batch FRI loop. Input is the power of alphas, evaluations at z, and evaluations at x.
-    CircuitV2BatchFRI(
-        Box<(Ext<C::F, C::EF>, Vec<Ext<C::F, C::EF>>, Vec<Ext<C::F, C::EF>>, Vec<Felt<C::F>>)>,
-    ),
     /// Evaluates the multilinear extension of the equality indicator between a bit-string point
     /// and a random extension-field point via the `PrefixSumChecks` precompile, while
     /// simultaneously reconstructing the bit-string's integer value as a felt. Fields:
@@ -333,9 +317,4 @@ pub enum DslIr<C: Config> {
     CycleTrackerV2Enter(String),
     /// Tracks the number of cycles used by a block of code annotated by the string input.
     CycleTrackerV2Exit,
-
-    // Reverse bits exponentiation.
-    ExpReverseBitsLen(Ptr<C::N>, Var<C::N>, Var<C::N>),
-    /// Reverse bits exponentiation. Output, base, exponent bits.
-    CircuitV2ExpReverseBits(Felt<C::F>, Felt<C::F>, Vec<Felt<C::F>>),
 }

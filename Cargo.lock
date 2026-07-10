@@ -8552,6 +8552,7 @@ dependencies = [
  "tracing",
  "vec_map",
  "zkm-core-machine",
+ "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-recursion-core",
  "zkm-recursion-derive",

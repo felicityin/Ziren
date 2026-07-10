@@ -10,9 +10,8 @@ use zkm_hypercube::{
 };
 
 use super::{
-    BaseAluEvent, BatchFRIEvent, CommitPublicValuesEvent, ExpReverseBitsEvent, ExtAluEvent,
-    FriFoldEvent, MemEvent, Poseidon2Event, PrefixSumChecksEvent, RecursionProgram,
-    RecursionPublicValues, SelectEvent,
+    BaseAluEvent, CommitPublicValuesEvent, ExtAluEvent, MemEvent, Poseidon2Event,
+    PrefixSumChecksEvent, RecursionProgram, RecursionPublicValues, SelectEvent,
 };
 
 #[derive(Clone, Default, Debug)]
@@ -30,9 +29,6 @@ pub struct ExecutionRecord<F> {
 
     pub poseidon2_events: Vec<Poseidon2Event<F>>,
     pub select_events: Vec<SelectEvent<F>>,
-    pub exp_reverse_bits_len_events: Vec<ExpReverseBitsEvent<F>>,
-    pub fri_fold_events: Vec<FriFoldEvent<F>>,
-    pub batch_fri_events: Vec<BatchFRIEvent<F>>,
     pub prefix_sum_checks_events: Vec<PrefixSumChecksEvent<F>>,
     pub commit_pv_hash_events: Vec<CommitPublicValuesEvent<F>>,
 }
@@ -45,8 +41,6 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
         stats.insert("mem_var_events".to_string(), self.mem_var_events.len());
 
         stats.insert("poseidon2_events".to_string(), self.poseidon2_events.len());
-        stats.insert("exp_reverse_bits_events".to_string(), self.exp_reverse_bits_len_events.len());
-        stats.insert("fri_fold_events".to_string(), self.fri_fold_events.len());
 
         stats
     }
@@ -63,9 +57,6 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
             public_values: _,
             poseidon2_events,
             select_events,
-            exp_reverse_bits_len_events,
-            fri_fold_events,
-            batch_fri_events,
             prefix_sum_checks_events,
             commit_pv_hash_events,
         } = self;
@@ -75,9 +66,6 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
         mem_var_events.append(&mut other.mem_var_events);
         poseidon2_events.append(&mut other.poseidon2_events);
         select_events.append(&mut other.select_events);
-        exp_reverse_bits_len_events.append(&mut other.exp_reverse_bits_len_events);
-        fri_fold_events.append(&mut other.fri_fold_events);
-        batch_fri_events.append(&mut other.batch_fri_events);
         prefix_sum_checks_events.append(&mut other.prefix_sum_checks_events);
         commit_pv_hash_events.append(&mut other.commit_pv_hash_events);
     }

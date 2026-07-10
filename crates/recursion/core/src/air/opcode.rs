@@ -37,10 +37,8 @@ pub struct OpcodeSelectorCols<T> {
     pub is_halt: T,
 
     pub is_poseidon: T,
-    pub is_fri_fold: T,
     pub is_commit: T,
     pub is_ext_to_felt: T,
-    pub is_exp_reverse_bits_len: T,
     pub is_heap_expand: T,
 }
 

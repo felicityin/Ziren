@@ -7,9 +7,9 @@ use p3_field::{FieldAlgebra, FieldExtensionAlgebra};
 use p3_koala_bear::KoalaBear;
 use zkm_recursion_core::air::RecursionPublicValues;
 use zkm_recursion_core::{chips::poseidon2_skinny::WIDTH, D, DIGEST_SIZE, HASH_RATE};
-use zkm_stark::septic_curve::SepticCurve;
-use zkm_stark::septic_digest::SepticDigest;
-use zkm_stark::septic_extension::SepticExtension;
+use zkm_hypercube::septic_curve::SepticCurve;
+use zkm_hypercube::septic_digest::SepticDigest;
+use zkm_hypercube::septic_extension::SepticExtension;
 
 use crate::prelude::*;
 pub trait CircuitV2Builder<C: Config> {
@@ -18,14 +18,6 @@ pub trait CircuitV2Builder<C: Config> {
         bits: impl IntoIterator<Item = Felt<<C as Config>::F>>,
     ) -> Felt<C::F>;
     fn num2bits_v2_f(&mut self, num: Felt<C::F>, num_bits: usize) -> Vec<Felt<C::F>>;
-    fn exp_reverse_bits_v2(&mut self, input: Felt<C::F>, power_bits: Vec<Felt<C::F>>)
-        -> Felt<C::F>;
-    fn batch_fri_v2(
-        &mut self,
-        alphas: Vec<Ext<C::F, C::EF>>,
-        p_at_zs: Vec<Ext<C::F, C::EF>>,
-        p_at_xs: Vec<Felt<C::F>>,
-    ) -> Ext<C::F, C::EF>;
     fn prefix_sum_checks_v2(
         &mut self,
         x1: Vec<Felt<C::F>>,
@@ -37,7 +29,6 @@ pub trait CircuitV2Builder<C: Config> {
         &mut self,
         input: impl IntoIterator<Item = Felt<C::F>>,
     ) -> [Felt<C::F>; DIGEST_SIZE];
-    fn fri_fold_v2(&mut self, input: CircuitV2FriFoldInput<C>) -> CircuitV2FriFoldOutput<C>;
     fn ext2felt_v2(&mut self, ext: Ext<C::F, C::EF>) -> [Felt<C::F>; D];
     fn add_curve_v2(
         &mut self,
@@ -122,29 +113,6 @@ impl<C: Config<F = KoalaBear>> CircuitV2Builder<C> for Builder<C> {
         output
     }
 
-    /// A version of `exp_reverse_bits_len` that uses the ExpReverseBitsLen precompile.
-    fn exp_reverse_bits_v2(
-        &mut self,
-        input: Felt<C::F>,
-        power_bits: Vec<Felt<C::F>>,
-    ) -> Felt<C::F> {
-        let output: Felt<_> = self.uninit();
-        self.push_op(DslIr::CircuitV2ExpReverseBits(output, input, power_bits));
-        output
-    }
-
-    /// A version of the `batch_fri` that uses the BatchFRI precompile.
-    fn batch_fri_v2(
-        &mut self,
-        alpha_pows: Vec<Ext<C::F, C::EF>>,
-        p_at_zs: Vec<Ext<C::F, C::EF>>,
-        p_at_xs: Vec<Felt<C::F>>,
-    ) -> Ext<C::F, C::EF> {
-        let output: Ext<_, _> = self.uninit();
-        self.push_op(DslIr::CircuitV2BatchFRI(Box::new((output, alpha_pows, p_at_zs, p_at_xs))));
-        output
-    }
-
     /// Evaluates `eq(x1, x2)` (the multilinear extension of the equality indicator between the
     /// bit-string `x1` and the point `x2`) using the PrefixSumChecks precompile, and
     /// simultaneously reconstructs the integer value of the first half of `x1`'s bits as a felt.
@@ -211,17 +179,6 @@ impl<C: Config<F = KoalaBear>> CircuitV2Builder<C> for Builder<C> {
         let post = self.poseidon2_permute_v2(pre);
         let post: [Felt<C::F>; DIGEST_SIZE] = post[..DIGEST_SIZE].try_into().unwrap();
         post
-    }
-
-    /// Runs FRI fold.
-    fn fri_fold_v2(&mut self, input: CircuitV2FriFoldInput<C>) -> CircuitV2FriFoldOutput<C> {
-        let mut uninit_vec = |len| std::iter::from_fn(|| Some(self.uninit())).take(len).collect();
-        let output = CircuitV2FriFoldOutput {
-            alpha_pow_output: uninit_vec(input.alpha_pow_input.len()),
-            ro_output: uninit_vec(input.ro_input.len()),
-        };
-        self.push_op(DslIr::CircuitV2FriFold(Box::new((output.clone(), input))));
-        output
     }
 
     /// Decomposes an ext into its felt coordinates.

@@ -1,30 +1,28 @@
 use std::marker::PhantomData;
 
 use p3_air::Air;
-use p3_commit::Mmcs;
 use p3_field::FieldAlgebra;
 use p3_koala_bear::KoalaBear;
-use p3_matrix::dense::RowMajorMatrix;
 
 use super::{
     PublicValuesOutputDigest, ZKMCompressVerifier, ZKMCompressWithVKeyVerifier,
     ZKMCompressWithVKeyWitnessVariable, ZKMCompressWitnessVariable,
 };
 use crate::{
-    challenger::DuplexChallengerVariable, constraints::RecursiveVerifierConstraintFolder,
-    CircuitConfig, KoalaBearFriConfigVariable,
+    challenger::DuplexChallengerVariable, zerocheck::RecursiveVerifierConstraintFolder,
+    shard::RecursiveShardVerifier, CircuitConfig,
 };
 use zkm_recursion_compiler::ir::{Builder, Felt};
 use zkm_recursion_core::DIGEST_SIZE;
-use zkm_stark::{air::MachineAir, StarkMachine};
+use zkm_hypercube::{air::MachineAir, config::ZkmGlobalContext};
 
 /// A program to verify a single recursive proof representing a complete proof of program execution.
 ///
 /// The root verifier is simply a `ZKMCompressVerifier` with an assertion that the `is_complete`
 /// flag is set to true.
 #[derive(Debug, Clone, Copy)]
-pub struct ZKMCompressRootVerifier<C, SC, A> {
-    _phantom: PhantomData<(C, SC, A)>,
+pub struct ZKMCompressRootVerifier<C, A> {
+    _phantom: PhantomData<(C, A)>,
 }
 
 /// A program to verify a single recursive proof representing a complete proof of program execution.
@@ -32,21 +30,19 @@ pub struct ZKMCompressRootVerifier<C, SC, A> {
 /// The root verifier is simply a `ZKMCompressVerifier` with an assertion that the `is_complete`
 /// flag is set to true.
 #[derive(Debug, Clone, Copy)]
-pub struct ZKMCompressRootVerifierWithVKey<C, SC, A> {
-    _phantom: PhantomData<(C, SC, A)>,
+pub struct ZKMCompressRootVerifierWithVKey<C, A> {
+    _phantom: PhantomData<(C, A)>,
 }
 
-impl<C, SC, A> ZKMCompressRootVerifier<C, SC, A>
+impl<C, A> ZKMCompressRootVerifier<C, A>
 where
-    SC: KoalaBearFriConfigVariable<C>,
-    C: CircuitConfig<F = SC::Val, EF = SC::Challenge>,
-    <SC::ValMmcs as Mmcs<KoalaBear>>::ProverData<RowMajorMatrix<KoalaBear>>: Clone,
-    A: MachineAir<SC::Val> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     pub fn verify(
         builder: &mut Builder<C>,
-        machine: &StarkMachine<SC, A>,
-        input: ZKMCompressWitnessVariable<C, SC>,
+        machine: &RecursiveShardVerifier<C, ZkmGlobalContext, DuplexChallengerVariable<C>, A>,
+        input: ZKMCompressWitnessVariable<C>,
         vk_root: [Felt<C::F>; DIGEST_SIZE],
     ) {
         // Assert that the program is complete.
@@ -62,21 +58,15 @@ where
     }
 }
 
-impl<C, SC, A> ZKMCompressRootVerifierWithVKey<C, SC, A>
+impl<C, A> ZKMCompressRootVerifierWithVKey<C, A>
 where
-    SC: KoalaBearFriConfigVariable<
-        C,
-        FriChallengerVariable = DuplexChallengerVariable<C>,
-        DigestVariable = [Felt<KoalaBear>; DIGEST_SIZE],
-    >,
-    C: CircuitConfig<F = SC::Val, EF = SC::Challenge, Bit = Felt<KoalaBear>>,
-    <SC::ValMmcs as Mmcs<KoalaBear>>::ProverData<RowMajorMatrix<KoalaBear>>: Clone,
-    A: MachineAir<SC::Val> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     pub fn verify(
         builder: &mut Builder<C>,
-        machine: &StarkMachine<SC, A>,
-        input: ZKMCompressWithVKeyWitnessVariable<C, SC>,
+        machine: &RecursiveShardVerifier<C, ZkmGlobalContext, DuplexChallengerVariable<C>, A>,
+        input: ZKMCompressWithVKeyWitnessVariable<C>,
         value_assertions: bool,
         kind: PublicValuesOutputDigest,
     ) {

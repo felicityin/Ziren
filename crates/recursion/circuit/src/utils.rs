@@ -5,7 +5,7 @@ use p3_koala_bear::KoalaBear;
 use zkm_recursion_compiler::ir::{Builder, Config, Felt, Var};
 use zkm_recursion_core::DIGEST_SIZE;
 
-use zkm_stark::Word;
+use zkm_hypercube::word::Word;
 
 /// Convert 8 KoalaBear words into a Bn254Fr field element by shifting by 31 bits each time. The last
 /// word becomes the least significant bits.

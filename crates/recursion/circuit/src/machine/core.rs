@@ -1,93 +1,67 @@
-use std::{
-    array,
-    borrow::{Borrow, BorrowMut},
-    marker::PhantomData,
-};
+use std::{array, borrow::Borrow, borrow::BorrowMut, marker::PhantomData};
 
 use itertools::Itertools;
-use p3_commit::Mmcs;
 use p3_field::FieldAlgebra;
 use p3_koala_bear::KoalaBear;
-use p3_matrix::dense::RowMajorMatrix;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use zkm_core_machine::{
-    cpu::MAX_CPU_LOG_DEGREE,
-    mips::{MipsAir, MAX_LOG_NUMBER_OF_SHARDS},
+use serde::{Deserialize, Serialize};
+use slop_air::Air;
+use slop_challenger::IopCtx;
+use zkm_core_machine::mips::{MipsAir, MAX_LOG_NUMBER_OF_SHARDS};
+
+use zkm_hypercube::{
+    air::{PublicValues, PV_DIGEST_NUM_WORDS},
+    config::ZkmGlobalContext,
+    septic_curve::SepticCurve,
+    septic_digest::SepticDigest,
+    septic_extension::SepticExtension,
+    verifier::{MachineVerifyingKey, ShardProof},
+    word::Word,
 };
-
-use zkm_recursion_core::air::PV_DIGEST_NUM_WORDS;
-use zkm_stark::air::LookupScope;
-use zkm_stark::air::MachineAir;
-use zkm_stark::{
-    air::{PublicValues, POSEIDON_NUM_WORDS},
-    koala_bear_poseidon2::KoalaBearPoseidon2,
-    shape::OrderedShape,
-    Dom, StarkMachine, Word,
-};
-
-use zkm_stark::{ShardProof, StarkGenericConfig, StarkVerifyingKey};
 
 use zkm_recursion_compiler::{
     circuit::CircuitV2Builder,
     ir::{Builder, Config, Felt, SymbolicFelt},
 };
 
-use zkm_recursion_core::{
-    air::{RecursionPublicValues, RECURSIVE_PROOF_NUM_PV_ELTS},
-    DIGEST_SIZE,
-};
+use zkm_recursion_core::air::{RecursionPublicValues, RECURSIVE_PROOF_NUM_PV_ELTS};
 
 use crate::{
     challenger::{CanObserveVariable, DuplexChallengerVariable},
     machine::{assert_complete, recursion_public_values_digest},
-    stark::{dummy_vk_and_shard_proof, ShardProofVariable, StarkVerifier},
-    CircuitConfig, KoalaBearFriConfig, KoalaBearFriConfigVariable, VerifyingKeyVariable,
+    shard::{MachineVerifyingKeyVariable, RecursiveShardVerifier, ShardProofVariable},
+    zerocheck::RecursiveVerifierConstraintFolder,
+    CircuitConfig,
 };
 
-pub struct ZKMRecursionWitnessVariable<
-    C: CircuitConfig<F = KoalaBear>,
-    SC: KoalaBearFriConfigVariable<C>,
-> {
-    pub vk: VerifyingKeyVariable<C, SC>,
-    pub shard_proofs: Vec<ShardProofVariable<C, SC>>,
+pub struct ZKMRecursionWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> {
+    pub vk: MachineVerifyingKeyVariable<C, ZkmGlobalContext>,
+    pub shard_proofs: Vec<ShardProofVariable<C, ZkmGlobalContext>>,
     pub is_complete: Felt<C::F>,
     pub is_first_shard: Felt<C::F>,
-    pub vk_root: [Felt<C::F>; DIGEST_SIZE],
+    pub vk_root: [Felt<C::F>; 8],
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "ShardProof<SC>: Serialize, Dom<SC>: Serialize"))]
-#[serde(bound(deserialize = "ShardProof<SC>: Deserialize<'de>, Dom<SC>: DeserializeOwned"))]
-pub struct ZKMRecursionWitnessValues<SC: StarkGenericConfig> {
-    pub vk: StarkVerifyingKey<SC>,
-    pub shard_proofs: Vec<ShardProof<SC>>,
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "ShardProof<GC, Proof>: Serialize"))]
+#[serde(bound(deserialize = "ShardProof<GC, Proof>: Deserialize<'de>"))]
+pub struct ZKMRecursionWitnessValues<GC: IopCtx, Proof> {
+    pub vk: MachineVerifyingKey<GC>,
+    pub shard_proofs: Vec<ShardProof<GC, Proof>>,
     pub is_complete: bool,
     pub is_first_shard: bool,
-    pub vk_root: [SC::Val; DIGEST_SIZE],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ZKMRecursionShape {
-    pub proof_shapes: Vec<OrderedShape>,
-    pub is_complete: bool,
+    pub vk_root: [GC::F; 8],
 }
 
 /// A program for recursively verifying a batch of Ziren proofs.
 #[derive(Debug, Clone, Copy)]
-pub struct ZKMRecursiveVerifier<C: Config, SC: KoalaBearFriConfig> {
-    _phantom: PhantomData<(C, SC)>,
+pub struct ZKMRecursiveVerifier<C: Config> {
+    _phantom: PhantomData<C>,
 }
 
-impl<C, SC> ZKMRecursiveVerifier<C, SC>
+impl<C> ZKMRecursiveVerifier<C>
 where
-    SC: KoalaBearFriConfigVariable<
-        C,
-        FriChallengerVariable = DuplexChallengerVariable<C>,
-        DigestVariable = [Felt<KoalaBear>; DIGEST_SIZE],
-    >,
-    C: CircuitConfig<F = SC::Val, EF = SC::Challenge, Bit = Felt<KoalaBear>>,
-    <SC::ValMmcs as Mmcs<KoalaBear>>::ProverData<RowMajorMatrix<KoalaBear>>: Clone,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
 {
     /// Verify a batch of Ziren shard proofs and aggregate their public values.
     ///
@@ -99,8 +73,8 @@ where
     /// # Constraints
     ///
     /// ## Verifying the STARK proofs.
-    /// For each shard, the verifier asserts the correctness of the STARK proof which is composed
-    /// of verifying the FRI proof for openings and verifying the constraints.
+    /// For each shard, the verifier asserts the correctness of the shard proof, which is composed
+    /// of verifying the jagged-PCS opening proof and verifying the zerocheck/LogUp-GKR constraints.
     ///
     /// ## Aggregating the shard public values.
     /// See [ZKMProver::verify] for the verification algorithm of a complete Ziren proof. In this
@@ -117,9 +91,11 @@ where
     /// as the one witnessed here.
     pub fn verify(
         builder: &mut Builder<C>,
-        machine: &StarkMachine<SC, MipsAir<SC::Val>>,
-        input: ZKMRecursionWitnessVariable<C, SC>,
-    ) {
+        machine: &RecursiveShardVerifier<C, ZkmGlobalContext, DuplexChallengerVariable<C>, MipsAir<C::F>>,
+        input: ZKMRecursionWitnessVariable<C>,
+    ) where
+        MipsAir<C::F>: for<'b> Air<RecursiveVerifierConstraintFolder<'b, C>>,
+    {
         // Read input.
         let ZKMRecursionWitnessVariable { vk, shard_proofs, is_complete, is_first_shard, vk_root } =
             input;
@@ -152,8 +128,7 @@ where
             array::from_fn(|_| Word(array::from_fn(|_| builder.uninit())));
 
         // Initialize the deferred proofs digest.
-        let mut deferred_proofs_digest: [Felt<_>; POSEIDON_NUM_WORDS] =
-            array::from_fn(|_| builder.uninit());
+        let mut deferred_proofs_digest: [Felt<_>; 8] = array::from_fn(|_| builder.uninit());
 
         // Initialize the cumulative sum.
         let mut global_cumulative_sums = Vec::new();
@@ -266,35 +241,21 @@ where
             // between all shards.
 
             // Prepare a challenger.
-            let mut challenger = machine.config().challenger_variable(builder);
+            let mut challenger = DuplexChallengerVariable::<C>::new(builder);
 
             // Observe the vk and start pc.
-            challenger.observe(builder, vk.commitment);
-            challenger.observe(builder, vk.pc_start);
-            challenger.observe_slice(builder, vk.initial_global_cumulative_sum.0.x.0);
-            challenger.observe_slice(builder, vk.initial_global_cumulative_sum.0.y.0);
-            // Observe the padding.
-            let zero: Felt<_> = builder.eval(C::F::ZERO);
-            challenger.observe(builder, zero);
+            vk.observe_into(builder, &mut challenger);
 
             challenger.observe_slice(
                 builder,
-                shard_proof.public_values[0..machine.num_pv_elts()].iter().copied(),
+                shard_proof.public_values[0..machine.machine.num_pv_elts()].iter().copied(),
             );
-            StarkVerifier::verify_shard(builder, &vk, machine, &mut challenger, &shard_proof);
-
-            let chips = machine.shard_chips_ordered(&shard_proof.chip_ordering).collect::<Vec<_>>();
+            machine.verify_shard(builder, &vk, &shard_proof, &mut challenger);
 
             // Assert that first shard has a "CPU". Equivalently, assert that if the shard does
             // not have a "CPU", then the current shard is not 1.
             if !contains_cpu {
                 builder.assert_felt_ne(current_shard, C::F::ONE);
-            }
-
-            // CPU log degree bound check constraints (this assertion is made in compile time).
-            if shard_proof.contains_cpu() {
-                let log_degree_cpu = shard_proof.log_degree_cpu();
-                assert!(log_degree_cpu <= MAX_CPU_LOG_DEGREE);
             }
 
             // Shard constraints.
@@ -504,12 +465,21 @@ where
             // have shard < 2^{MAX_LOG_NUMBER_OF_SHARDS}.
             C::range_check_felt(builder, public_values.shard, MAX_LOG_NUMBER_OF_SHARDS);
 
-            // Cumulative sum is updated by sums of all chips.
-            for (chip, values) in chips.iter().zip(shard_proof.opened_values.chips.iter()) {
-                if chip.commit_scope() == LookupScope::Global {
-                    global_cumulative_sums.push(values.global_cumulative_sum);
-                }
-            }
+            // The old FRI backend additionally asserted `log_degree_cpu() <= MAX_CPU_LOG_DEGREE`
+            // here, using a plain usize the circuit-side ShardProofVariable carried as shape
+            // metadata. The new backend's ChipOpenedValues::degree is itself an in-circuit witness
+            // (a Point<Felt<C::F>>, constraint-checked by verify_shard's own height/max_log_row_count
+            // bound), not compile-time metadata, so there's no equivalent Rust-level assert to port;
+            // the row-count bound is enforced by verify_shard itself instead.
+
+            // Add this shard's global cumulative sum (already fully aggregated over its chips by
+            // the native prover, unlike the old FRI backend which required summing per-chip
+            // Global-scope digests here) to the running total.
+            let shard_global_cumulative_sum = SepticDigest(SepticCurve {
+                x: SepticExtension(public_values.global_cumulative_sum_x),
+                y: SepticExtension(public_values.global_cumulative_sum_y),
+            });
+            global_cumulative_sums.push(shard_global_cumulative_sum);
         }
 
         let global_cumulative_sum = builder.sum_digest_v2(global_cumulative_sums);
@@ -524,8 +494,8 @@ where
 
             // Collect the deferred proof digests.
             let zero: Felt<_> = builder.eval(C::F::ZERO);
-            let start_deferred_digest = [zero; POSEIDON_NUM_WORDS];
-            let end_deferred_digest = [zero; POSEIDON_NUM_WORDS];
+            let start_deferred_digest = [zero; 8];
+            let end_deferred_digest = [zero; 8];
 
             // Initialize the public values we will commit to.
             let mut recursion_public_values_stream = [zero; RECURSIVE_PROOF_NUM_PV_ELTS];
@@ -557,43 +527,11 @@ where
 
             // Calculate the digest and set it in the public values.
             recursion_public_values.digest =
-                recursion_public_values_digest::<C, SC>(builder, recursion_public_values);
+                recursion_public_values_digest::<C, ZkmGlobalContext>(builder, recursion_public_values);
 
             assert_complete(builder, recursion_public_values, is_complete);
 
-            SC::commit_recursion_public_values(builder, *recursion_public_values);
+            builder.commit_public_values_v2(*recursion_public_values);
         }
-    }
-}
-
-impl<SC: KoalaBearFriConfig> ZKMRecursionWitnessValues<SC> {
-    pub fn shape(&self) -> ZKMRecursionShape {
-        let proof_shapes = self.shard_proofs.iter().map(|proof| proof.shape()).collect();
-
-        ZKMRecursionShape { proof_shapes, is_complete: self.is_complete }
-    }
-}
-
-impl ZKMRecursionWitnessValues<KoalaBearPoseidon2> {
-    pub fn dummy(
-        machine: &StarkMachine<KoalaBearPoseidon2, MipsAir<KoalaBear>>,
-        shape: &ZKMRecursionShape,
-    ) -> Self {
-        let (mut vks, shard_proofs): (Vec<_>, Vec<_>) =
-            shape.proof_shapes.iter().map(|shape| dummy_vk_and_shard_proof(machine, shape)).unzip();
-        let vk = vks.pop().unwrap();
-        Self {
-            vk,
-            shard_proofs,
-            is_complete: shape.is_complete,
-            is_first_shard: false,
-            vk_root: [KoalaBear::ZERO; DIGEST_SIZE],
-        }
-    }
-}
-
-impl From<OrderedShape> for ZKMRecursionShape {
-    fn from(proof_shape: OrderedShape) -> Self {
-        Self { proof_shapes: vec![proof_shape], is_complete: false }
     }
 }

@@ -54,6 +54,20 @@ pub struct ShardProofVariable<C: CircuitConfig, HV: FieldHasherVariable<C>> {
         JaggedPcsProofVariable<C::F, C::EF, RecursiveBasefoldProof<C, HV>, HV::DigestVariable>,
 }
 
+impl<C: CircuitConfig, HV: FieldHasherVariable<C>> ShardProofVariable<C, HV> {
+    pub fn contains_cpu(&self) -> bool {
+        self.opened_values.chips.contains_key("Cpu")
+    }
+
+    pub fn contains_memory_init(&self) -> bool {
+        self.opened_values.chips.contains_key("MemoryGlobalInit")
+    }
+
+    pub fn contains_memory_finalize(&self) -> bool {
+        self.opened_values.chips.contains_key("MemoryGlobalFinalize")
+    }
+}
+
 pub struct MachineVerifyingKeyVariable<C: CircuitConfig, HV: FieldHasherVariable<C>> {
     pub pc_start: Felt<C::F>,
     /// The starting global digest of the program, after incorporating the initial memory.
@@ -76,6 +90,21 @@ impl<C: CircuitConfig, HV: FieldHasherVariable<C>> MachineVerifyingKeyVariable<C
         inputs.extend(self.initial_global_cumulative_sum.0.y.0);
 
         HV::hash(builder, &inputs)
+    }
+
+    /// Observe the verifying key into a challenger, priming it before shard verification.
+    ///
+    /// Must match `zkm_hypercube::verifier::config::MachineVerifyingKey::observe_into` exactly
+    /// (same fields, same order) so the in-circuit Fiat-Shamir transcript matches the native
+    /// prover's.
+    pub fn observe_into<Challenger>(&self, builder: &mut Builder<C>, challenger: &mut Challenger)
+    where
+        Challenger: CanObserveVariable<C, HV::DigestVariable> + CanObserveVariable<C, Felt<C::F>>,
+    {
+        challenger.observe(builder, self.preprocessed_commit);
+        challenger.observe(builder, self.pc_start);
+        challenger.observe_slice(builder, self.initial_global_cumulative_sum.0.x.0);
+        challenger.observe_slice(builder, self.initial_global_cumulative_sum.0.y.0);
     }
 }
 

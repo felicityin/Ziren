@@ -32,7 +32,6 @@ use p3_field::{ExtensionField, FieldAlgebra, FieldExtensionAlgebra, PrimeField32
 use p3_koala_bear::Poseidon2ExternalLayerKoalaBear;
 use p3_poseidon2::Poseidon2;
 use p3_symmetric::{CryptographicPermutation, Permutation};
-use p3_util::reverse_bits_len;
 use thiserror::Error;
 
 use zkm_hypercube::septic_curve::SepticCurve;
@@ -91,12 +90,6 @@ pub struct Runtime<'a, F: PrimeField32, EF: ExtensionField<F>, Diffusion> {
     pub nb_branch_ops: usize,
 
     pub nb_select: usize,
-
-    pub nb_exp_reverse_bits: usize,
-
-    pub nb_fri_fold: usize,
-
-    pub nb_batch_fri: usize,
 
     pub nb_prefix_sum_checks: usize,
 
@@ -200,13 +193,10 @@ where
             nb_wide_poseidons: 0,
             nb_bit_decompositions: 0,
             nb_select: 0,
-            nb_exp_reverse_bits: 0,
             nb_ext_ops: 0,
             nb_base_ops: 0,
             nb_memory_ops: 0,
             nb_branch_ops: 0,
-            nb_fri_fold: 0,
-            nb_batch_fri: 0,
             nb_prefix_sum_checks: 0,
             nb_print_f: 0,
             nb_print_e: 0,
@@ -228,12 +218,9 @@ where
         tracing::debug!("Total Cycles: {}", self.timestamp);
         tracing::debug!("Poseidon Skinny Operations: {}", self.nb_poseidons);
         tracing::debug!("Poseidon Wide Operations: {}", self.nb_wide_poseidons);
-        tracing::debug!("Exp Reverse Bits Operations: {}", self.nb_exp_reverse_bits);
-        tracing::debug!("FriFold Operations: {}", self.nb_fri_fold);
         tracing::debug!("Field Operations: {}", self.nb_base_ops);
         tracing::debug!("Select Operations: {}", self.nb_select);
         tracing::debug!("Extension Operations: {}", self.nb_ext_ops);
-        tracing::debug!("BatchFRI Operations: {}", self.nb_batch_fri);
         tracing::debug!("PrefixSumChecks Operations: {}", self.nb_prefix_sum_checks);
         tracing::debug!("Memory Operations: {}", self.nb_memory_ops);
         tracing::debug!("Branch Operations: {}", self.nb_branch_ops);
@@ -390,27 +377,6 @@ where
                         in2,
                     })
                 }
-                Instruction::ExpReverseBitsLen(ExpReverseBitsInstr {
-                    addrs: ExpReverseBitsIo { base, exp, result },
-                    mult,
-                }) => {
-                    self.nb_exp_reverse_bits += 1;
-                    let base_val = self.memory.mr(base).val[0];
-                    let exp_bits: Vec<_> =
-                        exp.iter().map(|bit| self.memory.mr(*bit).val[0]).collect();
-                    let exp_val = exp_bits
-                        .iter()
-                        .enumerate()
-                        .fold(0, |acc, (i, &val)| acc + val.as_canonical_u32() * (1 << i));
-                    let out =
-                        base_val.exp_u64(reverse_bits_len(exp_val as usize, exp_bits.len()) as u64);
-                    self.memory.mw(result, Block::from(out), mult);
-                    self.record.exp_reverse_bits_len_events.push(ExpReverseBitsEvent {
-                        result: out,
-                        base: base_val,
-                        exp: exp_bits,
-                    });
-                }
                 Instruction::HintBits(HintBitsInstr { output_addrs_mults, input_addr }) => {
                     self.nb_bit_decompositions += 1;
                     let num = self.memory.mr_mult(input_addr, F::ZERO).val[0].as_canonical_u32();
@@ -462,122 +428,6 @@ where
                     }
                 }
 
-                Instruction::FriFold(instr) => {
-                    let FriFoldInstr {
-                        base_single_addrs,
-                        ext_single_addrs,
-                        ext_vec_addrs,
-                        alpha_pow_mults,
-                        ro_mults,
-                    } = *instr;
-                    self.nb_fri_fold += 1;
-                    let x = self.memory.mr(base_single_addrs.x).val[0];
-                    let z = self.memory.mr(ext_single_addrs.z).val;
-                    let z: EF = z.ext();
-                    let alpha = self.memory.mr(ext_single_addrs.alpha).val;
-                    let alpha: EF = alpha.ext();
-                    let mat_opening = ext_vec_addrs
-                        .mat_opening
-                        .iter()
-                        .map(|addr| self.memory.mr(*addr).val)
-                        .collect_vec();
-                    let ps_at_z = ext_vec_addrs
-                        .ps_at_z
-                        .iter()
-                        .map(|addr| self.memory.mr(*addr).val)
-                        .collect_vec();
-
-                    for m in 0..ps_at_z.len() {
-                        // let m = F::from_canonical_u32(m);
-                        // Get the opening values.
-                        let p_at_x = mat_opening[m];
-                        let p_at_x: EF = p_at_x.ext();
-                        let p_at_z = ps_at_z[m];
-                        let p_at_z: EF = p_at_z.ext();
-
-                        // Calculate the quotient and update the values
-                        let quotient = (-p_at_z + p_at_x) / (-z + x);
-
-                        // First we peek to get the current value.
-                        let alpha_pow: EF =
-                            self.memory.mr(ext_vec_addrs.alpha_pow_input[m]).val.ext();
-
-                        let ro: EF = self.memory.mr(ext_vec_addrs.ro_input[m]).val.ext();
-
-                        let new_ro = ro + alpha_pow * quotient;
-                        let new_alpha_pow = alpha_pow * alpha;
-
-                        let _ = self.memory.mw(
-                            ext_vec_addrs.ro_output[m],
-                            Block::from(new_ro.as_base_slice()),
-                            ro_mults[m],
-                        );
-
-                        let _ = self.memory.mw(
-                            ext_vec_addrs.alpha_pow_output[m],
-                            Block::from(new_alpha_pow.as_base_slice()),
-                            alpha_pow_mults[m],
-                        );
-
-                        self.record.fri_fold_events.push(FriFoldEvent {
-                            base_single: FriFoldBaseIo { x },
-                            ext_single: FriFoldExtSingleIo {
-                                z: Block::from(z.as_base_slice()),
-                                alpha: Block::from(alpha.as_base_slice()),
-                            },
-                            ext_vec: FriFoldExtVecIo {
-                                mat_opening: Block::from(p_at_x.as_base_slice()),
-                                ps_at_z: Block::from(p_at_z.as_base_slice()),
-                                alpha_pow_input: Block::from(alpha_pow.as_base_slice()),
-                                ro_input: Block::from(ro.as_base_slice()),
-                                alpha_pow_output: Block::from(new_alpha_pow.as_base_slice()),
-                                ro_output: Block::from(new_ro.as_base_slice()),
-                            },
-                        });
-                    }
-                }
-                Instruction::BatchFRI(instr) => {
-                    let BatchFRIInstr { base_vec_addrs, ext_single_addrs, ext_vec_addrs, acc_mult } =
-                        *instr;
-
-                    let mut acc = EF::ZERO;
-                    let p_at_xs = base_vec_addrs
-                        .p_at_x
-                        .iter()
-                        .map(|addr| self.memory.mr(*addr).val[0])
-                        .collect_vec();
-                    let p_at_zs = ext_vec_addrs
-                        .p_at_z
-                        .iter()
-                        .map(|addr| self.memory.mr(*addr).val.ext::<EF>())
-                        .collect_vec();
-                    let alpha_pows: Vec<_> = ext_vec_addrs
-                        .alpha_pow
-                        .iter()
-                        .map(|addr| self.memory.mr(*addr).val.ext::<EF>())
-                        .collect_vec();
-
-                    self.nb_batch_fri += p_at_zs.len();
-                    for m in 0..p_at_zs.len() {
-                        acc += alpha_pows[m] * (p_at_zs[m] - EF::from_base(p_at_xs[m]));
-                        self.record.batch_fri_events.push(BatchFRIEvent {
-                            base_vec: BatchFRIBaseVecIo { p_at_x: p_at_xs[m] },
-                            ext_single: BatchFRIExtSingleIo {
-                                acc: Block::from(acc.as_base_slice()),
-                            },
-                            ext_vec: BatchFRIExtVecIo {
-                                p_at_z: Block::from(p_at_zs[m].as_base_slice()),
-                                alpha_pow: Block::from(alpha_pows[m].as_base_slice()),
-                            },
-                        });
-                    }
-
-                    let _ = self.memory.mw(
-                        ext_single_addrs.acc,
-                        Block::from(acc.as_base_slice()),
-                        acc_mult,
-                    );
-                }
                 Instruction::PrefixSumChecks(instr) => {
                     let PrefixSumChecksInstr {
                         addrs: PrefixSumChecksIo { zero, one, x1, x2, accs, field_accs },
@@ -697,7 +547,6 @@ where
         self.record.mem_var_events.reserve(event_counts.mem_var_events);
         self.record.base_alu_events.reserve(event_counts.base_alu_events);
         self.record.ext_alu_events.reserve(event_counts.ext_alu_events);
-        self.record.exp_reverse_bits_len_events.reserve(event_counts.exp_reverse_bits_len_events);
         self.record.select_events.reserve(event_counts.select_events);
     }
 }

@@ -13,9 +13,6 @@ use crate::{
     chips::{
         alu_base::{BaseAluChip, NUM_BASE_ALU_ENTRIES_PER_ROW},
         alu_ext::{ExtAluChip, NUM_EXT_ALU_ENTRIES_PER_ROW},
-        batch_fri::BatchFRIChip,
-        exp_reverse_bits::ExpReverseBitsLenChip,
-        fri_fold::FriFoldChip,
         mem::{
             constant::NUM_CONST_MEM_ENTRIES_PER_ROW, variable::NUM_VAR_MEM_ENTRIES_PER_ROW,
             MemoryConstChip, MemoryVarChip,
@@ -28,7 +25,7 @@ use crate::{
     },
     instruction::{HintAddCurveInstr, HintBitsInstr, HintExt2FeltsInstr, HintInstr},
     shape::RecursionShape,
-    ExpReverseBitsInstr, Instruction, RecursionProgram, D,
+    Instruction, RecursionProgram, D,
 };
 
 #[derive(zkm_derive::MachineAir)]
@@ -46,9 +43,6 @@ pub enum RecursionAir<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: u
     Poseidon2Skinny(Poseidon2SkinnyChip<DEGREE>),
     Poseidon2Wide(Poseidon2WideChip<DEGREE>),
     Select(SelectChip),
-    FriFold(FriFoldChip<DEGREE>),
-    BatchFRI(BatchFRIChip<DEGREE>),
-    ExpReverseBitsLen(ExpReverseBitsLenChip<DEGREE>),
     PrefixSumChecks(PrefixSumChecksChip),
     PublicValues(PublicValuesChip),
 }
@@ -68,10 +62,7 @@ pub struct RecursionAirEventCount {
     pub base_alu_events: usize,
     pub ext_alu_events: usize,
     pub poseidon2_wide_events: usize,
-    pub fri_fold_events: usize,
-    pub batch_fri_events: usize,
     pub select_events: usize,
-    pub exp_reverse_bits_len_events: usize,
     pub prefix_sum_checks_events: usize,
 }
 
@@ -87,10 +78,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::BaseAlu(BaseAluChip),
             RecursionAir::ExtAlu(ExtAluChip),
             RecursionAir::Poseidon2Wide(Poseidon2WideChip::<DEGREE>),
-            RecursionAir::FriFold(FriFoldChip::<DEGREE>::default()),
-            RecursionAir::BatchFRI(BatchFRIChip::<DEGREE>),
             RecursionAir::Select(SelectChip),
-            RecursionAir::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>),
             RecursionAir::PrefixSumChecks(PrefixSumChecksChip),
             RecursionAir::PublicValues(PublicValuesChip),
         ]
@@ -112,10 +100,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::BaseAlu(BaseAluChip),
             RecursionAir::ExtAlu(ExtAluChip),
             RecursionAir::Poseidon2Skinny(Poseidon2SkinnyChip::<DEGREE>::default()),
-            RecursionAir::FriFold(FriFoldChip::<DEGREE>::default()),
-            RecursionAir::BatchFRI(BatchFRIChip::<DEGREE>),
             RecursionAir::Select(SelectChip),
-            RecursionAir::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>),
             RecursionAir::PublicValues(PublicValuesChip),
         ]
         .map(Chip::new)
@@ -136,9 +121,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::BaseAlu(BaseAluChip),
             RecursionAir::ExtAlu(ExtAluChip),
             RecursionAir::Poseidon2Wide(Poseidon2WideChip::<DEGREE>),
-            RecursionAir::BatchFRI(BatchFRIChip::<DEGREE>),
             RecursionAir::Select(SelectChip),
-            RecursionAir::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>),
             RecursionAir::PrefixSumChecks(PrefixSumChecksChip),
             RecursionAir::PublicValues(PublicValuesChip),
         ]
@@ -170,7 +153,6 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::BaseAlu(BaseAluChip),
             RecursionAir::ExtAlu(ExtAluChip),
             RecursionAir::Poseidon2Skinny(Poseidon2SkinnyChip::<DEGREE>::default()),
-            RecursionAir::BatchFRI(BatchFRIChip::<DEGREE>),
             RecursionAir::Select(SelectChip),
             RecursionAir::PublicValues(PublicValuesChip),
         ]
@@ -187,10 +169,8 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
                 (Self::MemoryVar(MemoryVarChip::default()), 18),
                 (Self::Select(SelectChip), 18),
                 (Self::MemoryConst(MemoryConstChip::default()), 17),
-                (Self::BatchFRI(BatchFRIChip::<DEGREE>), 17),
                 (Self::BaseAlu(BaseAluChip), 17),
                 (Self::ExtAlu(ExtAluChip), 15),
-                (Self::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>), 17),
                 (Self::Poseidon2Wide(Poseidon2WideChip::<DEGREE>), 16),
                 (Self::PublicValues(PublicValuesChip), PUB_VALUES_LOG_HEIGHT),
             ]
@@ -223,12 +203,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
                 heights.ext_alu_events.div_ceil(NUM_EXT_ALU_ENTRIES_PER_ROW),
             ),
             (Self::Poseidon2Wide(Poseidon2WideChip::<DEGREE>), heights.poseidon2_wide_events),
-            (Self::BatchFRI(BatchFRIChip::<DEGREE>), heights.batch_fri_events),
             (Self::Select(SelectChip), heights.select_events),
-            (
-                Self::ExpReverseBitsLen(ExpReverseBitsLenChip::<DEGREE>),
-                heights.exp_reverse_bits_len_events,
-            ),
             (Self::PrefixSumChecks(PrefixSumChecksChip), heights.prefix_sum_checks_events),
             (Self::PublicValues(PublicValuesChip), PUB_VALUES_LOG_HEIGHT),
         ]
@@ -246,9 +221,6 @@ impl<F> AddAssign<&Instruction<F>> for RecursionAirEventCount {
             Instruction::Mem(_) => self.mem_const_events += 1,
             Instruction::Poseidon2(_) => self.poseidon2_wide_events += 1,
             Instruction::Select(_) => self.select_events += 1,
-            Instruction::ExpReverseBitsLen(ExpReverseBitsInstr { addrs, .. }) => {
-                self.exp_reverse_bits_len_events += addrs.exp.len()
-            }
             Instruction::Hint(HintInstr { output_addrs_mults })
             | Instruction::HintBits(HintBitsInstr {
                 output_addrs_mults,
@@ -258,10 +230,6 @@ impl<F> AddAssign<&Instruction<F>> for RecursionAirEventCount {
                 output_addrs_mults,
                 input_addr: _, // No receive lookup for the hint operation
             }) => self.mem_var_events += output_addrs_mults.len(),
-            Instruction::FriFold(_) => self.fri_fold_events += 1,
-            Instruction::BatchFRI(instr) => {
-                self.batch_fri_events += instr.base_vec_addrs.p_at_x.len()
-            }
             Instruction::PrefixSumChecks(instr) => {
                 self.prefix_sum_checks_events += instr.addrs.x1.len()
             }
@@ -380,8 +348,8 @@ pub mod tests {
     /// TODO(zkm-hypercube): also run `B::machine_skinny_with_all_chips()` (DEGREE=9). Two
     /// distinct, stacked problems block this, both constraint-degree (not row-adjacency, which
     /// is already fixed below) issues:
-    /// 1. Every DEGREE-parameterized recursion chip's `Air::eval` (FriFold, BatchFRI,
-    ///    ExpReverseBitsLen, Poseidon2Wide, Poseidon2Skinny) has a "dummy constraints to
+    /// 1. Every DEGREE-parameterized recursion chip's `Air::eval` (Poseidon2Wide,
+    ///    Poseidon2Skinny) has a "dummy constraints to
     ///    normalize to DEGREE" step (`(0..DEGREE).map(...).product()`) that intentionally forces
     ///    the AIR's polynomial degree up to DEGREE. At DEGREE=9 this alone exceeds
     ///    `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE` (3), independent of any chip's own logic

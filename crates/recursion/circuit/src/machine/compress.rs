@@ -1,45 +1,41 @@
-use std::{
-    array,
-    borrow::{Borrow, BorrowMut},
-    marker::PhantomData,
-};
+use std::{array, borrow::{Borrow, BorrowMut}, marker::PhantomData};
 
 use itertools::{izip, Itertools};
 
 use p3_air::Air;
 use p3_koala_bear::KoalaBear;
 
-use p3_commit::Mmcs;
 use p3_field::FieldAlgebra;
-use p3_matrix::dense::RowMajorMatrix;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
+use slop_challenger::IopCtx;
 use zkm_recursion_compiler::circuit::CircuitV2Builder;
 use zkm_recursion_compiler::ir::{Builder, Felt, SymbolicFelt};
 use zkm_recursion_core::air::{RecursionPublicValues, RECURSIVE_PROOF_NUM_PV_ELTS};
+use zkm_recursion_core::DIGEST_SIZE;
 
-use zkm_stark::{
+use zkm_hypercube::{
     air::{MachineAir, POSEIDON_NUM_WORDS, PV_DIGEST_NUM_WORDS},
-    koala_bear_poseidon2::KoalaBearPoseidon2,
-    shape::OrderedShape,
-    Dom, ShardProof, StarkGenericConfig, StarkMachine, StarkVerifyingKey, Word, DIGEST_SIZE,
+    config::ZkmGlobalContext,
+    verifier::{MachineVerifyingKey, ShardProof},
+    word::Word,
 };
 
 use crate::{
-    challenger::CanObserveVariable,
-    constraints::RecursiveVerifierConstraintFolder,
+    challenger::{CanObserveVariable, DuplexChallengerVariable},
     machine::{
         assert_complete, assert_recursion_public_values_valid, recursion_public_values_digest,
         root_public_values_digest,
     },
-    stark::{dummy_vk_and_shard_proof, ShardProofVariable, StarkVerifier},
-    CircuitConfig, KoalaBearFriConfig, KoalaBearFriConfigVariable, VerifyingKeyVariable,
+    shard::{MachineVerifyingKeyVariable, RecursiveShardVerifier, ShardProofVariable},
+    zerocheck::RecursiveVerifierConstraintFolder,
+    CircuitConfig,
 };
 
 /// A program to verify a batch of recursive proofs and aggregate their public values.
 #[derive(Debug, Clone, Copy)]
-pub struct ZKMCompressVerifier<C, SC, A> {
-    _phantom: PhantomData<(C, SC, A)>,
+pub struct ZKMCompressVerifier<C, A> {
+    _phantom: PhantomData<(C, A)>,
 }
 
 pub enum PublicValuesOutputDigest {
@@ -48,35 +44,26 @@ pub enum PublicValuesOutputDigest {
 }
 
 /// Witness layout for the compress stage verifier.
-pub struct ZKMCompressWitnessVariable<
-    C: CircuitConfig<F = KoalaBear>,
-    SC: KoalaBearFriConfigVariable<C>,
-> {
+pub struct ZKMCompressWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> {
     /// The shard proofs to verify.
-    pub vks_and_proofs: Vec<(VerifyingKeyVariable<C, SC>, ShardProofVariable<C, SC>)>,
+    pub vks_and_proofs:
+        Vec<(MachineVerifyingKeyVariable<C, ZkmGlobalContext>, ShardProofVariable<C, ZkmGlobalContext>)>,
     pub is_complete: Felt<C::F>,
 }
 
 /// An input layout for the reduce verifier.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "ShardProof<SC>: Serialize, Dom<SC>: Serialize"))]
-#[serde(bound(deserialize = "ShardProof<SC>: Deserialize<'de>, Dom<SC>: DeserializeOwned"))]
-pub struct ZKMCompressWitnessValues<SC: StarkGenericConfig> {
-    pub vks_and_proofs: Vec<(StarkVerifyingKey<SC>, ShardProof<SC>)>,
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "ShardProof<GC, Proof>: Serialize"))]
+#[serde(bound(deserialize = "ShardProof<GC, Proof>: Deserialize<'de>"))]
+pub struct ZKMCompressWitnessValues<GC: IopCtx, Proof> {
+    pub vks_and_proofs: Vec<(MachineVerifyingKey<GC>, ShardProof<GC, Proof>)>,
     pub is_complete: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ZKMCompressShape {
-    proof_shapes: Vec<OrderedShape>,
-}
-
-impl<C, SC, A> ZKMCompressVerifier<C, SC, A>
+impl<C, A> ZKMCompressVerifier<C, A>
 where
-    SC: KoalaBearFriConfigVariable<C>,
-    C: CircuitConfig<F = SC::Val, EF = SC::Challenge>,
-    <SC::ValMmcs as Mmcs<KoalaBear>>::ProverData<RowMajorMatrix<KoalaBear>>: Clone,
-    A: MachineAir<SC::Val> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     /// Verify a batch of recursive proofs and aggregate their public values.
     ///
@@ -92,8 +79,8 @@ where
     ///   checked against itself as in [zkm_prover::Prover] or as in [super::ZKMRootVerifier].
     pub fn verify(
         builder: &mut Builder<C>,
-        machine: &StarkMachine<SC, A>,
-        input: ZKMCompressWitnessVariable<C, SC>,
+        machine: &RecursiveShardVerifier<C, ZkmGlobalContext, DuplexChallengerVariable<C>, A>,
+        input: ZKMCompressWitnessVariable<C>,
         vk_root: [Felt<C::F>; DIGEST_SIZE],
         kind: PublicValuesOutputDigest,
     ) {
@@ -139,30 +126,24 @@ where
             // Verify the shard proof.
 
             // Prepare a challenger.
-            let mut challenger = machine.config().challenger_variable(builder);
+            let mut challenger = DuplexChallengerVariable::<C>::new(builder);
 
             // Observe the vk and start pc.
-            challenger.observe(builder, vk.commitment);
-            challenger.observe(builder, vk.pc_start);
-            challenger.observe_slice(builder, vk.initial_global_cumulative_sum.0.x.0);
-            challenger.observe_slice(builder, vk.initial_global_cumulative_sum.0.y.0);
-            // Observe the padding.
-            let zero: Felt<_> = builder.eval(C::F::ZERO);
-            challenger.observe(builder, zero);
+            vk.observe_into(builder, &mut challenger);
 
             // Observe the main commitment and public values.
             challenger.observe_slice(
                 builder,
-                shard_proof.public_values[0..machine.num_pv_elts()].iter().copied(),
+                shard_proof.public_values[0..machine.machine.num_pv_elts()].iter().copied(),
             );
 
-            StarkVerifier::verify_shard(builder, &vk, machine, &mut challenger, &shard_proof);
+            machine.verify_shard(builder, &vk, &shard_proof, &mut challenger);
 
             // Get the current public values.
             let current_public_values: &RecursionPublicValues<Felt<C::F>> =
                 shard_proof.public_values.as_slice().borrow();
             // Assert that the public values are valid.
-            assert_recursion_public_values_valid::<C, SC>(builder, current_public_values);
+            assert_recursion_public_values_valid::<C, ZkmGlobalContext>(builder, current_public_values);
             // Assert that the vk root is the same as the witnessed one.
             for (expected, actual) in vk_root.iter().zip(current_public_values.vk_root.iter()) {
                 builder.assert_felt_eq(*expected, *actual);
@@ -478,47 +459,16 @@ where
         // Set the digest according to the previous values.
         compress_public_values.digest = match kind {
             PublicValuesOutputDigest::Reduce => {
-                recursion_public_values_digest::<C, SC>(builder, compress_public_values)
+                recursion_public_values_digest::<C, ZkmGlobalContext>(builder, compress_public_values)
             }
             PublicValuesOutputDigest::Root => {
-                root_public_values_digest::<C, SC>(builder, compress_public_values)
+                root_public_values_digest::<C, ZkmGlobalContext>(builder, compress_public_values)
             }
         };
 
         // If the proof is complete, make completeness assertions.
         assert_complete(builder, compress_public_values, is_complete);
 
-        SC::commit_recursion_public_values(builder, *compress_public_values);
-    }
-}
-
-impl<SC: KoalaBearFriConfig> ZKMCompressWitnessValues<SC> {
-    pub fn shape(&self) -> ZKMCompressShape {
-        let proof_shapes = self.vks_and_proofs.iter().map(|(_, proof)| proof.shape()).collect();
-        ZKMCompressShape { proof_shapes }
-    }
-}
-
-impl ZKMCompressWitnessValues<KoalaBearPoseidon2> {
-    pub fn dummy<A: MachineAir<KoalaBear>>(
-        machine: &StarkMachine<KoalaBearPoseidon2, A>,
-        shape: &ZKMCompressShape,
-    ) -> Self {
-        let vks_and_proofs = shape
-            .proof_shapes
-            .iter()
-            .map(|proof_shape| {
-                let (vk, proof) = dummy_vk_and_shard_proof(machine, proof_shape);
-                (vk, proof)
-            })
-            .collect();
-
-        Self { vks_and_proofs, is_complete: false }
-    }
-}
-
-impl From<Vec<OrderedShape>> for ZKMCompressShape {
-    fn from(proof_shapes: Vec<OrderedShape>) -> Self {
-        Self { proof_shapes }
+        builder.commit_public_values_v2(*compress_public_values);
     }
 }
