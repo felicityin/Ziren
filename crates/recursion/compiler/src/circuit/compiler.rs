@@ -842,8 +842,14 @@ mod tests {
     use p3_koala_bear::Poseidon2InternalLayerKoalaBear;
     use p3_symmetric::{CryptographicHasher, Permutation};
     use rand::{rngs::StdRng, Rng, SeedableRng};
+    use slop_challenger::IopCtx;
 
-    use zkm_core_machine::utils::{run_test_machine, setup_logger};
+    use zkm_core_machine::utils::setup_logger;
+    use zkm_hypercube::{
+        config::{default_fri_config, ZkmGlobalContext},
+        prover::{AirProver, ProverSemaphore, ZkmShardProver},
+        Machine, ShardVerifier,
+    };
     use zkm_recursion_core::{machine::RecursionAir, RecursionProgram, Runtime};
     use zkm_stark::{
         inner_perm, koala_bear_poseidon2::KoalaBearPoseidon2, InnerHash, KoalaBearPoseidon2Inner,
@@ -857,6 +863,12 @@ mod tests {
     type SC = KoalaBearPoseidon2;
     type F = <SC as StarkGenericConfig>::Val;
     type EF = <SC as StarkGenericConfig>::Challenge;
+
+    /// The log2 of the number of rows each stacked-PCS column is grouped into. Mirrors
+    /// `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`, kept in sync by
+    /// convention.
+    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
+
     fn test_operations(operations: TracedVec<DslIr<AsmConfig<F, EF>>>) {
         test_operations_with_runner(operations, |program| {
             let mut runtime = Runtime::<F, EF, Poseidon2InternalLayerKoalaBear<16>>::new(
@@ -868,6 +880,43 @@ mod tests {
         });
     }
 
+    fn prove_and_verify_recursion_shard<const DEGREE: usize>(
+        machine: Machine<F, RecursionAir<F, DEGREE>>,
+        program: Arc<RecursionProgram<F>>,
+        record: ExecutionRecord<F>,
+    ) {
+        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
+        let shard_prover = ZkmShardProver::<RecursionAir<F, DEGREE>>::new(
+            ShardVerifier::from_basefold_parameters(
+                default_fri_config(),
+                RECURSION_LOG_STACKING_HEIGHT,
+                max_log_row_count,
+                machine.clone(),
+            ),
+        );
+
+        let setup_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (vk, proof, _permit) = setup_rt.block_on(shard_prover.setup_and_prove_shard(
+            program,
+            record,
+            None,
+            ProverSemaphore::new(1),
+        ));
+
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            RECURSION_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        let mut challenger = ZkmGlobalContext::default_challenger();
+        vk.observe_into(&mut challenger);
+        if let Err(e) = shard_verifier.verify_shard(&vk, &proof, &mut challenger) {
+            panic!("Verification failed: {e:?}");
+        }
+    }
+
     fn test_operations_with_runner(
         operations: TracedVec<DslIr<AsmConfig<F, EF>>>,
         run: impl FnOnce(Arc<RecursionProgram<F>>) -> ExecutionRecord<F>,
@@ -877,23 +926,13 @@ mod tests {
         let record = run(program.clone());
 
         // Run with the poseidon2 wide chip.
-        let wide_machine =
-            RecursionAir::<_, 3>::machine_wide_with_all_chips(KoalaBearPoseidon2::default());
-        let (pk, vk) = wide_machine.setup(&program);
-        let result = run_test_machine(vec![record.clone()], wide_machine, pk, vk);
-        if let Err(e) = result {
-            panic!("Verification failed: {e:?}");
-        }
-
-        // Run with the poseidon2 skinny chip.
-        let skinny_machine = RecursionAir::<_, 9>::machine_skinny_with_all_chips(
-            KoalaBearPoseidon2::ultra_compressed(),
-        );
-        let (pk, vk) = skinny_machine.setup(&program);
-        let result = run_test_machine(vec![record.clone()], skinny_machine, pk, vk);
-        if let Err(e) = result {
-            panic!("Verification failed: {e:?}");
-        }
+        //
+        // TODO(zkm-hypercube): the skinny (DEGREE=9) machine is deliberately not exercised here
+        // -- see the matching TODO on `zkm_recursion_core::machine::tests::
+        // run_recursion_test_machines` (task #25) for why it still exceeds
+        // `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE`.
+        let wide_machine = RecursionAir::<_, 3>::machine_wide_with_all_chips();
+        prove_and_verify_recursion_shard(wide_machine, program, record);
     }
 
     #[test]

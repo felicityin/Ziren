@@ -1,4 +1,12 @@
-use zkm_recursion_compiler::ir::{Builder, Ext, Felt};
+use p3_bn254_fr::Bn254Fr;
+use p3_field::{FieldAlgebra, FieldExtensionAlgebra};
+
+pub use zkm_recursion_compiler::ir::Witness as OuterWitness;
+use zkm_recursion_compiler::{
+    config::OuterConfig,
+    ir::{Builder, Config, Ext, Felt, Var},
+};
+use zkm_recursion_core::air::Block;
 
 use zkm_stark::{InnerChallenge, InnerVal};
 
@@ -145,5 +153,58 @@ impl<C: CircuitConfig, K: Clone + Ord, V: Witnessable<C>> Witnessable<C>
         for v in self.values() {
             v.write(witness);
         }
+    }
+}
+
+/// A witness block used by the `InnerConfig`, backed by plain field-element storage rather than
+/// the `Var`/`Felt`/`Ext` variables Bn254-targeting Gnark/Plonk circuits need.
+pub type WitnessBlock<C> = Block<<C as Config>::F>;
+
+impl<C: CircuitConfig<F = p3_koala_bear::KoalaBear, Bit = Felt<p3_koala_bear::KoalaBear>>>
+    WitnessWriter<C> for Vec<WitnessBlock<C>>
+{
+    fn write_bit(&mut self, value: bool) {
+        self.push(Block::from(C::F::from_bool(value)))
+    }
+
+    fn write_var(&mut self, _value: <C>::N) {
+        unimplemented!("Cannot write Var<N> in this configuration")
+    }
+
+    fn write_felt(&mut self, value: <C>::F) {
+        self.push(Block::from(value))
+    }
+
+    fn write_ext(&mut self, value: <C>::EF) {
+        self.push(Block::from(value.as_base_slice()))
+    }
+}
+
+impl WitnessWriter<OuterConfig> for OuterWitness<OuterConfig> {
+    fn write_bit(&mut self, value: bool) {
+        self.vars.push(Bn254Fr::from_bool(value));
+    }
+
+    fn write_var(&mut self, value: Bn254Fr) {
+        self.vars.push(value);
+    }
+
+    fn write_felt(&mut self, value: <OuterConfig as Config>::F) {
+        self.felts.push(value);
+    }
+
+    fn write_ext(&mut self, value: <OuterConfig as Config>::EF) {
+        self.exts.push(value);
+    }
+}
+
+impl<C: CircuitConfig<N = Bn254Fr>> Witnessable<C> for Bn254Fr {
+    type WitnessVariable = Var<Bn254Fr>;
+
+    fn read(&self, builder: &mut Builder<C>) -> Self::WitnessVariable {
+        builder.witness_var()
+    }
+    fn write(&self, witness: &mut impl WitnessWriter<C>) {
+        witness.write_var(*self)
     }
 }

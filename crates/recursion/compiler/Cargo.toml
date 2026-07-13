@@ -34,6 +34,8 @@ p3-challenger = { workspace = true }
 p3-dft = { workspace = true }
 p3-merkle-tree = { workspace = true }
 rand = "0.8.5"
+slop-challenger = { workspace = true }
+tokio = { workspace = true, features = ["rt"] }
 
 [features]
 default = ["debug"]

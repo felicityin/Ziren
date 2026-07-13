@@ -12,8 +12,13 @@ mod tests {
 
     use p3_field::FieldAlgebra;
     use p3_koala_bear::Poseidon2InternalLayerKoalaBear;
+    use slop_challenger::IopCtx;
 
-    use zkm_core_machine::utils::run_test_machine;
+    use zkm_hypercube::{
+        config::{default_fri_config, ZkmGlobalContext},
+        prover::{AirProver, ProverSemaphore, ZkmShardProver},
+        ShardVerifier,
+    };
     use zkm_recursion_core::{machine::RecursionAir, Runtime, RuntimeError};
     use zkm_stark::{KoalaBearPoseidon2Inner, StarkGenericConfig};
 
@@ -23,6 +28,11 @@ mod tests {
     };
 
     const DEGREE: usize = 3;
+
+    /// The log2 of the number of rows each stacked-PCS column is grouped into. Mirrors
+    /// `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`, kept in sync by
+    /// convention.
+    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
 
     type SC = KoalaBearPoseidon2Inner;
     type F = <SC as StarkGenericConfig>::Val;
@@ -67,13 +77,36 @@ mod tests {
         .into();
         runtime.run().unwrap();
 
-        let machine = A::compress_machine(SC::new());
+        let machine = A::compress_machine();
+        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
 
-        let (pk, vk) = machine.setup(&program);
-        let result =
-            run_test_machine(vec![runtime.record], machine, pk, vk.clone()).expect("should verify");
+        let shard_prover = ZkmShardProver::<A>::new(ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            RECURSION_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine.clone(),
+        ));
 
-        tracing::info!("num shard proofs: {}", result.shard_proofs.len());
+        let setup_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (vk, proof, _permit) = setup_rt.block_on(shard_prover.setup_and_prove_shard(
+            program,
+            runtime.record,
+            None,
+            ProverSemaphore::new(1),
+        ));
+
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            RECURSION_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        let mut challenger = ZkmGlobalContext::default_challenger();
+        vk.observe_into(&mut challenger);
+        shard_verifier.verify_shard(&vk, &proof, &mut challenger).expect("should verify");
+
+        tracing::info!("verified recursion shard proof");
     }
 
     #[test]

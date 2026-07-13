@@ -92,15 +92,18 @@ pub fn words_to_bytes<T: Copy>(words: &[Word<T>]) -> Vec<T> {
 pub(crate) mod tests {
     use std::sync::Arc;
 
-    use zkm_core_machine::utils::{run_test_machine_with_prover, setup_logger};
+    use slop_challenger::IopCtx;
+    use zkm_core_machine::utils::setup_logger;
+    use zkm_hypercube::{
+        config::{default_fri_config, ZkmGlobalContext},
+        prover::{AirProver, ProverSemaphore, ZkmShardProver},
+        ShardVerifier,
+    };
     use zkm_recursion_compiler::{circuit::AsmCompiler, circuit::AsmConfig, ir::DslIr};
 
     use zkm_recursion_compiler::ir::TracedVec;
     use zkm_recursion_core::{machine::RecursionAir, Runtime};
-    use zkm_stark::{
-        koala_bear_poseidon2::KoalaBearPoseidon2, CpuProver, InnerChallenge, InnerVal,
-        MachineProver,
-    };
+    use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, InnerChallenge, InnerVal};
 
     use crate::witness::WitnessBlock;
 
@@ -108,10 +111,15 @@ pub(crate) mod tests {
     type F = InnerVal;
     type EF = InnerChallenge;
 
-    /// A simplified version of some code from `recursion/core/src/stark/mod.rs`.
-    /// Takes in a program and runs it with the given witness and generates a proof with a variety
-    /// of machines depending on the provided test_config.
-    pub(crate) fn run_test_recursion_with_prover<P: MachineProver<SC, RecursionAir<F, 3>>>(
+    /// The log2 of the number of rows each stacked-PCS column is grouped into. Mirrors
+    /// `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`, kept in sync by
+    /// convention.
+    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
+
+    /// A simplified version of some code from `recursion/core/src/machine.rs`.
+    /// Takes in a program and runs it with the given witness and generates a proof with the
+    /// wide Poseidon2 recursion machine.
+    pub(crate) fn run_test_recursion(
         operations: TracedVec<DslIr<AsmConfig<F, EF>>>,
         witness_stream: impl IntoIterator<Item = WitnessBlock<AsmConfig<F, EF>>>,
     ) {
@@ -131,27 +139,42 @@ pub(crate) mod tests {
         assert!(runtime.witness_stream.is_empty());
         run_span.exit();
 
-        let records = vec![runtime.record];
+        let record = runtime.record;
 
         // Run with the poseidon2 wide chip.
         let proof_wide_span = tracing::debug_span!("Run test with wide machine").entered();
-        let wide_machine = RecursionAir::<_, 3>::compress_machine(SC::default());
-        let (pk, vk) = wide_machine.setup(&program);
-        let prover = P::new(wide_machine);
-        let pk = prover.pk_to_device(&pk);
-        let result = run_test_machine_with_prover::<_, _, P>(&prover, records.clone(), pk, vk);
-        proof_wide_span.exit();
+        let machine = RecursionAir::<F, 3>::compress_machine();
+        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
 
-        if let Err(e) = result {
+        let shard_prover = ZkmShardProver::<RecursionAir<F, 3>>::new(
+            ShardVerifier::from_basefold_parameters(
+                default_fri_config(),
+                RECURSION_LOG_STACKING_HEIGHT,
+                max_log_row_count,
+                machine.clone(),
+            ),
+        );
+
+        let setup_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (vk, proof, _permit) = setup_rt.block_on(shard_prover.setup_and_prove_shard(
+            program,
+            record,
+            None,
+            ProverSemaphore::new(1),
+        ));
+
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            RECURSION_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        let mut challenger = ZkmGlobalContext::default_challenger();
+        vk.observe_into(&mut challenger);
+        if let Err(e) = shard_verifier.verify_shard(&vk, &proof, &mut challenger) {
             panic!("Verification failed: {e:?}");
         }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn run_test_recursion(
-        operations: TracedVec<DslIr<AsmConfig<F, EF>>>,
-        witness_stream: impl IntoIterator<Item = WitnessBlock<AsmConfig<F, EF>>>,
-    ) {
-        run_test_recursion_with_prover::<CpuProver<_, _>>(operations, witness_stream)
+        proof_wide_span.exit();
     }
 }
