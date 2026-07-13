@@ -123,6 +123,21 @@ pub(crate) mod tests {
         operations: TracedVec<DslIr<AsmConfig<F, EF>>>,
         witness_stream: impl IntoIterator<Item = WitnessBlock<AsmConfig<F, EF>>>,
     ) {
+        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
+        run_test_recursion_with_max_log_row_count(operations, witness_stream, max_log_row_count)
+    }
+
+    /// Like [`run_test_recursion`], but with an explicit override for the recursion machine's
+    /// `max_log_row_count` (i.e. its shard size), instead of the default
+    /// `zkm_stark::ZKMCoreOpts::recursion().shard_size`. Needed for circuits that emit far more
+    /// rows than that default accommodates, such as a full, real `verify_shard` gadget chain
+    /// (zerocheck + LogUp-GKR + jagged + basefold), which the default recursion shard size was
+    /// never sized for.
+    pub(crate) fn run_test_recursion_with_max_log_row_count(
+        operations: TracedVec<DslIr<AsmConfig<F, EF>>>,
+        witness_stream: impl IntoIterator<Item = WitnessBlock<AsmConfig<F, EF>>>,
+        max_log_row_count: usize,
+    ) {
         setup_logger();
 
         let compile_span = tracing::debug_span!("compile").entered();
@@ -140,11 +155,14 @@ pub(crate) mod tests {
         run_span.exit();
 
         let record = runtime.record;
+        eprintln!(
+            "DIAGNOSTIC record stats: {:?}",
+            zkm_hypercube::record::MachineRecord::stats(&record)
+        );
 
         // Run with the poseidon2 wide chip.
         let proof_wide_span = tracing::debug_span!("Run test with wide machine").entered();
         let machine = RecursionAir::<F, 3>::compress_machine();
-        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
 
         let shard_prover = ZkmShardProver::<RecursionAir<F, 3>>::new(
             ShardVerifier::from_basefold_parameters(

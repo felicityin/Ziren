@@ -429,6 +429,26 @@ where
 
         builder.cycle_tracker_v2_exit();
     }
+
+    /// Builds the circuit-side shard verifier matching a native
+    /// `zkm_hypercube::verifier::ShardVerifier::from_basefold_parameters` call with the same
+    /// `fri_config`/`log_stacking_height`/`max_log_row_count`/`machine`.
+    pub fn from_basefold_parameters(
+        fri_config: slop_basefold::FriConfig<C::F>,
+        log_stacking_height: u32,
+        max_log_row_count: usize,
+        machine: Machine<C::F, A>,
+    ) -> Self {
+        Self {
+            machine,
+            pcs_verifier: RecursiveJaggedPcsVerifier::from_basefold_parameters(
+                fri_config,
+                log_stacking_height,
+                max_log_row_count,
+            ),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<C: CircuitConfig<F = InnerVal, EF = InnerChallenge>> Witnessable<C>

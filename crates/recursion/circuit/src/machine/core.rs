@@ -27,7 +27,7 @@ use zkm_recursion_compiler::{
 use zkm_recursion_core::air::{RecursionPublicValues, RECURSIVE_PROOF_NUM_PV_ELTS};
 
 use crate::{
-    challenger::{CanObserveVariable, DuplexChallengerVariable},
+    challenger::DuplexChallengerVariable,
     machine::{assert_complete, recursion_public_values_digest},
     shard::{MachineVerifyingKeyVariable, RecursiveShardVerifier, ShardProofVariable},
     zerocheck::RecursiveVerifierConstraintFolder,
@@ -246,10 +246,10 @@ where
             // Observe the vk and start pc.
             vk.observe_into(builder, &mut challenger);
 
-            challenger.observe_slice(
-                builder,
-                shard_proof.public_values[0..machine.machine.num_pv_elts()].iter().copied(),
-            );
+            // Note: `verify_shard` observes the full `public_values` slice itself as the first
+            // step of its transcript (matching `zkm_hypercube::verifier::shard::ShardVerifier::
+            // verify_shard`), so it must not be pre-observed here -- doing so would desync the
+            // in-circuit Fiat-Shamir transcript from the native prover's.
             machine.verify_shard(builder, &vk, &shard_proof, &mut challenger);
 
             // Assert that first shard has a "CPU". Equivalently, assert that if the shard does
@@ -533,5 +533,199 @@ where
 
             builder.commit_public_values_v2(*recursion_public_values);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use p3_field::FieldAlgebra;
+    use p3_koala_bear::KoalaBear;
+
+    use slop_basefold::FriConfig;
+    use slop_challenger::IopCtx;
+    use zkm_core_executor::{Executor, Program};
+    use zkm_core_machine::mips::MipsAir;
+    use zkm_hypercube::{
+        config::ZkmGlobalContext,
+        prover::{AirProver, ProverSemaphore, ZkmShardProver},
+        ShardVerifier,
+    };
+    use zkm_recursion_compiler::{circuit::AsmConfig, ir::Builder};
+    use zkm_stark::{InnerChallenge, InnerVal, ZKMCoreOpts};
+
+    use crate::{
+        shard::RecursiveShardVerifier,
+        utils::tests::run_test_recursion,
+        witness::{WitnessBlock, Witnessable},
+    };
+
+    use super::{ZKMRecursionWitnessValues, ZKMRecursiveVerifier};
+
+    type F = InnerVal;
+    type EF = InnerChallenge;
+    type C = AsmConfig<F, EF>;
+
+    /// The log2 of the number of rows each stacked-PCS column is grouped into. Must match the
+    /// value the real shard proof below was produced with -- mirrors
+    /// `zkm_core_machine::utils::prove::ZKM_LOG_STACKING_HEIGHT` (crate-private), kept in sync by
+    /// convention.
+    const CORE_LOG_STACKING_HEIGHT: u32 = 4;
+
+    /// A FRI config sized for fast correctness testing, not real security: a single query and no
+    /// grinding. `verify_shard`'s basefold FRI-query verification does one round of Poseidon2
+    /// Merkle-path hashing per query per commit-phase round, which is what dominates the
+    /// in-circuit row count -- at the real `default_fri_config()` (94 queries, 16 grinding bits)
+    /// that pushes the verifier circuit well past the recursion machine's default shard size.
+    /// This must be used consistently for both producing the real MIPS shard proof below and
+    /// constructing the circuit-side verifier that checks it.
+    fn test_fri_config() -> FriConfig<KoalaBear> {
+        FriConfig::new(1, 1, 0)
+    }
+
+    /// Verifies a real, honestly-produced MIPS shard proof through the in-circuit
+    /// `RecursiveShardVerifier`/`ZKMRecursiveVerifier` gadgets (the phase 3.2/3.3
+    /// zerocheck/LogUp-GKR/jagged/basefold verifier chain), proving the resulting constraint
+    /// graph is well-formed and correctly handled end to end by the DSL/IR compiler.
+    ///
+    /// Currently `#[ignore]`d: `FIBONACCI_ELF` executes a `HALT` syscall, which triggers a
+    /// currently-unresolved native (not circuit-specific) `GkrVerificationFailed
+    /// (CumulativeSumMismatch(..))` bug that reproduces on any program using a real `SYSCALL`
+    /// instruction -- see the detailed writeup on `run_test_halt_only_smoke` in
+    /// `crates/core/machine/src/utils/prove.rs`. That bug must be fixed first; this test is a
+    /// second, independent reproduction (via `Witnessable`/circuit verification rather than
+    /// `ShardVerifier::verify_shard` directly) worth re-enabling once it is.
+    #[test]
+    #[ignore = "blocked on a native (non-circuit) CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
+    fn test_verify_real_core_shard_proof() {
+        let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
+        let opts = ZKMCoreOpts::default();
+
+        let mut runtime = Executor::new(program.clone(), opts);
+        runtime.run().unwrap();
+        // `runtime.record` is the raw, still-accumulating working record: `Executor::execute`
+        // only back-fills the real `PublicValues` (shard index, start/next pc, etc.) into
+        // `runtime.records` (plural) when it flushes a shard via `bump_record`. For a small
+        // single-shard program like this one, that's exactly one record.
+        assert_eq!(runtime.records.len(), 1, "expected fibonacci to execute as exactly one shard");
+        let mut record = runtime.records.remove(0);
+        // Work around a currently-unrelated gap in `zkm_core_executor::Executor`: unlike
+        // `public_values.execution_shard` (correctly back-filled from `state.current_shard`,
+        // 1-indexed), `public_values.shard` itself is never assigned anywhere in the executor and
+        // stays at its `Default` value of `0`. `ZKMRecursiveVerifier::verify` (this crate)
+        // expects 1-indexed shards, matching `execution_shard`'s convention, so patch it here.
+        // This field isn't read or constrained anywhere in trace generation, so setting it after
+        // execution is safe.
+        record.public_values.shard = 1;
+        // `Executor::execute` never back-fills `initial_timestamp`/`last_timestamp` either
+        // (unlike `start_pc`/`next_pc`, which it does set from the same events) -- mirrors the
+        // `state.initial_timestamp`/`state.last_timestamp` computation in
+        // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. These anchor the
+        // CPU chip's `LookupKind::State` chain boundary in `eval_public_values`.
+        let first_cpu_event = record.cpu_events.first().unwrap();
+        let last_cpu_event = record.cpu_events.last().unwrap();
+        record.public_values.initial_timestamp = first_cpu_event.clk;
+        record.public_values.last_timestamp =
+            last_cpu_event.clk + 5 + last_cpu_event.num_extra_cycles;
+        // `Executor::run`/`execute` never calls chip-level `generate_dependencies`, so
+        // cross-chip-derived public values that depend on the actual event contents --
+        // `GlobalChip`'s `global_count`/`global_cumulative_sum_{x,y}` and
+        // `MemoryGlobalChip`'s `global_init_count`/`global_finalize_count` -- are left at their
+        // `Default` (zero) values. The real proving pipeline
+        // (`zkm_core_machine::utils::prove::prove_with_context`) always runs this step before
+        // proving; without it, the LogUp GKR public-values boundary check (which is anchored to
+        // these fields) disagrees with the real interactions recorded in the trace.
+        MipsAir::<KoalaBear>::hypercube_machine()
+            .generate_dependencies(std::iter::once(&mut record), None)
+            .unwrap();
+        // Likewise, `previous_init_addr_bits`/`last_init_addr_bits` (and the `finalize`
+        // counterparts) are normally back-filled by the deferred-event splitting machinery in
+        // `ExecutionRecord::defer`/`split`, which the real proving pipeline always runs before
+        // proving but which this simplified single-shard test never invokes. Since this is the
+        // only (and therefore also the first and last) shard, there is no earlier/later memory
+        // chain to continue from or into, so `previous_*_addr_bits` correctly stay all-zero;
+        // only `last_*_addr_bits` (the address of the sorted chain's final event) need
+        // computing here, mirroring `ExecutionRecord::defer`'s per-chunk bit computation.
+        if let Some(last) = record.global_memory_initialize_events.iter().max_by_key(|e| e.addr) {
+            record.public_values.last_init_addr_bits =
+                core::array::from_fn(|i| (last.addr >> i) & 1);
+        }
+        if let Some(last) = record.global_memory_finalize_events.iter().max_by_key(|e| e.addr) {
+            record.public_values.last_finalize_addr_bits =
+                core::array::from_fn(|i| (last.addr >> i) & 1);
+        }
+
+        eprintln!(
+            "DEBUG counts: cpu={} init={} finalize={} global_lookup={} precompile_kinds={}",
+            record.cpu_events.len(),
+            record.global_memory_initialize_events.len(),
+            record.global_memory_finalize_events.len(),
+            record.global_lookup_events.len(),
+            record.precompile_events.len(),
+        );
+        eprintln!("DEBUG public_values = {:#?}", record.public_values);
+
+        let fri_config = test_fri_config();
+        let max_log_row_count = opts.shard_size.ilog2() as usize;
+        let native_machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let shard_prover = ZkmShardProver::<MipsAir<KoalaBear>>::new(
+            ShardVerifier::from_basefold_parameters(
+                fri_config,
+                CORE_LOG_STACKING_HEIGHT,
+                max_log_row_count,
+                native_machine,
+            ),
+        );
+
+        let setup_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (vk, proof, _permit) = setup_rt.block_on(shard_prover.setup_and_prove_shard(
+            Arc::new(program),
+            record,
+            None,
+            ProverSemaphore::new(1),
+        ));
+
+        // Sanity-check the proof natively before feeding it into the in-circuit verifier: this
+        // isolates whether a failure belongs to the circuit gadgets or to the record/proof
+        // itself, since `eval_public_values` (the LogUp GKR public-values boundary check) is the
+        // same generic code used by both the native and circuit-side constraint folders.
+        let native_shard_verifier = ShardVerifier::from_basefold_parameters(
+            fri_config,
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            MipsAir::<KoalaBear>::hypercube_machine(),
+        );
+        let mut native_challenger = ZkmGlobalContext::default_challenger();
+        vk.observe_into(&mut native_challenger);
+        native_shard_verifier
+            .verify_shard(&vk, &proof, &mut native_challenger)
+            .expect("native shard verification should succeed for an honestly-produced proof");
+
+        let witness_values = ZKMRecursionWitnessValues {
+            vk,
+            shard_proofs: vec![proof],
+            is_complete: false,
+            is_first_shard: true,
+            vk_root: [KoalaBear::ZERO; 8],
+        };
+
+        let mut witness_stream = Vec::<WitnessBlock<C>>::new();
+        Witnessable::<C>::write(&witness_values, &mut witness_stream);
+
+        let mut builder = Builder::<C>::default();
+        let input = Witnessable::<C>::read(&witness_values, &mut builder);
+
+        let machine = RecursiveShardVerifier::from_basefold_parameters(
+            fri_config,
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            MipsAir::<KoalaBear>::hypercube_machine(),
+        );
+
+        ZKMRecursiveVerifier::<C>::verify(&mut builder, &machine, input);
+
+        run_test_recursion(builder.into_operations(), witness_stream);
     }
 }

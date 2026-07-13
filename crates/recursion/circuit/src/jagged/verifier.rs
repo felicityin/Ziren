@@ -185,6 +185,35 @@ where
     }
 }
 
+impl<C: CircuitConfig<F = p3_koala_bear::KoalaBear>, HV: FieldHasherVariable<C>, Challenger>
+    RecursiveJaggedPcsVerifier<C, HV, Challenger>
+where
+    Challenger: FieldChallengerVariable<C, C::Bit> + CanObserveVariable<C, HV::DigestVariable>,
+{
+    /// Builds the circuit-side verifier config matching a native
+    /// `zkm_hypercube::verifier::ShardVerifier::from_basefold_parameters` call with the same
+    /// `fri_config`/`log_stacking_height`/`max_log_row_count`.
+    pub fn from_basefold_parameters(
+        fri_config: slop_basefold::FriConfig<C::F>,
+        log_stacking_height: u32,
+        max_log_row_count: usize,
+    ) -> Self {
+        let basefold_verifier = RecursiveBasefoldVerifier {
+            fri_config,
+            tcs: crate::basefold::tcs::RecursiveMerkleTreeTcs(std::marker::PhantomData),
+            _marker: std::marker::PhantomData,
+        };
+        Self {
+            stacked_pcs_verifier: RecursiveStackedPcsVerifier::new(
+                basefold_verifier,
+                log_stacking_height,
+            ),
+            max_log_row_count,
+            jagged_evaluator: RecursiveJaggedEvalSumcheckConfig(std::marker::PhantomData),
+        }
+    }
+}
+
 pub struct RecursiveMachineJaggedPcsVerifier<
     'a,
     C: CircuitConfig,
