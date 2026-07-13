@@ -176,10 +176,13 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
             cols.index = F::from_canonical_u32(i as u32);
             cols.prev_addr_bits = prev_addr_bits.map(F::from_canonical_u32);
             cols.prev_valid = F::from_bool(!(prev_addr == 0 && i != 0));
-            cols.is_prev_addr_zero.populate(prev_addr);
-            cols.is_index_zero.populate(i as u32);
+            let is_prev_addr_zero = cols.is_prev_addr_zero.populate(prev_addr);
+            let is_index_zero = cols.is_index_zero.populate(i as u32);
+            cols.is_addr_zero.populate(addr);
+            cols.is_prev_addr_and_index_zero =
+                F::from_bool(is_prev_addr_zero == 1 && is_index_zero == 1);
 
-            let is_comp = prev_addr != 0 || i != 0;
+            let is_comp = prev_addr != 0 || i != 0 || addr != 0;
             cols.is_comp = F::from_bool(is_comp);
             if is_comp {
                 debug_assert!(prev_addr < addr, "prev_addr {prev_addr} < addr {addr}");
@@ -260,8 +263,17 @@ pub struct MemoryInitCols<T: Copy> {
     /// A witness to assert whether or not `index` is zero.
     pub is_index_zero: IsZeroOperation<T>,
 
-    /// Whether or not we are making the assertion `prev_addr < addr`. False only when both
-    /// `prev_addr == 0` and `index == 0`, i.e. this is the sole initialization of address 0.
+    /// A witness to assert whether or not `addr` is zero.
+    pub is_addr_zero: IsZeroOperation<T>,
+
+    /// `is_prev_addr_zero.result * is_index_zero.result`, witnessed as its own column so that
+    /// `is_comp`'s three-way AND stays within `MAX_CONSTRAINT_DEGREE` (multiplying all three
+    /// `IsZeroOperation` results together directly would be degree 4).
+    pub is_prev_addr_and_index_zero: T,
+
+    /// Whether or not we are making the assertion `prev_addr < addr`. False only when
+    /// `prev_addr == 0`, `index == 0`, and `addr == 0`, i.e. this is the sole initialization of
+    /// address 0.
     pub is_comp: T,
 }
 
@@ -431,14 +443,33 @@ where
             local.is_index_zero,
             local.is_real.into(),
         );
+        IsZeroOperation::<AB::F>::eval(
+            builder,
+            local.addr.into(),
+            local.is_addr_zero,
+            local.is_real.into(),
+        );
 
-        // `is_comp` is false only when both `prev_addr == 0` and `index == 0`, i.e. this is the
-        // sole initialization of address 0 -- the one case with no valid comparison to make.
+        // Witnessed separately (rather than inlined into the `is_comp` formula below) so that
+        // `is_comp`'s three-way AND doesn't exceed `MAX_CONSTRAINT_DEGREE`.
+        builder.assert_eq(
+            local.is_prev_addr_and_index_zero,
+            local.is_prev_addr_zero.result.into() * local.is_index_zero.result.into(),
+        );
+
+        // `is_comp` is false only when `prev_addr == 0`, `index == 0`, and `addr == 0`, i.e. this
+        // is the sole initialization of address 0 -- the one case with no valid comparison to
+        // make. (Requiring `addr == 0` too, not just `prev_addr == 0 && index == 0`, matters
+        // whenever a shard's memory-init/finalize chain starts fresh -- `prev_addr` is then the
+        // public-values sentinel `0` regardless of what the chain's first real address is -- so
+        // omitting it would incorrectly mark every such first row as the degenerate case even
+        // when its own `addr` is nonzero, desyncing this row's `is_comp` from the next row's
+        // `prev_valid` in the `LookupKind::MemoryGlobalInitControl`/`FinalizeControl` chain.)
         builder.assert_eq(
             local.is_comp,
             local.is_real.into()
                 * (AB::Expr::one()
-                    - local.is_prev_addr_zero.result.into() * local.is_index_zero.result.into()),
+                    - local.is_prev_addr_and_index_zero.into() * local.is_addr_zero.result.into()),
         );
         builder.assert_bool(local.is_comp);
 

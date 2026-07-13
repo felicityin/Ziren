@@ -650,12 +650,65 @@ use p3_uni_stark::Proof;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::programs::tests::simple_program;
+    use crate::programs::tests::{
+        halt_only_program, hello_world_program, simple_memory_program, simple_program,
+    };
 
     #[test]
     fn run_test_core_smoke() {
         let program = simple_program();
         let runtime = Executor::new(program, ZKMCoreOpts::default());
         run_test_core(runtime, ZKMStdin::new()).unwrap();
+    }
+
+    #[test]
+    fn run_test_simple_memory_smoke() {
+        let program = simple_memory_program();
+        let runtime = Executor::new(program, ZKMCoreOpts::default());
+        run_test_core(runtime, ZKMStdin::new()).unwrap();
+    }
+
+    // The three tests below are `#[ignore]`d: they reproduce a currently-unresolved
+    // `GkrVerificationFailed(CumulativeSumMismatch(..))` that occurs specifically once a program
+    // executes a real `SYSCALL` instruction (any syscall, e.g. `HALT`), even the minimal
+    // 3-instruction case below. `run_test_core_smoke`/`run_test_simple_memory_smoke` above (ALU
+    // and memory instructions only, no syscalls) pass, and confirm the `is_comp` fix in
+    // `crates/core/machine/src/memory/global.rs` (a genuine bug: its formula was missing an
+    // `addr == 0` term, so it incorrectly treated any fresh memory-init/finalize chain's first
+    // row as address 0's degenerate one-time case) is real and necessary but not sufficient.
+    //
+    // Investigation so far has ruled out: the CPU `LookupKind::State` chain (covered by the
+    // passing tests above), `MemoryGlobalChip`'s `is_comp`/`prev_valid` formulas (fixed and
+    // re-verified against `run_test_simple_memory_smoke`), and `GlobalChip`'s own digest
+    // computation (`generate_dependencies` and `generate_trace` were directly compared and found
+    // to compute bit-for-bit identical accumulated digests, including on the minimal
+    // `halt_only_program` case below, where all 16 `global_lookup_events` were dumped and
+    // manually verified to pair up exactly by message with opposite `is_receive` and net to
+    // `SepticDigest::zero()`). The bug is confined to something specific to `SYSCALL` handling
+    // not yet identified -- candidates not yet fully ruled out include `SyscallInstrsChip`'s
+    // `is_sys_linux`/`send_to_table` gating (`crates/core/machine/src/syscall/instructions/air.rs`)
+    // and its correspondence with `SyscallChip`'s own row-inclusion filter
+    // (`crates/core/machine/src/syscall/chip.rs`'s `(prev_value byte[2]==1) || (prev_value
+    // byte[1]!=0)` predicate, applied inconsistently between `num_rows` and `generate_trace`).
+    #[test]
+    #[ignore = "known-broken: CumulativeSumMismatch on any program using a real SYSCALL instruction, see comment above"]
+    fn run_test_halt_only_smoke() {
+        let program = halt_only_program();
+        let runtime = Executor::new(program, ZKMCoreOpts::default());
+        run_test_core(runtime, ZKMStdin::new()).unwrap();
+    }
+
+    #[test]
+    #[ignore = "known-broken: CumulativeSumMismatch on any program using a real SYSCALL instruction, see comment on run_test_halt_only_smoke"]
+    fn run_test_hello_world_real_elf() {
+        let program = hello_world_program();
+        run_test(program).unwrap();
+    }
+
+    #[test]
+    #[ignore = "known-broken: CumulativeSumMismatch on any program using a real SYSCALL instruction, see comment on run_test_halt_only_smoke"]
+    fn run_test_fibonacci_real_elf() {
+        let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
+        run_test(program).unwrap();
     }
 }

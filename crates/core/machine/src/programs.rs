@@ -21,6 +21,19 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A synthetic (non-ELF) program that reaches an explicit `HALT` syscall (id 0, exit code 0),
+    /// isolating whether syscall handling itself (vs. real-ELF loading/bootstrap complexity)
+    /// triggers a given bug.
+    #[must_use]
+    pub fn halt_only_program() -> Program {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 2, 0, 0, false, true), // v0 = 0 (HALT syscall id)
+            Instruction::new(Opcode::ADD, 4, 0, 0, false, true), // a0 = 0 (exit code)
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+        ];
+        Program::new(instructions, 0, 0)
+    }
+
     /// Get the fibonacci program.
     ///
     /// # Panics
