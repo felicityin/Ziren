@@ -22,6 +22,7 @@ slop-algebra = { workspace = true }
 slop-commit = { workspace = true }
 
 itertools = { workspace = true }
+rayon = { workspace = true }
 thiserror = { workspace = true }
 derive-where = { workspace = true }
 serde = { workspace = true }
