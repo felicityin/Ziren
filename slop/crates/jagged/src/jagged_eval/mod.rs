@@ -41,20 +41,17 @@ mod tests {
     use rand::{thread_rng, Rng};
     use slop_algebra::{extension::BinomialExtensionField, FieldAlgebra};
     use slop_alloc::CpuBackend;
-    use slop_baby_bear::{
-        baby_bear_poseidon2::{my_bb_16_perm, Perm},
-        BabyBear,
-    };
     use slop_challenger::DuplexChallenger;
+    use slop_koala_bear::{my_kb_16_perm, KoalaBear, KoalaPerm};
     use slop_multilinear::Mle;
     use slop_sumcheck::partially_verify_sumcheck_proof;
     use slop_utils::log2_ceil_usize;
 
     use super::*;
 
-    type F = BabyBear;
+    type F = KoalaBear;
     type EF = BinomialExtensionField<F, 4>;
-    type Challenger = DuplexChallenger<BabyBear, Perm, 16, 8>;
+    type Challenger = DuplexChallenger<KoalaBear, KoalaPerm, 16, 8>;
 
     #[test]
     fn test_jagged_eval_sumcheck() {
@@ -120,7 +117,7 @@ mod tests {
             CpuBackend,
         );
 
-        let default_perm = my_bb_16_perm();
+        let default_perm = my_kb_16_perm();
         let mut challenger = Challenger::new(default_perm.clone());
 
         let mut sum_values = Buffer::from(vec![EF::zero(); 6 * (log_m + 1)]);
@@ -135,7 +132,7 @@ mod tests {
 
         assert!(sc_proof.claimed_sum == expected_sum);
 
-        let mut challenger = DuplexChallenger::<BabyBear, Perm, 16, 8>::new(default_perm);
+        let mut challenger = DuplexChallenger::<KoalaBear, KoalaPerm, 16, 8>::new(default_perm);
         partially_verify_sumcheck_proof(&sc_proof, &mut challenger, 2 * (log_m + 1), 2).unwrap();
 
         let out_of_domain_point = sc_proof.point_and_eval.0;

@@ -17,7 +17,6 @@ slop-commit = { workspace = true }
 slop-challenger = { workspace = true }
 slop-symmetric = { workspace = true }
 slop-poseidon2 = { workspace = true }
-slop-baby-bear = { workspace = true }
 slop-algebra = { workspace = true }
 slop-tensor = { workspace = true }
 slop-alloc = { workspace = true }

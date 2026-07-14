@@ -28,15 +28,15 @@ impl<F: Field> MultiToUni<F> {
 mod tests {
     use super::*;
     use slop_algebra::FieldAlgebra;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
     use slop_multilinear::Point;
 
     #[test]
     fn test_multi_to_uni() {
         let num_bits = 6;
-        let multi_to_uni = MultiToUni::<BabyBear>::new(num_bits);
+        let multi_to_uni = MultiToUni::<KoalaBear>::new(num_bits);
         for i in 0..(1 << num_bits) {
-            let x = BabyBear::from_canonical_usize(i);
+            let x = KoalaBear::from_canonical_usize(i);
             let expected = Point::from_usize(i, num_bits);
             let actual = multi_to_uni.evaluate(x);
             assert_eq!(expected, actual);

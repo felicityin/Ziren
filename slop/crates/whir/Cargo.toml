@@ -19,7 +19,6 @@ slop-commit = { workspace = true }
 slop-matrix = { workspace = true }
 slop-tensor = { workspace = true }
 slop-alloc = { workspace = true }
-slop-baby-bear = { workspace = true }
 slop-dft = { workspace = true }
 slop-koala-bear = { workspace = true }
 slop-stacked = { workspace = true }
@@ -35,7 +34,6 @@ futures = { workspace = true }
 itertools = { workspace = true }
 
 [dev-dependencies]
-slop-baby-bear = { workspace = true }
 slop-basefold = { workspace = true }
 bincode = { workspace = true }
 tracing = { workspace = true }

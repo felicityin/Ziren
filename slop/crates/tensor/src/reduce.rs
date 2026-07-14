@@ -48,7 +48,7 @@ impl<T: Field> Tensor<T, CpuBackend> {
 #[cfg(test)]
 mod tests {
     use slop_algebra::FieldAlgebra;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
 
     use super::*;
 
@@ -58,10 +58,10 @@ mod tests {
 
         let sizes = [3, 4];
 
-        let a = Tensor::<BabyBear>::rand(&mut rng, sizes);
+        let a = Tensor::<KoalaBear>::rand(&mut rng, sizes);
         let b = a.sum(0);
         for j in 0..sizes[1] {
-            let mut sum = BabyBear::zero();
+            let mut sum = KoalaBear::zero();
             for i in 0..sizes[0] {
                 sum += *a[[i, j]];
             }
@@ -70,11 +70,11 @@ mod tests {
 
         let sizes = [3, 4, 5];
 
-        let a = Tensor::<BabyBear>::rand(&mut rng, sizes);
+        let a = Tensor::<KoalaBear>::rand(&mut rng, sizes);
         let b = a.sum(0);
         for j in 0..sizes[1] {
             for k in 0..sizes[2] {
-                let mut sum = BabyBear::zero();
+                let mut sum = KoalaBear::zero();
                 for i in 0..sizes[0] {
                     sum += *a[[i, j, k]];
                 }

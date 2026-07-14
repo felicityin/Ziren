@@ -69,7 +69,6 @@ p3-poseidon2 = { git = "https://github.com/ProjectZKM/Plonky3" }
 p3-symmetric = { git = "https://github.com/ProjectZKM/Plonky3" }
 p3-bn254-fr = { git = "https://github.com/ProjectZKM/Plonky3" }
 p3-uni-stark = { git = "https://github.com/ProjectZKM/Plonky3" }
-p3-baby-bear = { git = "https://github.com/ProjectZKM/Plonky3" }
 
 # p3-air = { path = "../patch/Plonky3/air" }
 # p3-field = { path = "../patch/Plonky3/field" }
@@ -97,7 +96,6 @@ p3-baby-bear = { git = "https://github.com/ProjectZKM/Plonky3" }
 slop-air = { path = "./slop/crates/air" }
 slop-algebra = { path = "./slop/crates/algebra" }
 slop-alloc = { path = "./slop/crates/alloc" }
-slop-baby-bear = { path = "./slop/crates/baby-bear" }
 slop-basefold = { path = "./slop/crates/basefold" }
 slop-basefold-prover = { path = "./slop/crates/basefold-prover" }
 slop-bn254 = { path = "./slop/crates/bn254" }

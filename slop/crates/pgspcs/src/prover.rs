@@ -106,10 +106,10 @@ where
 mod tests {
     use rand::{thread_rng, Rng};
     use slop_algebra::extension::BinomialExtensionField;
-    use slop_baby_bear::{baby_bear_poseidon2::BabyBearDegree4Duplex, BabyBear};
     use slop_basefold::{BasefoldVerifier, FriConfig};
     use slop_basefold_prover::BasefoldProver;
-    use slop_merkle_tree::Poseidon2BabyBear16Prover;
+    use slop_koala_bear::{KoalaBear, KoalaBearDegree4Duplex};
+    use slop_merkle_tree::Poseidon2KoalaBear16Prover;
 
     use crate::verifier::SparsePCSVerifier;
 
@@ -117,11 +117,11 @@ mod tests {
 
     #[test]
     fn test_sparse_polynomial_prover() {
-        type GC = BabyBearDegree4Duplex;
-        type BackendProver = BasefoldProver<GC, Poseidon2BabyBear16Prover>;
+        type GC = KoalaBearDegree4Duplex;
+        type BackendProver = BasefoldProver<GC, Poseidon2KoalaBear16Prover>;
         type BackendVerifier = BasefoldVerifier<GC>;
-        type F = BabyBear;
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type F = KoalaBear;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let mut rng = thread_rng();
 

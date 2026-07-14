@@ -227,48 +227,14 @@ where
 mod tests {
     use itertools::Itertools;
     use rand::{thread_rng, Rng};
-    use slop_baby_bear::{baby_bear_poseidon2::BabyBearDegree4Duplex, BabyBear};
     use slop_commit::Message;
     use slop_koala_bear::{KoalaBear, KoalaBearDegree4Duplex};
     use slop_tensor::Tensor;
 
     use crate::MerkleTreeTcs;
 
-    use super::super::{Poseidon2BabyBear16Prover, Poseidon2KoalaBear16Prover};
+    use super::super::Poseidon2KoalaBear16Prover;
     use super::*;
-
-    #[test]
-    fn test_merkle_proof_sync() {
-        let mut rng = thread_rng();
-
-        let height: usize = 1 << 10;
-        let width = 25;
-        let num_tensors = 10;
-
-        let num_indices = 5;
-
-        let tensors = (0..num_tensors)
-            .map(|_| Tensor::<BabyBear>::rand(&mut rng, [height, width]))
-            .collect::<Message<_>>();
-
-        let prover = Poseidon2BabyBear16Prover::default();
-        let (commitment, data) = prover.commit_tensors(tensors.clone()).unwrap();
-
-        let indices = (0..num_indices).map(|_| rng.gen_range(0..height)).collect_vec();
-        let proof = prover.prove_openings_at_indices(data, &indices).unwrap();
-        let openings = prover.compute_openings_at_indices(tensors, &indices);
-
-        let tcs = MerkleTreeTcs::<BabyBearDegree4Duplex>::default();
-        tcs.verify_tensor_openings(
-            &commitment,
-            &indices,
-            &openings,
-            width * num_tensors,
-            slop_utils::log2_strict_usize(height),
-            &proof,
-        )
-        .unwrap();
-    }
 
     #[test]
     fn test_kb_merkle_proof_sync() {

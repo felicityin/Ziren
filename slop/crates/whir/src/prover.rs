@@ -818,15 +818,12 @@ mod tests {
 
     use rand::{distributions::Standard, prelude::Distribution, thread_rng, Rng, SeedableRng};
     use slop_algebra::{extension::BinomialExtensionField, TwoAdicField, UnivariatePolynomial};
-    use slop_baby_bear::BabyBear;
     use slop_commit::Rounds;
     use slop_dft::p3::Radix2DitParallel;
     use slop_jagged::{JaggedEvalSumcheckProver, JaggedPcsVerifier, JaggedProver};
     use slop_koala_bear::{KoalaBear, KoalaBearDegree4Duplex};
     use slop_matrix::{bitrev::BitReversableMatrix, dense::RowMajorMatrix, Matrix};
-    use slop_merkle_tree::{
-        FieldMerkleTreeProver, MerkleTreeTcs, Poseidon2BabyBear16Prover, Poseidon2KoalaBear16Prover,
-    };
+    use slop_merkle_tree::{FieldMerkleTreeProver, MerkleTreeTcs, Poseidon2KoalaBear16Prover};
     use slop_multilinear::{Evaluations, MultilinearPcsVerifier, PaddedMle};
     use slop_utils::setup_logger;
 
@@ -1055,7 +1052,7 @@ mod tests {
         let height = 1 << 5;
         let widths = [1, 2, 3, 4, 5];
         let total_width: usize = widths.iter().sum();
-        let tensors: Vec<Tensor<BabyBear>> =
+        let tensors: Vec<Tensor<KoalaBear>> =
             widths.iter().map(|w| Tensor::rand(rng, [height, *w])).collect();
 
         let interleaved = interleave_chain(tensors.iter().cloned());
@@ -1305,24 +1302,9 @@ mod tests {
     }
 
     #[test]
-    fn whir_test_e2e_baby_bear() {
+    fn jagged_whir_test_koala_bear() {
         let config = WhirProofShape::default_whir_config();
-        let merkle_prover: Poseidon2BabyBear16Prover = FieldMerkleTreeProver::default();
-        whir_test_single_round::<_, _>(config, 16, merkle_prover);
-    }
-
-    #[test]
-    #[ignore = "test used for benchmarking"]
-    fn whir_test_realistic_baby_bear() {
-        let config = WhirProofShape::big_beautiful_whir_config();
-        let merkle_prover: Poseidon2BabyBear16Prover = FieldMerkleTreeProver::default();
-        whir_test_single_round::<_, _>(config, 28, merkle_prover);
-    }
-
-    #[test]
-    fn jagged_whir_test_baby_bear() {
-        let config = WhirProofShape::default_whir_config();
-        let merkle_prover: Poseidon2BabyBear16Prover = FieldMerkleTreeProver::default();
+        let merkle_prover: Poseidon2KoalaBear16Prover = FieldMerkleTreeProver::default();
 
         test_jagged_whir_generic::<_, _>(config, merkle_prover);
     }

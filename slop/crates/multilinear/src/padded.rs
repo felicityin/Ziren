@@ -314,7 +314,7 @@ impl<T, A: Backend> HasBackend for PaddedMle<T, A> {
 #[cfg(test)]
 mod tests {
     use rand::Rng;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
 
     use crate::Mle;
 
@@ -324,21 +324,21 @@ mod tests {
     fn test_padded_eval_at() {
         let padded_guts = vec![1, 2, 3, 1, 1, 1, 1, 1]
             .into_iter()
-            .map(BabyBear::from_canonical_usize)
+            .map(KoalaBear::from_canonical_usize)
             .collect::<Vec<_>>();
 
-        let point = (0..3).map(|_| rand::thread_rng().gen::<BabyBear>()).collect::<Point<_>>();
+        let point = (0..3).map(|_| rand::thread_rng().gen::<KoalaBear>()).collect::<Point<_>>();
         for i in 3..8 {
             let virtually_padded_mle = PaddedMle::padded(
                 Arc::new(padded_guts[..i].to_vec().into()),
                 3,
-                Padding::Constant((BabyBear::one(), 1, CpuBackend)),
+                Padding::Constant((KoalaBear::one(), 1, CpuBackend)),
             );
 
             let other_virtually_padded_mle = PaddedMle::padded(
                 Arc::new(padded_guts[..i].to_vec().into()),
                 3,
-                Padding::Generic(Arc::new(vec![BabyBear::one()].into())),
+                Padding::Generic(Arc::new(vec![KoalaBear::one()].into())),
             );
             assert_eq!(
                 Into::<Mle<_>>::into(padded_guts.clone()).eval_at(&point).to_vec()[0],
@@ -354,12 +354,12 @@ mod tests {
     #[test]
     fn test_pure_padded_mle() {
         let mut rng = rand::thread_rng();
-        let padded_values = (0..1000).map(|_| rng.gen::<BabyBear>()).collect::<Vec<_>>();
-        let padded_values = Arc::new(MleEval::<BabyBear, CpuBackend>::from(padded_values));
+        let padded_values = (0..1000).map(|_| rng.gen::<KoalaBear>()).collect::<Vec<_>>();
+        let padded_values = Arc::new(MleEval::<KoalaBear, CpuBackend>::from(padded_values));
         let num_variables = 16;
         let padded_mle = PaddedMle::dummy(num_variables, Padding::Generic(padded_values.clone()));
         let point =
-            (0..num_variables).map(|_| rand::thread_rng().gen::<BabyBear>()).collect::<Point<_>>();
+            (0..num_variables).map(|_| rand::thread_rng().gen::<KoalaBear>()).collect::<Point<_>>();
         let evals = padded_mle.eval_at(&point);
         assert_eq!(evals.to_vec(), padded_values.to_vec());
     }
@@ -368,30 +368,30 @@ mod tests {
     fn test_padded_fix_last_variable() {
         let padded_guts = vec![1, 2, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
             .into_iter()
-            .map(BabyBear::from_canonical_usize)
+            .map(KoalaBear::from_canonical_usize)
             .collect::<Vec<_>>();
 
         for i in 3..16 {
             let virtually_padded_mle = PaddedMle::padded(
                 Arc::new(padded_guts[..i].to_vec().into()),
                 4,
-                Padding::Constant((BabyBear::one(), 1, CpuBackend)),
+                Padding::Constant((KoalaBear::one(), 1, CpuBackend)),
             );
             let other_virtually_padded_mle = PaddedMle::padded(
                 Arc::new(padded_guts[..i].to_vec().into()),
                 4,
-                Padding::Generic(Arc::new(vec![BabyBear::one()].into())),
+                Padding::Generic(Arc::new(vec![KoalaBear::one()].into())),
             );
             let mut virtual_cursor = virtually_padded_mle.clone();
             let mut other_virtual_cursor = other_virtually_padded_mle.clone();
             let mut cursor: Mle<_> = padded_guts.clone().into();
 
             for j in 0..4 {
-                let alpha = rand::thread_rng().gen::<BabyBear>();
+                let alpha = rand::thread_rng().gen::<KoalaBear>();
                 virtual_cursor = virtual_cursor.fix_last_variable(alpha);
                 other_virtual_cursor = other_virtual_cursor.fix_last_variable(alpha);
                 cursor = cursor.fix_last_variable(alpha);
-                let beta = (0..(3 - j)).map(|_| rand::thread_rng().gen::<BabyBear>()).collect();
+                let beta = (0..(3 - j)).map(|_| rand::thread_rng().gen::<KoalaBear>()).collect();
                 assert_eq!(
                     virtual_cursor.eval_at(&beta).to_vec()[0],
                     cursor.eval_at(&beta).to_vec()[0]

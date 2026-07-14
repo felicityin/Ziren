@@ -479,11 +479,11 @@ pub mod tests {
 
     use rand::Rng;
     use slop_algebra::FieldAlgebra;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
     use slop_multilinear::Point;
     use slop_utils::log2_ceil_usize;
 
-    type F = BabyBear;
+    type F = KoalaBear;
 
     use crate::StateOrFail;
 

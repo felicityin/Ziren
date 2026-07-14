@@ -156,7 +156,7 @@ impl<F> LongMle<F> {
 #[cfg(test)]
 mod tests {
     use slop_algebra::extension::BinomialExtensionField;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
 
     use super::*;
 
@@ -166,7 +166,7 @@ mod tests {
         let log_stacking_height = 8;
         let batch_size = 4;
 
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let mut rng = rand::thread_rng();
         let mle = LongMle::<EF>::rand(&mut rng, num_variables, batch_size, log_stacking_height);
@@ -189,7 +189,7 @@ mod tests {
         let log_stacking_height = 8;
         let batch_size = 4;
 
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let mut rng = rand::thread_rng();
         let mle = LongMle::<EF>::rand(&mut rng, num_variables, batch_size, log_stacking_height);

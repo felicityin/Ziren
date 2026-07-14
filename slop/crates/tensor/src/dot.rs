@@ -72,18 +72,18 @@ where
 #[cfg(test)]
 mod tests {
     use slop_algebra::FieldAlgebra;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
 
     use super::*;
 
     #[test]
     fn test_dot_along_dim_0() {
         let mut rng = rand::thread_rng();
-        let tensor = Tensor::<BabyBear, CpuBackend>::rand(&mut rng, [1500, 10]);
-        let scalars = Tensor::<BabyBear, CpuBackend>::rand(&mut rng, [1500]);
+        let tensor = Tensor::<KoalaBear, CpuBackend>::rand(&mut rng, [1500, 10]);
+        let scalars = Tensor::<KoalaBear, CpuBackend>::rand(&mut rng, [1500]);
         let dot = dot_along_dim(&tensor, &scalars, 0);
         for j in 0..10 {
-            let mut dot_product = BabyBear::zero();
+            let mut dot_product = KoalaBear::zero();
             for i in 0..1500 {
                 dot_product += *scalars[[i]] * *tensor[[i, j]];
             }
@@ -94,12 +94,12 @@ mod tests {
     #[test]
     fn test_dot_along_dim_last() {
         let mut rng = rand::thread_rng();
-        let tensor = Tensor::<BabyBear, CpuBackend>::rand(&mut rng, [10, 1500, 10]);
-        let scalars = Tensor::<BabyBear, CpuBackend>::rand(&mut rng, [10]);
+        let tensor = Tensor::<KoalaBear, CpuBackend>::rand(&mut rng, [10, 1500, 10]);
+        let scalars = Tensor::<KoalaBear, CpuBackend>::rand(&mut rng, [10]);
         let dot = dot_along_dim(&tensor, &scalars, 2);
         for k in 0..10 {
             for i in 0..1500 {
-                let mut dot_product = BabyBear::zero();
+                let mut dot_product = KoalaBear::zero();
                 for j in 0..10 {
                     dot_product += *scalars[[j]] * *tensor[[k, i, j]];
                 }

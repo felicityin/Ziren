@@ -78,13 +78,13 @@ impl<F: Field> SparsePolynomial<F> {
 mod tests {
     use rand::Rng;
     use slop_algebra::extension::BinomialExtensionField;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
     use slop_multilinear::Point;
 
     use super::SparsePolynomial;
 
-    type F = BabyBear;
-    type EF = BinomialExtensionField<BabyBear, 4>;
+    type F = KoalaBear;
+    type EF = BinomialExtensionField<KoalaBear, 4>;
 
     #[test]
     fn test_consistency_with_mle() {

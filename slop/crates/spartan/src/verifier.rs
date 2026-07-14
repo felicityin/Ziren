@@ -140,27 +140,24 @@ mod tests {
 
     use rand::Rng;
     use slop_algebra::{extension::BinomialExtensionField, FieldAlgebra};
-    use slop_baby_bear::{
-        baby_bear_poseidon2::{my_bb_16_perm, Perm},
-        BabyBear,
-    };
     use slop_challenger::DuplexChallenger;
+    use slop_koala_bear::{my_kb_16_perm, KoalaBear, KoalaPerm};
 
     use crate::{
         prover::SpartanR1CSProver, r1cs, sparse_matrix::SparseMatrix, verifier::SpartanR1CSVerifier,
     };
 
-    type F = BabyBear;
-    type EF = BinomialExtensionField<BabyBear, 4>;
+    type F = KoalaBear;
+    type EF = BinomialExtensionField<KoalaBear, 4>;
 
     #[tokio::test]
     async fn test_e2e_spartan() {
         let mut rng = rand::thread_rng();
-        let default_perm = my_bb_16_perm();
+        let default_perm = my_kb_16_perm();
         let mut challenger_prover =
-            DuplexChallenger::<BabyBear, Perm, 16, 8>::new(default_perm.clone());
+            DuplexChallenger::<KoalaBear, KoalaPerm, 16, 8>::new(default_perm.clone());
         let mut challenger_verifier =
-            DuplexChallenger::<BabyBear, Perm, 16, 8>::new(default_perm.clone());
+            DuplexChallenger::<KoalaBear, KoalaPerm, 16, 8>::new(default_perm.clone());
 
         // TODO: Setup a non-trivial R1CS here
         let log_witness_len = 8;

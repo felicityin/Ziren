@@ -15,7 +15,7 @@ slop-multilinear = { workspace = true }
 slop-challenger = { workspace = true }
 slop-alloc = { workspace = true }
 slop-sumcheck = { workspace = true }
-slop-baby-bear = { workspace = true }
+slop-koala-bear = { workspace = true }
 slop-merkle-tree = { workspace = true }
 slop-pgspcs = { workspace = true }
 futures = { workspace = true }

@@ -2,10 +2,6 @@ use std::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 use slop_algebra::extension::BinomialExtensionField;
-use slop_baby_bear::{
-    baby_bear_poseidon2::{BabyBearDegree4Duplex, Perm},
-    BabyBear,
-};
 use slop_bn254::{
     Bn254Fr, OuterPerm, Poseidon2Bn254GlobalConfig, OUTER_CHALLENGER_RATE,
     OUTER_CHALLENGER_STATE_WIDTH,
@@ -28,13 +24,6 @@ impl<F, EF, Tcs, Challenger> Default for BasefoldConfigImpl<F, EF, Tcs, Challeng
         Self(PhantomData)
     }
 }
-
-pub type Poseidon2BabyBear16BasefoldConfig = BasefoldConfigImpl<
-    BabyBear,
-    BinomialExtensionField<BabyBear, 4>,
-    MerkleTreeTcs<BabyBearDegree4Duplex>,
-    DuplexChallenger<BabyBear, Perm, 16, 8>,
->;
 
 pub type Poseidon2KoalaBear16BasefoldConfig = BasefoldConfigImpl<
     KoalaBear,

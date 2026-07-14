@@ -168,11 +168,11 @@ mod tests {
         use super::*;
         use rand::Rng;
         use slop_algebra::extension::BinomialExtensionField;
-        use slop_baby_bear::BabyBear;
+        use slop_koala_bear::KoalaBear;
         use slop_multilinear::Point;
 
-        type F = BabyBear;
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type F = KoalaBear;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         // Matrix dimensions
         let num_rows = 4;

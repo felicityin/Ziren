@@ -92,11 +92,11 @@ where
 mod tests {
     use rand::thread_rng;
     use slop_algebra::{extension::BinomialExtensionField, FieldExtensionAlgebra};
-    use slop_baby_bear::{
-        baby_bear_poseidon2::{my_bb_16_perm, Perm},
-        BabyBear,
-    };
     use slop_challenger::DuplexChallenger;
+    use slop_koala_bear::{
+        my_kb_16_perm, KoalaPerm,
+        KoalaBear,
+    };
 
     use crate::{partially_verify_sumcheck_proof, reduce_sumcheck_to_evaluation};
 
@@ -106,15 +106,16 @@ mod tests {
     fn test_single_mle_sumcheck() {
         let mut rng = thread_rng();
 
-        let mle = Mle::<BabyBear, CpuBackend>::rand(&mut rng, 1, 10);
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        let mle = Mle::<KoalaBear, CpuBackend>::rand(&mut rng, 1, 10);
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
-        let default_perm = my_bb_16_perm();
-        let mut challenger = DuplexChallenger::<BabyBear, Perm, 16, 8>::new(default_perm.clone());
+        let default_perm = my_kb_16_perm();
+        let mut challenger =
+            DuplexChallenger::<KoalaBear, KoalaPerm, 16, 8>::new(default_perm.clone());
 
-        let claim = EF::from_base(mle.guts().as_slice().par_iter().copied().sum::<BabyBear>());
+        let claim = EF::from_base(mle.guts().as_slice().par_iter().copied().sum::<KoalaBear>());
 
-        let (sumcheck_proof, _) = reduce_sumcheck_to_evaluation::<BabyBear, EF, _>(
+        let (sumcheck_proof, _) = reduce_sumcheck_to_evaluation::<KoalaBear, EF, _>(
             vec![mle.clone()],
             &mut challenger,
             vec![claim],
@@ -128,7 +129,7 @@ mod tests {
         assert_eq!(evaluation, eval_claim);
 
         // Verify the proof.
-        let mut challenger = DuplexChallenger::<BabyBear, Perm, 16, 8>::new(default_perm);
+        let mut challenger = DuplexChallenger::<KoalaBear, KoalaPerm, 16, 8>::new(default_perm);
         partially_verify_sumcheck_proof(&sumcheck_proof, &mut challenger, 10, 1).unwrap()
     }
 }

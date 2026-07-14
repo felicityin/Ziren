@@ -11,7 +11,7 @@ categories.workspace = true
 
 [dependencies]
 slop-challenger = { workspace = true }
-slop-baby-bear = { workspace = true }
+slop-koala-bear = { workspace = true }
 slop-alloc = { workspace = true }
 
 slop-algebra = { workspace = true }

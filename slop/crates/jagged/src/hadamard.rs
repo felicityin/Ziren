@@ -151,8 +151,8 @@ where
 mod tests {
     use rand::thread_rng;
     use slop_algebra::extension::BinomialExtensionField;
-    use slop_baby_bear::{baby_bear_poseidon2::BabyBearDegree4Duplex, BabyBear};
     use slop_challenger::{CanSample, IopCtx};
+    use slop_koala_bear::{KoalaBear, KoalaBearDegree4Duplex};
     use slop_multilinear::Mle;
     use slop_sumcheck::{partially_verify_sumcheck_proof, reduce_sumcheck_to_evaluation};
 
@@ -162,8 +162,8 @@ mod tests {
     fn test_hadamard_product_sumcheck() {
         let mut rng = thread_rng();
 
-        type F = BabyBear;
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type F = KoalaBear;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let num_variables = 14;
 
@@ -175,7 +175,7 @@ mod tests {
 
         let product = HadamardProduct { base, ext };
 
-        let mut challenger = BabyBearDegree4Duplex::default_challenger();
+        let mut challenger = KoalaBearDegree4Duplex::default_challenger();
 
         let claim: EF = product
             .ext
@@ -210,7 +210,7 @@ mod tests {
         let claimed_eval = proof.point_and_eval.1;
         assert_eq!(claimed_eval, exp_eval_ext * exp_eval_base);
 
-        let mut challenger = BabyBearDegree4Duplex::default_challenger();
+        let mut challenger = KoalaBearDegree4Duplex::default_challenger();
         let _lambda: EF = challenger.sample();
         assert!(partially_verify_sumcheck_proof::<F, EF, _>(
             &proof,

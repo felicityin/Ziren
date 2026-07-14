@@ -167,11 +167,11 @@ impl<GC: IopCtx<F: TwoAdicField, EF: TwoAdicField>, P: ComputeTcsOpenings<GC, Cp
 mod tests {
     use rand::thread_rng;
     use slop_algebra::extension::BinomialExtensionField;
-    use slop_baby_bear::{baby_bear_poseidon2::BabyBearDegree4Duplex, BabyBear};
     use slop_basefold::{BasefoldVerifier, FriConfig};
     use slop_basefold_prover::BasefoldProver;
     use slop_challenger::CanObserve;
-    use slop_merkle_tree::Poseidon2BabyBear16Prover;
+    use slop_koala_bear::{KoalaBear, KoalaBearDegree4Duplex};
+    use slop_merkle_tree::Poseidon2KoalaBear16Prover;
     use slop_tensor::Tensor;
 
     use crate::StackedPcsVerifier;
@@ -183,9 +183,9 @@ mod tests {
         let log_stacking_height = 10;
         let batch_size = 10;
 
-        type GC = BabyBearDegree4Duplex;
-        type Prover = BasefoldProver<GC, Poseidon2BabyBear16Prover>;
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type GC = KoalaBearDegree4Duplex;
+        type Prover = BasefoldProver<GC, Poseidon2KoalaBear16Prover>;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let round_widths_and_log_heights = [vec![(1 << 10, 10), (1 << 4, 11), (496, 11)]];
 
@@ -210,7 +210,7 @@ mod tests {
             .iter()
             .map(|dims| {
                 dims.iter()
-                    .map(|&(w, log_h)| Mle::<BabyBear>::rand(&mut rng, w, log_h))
+                    .map(|&(w, log_h)| Mle::<KoalaBear>::rand(&mut rng, w, log_h))
                     .collect::<Message<_>>()
             })
             .collect::<Rounds<_>>();
@@ -230,7 +230,7 @@ mod tests {
         let mut batch_evaluations = Rounds::new();
         let point = Point::<EF>::rand(&mut rng, total_number_of_variables);
 
-        let concat_mle: Vec<BabyBear> = round_mles
+        let concat_mle: Vec<KoalaBear> = round_mles
             .iter()
             .flat_map(|mles| mles.iter())
             .flat_map(|mle| mle.guts().transpose().as_slice().to_vec())

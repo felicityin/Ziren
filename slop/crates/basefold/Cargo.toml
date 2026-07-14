@@ -16,7 +16,6 @@ slop-challenger = { workspace = true }
 slop-utils = { workspace = true }
 slop-tensor = { workspace = true }
 slop-alloc = { workspace = true }
-slop-baby-bear = { workspace = true }
 slop-primitives = { workspace = true }
 slop-koala-bear = { workspace = true }
 slop-merkle-tree = { workspace = true }
@@ -27,5 +26,3 @@ itertools = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 derive-where = { workspace = true }
 
-[dev-dependencies]
-slop-baby-bear = { workspace = true }

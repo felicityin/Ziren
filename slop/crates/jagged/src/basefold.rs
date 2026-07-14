@@ -1,6 +1,5 @@
 use slop_algebra::TwoAdicField;
 use slop_alloc::CpuBackend;
-use slop_baby_bear::baby_bear_poseidon2::BabyBearDegree4Duplex;
 use slop_basefold::{BasefoldVerifier, FriConfig};
 use slop_basefold_prover::BasefoldProver;
 use slop_bn254::BNGC;
@@ -10,8 +9,6 @@ use slop_merkle_tree::ComputeTcsOpenings;
 use slop_stacked::{StackedBasefoldProof, StackedPcsProver, StackedPcsVerifier};
 
 use crate::{DefaultJaggedProver, JaggedAssistProver, JaggedPcsVerifier, JaggedProver};
-
-pub type BabyBearStackedBasefoldVerifier = StackedPcsVerifier<BabyBearDegree4Duplex>;
 
 pub type KoalaBearStackedBasefoldVerifier = StackedPcsVerifier<KoalaBearDegree4Duplex>;
 
@@ -79,20 +76,13 @@ mod tests {
 
     use rand::{thread_rng, Rng};
     use slop_algebra::extension::BinomialExtensionField;
-    use slop_baby_bear::BabyBear;
     use slop_challenger::CanObserve;
     use slop_commit::Rounds;
     use slop_koala_bear::KoalaBear;
-    use slop_merkle_tree::{BnProver, Poseidon2BabyBear16Prover, Poseidon2KoalaBear16Prover};
+    use slop_merkle_tree::{BnProver, Poseidon2KoalaBear16Prover};
     use slop_multilinear::{Evaluations, Mle, MleEval, MultilinearPcsProver, PaddedMle, Point};
 
     use super::*;
-
-    #[test]
-    fn test_baby_bear_jagged_basefold() {
-        test_jagged_basefold::<BabyBearDegree4Duplex, StackedPcsProver<Poseidon2BabyBear16Prover, _>>(
-        );
-    }
 
     #[test]
     fn test_koala_bear_jagged_basefold() {

@@ -299,7 +299,7 @@ impl<T> Mle<T, CpuBackend> {
     }
 
     /// Evaluates the 2n-variate multilinear polynomial f(X,Y) = Prod_i (X_i * Y_i + (1-X_i) *
-    /// (1-Y_i)) at a given pair (X,Y) of n-dimenional BabyBearExtensionField points.
+    /// (1-Y_i)) at a given pair (X,Y) of n-dimenional KoalaBearExtensionField points.
     ///
     /// This evaluation takes time linear in n to compute, so the verifier can easily compute it.
     /// Hence, even though
@@ -542,7 +542,7 @@ mod tests {
 
     use slop_algebra::extension::BinomialExtensionField;
     use slop_alloc::Buffer;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
 
     use super::*;
 
@@ -552,8 +552,8 @@ mod tests {
     fn test_mle_eval() {
         let mut rng = rand::thread_rng();
 
-        type F = BabyBear;
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type F = KoalaBear;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let num_variables = 11;
         let num_polynomials = 10;
@@ -604,7 +604,7 @@ mod tests {
     fn test_mle_fold() {
         let mut rng = rand::thread_rng();
 
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let mle = Mle::<EF>::rand(&mut rng, 1, 11);
         let point = Point::<EF>::rand(&mut rng, 10);
@@ -633,7 +633,7 @@ mod tests {
         let num_variables = 12;
         let mut rng = rand::thread_rng();
 
-        type F = BabyBear;
+        type F = KoalaBear;
 
         for threshold in 0..(1 << num_variables) {
             let eval_point =
@@ -650,7 +650,7 @@ mod tests {
     fn test_mle_fix_last_variable() {
         let mut rng = rand::thread_rng();
 
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let num_polynomials = 5;
         let num_variables = 11;
@@ -671,7 +671,7 @@ mod tests {
     fn test_mle_serialization() {
         let mut rng = rand::thread_rng();
 
-        type F = BabyBear;
+        type F = KoalaBear;
 
         let mle = Mle::<F>::rand(&mut rng, 5, 11);
 
@@ -685,7 +685,7 @@ mod tests {
     fn test_blocking_mle_eval_at() {
         let mut rng = rand::thread_rng();
 
-        type EF = BinomialExtensionField<BabyBear, 4>;
+        type EF = BinomialExtensionField<KoalaBear, 4>;
 
         let mle = Mle::<EF>::rand(&mut rng, 5, 11);
         let point = Point::<EF>::rand(&mut rng, 11);

@@ -135,9 +135,8 @@ where
 mod tests {
     use rand::Rng;
     use slop_algebra::{extension::BinomialExtensionField, FieldAlgebra};
-    use slop_baby_bear::BabyBear;
     use slop_challenger::DuplexChallenger;
-    use slop_merkle_tree::{my_bb_16_perm, Perm};
+    use slop_koala_bear::{my_kb_16_perm, KoalaBear, KoalaPerm};
     use slop_multilinear::{Mle, Point};
     use slop_sumcheck::{partially_verify_sumcheck_proof, reduce_sumcheck_to_evaluation};
 
@@ -145,17 +144,17 @@ mod tests {
 
     use super::LincheckPoly;
 
-    type F = BabyBear;
-    type EF = BinomialExtensionField<BabyBear, 4>;
+    type F = KoalaBear;
+    type EF = BinomialExtensionField<KoalaBear, 4>;
 
     #[tokio::test]
     async fn lincheck_sumcheck() {
         let mut rng = rand::thread_rng();
-        let default_perm = my_bb_16_perm();
+        let default_perm = my_kb_16_perm();
         let mut challenger_prover =
-            DuplexChallenger::<BabyBear, Perm, 16, 8>::new(default_perm.clone());
+            DuplexChallenger::<KoalaBear, KoalaPerm, 16, 8>::new(default_perm.clone());
         let mut challenger_verifier =
-            DuplexChallenger::<BabyBear, Perm, 16, 8>::new(default_perm.clone());
+            DuplexChallenger::<KoalaBear, KoalaPerm, 16, 8>::new(default_perm.clone());
 
         let log_witness_len = 8;
         let witness_len = 1 << log_witness_len;

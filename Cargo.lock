@@ -4062,20 +4062,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "p3-baby-bear"
-version = "0.1.0"
-source = "git+https://github.com/ProjectZKM/Plonky3#faa24ca4597eebeecbf71b194b71c7d1a99b3f01"
-dependencies = [
- "p3-field",
- "p3-mds",
- "p3-monty-31",
- "p3-poseidon2",
- "p3-symmetric",
- "rand 0.8.5",
- "serde",
-]
-
-[[package]]
 name = "p3-bn254-fr"
 version = "0.1.0"
 source = "git+https://github.com/ProjectZKM/Plonky3#faa24ca4597eebeecbf71b194b71c7d1a99b3f01"
@@ -5902,7 +5888,7 @@ dependencies = [
  "itertools 0.13.0",
  "p3-field",
  "serde",
- "slop-baby-bear",
+ "slop-koala-bear",
 ]
 
 [[package]]
@@ -5915,19 +5901,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "slop-baby-bear"
-version = "1.2.7"
-dependencies = [
- "lazy_static",
- "p3-baby-bear",
- "serde",
- "slop-algebra",
- "slop-challenger",
- "slop-poseidon2",
- "slop-symmetric",
-]
-
-[[package]]
 name = "slop-basefold"
 version = "1.2.7"
 dependencies = [
@@ -5936,7 +5909,6 @@ dependencies = [
  "serde",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-bn254",
  "slop-challenger",
  "slop-koala-bear",
@@ -5959,7 +5931,6 @@ dependencies = [
  "serde",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-basefold",
  "slop-bn254",
  "slop-challenger",
@@ -6053,7 +6024,6 @@ dependencies = [
  "serde",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-basefold",
  "slop-basefold-prover",
  "slop-bn254",
@@ -6110,7 +6080,6 @@ dependencies = [
  "serde",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-bn254",
  "slop-challenger",
  "slop-commit",
@@ -6137,10 +6106,10 @@ dependencies = [
  "serde_json",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-challenger",
  "slop-commit",
  "slop-futures",
+ "slop-koala-bear",
  "slop-matrix",
  "slop-tensor",
 ]
@@ -6170,12 +6139,12 @@ dependencies = [
  "serde",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-basefold",
  "slop-basefold-prover",
  "slop-challenger",
  "slop-commit",
  "slop-futures",
+ "slop-koala-bear",
  "slop-merkle-tree",
  "slop-multilinear",
  "slop-tensor",
@@ -6193,8 +6162,8 @@ dependencies = [
  "serde",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-challenger",
+ "slop-koala-bear",
  "slop-multilinear",
  "thiserror 1.0.69",
 ]
@@ -6219,8 +6188,8 @@ dependencies = [
  "serde_json",
  "slop-algebra",
  "slop-alloc",
- "slop-baby-bear",
  "slop-futures",
+ "slop-koala-bear",
  "slop-matrix",
  "thiserror 1.0.69",
  "transpose",

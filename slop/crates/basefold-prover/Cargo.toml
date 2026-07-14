@@ -19,7 +19,6 @@ slop-dft = { workspace = true }
 slop-commit = { workspace = true }
 slop-tensor = { workspace = true }
 slop-alloc = { workspace = true }
-slop-baby-bear = { workspace = true }
 slop-koala-bear = { workspace = true }
 slop-merkle-tree = { workspace = true }
 slop-fri = { workspace = true }

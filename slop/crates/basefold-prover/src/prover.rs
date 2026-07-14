@@ -273,21 +273,13 @@ impl<GC: IopCtx<F: TwoAdicField, EF: TwoAdicField>, P: ComputeTcsOpenings<GC, Cp
 #[cfg(test)]
 mod tests {
     use rand::thread_rng;
-    use slop_baby_bear::baby_bear_poseidon2::BabyBearDegree4Duplex;
     use slop_basefold::{BasefoldVerifier, FriConfig};
     use slop_challenger::CanObserve;
     use slop_koala_bear::KoalaBearDegree4Duplex;
-    use slop_merkle_tree::{
-        ComputeTcsOpenings, Poseidon2BabyBear16Prover, Poseidon2KoalaBear16Prover,
-    };
+    use slop_merkle_tree::{ComputeTcsOpenings, Poseidon2KoalaBear16Prover};
     use slop_multilinear::MleEval;
 
     use super::*;
-
-    #[test]
-    fn test_baby_bear_basefold_prover() {
-        test_basefold_prover_backend::<BabyBearDegree4Duplex, Poseidon2BabyBear16Prover>();
-    }
 
     #[test]
     fn test_koala_bear_basefold_prover() {

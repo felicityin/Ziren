@@ -11,7 +11,6 @@ categories.workspace = true
 
 [dependencies]
 slop-multilinear = { workspace = true }
-slop-baby-bear = { workspace = true }
 slop-bn254 = { workspace = true }
 slop-koala-bear = { workspace = true }
 slop-sumcheck = { workspace = true }
@@ -38,5 +37,3 @@ derive-where = { workspace = true }
 rand = { workspace = true }
 num_cpus = { workspace = true }
 
-[dev-dependencies]
-slop-baby-bear = { workspace = true }

@@ -111,9 +111,9 @@ pub fn rlc_univariate_polynomials<K: Field>(
 mod tests {
     use crate::{interpolate_univariate_polynomial, UnivariatePolynomial};
     use p3_field::FieldAlgebra;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
 
-    type F = BabyBear;
+    type F = KoalaBear;
 
     #[test]
     fn test_univariate_eval_at_point() {

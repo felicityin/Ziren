@@ -94,9 +94,9 @@ pub mod tests {
     use super::*;
     use rand::Rng;
     use slop_algebra::FieldAlgebra;
-    use slop_baby_bear::BabyBear;
+    use slop_koala_bear::KoalaBear;
 
-    type F = BabyBear;
+    type F = KoalaBear;
 
     #[test]
     fn test_virtual_geq() {

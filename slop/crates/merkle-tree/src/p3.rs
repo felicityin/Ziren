@@ -2,7 +2,6 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use slop_algebra::Field;
-use slop_baby_bear::{baby_bear_poseidon2::BabyBearDegree4Duplex, BabyBear};
 use slop_bn254::{Bn254Fr, BNGC, OUTER_DIGEST_SIZE};
 use slop_challenger::IopCtx;
 use slop_koala_bear::{KoalaBear, KoalaBearDegree4Duplex};
@@ -40,13 +39,6 @@ impl<P, PW, GC: IopCtx, const DIGEST_ELEMS: usize> FieldMerkleTreeProver<P, PW, 
         Self { tcs: Arc::new(tcs), _phantom: PhantomData }
     }
 }
-
-pub type Poseidon2BabyBear16Prover = FieldMerkleTreeProver<
-    <BabyBear as Field>::Packing,
-    <BabyBear as Field>::Packing,
-    BabyBearDegree4Duplex,
-    8,
->;
 
 pub type Poseidon2KoalaBear16Prover = FieldMerkleTreeProver<
     <KoalaBear as Field>::Packing,
