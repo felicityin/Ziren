@@ -62,6 +62,8 @@ pub struct RecursionAirEventCount {
     pub base_alu_events: usize,
     pub ext_alu_events: usize,
     pub poseidon2_wide_events: usize,
+    pub poseidon2_linear_layer_events: usize,
+    pub poseidon2_sbox_events: usize,
     pub select_events: usize,
     pub prefix_sum_checks_events: usize,
 }
@@ -220,6 +222,8 @@ impl<F> AddAssign<&Instruction<F>> for RecursionAirEventCount {
             Instruction::ExtAlu(_) => self.ext_alu_events += 1,
             Instruction::Mem(_) => self.mem_const_events += 1,
             Instruction::Poseidon2(_) => self.poseidon2_wide_events += 1,
+            Instruction::Poseidon2LinearLayer(_) => self.poseidon2_linear_layer_events += 1,
+            Instruction::Poseidon2SBox(_) => self.poseidon2_sbox_events += 1,
             Instruction::Select(_) => self.select_events += 1,
             Instruction::Hint(HintInstr { output_addrs_mults })
             | Instruction::HintBits(HintBitsInstr {

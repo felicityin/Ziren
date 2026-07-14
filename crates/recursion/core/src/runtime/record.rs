@@ -10,7 +10,8 @@ use zkm_hypercube::{
 
 use super::{
     BaseAluEvent, CommitPublicValuesEvent, ExtAluEvent, MemEvent, Poseidon2Event,
-    PrefixSumChecksEvent, RecursionProgram, RecursionPublicValues, SelectEvent,
+    Poseidon2LinearLayerEvent, Poseidon2SBoxEvent, PrefixSumChecksEvent, RecursionProgram,
+    RecursionPublicValues, SelectEvent,
 };
 
 #[derive(Clone, Default, Debug)]
@@ -27,6 +28,8 @@ pub struct ExecutionRecord<F> {
     pub public_values: RecursionPublicValues<F>,
 
     pub poseidon2_events: Vec<Poseidon2Event<F>>,
+    pub poseidon2_linear_layer_events: Vec<Poseidon2LinearLayerEvent<F>>,
+    pub poseidon2_sbox_events: Vec<Poseidon2SBoxEvent<F>>,
     pub select_events: Vec<SelectEvent<F>>,
     pub prefix_sum_checks_events: Vec<PrefixSumChecksEvent<F>>,
     pub commit_pv_hash_events: Vec<CommitPublicValuesEvent<F>>,
@@ -40,6 +43,11 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
         stats.insert("mem_var_events".to_string(), self.mem_var_events.len());
 
         stats.insert("poseidon2_events".to_string(), self.poseidon2_events.len());
+        stats.insert(
+            "poseidon2_linear_layer_events".to_string(),
+            self.poseidon2_linear_layer_events.len(),
+        );
+        stats.insert("poseidon2_sbox_events".to_string(), self.poseidon2_sbox_events.len());
 
         stats
     }
@@ -55,6 +63,8 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
             mem_var_events,
             public_values: _,
             poseidon2_events,
+            poseidon2_linear_layer_events,
+            poseidon2_sbox_events,
             select_events,
             prefix_sum_checks_events,
             commit_pv_hash_events,
@@ -64,6 +74,8 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
         *mem_const_count += other.mem_const_count;
         mem_var_events.append(&mut other.mem_var_events);
         poseidon2_events.append(&mut other.poseidon2_events);
+        poseidon2_linear_layer_events.append(&mut other.poseidon2_linear_layer_events);
+        poseidon2_sbox_events.append(&mut other.poseidon2_sbox_events);
         select_events.append(&mut other.select_events);
         prefix_sum_checks_events.append(&mut other.prefix_sum_checks_events);
         commit_pv_hash_events.append(&mut other.commit_pv_hash_events);

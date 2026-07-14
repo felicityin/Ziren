@@ -611,6 +611,19 @@ where
                         } = instr.as_mut();
                         mults.iter_mut().zip(addrs).for_each(&mut backfill);
                     }
+                    Instruction::Poseidon2LinearLayer(instr) => {
+                        let Poseidon2LinearLayerInstr {
+                            addrs: Poseidon2LinearLayerIo { output: ref addrs, .. },
+                            mults,
+                            ..
+                        } = instr.as_mut();
+                        mults.iter_mut().zip(addrs).for_each(&mut backfill);
+                    }
+                    Instruction::Poseidon2SBox(Poseidon2SBoxInstr {
+                        addrs: Poseidon2SBoxIo { output: ref addr, .. },
+                        mult,
+                        ..
+                    }) => backfill((mult, addr)),
                     Instruction::Select(SelectInstr {
                         addrs: SelectIo { out1: ref addr1, out2: ref addr2, .. },
                         mult1,
@@ -697,6 +710,8 @@ const fn instr_name<F>(instr: &Instruction<F>) -> &'static str {
         Instruction::ExtAlu(_) => "ExtAlu",
         Instruction::Mem(_) => "Mem",
         Instruction::Poseidon2(_) => "Poseidon2",
+        Instruction::Poseidon2LinearLayer(_) => "Poseidon2LinearLayer",
+        Instruction::Poseidon2SBox(_) => "Poseidon2SBox",
         Instruction::Select(_) => "Select",
         Instruction::HintBits(_) => "HintBits",
         Instruction::PrefixSumChecks(_) => "PrefixSumChecks",

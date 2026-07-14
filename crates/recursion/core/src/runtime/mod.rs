@@ -38,6 +38,7 @@ use zkm_hypercube::septic_curve::SepticCurve;
 use zkm_hypercube::septic_extension::SepticExtension;
 
 use crate::air::{Block, RECURSIVE_PROOF_NUM_PV_ELTS};
+use crate::chips::poseidon2_wide::{external_linear_layer, internal_linear_layer};
 
 /// TODO expand glob import once things are organized enough
 use crate::*;
@@ -355,6 +356,57 @@ where
                     self.record
                         .poseidon2_events
                         .push(Poseidon2Event { input: in_vals, output: perm_output });
+                }
+                Instruction::Poseidon2LinearLayer(instr) => {
+                    let Poseidon2LinearLayerInstr {
+                        addrs: Poseidon2LinearLayerIo { input, output },
+                        mults,
+                        external,
+                    } = *instr;
+                    let mut state = [F::ZERO; PERMUTATION_WIDTH];
+                    let mut io_input = [Block::from(F::ZERO); PERMUTATION_WIDTH / D];
+                    let mut io_output = [Block::from(F::ZERO); PERMUTATION_WIDTH / D];
+                    for i in 0..PERMUTATION_WIDTH / D {
+                        io_input[i] = self.memory.mr(input[i]).val;
+                        for j in 0..D {
+                            state[i * D + j] = io_input[i].0[j];
+                        }
+                    }
+                    if external {
+                        external_linear_layer(&mut state);
+                    } else {
+                        internal_linear_layer(&mut state);
+                    }
+                    for i in 0..PERMUTATION_WIDTH / D {
+                        io_output[i] = Block(state[i * D..i * D + D].try_into().unwrap());
+                        self.memory.mw(output[i], io_output[i], mults[i]);
+                    }
+                    self.record
+                        .poseidon2_linear_layer_events
+                        .push(Poseidon2LinearLayerEvent { input: io_input, output: io_output });
+                }
+                Instruction::Poseidon2SBox(Poseidon2SBoxInstr {
+                    addrs: Poseidon2SBoxIo { input, output },
+                    mult,
+                    external,
+                }) => {
+                    let io_input = self.memory.mr(input).val;
+                    let cube = |x: F| x * x * x;
+
+                    let io_output = if external {
+                        Block([
+                            cube(io_input.0[0]),
+                            cube(io_input.0[1]),
+                            cube(io_input.0[2]),
+                            cube(io_input.0[3]),
+                        ])
+                    } else {
+                        Block([cube(io_input.0[0]), io_input.0[1], io_input.0[2], io_input.0[3]])
+                    };
+                    self.memory.mw(output, io_output, mult);
+                    self.record
+                        .poseidon2_sbox_events
+                        .push(Poseidon2SBoxEvent { input: io_input, output: io_output });
                 }
                 Instruction::Select(SelectInstr {
                     addrs: SelectIo { bit, out1, out2, in1, in2 },

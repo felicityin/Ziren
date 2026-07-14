@@ -11,6 +11,8 @@ pub enum Instruction<F> {
     ExtAlu(ExtAluInstr<F>),
     Mem(MemInstr<F>),
     Poseidon2(Box<Poseidon2Instr<F>>),
+    Poseidon2LinearLayer(Box<Poseidon2LinearLayerInstr<F>>),
+    Poseidon2SBox(Poseidon2SBoxInstr<F>),
     Select(SelectInstr<F>),
     HintBits(HintBitsInstr<F>),
     HintAddCurve(HintAddCurveInstr<F>),
@@ -149,6 +151,38 @@ pub fn poseidon2<F: FieldAlgebra>(
             input: input.map(F::from_canonical_u32).map(Address),
         },
     }))
+}
+
+pub fn poseidon2_linear_layer<F: FieldAlgebra>(
+    external: bool,
+    mults: [u32; WIDTH / D],
+    output: [u32; WIDTH / D],
+    input: [u32; WIDTH / D],
+) -> Instruction<F> {
+    Instruction::Poseidon2LinearLayer(Box::new(Poseidon2LinearLayerInstr {
+        mults: mults.map(F::from_canonical_u32),
+        addrs: Poseidon2LinearLayerIo {
+            output: output.map(F::from_canonical_u32).map(Address),
+            input: input.map(F::from_canonical_u32).map(Address),
+        },
+        external,
+    }))
+}
+
+pub fn poseidon2_sbox<F: FieldAlgebra>(
+    external: bool,
+    mult: u32,
+    output: u32,
+    input: u32,
+) -> Instruction<F> {
+    Instruction::Poseidon2SBox(Poseidon2SBoxInstr {
+        mult: F::from_canonical_u32(mult),
+        addrs: Poseidon2SBoxIo {
+            output: Address(F::from_canonical_u32(output)),
+            input: Address(F::from_canonical_u32(input)),
+        },
+        external,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

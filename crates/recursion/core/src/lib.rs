@@ -161,6 +161,46 @@ pub type SelectEvent<F> = SelectIo<F>;
 pub type Poseidon2WideEvent<F> = Poseidon2Io<F>;
 pub type Poseidon2Instr<F> = Poseidon2SkinnyInstr<F>;
 
+/// The inputs and outputs to one linear-layer round over the permutation state, packed as
+/// `WIDTH / D` extension-sized blocks (each `V` holds `D` base-field elements).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Poseidon2LinearLayerIo<V> {
+    pub input: [V; WIDTH / D],
+    pub output: [V; WIDTH / D],
+}
+
+/// An instruction invoking one external or internal linear-layer round, row-local (degree <= 3),
+/// unlike `Poseidon2SkinnyInstr` which invokes a full permutation.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Poseidon2LinearLayerInstr<F> {
+    pub addrs: Poseidon2LinearLayerIo<Address<F>>,
+    pub mults: [F; WIDTH / D],
+    pub external: bool,
+}
+
+pub type Poseidon2LinearLayerEvent<F> = Poseidon2LinearLayerIo<Block<F>>;
+
+/// The input and output to one Poseidon2 S-box application over a single extension-sized block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Poseidon2SBoxIo<V> {
+    pub input: V,
+    pub output: V,
+}
+
+/// An instruction invoking one external or internal S-box application, row-local (degree <= 3).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[repr(C)]
+pub struct Poseidon2SBoxInstr<F> {
+    pub addrs: Poseidon2SBoxIo<Address<F>>,
+    pub mult: F,
+    pub external: bool,
+}
+
+pub type Poseidon2SBoxEvent<F> = Poseidon2SBoxIo<Block<F>>;
+
 /// The inputs and outputs to the operations for prefix sum checks. This struct doubles as both
 /// the DSL/instruction-level "one entry per accumulation step" addresses (`Vec<Address<F>>`) and
 /// the executed-value shape (`Vec<V>` for the runtime), matching SP1's own `PrefixSumChecksIo`
