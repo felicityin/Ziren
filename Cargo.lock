@@ -8210,6 +8210,7 @@ dependencies = [
  "slop-alloc",
  "slop-challenger",
  "slop-koala-bear",
+ "slop-multilinear",
  "snowbridge-amcl",
  "static_assertions",
  "strum",
