@@ -588,19 +588,19 @@ mod tests {
     /// `RecursiveShardVerifier`/`ZKMRecursiveVerifier` gadgets (the phase 3.2/3.3
     /// zerocheck/LogUp-GKR/jagged/basefold verifier chain), proving the resulting constraint
     /// graph is well-formed and correctly handled end to end by the DSL/IR compiler.
-    ///
-    /// Currently `#[ignore]`d: `FIBONACCI_ELF` executes a `HALT` syscall, which triggers a
-    /// currently-unresolved native (not circuit-specific) `GkrVerificationFailed
-    /// (CumulativeSumMismatch(..))` bug that reproduces on any program using a real `SYSCALL`
-    /// instruction -- see the detailed writeup on `run_test_halt_only_smoke` in
-    /// `crates/core/machine/src/utils/prove.rs`. That bug must be fixed first; this test is a
-    /// second, independent reproduction (via `Witnessable`/circuit verification rather than
-    /// `ShardVerifier::verify_shard` directly) worth re-enabling once it is.
     #[test]
-    #[ignore = "blocked on a native (non-circuit) CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
     fn test_verify_real_core_shard_proof() {
         let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
-        let opts = ZKMCoreOpts::default();
+        // `ZKMCoreOpts::default()`'s `shard_size` is chosen from this machine's RAM (production
+        // scale, e.g. `1 << 22` here) via `ZKMProverOpts::get_memory_opts`, not from what this
+        // tiny test program actually needs. `max_log_row_count` (`shard_size.ilog2()`) directly
+        // gates round counts and bit-decomposition widths throughout the circuit-side verifier
+        // (`shard.rs`/`zerocheck.rs`), so a production-scale cap here -- regardless of the FRI
+        // config used, and regardless of how few rows Fibonacci's own trace actually needs --
+        // was what made the compiled verify_shard circuit exceed the jagged-PCS protocol's
+        // per-round area bound. `1 << 16` is still far larger than Fibonacci's real trace but
+        // small enough to keep the compiled circuit's own trace within bounds.
+        let opts = ZKMCoreOpts { shard_size: 1 << 16, ..ZKMCoreOpts::default() };
 
         let mut runtime = Executor::new(program.clone(), opts);
         runtime.run().unwrap();
@@ -730,6 +730,16 @@ mod tests {
         // is sized for small synthetic recursion-core unit tests, not for a full, real
         // `verify_shard` gadget chain: this circuit's `ExtAlu` chip alone emits over 17 million
         // events (> 1 << 21 rows), so the default overflows `PaddedMle`'s row-count assertion.
-        run_test_recursion_with_max_log_row_count(builder.into_operations(), witness_stream, 24);
+        // Likewise, `default_fri_config`'s real query count (94) makes this circuit's own trace
+        // large enough to exceed the jagged-PCS protocol's per-round area bound, so reuse the
+        // same fast `test_fri_config` (1 query, no grinding) used for the core-layer proof above
+        // -- this test is about the DSL/IR compiler's output being well-formed and provable, not
+        // about proving at real security parameters.
+        run_test_recursion_with_max_log_row_count(
+            builder.into_operations(),
+            witness_stream,
+            24,
+            fri_config,
+        );
     }
 }

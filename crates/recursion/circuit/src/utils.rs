@@ -92,6 +92,7 @@ pub fn words_to_bytes<T: Copy>(words: &[Word<T>]) -> Vec<T> {
 pub(crate) mod tests {
     use std::sync::Arc;
 
+    use slop_basefold::FriConfig;
     use slop_challenger::IopCtx;
     use zkm_core_machine::utils::setup_logger;
     use zkm_hypercube::{
@@ -124,19 +125,27 @@ pub(crate) mod tests {
         witness_stream: impl IntoIterator<Item = WitnessBlock<AsmConfig<F, EF>>>,
     ) {
         let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
-        run_test_recursion_with_max_log_row_count(operations, witness_stream, max_log_row_count)
+        run_test_recursion_with_max_log_row_count(
+            operations,
+            witness_stream,
+            max_log_row_count,
+            default_fri_config(),
+        )
     }
 
     /// Like [`run_test_recursion`], but with an explicit override for the recursion machine's
     /// `max_log_row_count` (i.e. its shard size), instead of the default
-    /// `zkm_stark::ZKMCoreOpts::recursion().shard_size`. Needed for circuits that emit far more
-    /// rows than that default accommodates, such as a full, real `verify_shard` gadget chain
-    /// (zerocheck + LogUp-GKR + jagged + basefold), which the default recursion shard size was
-    /// never sized for.
+    /// `zkm_stark::ZKMCoreOpts::recursion().shard_size`, and for its FRI config, instead of
+    /// [`default_fri_config`]. Needed for circuits that emit far more rows than the default
+    /// shard size accommodates, such as a full, real `verify_shard` gadget chain (zerocheck +
+    /// LogUp-GKR + jagged + basefold): at `default_fri_config`'s real query count, such a
+    /// circuit's own trace can exceed the jagged-PCS protocol's per-round area bound, so a
+    /// smaller FRI config may be needed in addition to a larger `max_log_row_count`.
     pub(crate) fn run_test_recursion_with_max_log_row_count(
         operations: TracedVec<DslIr<AsmConfig<F, EF>>>,
         witness_stream: impl IntoIterator<Item = WitnessBlock<AsmConfig<F, EF>>>,
         max_log_row_count: usize,
+        fri_config: FriConfig<F>,
     ) {
         setup_logger();
 
@@ -166,7 +175,7 @@ pub(crate) mod tests {
 
         let shard_prover = ZkmShardProver::<RecursionAir<F, 3>>::new(
             ShardVerifier::from_basefold_parameters(
-                default_fri_config(),
+                fri_config.clone(),
                 RECURSION_LOG_STACKING_HEIGHT,
                 max_log_row_count,
                 machine.clone(),
@@ -183,7 +192,7 @@ pub(crate) mod tests {
         ));
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
-            default_fri_config(),
+            fri_config,
             RECURSION_LOG_STACKING_HEIGHT,
             max_log_row_count,
             machine,
