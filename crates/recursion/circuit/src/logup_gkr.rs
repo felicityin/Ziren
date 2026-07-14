@@ -97,19 +97,17 @@ where
             .map(|i| i.values.len() + 1)
             .max()
             .unwrap();
-        // NOTE: deliberately diverges from SP1's circuit gadget, which only uses
-        // `max_interaction_arity` here. Ziren's native verifier
-        // (`zkm_hypercube::logup_gkr::verifier::LogUpGkrVerifier::verify_logup_gkr`) samples
-        // `beta_seed` using `max(max_interaction_arity, max_interaction_kinds_values)`, and this
-        // gadget must match the native prover/verifier's transcript exactly or the Fiat-Shamir
-        // challenges desynchronize.
-        let max_interaction_kinds_values = A::Record::lookups_in_public_values()
-            .iter()
-            .map(|kind| *kind as usize + 1)
-            .max()
-            .unwrap_or(1);
-        let beta_seed_dim =
-            max_interaction_arity.max(max_interaction_kinds_values).next_power_of_two().ilog2();
+        // `eval_public_values` sends/receives unconditionally for every shard regardless of
+        // which chips that shard's cluster includes, so `beta_seed`'s width must also cover its
+        // widest interaction on top of the chosen cluster's own widest chip interaction -- this
+        // gadget must match the native prover/verifier's transcript exactly
+        // (`zkm_hypercube::logup_gkr::verifier::LogUpGkrVerifier::verify_logup_gkr`) or the
+        // Fiat-Shamir challenges desynchronize.
+        let max_public_values_interaction_arity = A::Record::max_public_values_interaction_arity();
+        let beta_seed_dim = max_interaction_arity
+            .max(max_public_values_interaction_arity)
+            .next_power_of_two()
+            .ilog2();
         let beta_seed =
             Point::from_iter((0..beta_seed_dim).map(|_| challenger.sample_ext(builder)));
         // Sample the public value challenge.

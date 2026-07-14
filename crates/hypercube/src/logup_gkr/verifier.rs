@@ -113,12 +113,9 @@ impl<GC: IopCtx, SC: ShardContext<GC>> LogUpGkrVerifier<GC, SC> {
             .max()
             .unwrap();
 
-        let max_interaction_kinds_values = Record::<_, SC>::lookups_in_public_values()
-            .iter()
-            .map(|kind| *kind as usize + 1)
-            .max()
-            .unwrap_or(1);
-        let beta_seed_dim = max(max_interaction_arity, max_interaction_kinds_values).next_power_of_two().ilog2();
+        let max_public_values_interaction_arity = Record::<_, SC>::max_public_values_interaction_arity();
+        let beta_seed_dim =
+            max(max_interaction_arity, max_public_values_interaction_arity).next_power_of_two().ilog2();
 
         // Check proof of work (grinding to find a number that hashes to have
         // `GKR_GRINDING_BITS` zeroes at the beginning).

@@ -502,13 +502,11 @@ impl MachineRecord for ExecutionRecord {
         );
     }
 
-    fn lookups_in_public_values() -> Vec<LookupKind> {
-        vec![
-            LookupKind::State,
-            LookupKind::MemoryGlobalInitControl,
-            LookupKind::MemoryGlobalFinalizeControl,
-            LookupKind::GlobalAccumulation,
-        ]
+    fn max_public_values_interaction_arity() -> usize {
+        // The widest interactions here are `MemoryGlobalInitControl`/`MemoryGlobalFinalizeControl`'s
+        // boundary-anchor sends/receives above: 1 (index) + 32 (address bits) + 1 (flag) values,
+        // plus 1 for the `LookupKind` value itself.
+        1 + 32 + 1 + 1
     }
 }
 

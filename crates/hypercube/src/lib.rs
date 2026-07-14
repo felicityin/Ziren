@@ -165,8 +165,8 @@ mod tests {
 
         fn eval_public_values<AB: crate::air::ZKMAirBuilder>(_builder: &mut AB) {}
 
-        fn lookups_in_public_values() -> Vec<crate::lookup::LookupKind> {
-            Vec::new()
+        fn max_public_values_interaction_arity() -> usize {
+            0
         }
     }
 
