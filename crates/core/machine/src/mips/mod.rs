@@ -189,61 +189,175 @@ impl<F: PrimeField32> MipsAir<F> {
 
     /// Builds the zkm-hypercube [`zkm_hypercube::Machine`] over all MIPS chips.
     ///
-    /// Registers three chip clusters (unlike SP1's `riscv/mod.rs`, which combinatorially extends
-    /// a base cluster with each precompile/memory-boundary chip group, this stays with a small,
-    /// conservatively safe set for now -- see task #42 for extending it further):
+    /// Registers a curated, finite set of chip clusters rather than adding a catch-all covering
+    /// every chip: `Machine::smallest_cluster` (called with `.unwrap()` in
+    /// `generate_main_traces`) panics if a shard's chip set isn't a subset of any cluster below.
+    /// This is intentional -- it relies on (and cross-checks) the checkpoint/deferred-event
+    /// splitting invariant that a shard only ever combines ordinary CPU execution with the
+    /// deferred global-memory-init/finalize events and/or the small set of precompiles below, or
+    /// executes exactly one precompile family on its own, never an arbitrary combination. A base
+    /// `core_cluster` (ordinary CPU execution: ALU, control flow, memory access, syscall
+    /// dispatch) is combinatorially extended with a small, curated set of precompile/
+    /// memory-boundary chip groups (`core_cluster_exts`) so that a shard combining ordinary CPU
+    /// execution with the deferred global-memory-init/finalize events, or with one of a few
+    /// common precompiles, gets a cluster sized for just that combination. This matters beyond
+    /// native proving time -- for a shard verified inside a recursion circuit, the DSL/IR-compiled
+    /// verifier does real per-chip constraint/interaction-evaluation work for every chip in the
+    /// chosen cluster (`RecursiveShardVerifier::verify_shard`), even for chips with an all-zero
+    /// padded trace, so an unnecessarily large cluster can blow the compiled circuit's own
+    /// row*column area past the jagged-PCS protocol's bound (task #48).
     /// - `core_cluster`: `Program`/`Byte`/`Global` plus every chip that's part of ordinary CPU
-    ///   execution (ALU, control flow, memory access, syscall dispatch). Covers the overwhelming
-    ///   majority of shards in a long-running program, which just keep executing user code.
+    ///   execution. Covers the overwhelming majority of shards in a long-running program, which
+    ///   just keep executing user code.
+    /// - `core_clusters`: given E extension groups (`core_cluster_exts`), `core_cluster` with no
+    ///   extension (E choose 0), with exactly one extension group added (E choose 1), and with
+    ///   every extension group added (E choose E).
+    /// - `core_cluster_special`: one specific extra combination beyond the combinatorics above --
+    ///   `core_cluster` plus both the memory-boundary pair and the SHA-256/Uint256 precompiles
+    ///   together, for a shard that both finalizes deferred global memory and executes those
+    ///   precompiles inline.
     /// - `memory_boundary_cluster`: `Program`/`Byte`/`Global` plus `MemoryGlobalInit`/
     ///   `MemoryGlobalFinal`, for the (typically one) shard that commits deferred global memory
     ///   init/finalize events with no CPU activity of its own.
-    /// - `all_cluster`: every chip, unconditionally a superset of any shard's actual chip set.
-    ///   `Machine::smallest_cluster` picks the smallest cluster that's a superset of what a shard
-    ///   actually needs, so this is a safety-net fallback -- any shard that doesn't fit the two
-    ///   smaller clusters above (i.e. one using a precompile, or a deferred Linux syscall) still
-    ///   finds a match here instead of panicking, at the same shard-size cost `MachineShape::all`
-    ///   already paid for every shard.
+    /// - `precompile_clusters`: `base_precompile_cluster` (`Program`/`Byte`/`Global`/
+    ///   `SyscallPrecompile`/`MemoryLocal`, deliberately without any of `core_cluster`'s CPU/ALU
+    ///   chips) extended with exactly one precompile family, for a deferred shard that executes
+    ///   only that precompile's worker chips and no ordinary CPU code of its own -- the checkpoint
+    ///   splitting that produces deferred shards keeps different precompiles' events in separate
+    ///   shards, so (unlike `core_cluster_exts`) these stay one precompile family per cluster
+    ///   rather than combinatorial.
     pub fn hypercube_machine() -> zkm_hypercube::Machine<F, Self>
     where
         F: slop_algebra::Field,
     {
+        use itertools::Itertools;
         use std::collections::BTreeSet;
+        use strum::IntoEnumIterator;
+        use MipsAirDiscriminants::*;
 
         let chips = Self::chips();
-        let by_name: HashMap<String, Chip<F, Self>> =
-            chips.iter().map(|c| (MachineAir::<F>::name(c), c.clone())).collect();
-        let cluster = |names: &[&str]| -> BTreeSet<Chip<F, Self>> {
-            names.iter().map(|name| by_name[*name].clone()).collect()
+        let by_variant: HashMap<MipsAirDiscriminants, Chip<F, Self>> =
+            chips.iter().map(|c| (c.air.as_ref().into(), c.clone())).collect();
+        assert_eq!(
+            by_variant.len(),
+            MipsAirDiscriminants::iter().len(),
+            "every MipsAir variant must have exactly one chip in Self::chips()"
+        );
+        let cluster = |variants: &[MipsAirDiscriminants]| -> BTreeSet<Chip<F, Self>> {
+            variants.iter().map(|v| by_variant[v].clone()).collect()
+        };
+        let extend = |base: &BTreeSet<Chip<F, Self>>,
+                      variants: &[MipsAirDiscriminants]|
+         -> BTreeSet<Chip<F, Self>> {
+            let mut set = base.clone();
+            set.extend(variants.iter().map(|v| by_variant[v].clone()));
+            set
         };
 
         let core_cluster = cluster(&[
-            "Program",
-            "Byte",
-            "Global",
-            "Cpu",
-            "AddSub",
-            "Bitwise",
-            "Mul",
-            "ShiftRight",
-            "ShiftLeft",
-            "Lt",
-            "DivRem",
-            "CloClz",
-            "Branch",
-            "Jump",
-            "MiscInstrs",
-            "MovCond",
-            "MemoryInstrs",
-            "SyscallInstrs",
-            "MemoryLocal",
+            Program,
+            ByteLookup,
+            Global,
+            Cpu,
+            Add,
+            Bitwise,
+            Mul,
+            ShiftRight,
+            ShiftLeft,
+            Lt,
+            DivRem,
+            CloClz,
+            Branch,
+            Jump,
+            MiscInstrs,
+            MovCond,
+            MemoryInstrs,
+            SyscallCore,
+            SyscallInstrs,
+            MemoryLocal,
         ]);
         let memory_boundary_cluster =
-            cluster(&["Program", "Byte", "Global", "MemoryGlobalInit", "MemoryGlobalFinalize"]);
-        let all_cluster = chips.iter().cloned().collect::<BTreeSet<_>>();
+            cluster(&[Program, ByteLookup, Global, MemoryGlobalInit, MemoryGlobalFinal]);
 
-        let shape =
-            zkm_hypercube::MachineShape::new(vec![core_cluster, memory_boundary_cluster, all_cluster]);
+        // Chip groups that may extend `core_cluster`. Deliberately small (one entry per
+        // precompile would work too, but combinatorial growth isn't worth it for precompiles
+        // that rarely co-occur with CPU execution in the same shard).
+        let core_cluster_exts: Vec<&[MipsAirDiscriminants]> = vec![
+            &[MemoryGlobalInit, MemoryGlobalFinal],
+            &[Bls12381Fp],
+            &[Bn254Fp],
+            &[Sha256ExtendControl, Sha256Extend, Sha256CompressControl, Sha256Compress],
+            &[Uint256Mul],
+            &[Poseidon2Permute],
+        ];
+        let core_clusters = [0usize, 1, core_cluster_exts.len()]
+            .into_iter()
+            .flat_map(|k| core_cluster_exts.iter().copied().combinations(k).collect::<Vec<_>>())
+            .map(|ext_set| {
+                ext_set.into_iter().fold(core_cluster.clone(), |set, variants| extend(&set, variants))
+            });
+
+        // A specific extra combination beyond the `core_cluster_exts` combinatorics above: a
+        // shard that both commits the deferred global-memory-init/finalize events and executes
+        // SHA-256/Uint256 precompiles inline.
+        let core_cluster_special = extend(
+            &core_cluster,
+            &[
+                MemoryGlobalInit,
+                MemoryGlobalFinal,
+                Sha256ExtendControl,
+                Sha256Extend,
+                Sha256CompressControl,
+                Sha256Compress,
+                Uint256Mul,
+            ],
+        );
+
+        let base_precompile_cluster =
+            cluster(&[Program, ByteLookup, Global, SyscallPrecompile, MemoryLocal]);
+
+        // One entry per precompile family (a syscall's worker chip plus its control chip, if
+        // any), each its own cluster -- unlike `core_cluster_exts`, these aren't combined,
+        // since a deferred precompile-only shard only ever contains events for one precompile.
+        let precompile_clusters: Vec<&[MipsAirDiscriminants]> = vec![
+            &[Sha256ExtendControl, Sha256Extend],
+            &[Sha256CompressControl, Sha256Compress],
+            &[Ed25519Add],
+            &[Ed25519Decompress],
+            &[K256Decompress],
+            &[Secp256k1Add],
+            &[Secp256k1Double],
+            &[P256Decompress],
+            &[Secp256r1Add],
+            &[Secp256r1Double],
+            &[Poseidon2Permute],
+            &[KeccakSponge],
+            &[Bn254Add],
+            &[Bn254Double],
+            &[Bls12381Add],
+            &[Bls12381Double],
+            &[Uint256Mul],
+            &[U256x2048Mul],
+            &[Bls12381Decompress],
+            &[Bls12381Fp],
+            &[Bls12381Fp2Mul],
+            &[Bls12381Fp2AddSub],
+            &[Bn254Fp],
+            &[Bn254Fp2Mul],
+            &[Bn254Fp2AddSub],
+            &[SysLinux],
+        ];
+        let precompile_clusters = precompile_clusters
+            .into_iter()
+            .map(|variants| extend(&base_precompile_cluster, variants));
+
+        let clusters = core_clusters
+            .chain(std::iter::once(core_cluster_special))
+            .chain(std::iter::once(memory_boundary_cluster))
+            .chain(precompile_clusters)
+            .collect::<Vec<_>>();
+
+        let shape = zkm_hypercube::MachineShape::new(clusters);
         zkm_hypercube::Machine::new(chips, zkm_hypercube::air::ZKM_PROOF_NUM_PV_ELTS, shape)
     }
 
@@ -1075,5 +1189,13 @@ pub mod tests {
         setup_logger();
         let program = fibonacci_program();
         run_test(program).unwrap();
+    }
+
+    /// Every chip name referenced by `MipsAir::hypercube_machine`'s cluster construction must
+    /// resolve against `Self::chips()` (`by_name[name]` panics on a typo or a renamed chip).
+    #[test]
+    fn hypercube_machine_builds_without_panicking() {
+        let machine = MipsAir::<p3_koala_bear::KoalaBear>::hypercube_machine();
+        assert!(!machine.chips().is_empty());
     }
 }
