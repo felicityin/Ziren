@@ -624,6 +624,13 @@ where
                         mult,
                         ..
                     }) => backfill((mult, addr)),
+                    Instruction::ExtFelt(ExtFeltInstr { addrs, mults, ext2felt }) => {
+                        if *ext2felt {
+                            mults[1..].iter_mut().zip(&addrs[1..]).for_each(&mut backfill);
+                        } else {
+                            backfill((&mut mults[0], &addrs[0]));
+                        }
+                    }
                     Instruction::Select(SelectInstr {
                         addrs: SelectIo { out1: ref addr1, out2: ref addr2, .. },
                         mult1,
@@ -712,6 +719,7 @@ const fn instr_name<F>(instr: &Instruction<F>) -> &'static str {
         Instruction::Poseidon2(_) => "Poseidon2",
         Instruction::Poseidon2LinearLayer(_) => "Poseidon2LinearLayer",
         Instruction::Poseidon2SBox(_) => "Poseidon2SBox",
+        Instruction::ExtFelt(_) => "ExtFelt",
         Instruction::Select(_) => "Select",
         Instruction::HintBits(_) => "HintBits",
         Instruction::PrefixSumChecks(_) => "PrefixSumChecks",

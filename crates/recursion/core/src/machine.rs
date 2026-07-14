@@ -13,10 +13,13 @@ use crate::{
     chips::{
         alu_base::{BaseAluChip, NUM_BASE_ALU_ENTRIES_PER_ROW},
         alu_ext::{ExtAluChip, NUM_EXT_ALU_ENTRIES_PER_ROW},
+        ext_felt_convert::ConvertChip,
         mem::{
             constant::NUM_CONST_MEM_ENTRIES_PER_ROW, variable::NUM_VAR_MEM_ENTRIES_PER_ROW,
             MemoryConstChip, MemoryVarChip,
         },
+        poseidon2_linear_layer::Poseidon2LinearLayerChip,
+        poseidon2_sbox::Poseidon2SBoxChip,
         poseidon2_skinny::Poseidon2SkinnyChip,
         poseidon2_wide::Poseidon2WideChip,
         prefix_sum_checks::PrefixSumChecksChip,
@@ -42,6 +45,9 @@ pub enum RecursionAir<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: u
     ExtAlu(ExtAluChip),
     Poseidon2Skinny(Poseidon2SkinnyChip<DEGREE>),
     Poseidon2Wide(Poseidon2WideChip<DEGREE>),
+    Poseidon2LinearLayer(Poseidon2LinearLayerChip),
+    Poseidon2SBox(Poseidon2SBoxChip),
+    ExtFeltConvert(ConvertChip),
     Select(SelectChip),
     PrefixSumChecks(PrefixSumChecksChip),
     PublicValues(PublicValuesChip),
@@ -64,6 +70,7 @@ pub struct RecursionAirEventCount {
     pub poseidon2_wide_events: usize,
     pub poseidon2_linear_layer_events: usize,
     pub poseidon2_sbox_events: usize,
+    pub ext_felt_conversion_events: usize,
     pub select_events: usize,
     pub prefix_sum_checks_events: usize,
 }
@@ -80,6 +87,9 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::BaseAlu(BaseAluChip),
             RecursionAir::ExtAlu(ExtAluChip),
             RecursionAir::Poseidon2Wide(Poseidon2WideChip::<DEGREE>),
+            RecursionAir::Poseidon2LinearLayer(Poseidon2LinearLayerChip),
+            RecursionAir::Poseidon2SBox(Poseidon2SBoxChip),
+            RecursionAir::ExtFeltConvert(ConvertChip),
             RecursionAir::Select(SelectChip),
             RecursionAir::PrefixSumChecks(PrefixSumChecksChip),
             RecursionAir::PublicValues(PublicValuesChip),
@@ -224,6 +234,7 @@ impl<F> AddAssign<&Instruction<F>> for RecursionAirEventCount {
             Instruction::Poseidon2(_) => self.poseidon2_wide_events += 1,
             Instruction::Poseidon2LinearLayer(_) => self.poseidon2_linear_layer_events += 1,
             Instruction::Poseidon2SBox(_) => self.poseidon2_sbox_events += 1,
+            Instruction::ExtFelt(_) => self.ext_felt_conversion_events += 1,
             Instruction::Select(_) => self.select_events += 1,
             Instruction::Hint(HintInstr { output_addrs_mults })
             | Instruction::HintBits(HintBitsInstr {

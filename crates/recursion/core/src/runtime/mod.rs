@@ -408,6 +408,20 @@ where
                         .poseidon2_sbox_events
                         .push(Poseidon2SBoxEvent { input: io_input, output: io_output });
                 }
+                Instruction::ExtFelt(ExtFeltInstr { addrs, mults, ext2felt }) => {
+                    let input = if ext2felt {
+                        let input = self.memory.mr(addrs[0]).val;
+                        for i in 0..D {
+                            self.memory.mw(addrs[i + 1], Block::from(input.0[i]), mults[i + 1]);
+                        }
+                        input
+                    } else {
+                        let input = Block(std::array::from_fn(|i| self.memory.mr(addrs[i + 1]).val.0[0]));
+                        self.memory.mw(addrs[0], input, mults[0]);
+                        input
+                    };
+                    self.record.ext_felt_conversion_events.push(ExtFeltEvent { input });
+                }
                 Instruction::Select(SelectInstr {
                     addrs: SelectIo { bit, out1, out2, in1, in2 },
                     mult1,

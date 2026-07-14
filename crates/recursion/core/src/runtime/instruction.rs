@@ -13,6 +13,7 @@ pub enum Instruction<F> {
     Poseidon2(Box<Poseidon2Instr<F>>),
     Poseidon2LinearLayer(Box<Poseidon2LinearLayerInstr<F>>),
     Poseidon2SBox(Poseidon2SBoxInstr<F>),
+    ExtFelt(ExtFeltInstr<F>),
     Select(SelectInstr<F>),
     HintBits(HintBitsInstr<F>),
     HintAddCurve(HintAddCurveInstr<F>),
@@ -182,6 +183,18 @@ pub fn poseidon2_sbox<F: FieldAlgebra>(
             input: Address(F::from_canonical_u32(input)),
         },
         external,
+    })
+}
+
+pub fn ext_felt<F: FieldAlgebra>(
+    ext2felt: bool,
+    mults: [u32; 5],
+    addrs: [u32; 5],
+) -> Instruction<F> {
+    Instruction::ExtFelt(ExtFeltInstr {
+        mults: mults.map(F::from_canonical_u32),
+        addrs: addrs.map(F::from_canonical_u32).map(Address),
+        ext2felt,
     })
 }
 

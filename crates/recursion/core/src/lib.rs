@@ -201,6 +201,28 @@ pub struct Poseidon2SBoxInstr<F> {
 
 pub type Poseidon2SBoxEvent<F> = Poseidon2SBoxIo<Block<F>>;
 
+/// An instruction converting between one extension-sized block (`addrs[0]`) and `D` separate
+/// base-field cells (`addrs[1..]`), row-local (degree <= 3). Bridges the block-addressed
+/// `Poseidon2SBoxChip`/`Poseidon2LinearLayerChip` wiring with ordinary felt-addressed memory.
+///
+/// `mults` only holds the real (compiler-backfilled) consumption count at the index this
+/// instruction actually writes to (`addrs[1..5]` when `ext2felt`, else `addrs[0]`); the entries
+/// at the read-side indices are placeholders, ignored by both the runtime and the AIR.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[repr(C)]
+pub struct ExtFeltInstr<F> {
+    pub addrs: [Address<F>; 5],
+    pub mults: [F; 5],
+    pub ext2felt: bool,
+}
+
+/// An event recording an ext2felt or felt2ext conversion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
+pub struct ExtFeltEvent<F> {
+    pub input: Block<F>,
+}
+
 /// The inputs and outputs to the operations for prefix sum checks. This struct doubles as both
 /// the DSL/instruction-level "one entry per accumulation step" addresses (`Vec<Address<F>>`) and
 /// the executed-value shape (`Vec<V>` for the runtime), matching SP1's own `PrefixSumChecksIo`

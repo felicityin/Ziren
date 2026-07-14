@@ -1,6 +1,9 @@
 pub mod alu_base;
 pub mod alu_ext;
+pub mod ext_felt_convert;
 pub mod mem;
+pub mod poseidon2_linear_layer;
+pub mod poseidon2_sbox;
 pub mod poseidon2_skinny;
 pub mod poseidon2_wide;
 pub mod prefix_sum_checks;
