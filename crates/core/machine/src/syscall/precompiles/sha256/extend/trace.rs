@@ -7,7 +7,7 @@ use std::borrow::BorrowMut;
 use zkm_core_executor::{
     events::{ByteLookupEvent, ByteRecord, PrecompileEvent, ShaExtendEvent},
     syscalls::SyscallCode,
-    ExecutionRecord, Program,
+    ByteOpcode, ExecutionRecord, Program,
 };
 use zkm_hypercube::air::MachineAir;
 #[cfg(feature = "picus")]
@@ -108,6 +108,15 @@ impl ShaExtendChip {
             cols.shard = F::from_canonical_u32(event.shard);
             cols.clk = F::from_canonical_u32(event.clk);
             cols.w_ptr = F::from_canonical_u32(event.w_ptr);
+
+            // Matches the AIR's `send_byte(LTU, 1, i - 16, 48, is_real)` bound check.
+            blu.add_byte_lookup_event(ByteLookupEvent {
+                opcode: ByteOpcode::LTU,
+                a1: 1,
+                a2: 0,
+                b: j as u8,
+                c: 48,
+            });
 
             cols.w_i_minus_15.populate(event.w_i_minus_15_reads[j], blu);
             cols.w_i_minus_2.populate(event.w_i_minus_2_reads[j], blu);
