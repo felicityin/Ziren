@@ -12,7 +12,7 @@ use super::Lookup;
 
 /// A builder that symbolically evaluates an AIR to extract its lookup interactions as
 /// affine (degree <= 1) combinations of the preprocessed/main columns.
-pub struct InteractionBuilder<F: Field> {
+pub struct LookBuilder<F: Field> {
     preprocessed: RowMajorMatrix<SymbolicVariable<F>>,
     main: RowMajorMatrix<SymbolicVariable<F>>,
     sends: Vec<Lookup<F>>,
@@ -20,7 +20,7 @@ pub struct InteractionBuilder<F: Field> {
     public_values: Vec<F>,
 }
 
-impl<F: Field> InteractionBuilder<F> {
+impl<F: Field> LookBuilder<F> {
     #[must_use]
     pub fn new(preprocessed_width: usize, main_width: usize) -> Self {
         let preprocessed_width = preprocessed_width.max(1);
@@ -47,7 +47,7 @@ impl<F: Field> InteractionBuilder<F> {
     }
 }
 
-impl<F: Field> AirBuilder for InteractionBuilder<F> {
+impl<F: Field> AirBuilder for LookBuilder<F> {
     type F = F;
     type Expr = SymbolicExpression<F>;
     type Var = SymbolicVariable<F>;
@@ -72,13 +72,13 @@ impl<F: Field> AirBuilder for InteractionBuilder<F> {
     fn assert_zero<I: Into<Self::Expr>>(&mut self, _x: I) {}
 }
 
-impl<F: Field> PairBuilder for InteractionBuilder<F> {
+impl<F: Field> PairBuilder for LookBuilder<F> {
     fn preprocessed(&self) -> Self::M {
         self.preprocessed.clone()
     }
 }
 
-impl<F: Field> MessageBuilder<AirLookup<SymbolicExpression<F>>> for InteractionBuilder<F> {
+impl<F: Field> MessageBuilder<AirLookup<SymbolicExpression<F>>> for LookBuilder<F> {
     fn send(&mut self, message: AirLookup<SymbolicExpression<F>>, scope: LookupScope) {
         let values = message.values.into_iter().map(|v| symbolic_to_virtual_pair(&v)).collect::<Vec<_>>();
         let multiplicity = symbolic_to_virtual_pair(&message.multiplicity);
@@ -92,7 +92,7 @@ impl<F: Field> MessageBuilder<AirLookup<SymbolicExpression<F>>> for InteractionB
     }
 }
 
-impl<F: Field> AirBuilderWithPublicValues for InteractionBuilder<F> {
+impl<F: Field> AirBuilderWithPublicValues for LookBuilder<F> {
     type PublicVar = F;
 
     fn public_values(&self) -> &[Self::PublicVar] {
@@ -100,7 +100,7 @@ impl<F: Field> AirBuilderWithPublicValues for InteractionBuilder<F> {
     }
 }
 
-impl<F: Field> crate::air::OperationSummaryAirBuilder for InteractionBuilder<F> {}
+impl<F: Field> crate::air::OperationSummaryAirBuilder for LookBuilder<F> {}
 
 fn symbolic_to_virtual_pair<F: Field>(expression: &SymbolicExpression<F>) -> VirtualPairCol<F> {
     if expression.degree_multiple() > 1 {
@@ -224,7 +224,7 @@ mod tests {
     fn test_lookup_interactions() {
         let air = LookupTestAir;
 
-        let mut builder = InteractionBuilder::<KoalaBear>::new(0, NUM_COLS);
+        let mut builder = LookBuilder::<KoalaBear>::new(0, NUM_COLS);
         air.eval(&mut builder);
 
         let mut main = builder.main();

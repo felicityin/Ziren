@@ -668,30 +668,19 @@ mod tests {
         run_test_core(runtime, ZKMStdin::new()).unwrap();
     }
 
-    // The three tests below are `#[ignore]`d: they reproduce a currently-unresolved
-    // `GkrVerificationFailed(CumulativeSumMismatch(..))` that occurs specifically once a program
-    // executes a real `SYSCALL` instruction (any syscall, e.g. `HALT`), even the minimal
-    // 3-instruction case below. `run_test_core_smoke`/`run_test_simple_memory_smoke` above (ALU
-    // and memory instructions only, no syscalls) pass, and confirm the `is_comp` fix in
-    // `crates/core/machine/src/memory/global.rs` (a genuine bug: its formula was missing an
-    // `addr == 0` term, so it incorrectly treated any fresh memory-init/finalize chain's first
-    // row as address 0's degenerate one-time case) is real and necessary but not sufficient.
-    //
-    // Investigation so far has ruled out: the CPU `LookupKind::State` chain (covered by the
-    // passing tests above), `MemoryGlobalChip`'s `is_comp`/`prev_valid` formulas (fixed and
-    // re-verified against `run_test_simple_memory_smoke`), and `GlobalChip`'s own digest
-    // computation (`generate_dependencies` and `generate_trace` were directly compared and found
-    // to compute bit-for-bit identical accumulated digests, including on the minimal
-    // `halt_only_program` case below, where all 16 `global_lookup_events` were dumped and
-    // manually verified to pair up exactly by message with opposite `is_receive` and net to
-    // `SepticDigest::zero()`). The bug is confined to something specific to `SYSCALL` handling
-    // not yet identified -- candidates not yet fully ruled out include `SyscallInstrsChip`'s
-    // `is_sys_linux`/`send_to_table` gating (`crates/core/machine/src/syscall/instructions/air.rs`)
-    // and its correspondence with `SyscallChip`'s own row-inclusion filter
-    // (`crates/core/machine/src/syscall/chip.rs`'s `(prev_value byte[2]==1) || (prev_value
-    // byte[1]!=0)` predicate, applied inconsistently between `num_rows` and `generate_trace`).
+    // `run_test_halt_only_smoke` used to reproduce a `GkrVerificationFailed(CumulativeSumMismatch(..))`
+    // that occurred on any program executing a real `SYSCALL` instruction. Root-caused to two bugs
+    // in `CpuChip::eval_state_chain`'s (`crates/core/machine/src/cpu/air/mod.rs`) `LookupKind::State`
+    // chain: (1) a halting row's `next_pc` is forced to the public sentinel `0`, which the
+    // predecessor's chain prediction doesn't know about, and (2) a row immediately following a
+    // taken branch/jump (i.e. sitting in the delay slot) inherits its predecessor's resolved
+    // `next_next_pc` as its own `next_pc` (see `Executor::execute_operation`'s carry-forward of
+    // `self.state.next_pc`) rather than `pc + 4`. Fixed by witnessing a dedicated
+    // `state_chain_next_pc` column that resolves to `pc + 4` only on a halting row and to
+    // `local.next_pc` otherwise. Found via `zkm_hypercube::lookup::debug_interactions_with_all_chips`,
+    // a ported-from-upstream interaction-imbalance debugger (`crates/hypercube/src/lookup/debug.rs`)
+    // that nets each chip's send/receive multiplicities per lookup key.
     #[test]
-    #[ignore = "known-broken: CumulativeSumMismatch on any program using a real SYSCALL instruction, see comment above"]
     fn run_test_halt_only_smoke() {
         let program = halt_only_program();
         let runtime = Executor::new(program, ZKMCoreOpts::default());
@@ -699,14 +688,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known-broken: CumulativeSumMismatch on any program using a real SYSCALL instruction, see comment on run_test_halt_only_smoke"]
     fn run_test_hello_world_real_elf() {
         let program = hello_world_program();
         run_test(program).unwrap();
     }
 
     #[test]
-    #[ignore = "known-broken: CumulativeSumMismatch on any program using a real SYSCALL instruction, see comment on run_test_halt_only_smoke"]
     fn run_test_fibonacci_real_elf() {
         let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
         run_test(program).unwrap();

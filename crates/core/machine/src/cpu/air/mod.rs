@@ -6,7 +6,7 @@ use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use zkm_core_executor::ByteOpcode;
 use zkm_hypercube::{
-    air::{BaseAirBuilder, PublicValues, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    air::{PublicValues, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
     word::Word,
 };
 
@@ -170,18 +170,39 @@ impl CpuChip {
         local: &CpuCols<AB::Var>,
         clk: AB::Expr,
     ) {
-        builder.receive_state(clk.clone(), local.pc, local.next_pc, local.is_real);
+        // For a non-halting row, `local.next_pc` already carries the value the state chain needs
+        // to receive here: for a row that isn't itself in a delay slot it's simply `pc + 4`
+        // (asserted below), and for a row that *is* in a delay slot -- i.e. it immediately follows
+        // a branch/jump -- the executor inherits the preceding row's resolved `next_next_pc` as
+        // this row's own `next_pc` (see `Executor::execute_operation`'s `next_pc = self.state.next_pc`
+        // carry-forward), which is exactly what that predecessor's `send_state` (below) predicts.
+        // A halting row is the one exception: `local.next_pc` is overwritten to the public sentinel
+        // `0` (see `eval_halt_unimpl`) instead of carrying that inherited value, so substitute
+        // `pc + 4` there -- correct as long as a `HALT`/`SYS_EXT_GROUP` syscall never itself sits in
+        // a delay slot, which real (compiler-generated) programs never do. `LookupKind::State`'s
+        // values must stay affine in the trace columns, so this is witnessed as its own column
+        // (`state_chain_next_pc`) rather than computed inline.
+        builder.assert_eq(
+            local.state_chain_next_pc,
+            local.next_pc.into()
+                + local.is_halt.into() * (local.pc + AB::Expr::from_canonical_u32(4)),
+        );
+        builder.receive_state(clk.clone(), local.pc, local.state_chain_next_pc, local.is_real);
 
         // We already assert that `local.clk < 2^24`. `num_extra_cycles` is an entry of a word and
         // therefore less than `2^8`, this means that the sum cannot overflow in a 31 bit field.
         let expected_next_clk = clk + AB::Expr::from_canonical_u32(5) + local.num_extra_cycles;
         builder.send_state(expected_next_clk, local.next_pc, local.next_next_pc, local.is_real);
 
-        // A non-halting row's own delay slot is always at `pc + 4`.
-        builder
-            .when(local.is_real)
-            .when_not(local.is_halt)
-            .assert_eq(local.pc + AB::Expr::from_canonical_u32(4), local.next_pc);
+        // Note: there is deliberately no direct `assert_eq(pc + 4, next_pc)` constraint here. It
+        // would be actively wrong for a row occupying a delay slot -- such a row's `next_pc`
+        // legitimately carries the *inherited* resolved target from the preceding branch/jump
+        // (see the inheritance comment above), not `pc + 4`. It's also unnecessary for every other
+        // row: inductively, `next_pc == pc + 4` already falls out of the state chain itself --
+        // the shard's first row's incoming receive is anchored to `start_pc + 4` by
+        // `eval_public_values`, and every non-branch/jump row's own `next_next_pc` (via the
+        // `is_sequential` rule below) propagates that same `+ 4` step forward through the chain's
+        // send/receive matching, with no separate assertion needed.
 
         // A sequential row's post-delay-slot pc is just its delay slot's fall-through.
         builder

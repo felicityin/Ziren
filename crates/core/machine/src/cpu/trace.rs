@@ -190,6 +190,9 @@ impl CpuChip {
             !is_halt && !instruction.is_branch_instruction() && !instruction.is_jump_instruction(),
         );
 
+        cols.state_chain_next_pc =
+            if is_halt { F::from_canonical_u32(event.pc + 4) } else { cols.next_pc };
+
         // Populate range checks for a.
         let a_bytes = cols
             .op_a_access

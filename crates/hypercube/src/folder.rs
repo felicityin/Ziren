@@ -8,7 +8,7 @@ use slop_algebra::{FieldExtensionAlgebra, FieldAlgebra, ExtensionField, Field};
 use slop_challenger::IopCtx;
 use slop_matrix::dense::RowMajorMatrixView;
 
-use crate::air::{AirLookup, EmptyMessageBuilder, LookupScope, MessageBuilder};
+use crate::{air::{AirLookup, EmptyMessageBuilder, LookupScope, MessageBuilder}, lookup::LookupKind};
 
 pub type VerifierConstraintFolder<'a, F, EF> = GenericVerifierConstraintFolder<'a, F, EF, F, EF, EF>;
 
@@ -613,6 +613,269 @@ where
 }
 
 impl<F, EF, PubVar, Var, Expr> AirBuilderWithPublicValues for GenericVerifierPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Expr: FieldAlgebra<F = EF>
+        + From<F>
+        + Add<Var, Output = Expr>
+        + Add<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<F, Output = Expr>
+        + MulAssign<EF>,
+    Var: Into<Expr>
+        + Copy
+        + Add<F, Output = Expr>
+        + Add<Var, Output = Expr>
+        + Add<Expr, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<Expr, Output = Expr>
+        + Mul<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<Expr, Output = Expr>
+        + Send
+        + Sync,
+    PubVar: Into<Expr> + Copy,
+{
+    type PublicVar = PubVar;
+
+    fn public_values(&self) -> &[Self::PublicVar] {
+        self.public_values
+    }
+}
+
+pub type DebugPublicValuesConstraintFolder<'a, F> = GenericDebugPublicValuesConstraintFolder<'a, F, F, F, F, F>;
+
+/// A folder that records every interaction sent/received while evaluating `eval_public_values`,
+/// for [`crate::lookup::debug_interactions_with_all_chips`] to net against per-chip trace
+/// interactions and pinpoint an unbalanced lookup key.
+pub struct GenericDebugPublicValuesConstraintFolder<'a, F, EF, PubVar, Var, Expr> {
+    pub perm_challenges: (&'a Var, &'a [Var]),
+    pub alpha: Var,
+    pub accumulator: Expr,
+    pub public_values: &'a [PubVar],
+    pub interactions: Vec<(LookupKind, LookupScope, Vec<Expr>, Expr)>,
+    pub _marker: PhantomData<(F, EF, Expr)>,
+}
+
+impl<'a, F, EF, PubVar, Var, Expr> AirBuilder for GenericDebugPublicValuesConstraintFolder<'a, F, EF, PubVar, Var, Expr>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Expr: FieldAlgebra<F = EF>
+        + From<F>
+        + Add<Var, Output = Expr>
+        + Add<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<F, Output = Expr>
+        + MulAssign<EF>,
+    Var: Into<Expr>
+        + Copy
+        + Add<F, Output = Expr>
+        + Add<Var, Output = Expr>
+        + Add<Expr, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<Expr, Output = Expr>
+        + Mul<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<Expr, Output = Expr>
+        + Send
+        + Sync,
+    PubVar: Into<Expr> + Copy,
+{
+    type F = F;
+    type Expr = Expr;
+    type Var = Var;
+    type M = RowMajorMatrixView<'a, Var>;
+
+    fn main(&self) -> Self::M {
+        unimplemented!()
+    }
+
+    fn is_first_row(&self) -> Self::Expr {
+        unimplemented!()
+    }
+
+    fn is_last_row(&self) -> Self::Expr {
+        unimplemented!()
+    }
+
+    fn is_transition_window(&self, _: usize) -> Self::Expr {
+        unimplemented!()
+    }
+
+    fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
+        let x: Expr = x.into();
+        self.accumulator *= self.alpha.into();
+        self.accumulator += x;
+    }
+}
+
+impl<F, EF, PubVar, Var, Expr> ExtensionBuilder for GenericDebugPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Expr: FieldAlgebra<F = EF>
+        + From<F>
+        + Add<Var, Output = Expr>
+        + Add<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<F, Output = Expr>
+        + MulAssign<EF>,
+    Var: Into<Expr>
+        + Copy
+        + Add<F, Output = Expr>
+        + Add<Var, Output = Expr>
+        + Add<Expr, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<Expr, Output = Expr>
+        + Mul<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<Expr, Output = Expr>
+        + Send
+        + Sync,
+    PubVar: Into<Expr> + Copy,
+{
+    type EF = EF;
+    type ExprEF = Expr;
+    type VarEF = Var;
+
+    fn assert_zero_ext<I>(&mut self, x: I)
+    where
+        I: Into<Self::ExprEF>,
+    {
+        self.assert_zero(x);
+    }
+}
+
+impl<'a, F, EF, PubVar, Var, Expr> PermutationAirBuilder for GenericDebugPublicValuesConstraintFolder<'a, F, EF, PubVar, Var, Expr>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Expr: FieldAlgebra<F = EF>
+        + From<F>
+        + Add<Var, Output = Expr>
+        + Add<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<F, Output = Expr>
+        + MulAssign<EF>,
+    Var: Into<Expr>
+        + Copy
+        + Add<F, Output = Expr>
+        + Add<Var, Output = Expr>
+        + Add<Expr, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<Expr, Output = Expr>
+        + Mul<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<Expr, Output = Expr>
+        + Send
+        + Sync,
+    PubVar: Into<Expr> + Copy,
+{
+    type MP = RowMajorMatrixView<'a, Var>;
+    type RandomVar = Var;
+
+    fn permutation(&self) -> Self::MP {
+        unimplemented!()
+    }
+
+    fn permutation_randomness(&self) -> &[Self::Var] {
+        unimplemented!()
+    }
+}
+
+impl<F, EF, PubVar, Var, Expr> PairBuilder for GenericDebugPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Expr: FieldAlgebra<F = EF>
+        + From<F>
+        + Add<Var, Output = Expr>
+        + Add<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<F, Output = Expr>
+        + MulAssign<EF>,
+    Var: Into<Expr>
+        + Copy
+        + Add<F, Output = Expr>
+        + Add<Var, Output = Expr>
+        + Add<Expr, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<Expr, Output = Expr>
+        + Mul<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<Expr, Output = Expr>
+        + Send
+        + Sync,
+    PubVar: Into<Expr> + Copy,
+{
+    fn preprocessed(&self) -> Self::M {
+        unimplemented!()
+    }
+}
+
+impl<F, EF, PubVar, Var, Expr> MessageBuilder<AirLookup<Expr>> for GenericDebugPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
+where
+    F: Field,
+    EF: ExtensionField<F>,
+    Expr: FieldAlgebra<F = EF>
+        + From<F>
+        + Add<Var, Output = Expr>
+        + Add<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<F, Output = Expr>
+        + MulAssign<EF>
+        + Div<Expr, Output = Expr>,
+    Var: Into<Expr>
+        + Copy
+        + Add<F, Output = Expr>
+        + Add<Var, Output = Expr>
+        + Add<Expr, Output = Expr>
+        + Sub<F, Output = Expr>
+        + Sub<Var, Output = Expr>
+        + Sub<Expr, Output = Expr>
+        + Mul<F, Output = Expr>
+        + Mul<Var, Output = Expr>
+        + Mul<Expr, Output = Expr>
+        + Send
+        + Sync,
+    PubVar: Into<Expr> + Copy,
+{
+    fn send(&mut self, message: AirLookup<Expr>, scope: LookupScope) {
+        self.interactions.push((message.kind, scope, message.values, message.multiplicity));
+    }
+
+    fn receive(&mut self, message: AirLookup<Expr>, scope: LookupScope) {
+        self.interactions.push((message.kind, scope, message.values, -message.multiplicity));
+    }
+}
+
+impl<F, EF, PubVar, Var, Expr> crate::air::OperationSummaryAirBuilder
+    for GenericDebugPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
+where
+    Self: slop_air::AirBuilder,
+{
+}
+
+impl<F, EF, PubVar, Var, Expr> AirBuilderWithPublicValues for GenericDebugPublicValuesConstraintFolder<'_, F, EF, PubVar, Var, Expr>
 where
     F: Field,
     EF: ExtensionField<F>,

@@ -44,7 +44,7 @@
   "Branch": 62,
   "SysLinux": 103,
   "Bls12381FpOpAssign": 556,
-  "Cpu": 67,
+  "Cpu": 68,
   "ShaCompress": 20880,
   "MemoryInstrs": 79,
   "MiscInstrs": 72,

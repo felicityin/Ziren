@@ -45,6 +45,13 @@ pub struct CpuCols<T: Copy> {
     /// The expected next_next program counter value.
     pub next_next_pc: T,
 
+    /// This row's own incoming-chain pc, i.e. what `local.next_pc` would be if it weren't
+    /// overwritten to the public halt sentinel `0` on a halting row (see
+    /// [`crate::cpu::air::CpuChip::eval_state_chain`]). Equal to `local.next_pc` for every
+    /// non-halting row and to `local.pc + 4` for a halting one; witnessed separately because
+    /// `LookupKind::State`'s values must stay affine in the trace columns.
+    pub state_chain_next_pc: T,
+
     /// Columns related to the instruction.
     pub instruction: InstructionCols<T>,
 

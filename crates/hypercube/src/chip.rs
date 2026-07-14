@@ -8,7 +8,7 @@ use slop_uni_stark::{get_max_constraint_degree, get_symbolic_constraints, Symbol
 
 use crate::{
     air::{MachineAir, ZKMAirBuilder},
-    lookup::{InteractionBuilder, Lookup, LookupKind},
+    lookup::{LookBuilder, Lookup, LookupKind},
     PROOF_MAX_NUM_PVS,
 };
 
@@ -77,9 +77,9 @@ where
     /// Records the interactions and constraint degree from the air and creates a new chip.
     pub fn new(air: A) -> Self
     where
-        A: MachineAir<F> + Air<InteractionBuilder<F>> + Air<SymbolicAirBuilder<F>>,
+        A: MachineAir<F> + Air<LookBuilder<F>> + Air<SymbolicAirBuilder<F>>,
     {
-        let mut builder = InteractionBuilder::new(air.preprocessed_width(), air.width());
+        let mut builder = LookBuilder::new(air.preprocessed_width(), air.width());
         air.eval(&mut builder);
         let (sends, receives) = builder.interactions();
 

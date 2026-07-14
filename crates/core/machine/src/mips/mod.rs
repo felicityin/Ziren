@@ -187,14 +187,63 @@ impl<F: PrimeField32> MipsAir<F> {
     //     StarkMachine::new(config, chips, ZKM_PROOF_NUM_PV_ELTS)
     // }
 
-    /// Builds the zkm-hypercube [`zkm_hypercube::Machine`] over all MIPS chips (a single cluster
-    /// containing every chip; no shard-shape splitting yet).
+    /// Builds the zkm-hypercube [`zkm_hypercube::Machine`] over all MIPS chips.
+    ///
+    /// Registers three chip clusters (unlike SP1's `riscv/mod.rs`, which combinatorially extends
+    /// a base cluster with each precompile/memory-boundary chip group, this stays with a small,
+    /// conservatively safe set for now -- see task #42 for extending it further):
+    /// - `core_cluster`: `Program`/`Byte`/`Global` plus every chip that's part of ordinary CPU
+    ///   execution (ALU, control flow, memory access, syscall dispatch). Covers the overwhelming
+    ///   majority of shards in a long-running program, which just keep executing user code.
+    /// - `memory_boundary_cluster`: `Program`/`Byte`/`Global` plus `MemoryGlobalInit`/
+    ///   `MemoryGlobalFinal`, for the (typically one) shard that commits deferred global memory
+    ///   init/finalize events with no CPU activity of its own.
+    /// - `all_cluster`: every chip, unconditionally a superset of any shard's actual chip set.
+    ///   `Machine::smallest_cluster` picks the smallest cluster that's a superset of what a shard
+    ///   actually needs, so this is a safety-net fallback -- any shard that doesn't fit the two
+    ///   smaller clusters above (i.e. one using a precompile, or a deferred Linux syscall) still
+    ///   finds a match here instead of panicking, at the same shard-size cost `MachineShape::all`
+    ///   already paid for every shard.
     pub fn hypercube_machine() -> zkm_hypercube::Machine<F, Self>
     where
         F: slop_algebra::Field,
     {
+        use std::collections::BTreeSet;
+
         let chips = Self::chips();
-        let shape = zkm_hypercube::MachineShape::all(&chips);
+        let by_name: HashMap<String, Chip<F, Self>> =
+            chips.iter().map(|c| (MachineAir::<F>::name(c), c.clone())).collect();
+        let cluster = |names: &[&str]| -> BTreeSet<Chip<F, Self>> {
+            names.iter().map(|name| by_name[*name].clone()).collect()
+        };
+
+        let core_cluster = cluster(&[
+            "Program",
+            "Byte",
+            "Global",
+            "Cpu",
+            "AddSub",
+            "Bitwise",
+            "Mul",
+            "ShiftRight",
+            "ShiftLeft",
+            "Lt",
+            "DivRem",
+            "CloClz",
+            "Branch",
+            "Jump",
+            "MiscInstrs",
+            "MovCond",
+            "MemoryInstrs",
+            "SyscallInstrs",
+            "MemoryLocal",
+        ]);
+        let memory_boundary_cluster =
+            cluster(&["Program", "Byte", "Global", "MemoryGlobalInit", "MemoryGlobalFinalize"]);
+        let all_cluster = chips.iter().cloned().collect::<BTreeSet<_>>();
+
+        let shape =
+            zkm_hypercube::MachineShape::new(vec![core_cluster, memory_boundary_cluster, all_cluster]);
         zkm_hypercube::Machine::new(chips, zkm_hypercube::air::ZKM_PROOF_NUM_PV_ELTS, shape)
     }
 
@@ -855,7 +904,6 @@ pub mod tests {
     }
 
     #[test]
-    #[ignore = "blocked on a native CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
     fn test_hello_world_prove_simple() {
         setup_logger();
         let program = hello_world_program();
@@ -863,7 +911,6 @@ pub mod tests {
     }
 
     #[test]
-    #[ignore = "blocked on a native CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
     fn test_fibonacci_prove_simple() {
         setup_logger();
         let program = fibonacci_program();
@@ -871,7 +918,6 @@ pub mod tests {
     }
 
     #[test]
-    #[ignore = "blocked on a native CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
     fn test_max_memory_prove_simple() {
         setup_logger();
         let program = max_memory_program();
@@ -937,7 +983,6 @@ pub mod tests {
     }
 
     #[test]
-    #[ignore = "blocked on a native CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
     fn test_unconstrained() {
         setup_logger();
         let program = unconstrained_program();
@@ -1017,7 +1062,6 @@ pub mod tests {
     /// Exercises SYS_WRITE, exit_group, mmap, clone, brk, fcntl, and nop
     /// syscall paths through the Go hello_world runtime.
     #[test]
-    #[ignore = "blocked on a native CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
     fn test_syscall_soundness_hello_world() {
         setup_logger();
         let program = hello_world_program();
@@ -1027,7 +1071,6 @@ pub mod tests {
     /// Exercises the full Go runtime init: mmap2 with a0=0 (heap allocation),
     /// fcntl with a1=1 and a1=3, clone, brk, read, and exit_group.
     #[test]
-    #[ignore = "blocked on a native CumulativeSumMismatch bug on any program using a real SYSCALL instruction -- see run_test_halt_only_smoke in crates/core/machine/src/utils/prove.rs"]
     fn test_syscall_soundness_fibonacci() {
         setup_logger();
         let program = fibonacci_program();
