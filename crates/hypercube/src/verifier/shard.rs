@@ -15,7 +15,7 @@ use slop_jagged::{JaggedPcsVerifier, JaggedPcsVerifierError};
 use slop_matrix::dense::RowMajorMatrixView;
 use slop_multilinear::{full_geq, Evaluations, Mle, MleEval, MultilinearPcsVerifier};
 use slop_primitives::FriConfig;
-use slop_stacked::StackedPcsVerifier;
+use slop_stacked::{StackedBasefoldProof, StackedPcsVerifier};
 use slop_sumcheck::{partially_verify_sumcheck_proof, SumcheckError};
 use thiserror::Error;
 
@@ -28,6 +28,14 @@ use crate::{
 };
 
 use super::{MachineVerifyingKey, ShardOpenedValues, ShardProof};
+
+/// The PCS opening proof type for a given global context, independent of the specific machine
+/// (`ShardContext::Config` is the same `ZkmStackedPcs` regardless of which `Air` parameterizes
+/// `ZkmSC`), so it doesn't need to be parameterized by an `Air` type.
+pub type ZkmPcsProof<GC> = StackedBasefoldProof<GC>;
+
+/// The PCS opening proof type for the default (inner, non-wrap) global context.
+pub type ZkmPcsProofInner = ZkmPcsProof<ZkmGlobalContext>;
 
 /// A verifier for shard proofs.
 #[derive_where(Clone)]

@@ -15,20 +15,34 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSlice;
 use serde::{Deserialize, Serialize};
+use slop_challenger::IopCtx;
 use zkm_core_executor::ZKMReduceProof;
 use zkm_core_machine::utils::log2_strict_usize;
+#[cfg(not(feature = "dummy-vk-map"))]
+use zkm_hypercube::verifier::verify_merkle_proof;
+use zkm_hypercube::{
+    config::{default_fri_config, ZkmGlobalContext},
+    verifier::ZkmPcsProofInner,
+    ShardVerifier, DIGEST_SIZE,
+};
 use zkm_recursion_core::air::{RecursionPublicValues, NUM_PV_ELMS_TO_HASH};
 use zkm_recursion_core::machine::RecursionAir;
-use zkm_stark::{
-    inner_perm, koala_bear_poseidon2::MyHash as InnerHash, CpuProver, MachineProof, MachineProver,
-    MachineVerificationError, StarkGenericConfig, DIGEST_SIZE,
-};
+use zkm_stark::{inner_perm, koala_bear_poseidon2::MyHash as InnerHash};
 
-use super::{HashableKey, InnerSC, ZKMVerifyingKey};
+use super::{HashableKey, ZKMVerifyingKey};
 
 const COMPRESS_DEGREE: usize = 3;
 pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
-type CompressProver = CpuProver<InnerSC, CompressAir<<InnerSC as StarkGenericConfig>::Val>>;
+
+/// The log2 of the number of rows each stacked-PCS column is grouped into for the compress
+/// machine. Mirrors `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`, kept in
+/// sync by convention.
+const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
+
+/// The max log row count the compress machine's jagged PCS is configured for. Mirrors
+/// `zkm_stark::ZKMCoreOpts::recursion().shard_size`'s log2 (`RECURSION_MAX_SHARD_SIZE = 1 << 21`
+/// in `crates/stark/src/opts.rs`).
+const RECURSION_MAX_LOG_ROW_COUNT: usize = 21;
 
 pub static VK_MAP: Lazy<&'static [u8]> = Lazy::new(|| {
     #[cfg(feature = "dummy-vk-map")]
@@ -44,60 +58,64 @@ pub static VK_MAP: Lazy<&'static [u8]> = Lazy::new(|| {
 
 pub(crate) fn verify_stark_compressed_proof(
     vk: &ZKMVerifyingKey,
-    proof: &ZKMReduceProof<InnerSC>,
-) -> Result<(), MachineVerificationError<InnerSC>> {
+    proof: &ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>,
+) -> Result<(), super::error::StarkError> {
     let allowed_vk_map: BTreeMap<[KoalaBear; DIGEST_SIZE], usize> =
         bincode::deserialize(&VK_MAP).unwrap();
     let (recursion_vk_root, _merkle_tree) =
-        MerkleTree::<KoalaBear, InnerSC>::commit(allowed_vk_map.keys().copied().collect());
+        MerkleTree::<KoalaBear, ZkmGlobalContext>::commit(allowed_vk_map.keys().copied().collect());
 
-    let compress_machine = CompressAir::compress_machine(InnerSC::default());
-    let compress_prover = CompressProver::new(compress_machine);
+    let ZKMReduceProof { vk: compress_vk, proof, vk_merkle_proof } = proof;
 
-    let ZKMReduceProof { vk: compress_vk, proof } = proof;
+    // Verify the shard proof.
+    let machine = CompressAir::<KoalaBear>::compress_machine();
+    let shard_verifier = ShardVerifier::from_basefold_parameters(
+        default_fri_config(),
+        RECURSION_LOG_STACKING_HEIGHT,
+        RECURSION_MAX_LOG_ROW_COUNT,
+        machine,
+    );
+    let mut challenger = ZkmGlobalContext::default_challenger();
+    compress_vk.observe_into(&mut challenger);
+    shard_verifier
+        .verify_shard(compress_vk, proof, &mut challenger)
+        .map_err(|e| super::error::StarkError::Recursion(format!("{e:?}")))?;
 
-    #[cfg(not(feature = "dummy-vk-map"))]
-    if !allowed_vk_map.contains_key(&compress_vk.hash_koalabear()) {
-        return Err(MachineVerificationError::InvalidVerificationKey);
-    }
-
-    // Validate public values
+    // Validate public values.
     let public_values: &RecursionPublicValues<_> = proof.public_values.as_slice().borrow();
-    if !is_recursion_public_values_valid(compress_prover.machine().config(), public_values) {
-        return Err(MachineVerificationError::InvalidPublicValues(
-            "recursion public values are invalid",
-        ));
+    if !is_recursion_public_values_valid(public_values) {
+        return Err(super::error::StarkError::InvalidPublicValues);
     }
+
+    // Verify the merkle proof of inclusion of `compress_vk` in the allowed vk set.
+    #[cfg(not(feature = "dummy-vk-map"))]
+    verify_merkle_proof(vk_merkle_proof, compress_vk.hash_koalabear(), recursion_vk_root)
+        .map_err(|_| super::error::StarkError::InvalidVerificationKey)?;
+    #[cfg(feature = "dummy-vk-map")]
+    let _ = vk_merkle_proof;
 
     if public_values.vk_root != recursion_vk_root {
-        return Err(MachineVerificationError::InvalidPublicValues("vk_root mismatch"));
+        return Err(super::error::StarkError::InvalidPublicValues);
     }
 
     // `is_complete` should be 1. In the reduce program, this ensures that the proof is fully
     // reduced.
     if public_values.is_complete != KoalaBear::ONE {
-        return Err(MachineVerificationError::InvalidPublicValues("is_complete is not 1"));
+        return Err(super::error::StarkError::InvalidPublicValues);
     }
 
     // Verify that the proof is for the Ziren vkey we are expecting.
     let vkey_hash = vk.vk.hash_koalabear();
     if public_values.zkm_vk_digest != vkey_hash {
-        return Err(MachineVerificationError::InvalidPublicValues("Ziren vk hash mismatch"));
+        return Err(super::error::StarkError::InvalidPublicValues);
     }
-
-    let mut challenger = compress_prover.config().challenger();
-    let machine_proof = MachineProof { shard_proofs: vec![proof.clone()] };
-    compress_prover.machine().verify(compress_vk, &machine_proof, &mut challenger)?;
 
     Ok(())
 }
 
 /// Check if the digest of the public values is correct.
-fn is_recursion_public_values_valid(
-    config: &InnerSC,
-    public_values: &RecursionPublicValues<KoalaBear>,
-) -> bool {
-    let expected_digest = recursion_public_values_digest(config, public_values);
+fn is_recursion_public_values_valid(public_values: &RecursionPublicValues<KoalaBear>) -> bool {
+    let expected_digest = recursion_public_values_digest(public_values);
     for (value, expected) in public_values.digest.iter().copied().zip_eq(expected_digest) {
         if value != expected {
             return false;
@@ -108,10 +126,9 @@ fn is_recursion_public_values_valid(
 
 /// Compute the digest of the public values.
 pub(crate) fn recursion_public_values_digest(
-    config: &InnerSC,
     public_values: &RecursionPublicValues<KoalaBear>,
 ) -> [KoalaBear; 8] {
-    let hash = InnerHash::new(config.perm.clone());
+    let hash = InnerHash::new(inner_perm());
     let pv_array = public_values.as_array();
     hash.hash_slice(&pv_array[0..NUM_PV_ELMS_TO_HASH])
 }
@@ -122,7 +139,7 @@ pub(crate) trait FieldHasher<F: Field> {
     fn constant_compress(input: [Self::Digest; 2]) -> Self::Digest;
 }
 
-impl FieldHasher<KoalaBear> for InnerSC {
+impl FieldHasher<KoalaBear> for ZkmGlobalContext {
     type Digest = [KoalaBear; DIGEST_SIZE];
 
     fn constant_compress(input: [Self::Digest; 2]) -> Self::Digest {

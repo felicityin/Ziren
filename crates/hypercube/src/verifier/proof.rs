@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 
+use p3_util::reverse_bits_len;
 use serde::{Deserialize, Serialize};
 use slop_challenger::{GrindingChallenger, IopCtx};
 use slop_jagged::JaggedPcsProof;
 use slop_matrix::dense::RowMajorMatrixView;
 use slop_multilinear::{MultilinearPcsVerifier, Point};
 use slop_sumcheck::PartialSumcheckProof;
+use slop_symmetric::PseudoCompressionFunction;
 
-use crate::{LogupGkrProof, ShardContext};
+use crate::{config::ZkmGlobalContext, LogupGkrProof, MachineVerifyingKey, ShardContext};
 
 /// A proof for a shard.
 #[derive(Clone, Serialize, Deserialize)]
@@ -72,4 +74,76 @@ impl<T> AirOpenedValues<T> {
     {
         RowMajorMatrixView::new_row(&self.local)
     }
+}
+
+/// A Merkle tree proof for proving membership in the recursion verifying key set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerkleProof<GC: IopCtx> {
+    /// The index of the leaf being proven.
+    pub index: usize,
+    /// The Merkle path.
+    pub path: Vec<GC::Digest>,
+}
+
+#[derive(Debug)]
+/// The error type for Merkle proof verification.
+pub struct VcsError;
+
+/// Verify a Merkle proof.
+pub fn verify_merkle_proof<GC: IopCtx>(
+    proof: &MerkleProof<GC>,
+    value: GC::Digest,
+    commitment: GC::Digest,
+) -> Result<(), VcsError> {
+    let MerkleProof { index, path } = proof;
+
+    let mut value = value;
+    let mut index = reverse_bits_len(*index, path.len());
+
+    for sibling in path {
+        let new_pair = if index.is_multiple_of(2) { [value, *sibling] } else { [*sibling, value] };
+        let (_, compressor) = GC::default_hasher_and_compressor();
+        value = compressor.compress(new_pair);
+        index >>= 1;
+    }
+    if value != commitment {
+        Err(VcsError)
+    } else {
+        Ok(())
+    }
+}
+
+/// An intermediate proof which proves the execution of a hypercube verifier.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(bound(
+    serialize = "GC: IopCtx, GC::Challenger: Serialize, Proof: Serialize",
+    deserialize = "GC: IopCtx, GC::Challenger: Deserialize<'de>, Proof: Deserialize<'de>"
+))]
+pub struct ZKMReduceProof<GC: IopCtx, Proof> {
+    /// The verifying key associated with the proof.
+    pub vk: MachineVerifyingKey<GC>,
+    /// The shard proof representing the shard proof.
+    pub proof: ShardProof<GC, Proof>,
+    /// The Merkle proof for the recursion verifying key.
+    pub vk_merkle_proof: MerkleProof<ZkmGlobalContext>,
+}
+
+impl<GC: IopCtx, Proof> std::fmt::Debug for ZKMReduceProof<GC, Proof> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ZKMReduceProof").finish_non_exhaustive()
+    }
+}
+
+/// An intermediate proof which proves the execution of a hypercube verifier, used for the final
+/// wrap layer.
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(bound(
+    serialize = "GC: IopCtx, GC::Challenger: Serialize, Proof: Serialize",
+    deserialize = "GC: IopCtx, GC::Challenger: Deserialize<'de>, Proof: Deserialize<'de>"
+))]
+pub struct ZKMWrapProof<GC: IopCtx, Proof> {
+    /// The verifying key associated with the proof.
+    pub vk: MachineVerifyingKey<GC>,
+    /// The shard proof within the wrap proof.
+    pub proof: ShardProof<GC, Proof>,
 }

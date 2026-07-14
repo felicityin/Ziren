@@ -1,8 +1,4 @@
 use thiserror::Error;
-// use zkm_prover::{CoreSC, InnerSC};
-use zkm_stark::MachineVerificationError;
-
-use super::{CoreSC, InnerSC};
 
 #[derive(Error, Debug)]
 pub enum StarkError {
@@ -10,8 +6,10 @@ pub enum StarkError {
     InvalidPublicValues,
     #[error("Version mismatch")]
     VersionMismatch(String),
+    #[error("Invalid verification key")]
+    InvalidVerificationKey,
     #[error("Core machine verification error: {0}")]
-    Core(MachineVerificationError<CoreSC>),
+    Core(String),
     #[error("Recursion verification error: {0}")]
-    Recursion(MachineVerificationError<InnerSC>),
+    Recursion(String),
 }

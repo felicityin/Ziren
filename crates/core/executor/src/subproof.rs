@@ -1,8 +1,10 @@
 //! Types and methods for subproof verification inside the [`crate::Executor`].
 
 use crate::ZKMReduceProof;
-use zkm_stark::{
-    koala_bear_poseidon2::KoalaBearPoseidon2, MachineVerificationError, StarkVerifyingKey,
+use zkm_hypercube::{
+    config::{ZkmGlobalContext, ZkmStackedPcs},
+    verifier::{ShardVerifierConfigError, ZkmPcsProofInner},
+    MachineVerifyingKey,
 };
 
 /// Verifier used in runtime when `zkm_zkvm::precompiles::verify::verify_zkm_proof` is called. This
@@ -15,11 +17,11 @@ pub trait SubproofVerifier: Sync + Send {
     /// Verify a deferred proof.
     fn verify_deferred_proof(
         &self,
-        proof: &ZKMReduceProof<KoalaBearPoseidon2>,
-        vk: &StarkVerifyingKey<KoalaBearPoseidon2>,
+        proof: &ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>,
+        vk: &MachineVerifyingKey<ZkmGlobalContext>,
         vk_hash: [u32; 8],
         committed_value_digest: [u32; 8],
-    ) -> Result<(), MachineVerificationError<KoalaBearPoseidon2>>;
+    ) -> Result<(), ShardVerifierConfigError<ZkmGlobalContext, ZkmStackedPcs>>;
 }
 
 /// A dummy verifier which does nothing.
@@ -28,11 +30,11 @@ pub struct NoOpSubproofVerifier;
 impl SubproofVerifier for NoOpSubproofVerifier {
     fn verify_deferred_proof(
         &self,
-        _proof: &ZKMReduceProof<KoalaBearPoseidon2>,
-        _vk: &StarkVerifyingKey<KoalaBearPoseidon2>,
+        _proof: &ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>,
+        _vk: &MachineVerifyingKey<ZkmGlobalContext>,
         _vk_hash: [u32; 8],
         _committed_value_digest: [u32; 8],
-    ) -> Result<(), MachineVerificationError<KoalaBearPoseidon2>> {
+    ) -> Result<(), ShardVerifierConfigError<ZkmGlobalContext, ZkmStackedPcs>> {
         Ok(())
     }
 }

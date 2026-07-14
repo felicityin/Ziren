@@ -13,7 +13,6 @@ mod program;
 #[cfg(test)]
 pub mod programs;
 mod record;
-pub mod reduce;
 mod register;
 pub mod report;
 mod state;
@@ -30,12 +29,12 @@ pub use instruction::*;
 pub use opcode::*;
 pub use program::*;
 pub use record::*;
-pub use reduce::*;
 pub use register::*;
 pub use report::*;
 pub use state::*;
 pub use subproof::*;
 pub use utils::*;
+pub use zkm_hypercube::ZKMReduceProof;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(u8)]

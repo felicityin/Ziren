@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use serde::{de::DeserializeOwned, Serialize};
-use zkm_stark::{koala_bear_poseidon2::KoalaBearPoseidon2, StarkVerifyingKey};
+use zkm_hypercube::{config::ZkmGlobalContext, verifier::ZkmPcsProofInner, MachineVerifyingKey};
 
 use super::Executor;
 use crate::ZKMReduceProof;
@@ -36,8 +36,8 @@ impl Executor<'_> {
     /// Write a proof and verifying key to the proof stream.
     pub fn write_proof(
         &mut self,
-        proof: ZKMReduceProof<KoalaBearPoseidon2>,
-        vk: StarkVerifyingKey<KoalaBearPoseidon2>,
+        proof: ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>,
+        vk: MachineVerifyingKey<ZkmGlobalContext>,
     ) {
         self.state.proof_stream.push((proof, vk));
     }
