@@ -83,6 +83,10 @@ pub fn estimate_mips_lde_size(
     cells += (num_events_per_air[MipsAirId::SyscallCore]).next_power_of_two()
         * costs_per_air[&MipsAirId::SyscallCore];
 
+    // Compute the movcond chip contribution.
+    cells += (num_events_per_air[MipsAirId::MovCond]).next_power_of_two()
+        * costs_per_air[&MipsAirId::MovCond];
+
     // Compute the global chip contribution.
     cells += (num_events_per_air[MipsAirId::Global]).next_power_of_two()
         * costs_per_air[&MipsAirId::Global];
@@ -218,6 +222,7 @@ pub fn pad_mips_event_counts(
         MipsAirId::MiscInstrs => *v += 8 * num_cycles, // TODO: Check this value.
         MipsAirId::CloClz => *v += 3 * num_cycles,     // TODO: Check this value.
         MipsAirId::SyscallCore => *v += 2 * num_cycles,
+        MipsAirId::MovCond => *v += 2 * num_cycles,
         MipsAirId::Global => *v += 64 * num_cycles,
         _ => (),
     });

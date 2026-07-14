@@ -13,9 +13,20 @@ const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = 1;
 /// The threshold for splitting deferred events.
 pub const MAX_DEFERRED_SPLIT_THRESHOLD: usize = 1 << 15;
 
-/// The default maximum estimated LDE size (in bytes) before a shard is stopped early to avoid
-/// OOM during proving.
-pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 14_000_000_000;
+/// The default maximum estimated trace area (in bytes, via
+/// `zkm_core_executor::cost::estimate_mips_lde_size`) before a shard is stopped early.
+///
+/// This is a correctness bound, not just an OOM guard: the jagged PCS commits a shard's *total*
+/// padded cell count (preprocessed + main trace, summed across every chip in the chosen cluster)
+/// and rejects the proof with `AreaOutOfBounds` once that total needs 30 bits to represent (i.e.
+/// exceeds `2^29` cells; see `slop_jagged::verifier::JaggedPcsVerifierError::AreaOutOfBounds`).
+/// `estimate_mips_lde_size` reports `cells * 8` (`size_of::<KoalaBear>() << 1`), so the threshold
+/// here is set to roughly 450M cells' worth of bytes, comfortably under that 2^29 (~537M) hard
+/// limit -- this value was inherited from the old FRI-based backend (whose LDE blowup had a much
+/// larger safe margin) and was never recalibrated for the jagged/basefold backend's tighter
+/// area bound, which let CPU/ALU-dense shards (e.g. a Keccak-heavy program exercising many ALU
+/// and memory instructions per cycle) silently exceed it.
+pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 3_600_000_000;
 
 /// Options to configure the Ziren prover for core and recursive proofs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
