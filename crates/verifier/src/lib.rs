@@ -30,13 +30,16 @@ mod error;
 mod utils;
 pub use utils::*;
 
+pub use proof::{HashableKey, ZKMProof, ZKMProofKind, ZKMVerifyingKey};
+mod proof;
+
 pub use groth16::error::Groth16Error;
 pub use groth16::Groth16Verifier;
 mod groth16;
 
-pub use stark::error::StarkError;
-pub use stark::StarkVerifier;
-mod stark;
+pub use compressed::error::CompressedError;
+pub use compressed::CompressedVerifier;
+mod compressed;
 
 #[cfg(feature = "ark")]
 pub use groth16::ark_converter::*;

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum StarkError {
+pub enum CompressedError {
     #[error("Invalid public values")]
     InvalidPublicValues,
     #[error("Version mismatch")]

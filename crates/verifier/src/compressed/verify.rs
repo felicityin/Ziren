@@ -29,7 +29,7 @@ use zkm_recursion_core::air::{RecursionPublicValues, NUM_PV_ELMS_TO_HASH};
 use zkm_recursion_core::machine::RecursionAir;
 use zkm_stark::{inner_perm, koala_bear_poseidon2::MyHash as InnerHash};
 
-use super::{HashableKey, ZKMVerifyingKey};
+use crate::proof::{HashableKey, ZKMVerifyingKey};
 
 const COMPRESS_DEGREE: usize = 3;
 pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
@@ -56,10 +56,10 @@ pub static VK_MAP: Lazy<&'static [u8]> = Lazy::new(|| {
     }
 });
 
-pub(crate) fn verify_stark_compressed_proof(
+pub(crate) fn verify_compressed_proof(
     vk: &ZKMVerifyingKey,
     proof: &ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>,
-) -> Result<(), super::error::StarkError> {
+) -> Result<(), super::error::CompressedError> {
     let allowed_vk_map: BTreeMap<[KoalaBear; DIGEST_SIZE], usize> =
         bincode::deserialize(&VK_MAP).unwrap();
     let (recursion_vk_root, _merkle_tree) =
@@ -79,35 +79,35 @@ pub(crate) fn verify_stark_compressed_proof(
     compress_vk.observe_into(&mut challenger);
     shard_verifier
         .verify_shard(compress_vk, proof, &mut challenger)
-        .map_err(|e| super::error::StarkError::Recursion(format!("{e:?}")))?;
+        .map_err(|e| super::error::CompressedError::Recursion(format!("{e:?}")))?;
 
     // Validate public values.
     let public_values: &RecursionPublicValues<_> = proof.public_values.as_slice().borrow();
     if !is_recursion_public_values_valid(public_values) {
-        return Err(super::error::StarkError::InvalidPublicValues);
+        return Err(super::error::CompressedError::InvalidPublicValues);
     }
 
     // Verify the merkle proof of inclusion of `compress_vk` in the allowed vk set.
     #[cfg(not(feature = "dummy-vk-map"))]
     verify_merkle_proof(vk_merkle_proof, compress_vk.hash_koalabear(), recursion_vk_root)
-        .map_err(|_| super::error::StarkError::InvalidVerificationKey)?;
+        .map_err(|_| super::error::CompressedError::InvalidVerificationKey)?;
     #[cfg(feature = "dummy-vk-map")]
     let _ = vk_merkle_proof;
 
     if public_values.vk_root != recursion_vk_root {
-        return Err(super::error::StarkError::InvalidPublicValues);
+        return Err(super::error::CompressedError::InvalidPublicValues);
     }
 
     // `is_complete` should be 1. In the reduce program, this ensures that the proof is fully
     // reduced.
     if public_values.is_complete != KoalaBear::ONE {
-        return Err(super::error::StarkError::InvalidPublicValues);
+        return Err(super::error::CompressedError::InvalidPublicValues);
     }
 
     // Verify that the proof is for the Ziren vkey we are expecting.
     let vkey_hash = vk.vk.hash_koalabear();
     if public_values.zkm_vk_digest != vkey_hash {
-        return Err(super::error::StarkError::InvalidPublicValues);
+        return Err(super::error::CompressedError::InvalidPublicValues);
     }
 
     Ok(())

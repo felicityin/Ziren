@@ -122,10 +122,11 @@ fn test_verify_stark() {
 
     let vk_bytes = bincode::serialize(&vk).unwrap();
 
-    crate::StarkVerifier::verify(&proof, &public_inputs, &vk_bytes)
-        .expect("Stark proof is invalid");
+    crate::CompressedVerifier::verify(&proof, &public_inputs, &vk_bytes)
+        .expect("Compressed proof is invalid");
 
-    crate::StarkVerifier::verify_proof(&proof, &vk_bytes).expect("Stark proof is invalid");
+    crate::CompressedVerifier::verify_proof(&proof, &vk_bytes)
+        .expect("Compressed proof is invalid");
 }
 
 // ZKM_DEV=true RUST_LOG=debug cargo test -r test_e2e_verify_groth16 --features ark -- --nocapture
