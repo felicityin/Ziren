@@ -17,10 +17,7 @@ use zkm_stark::koala_bear_poseidon2::KoalaBearPoseidon2;
 use p3_field::PrimeField32;
 use p3_koala_bear::KoalaBear;
 
-use crate::{
-    io::ZKMStdin,
-    utils::{chunk_vec, concurrency::TurnBasedSync},
-};
+use crate::{io::ZKMStdin, utils::concurrency::TurnBasedSync};
 use zkm_core_executor::{
     events::{format_table_line, sorted_table_lines},
     subproof::NoOpSubproofVerifier,
@@ -374,37 +371,38 @@ pub fn prove_with_context(
                             #[cfg(feature = "debug")]
                             all_records_tx.send(records.clone()).unwrap();
 
-                            let main_trace_data: Vec<ZkmShardData> =
-                                tracing::debug_span!("generate main traces", index).in_scope(|| {
-                                    records
-                                        .iter()
-                                        .map(|record| {
-                                            let main_trace_data =
-                                                async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
-                                                    record.clone(),
-                                                    shard_prover.max_log_row_count(),
-                                                    prover_permits.clone(),
-                                                ));
-                                            ZkmShardData { pk: Arc::clone(&pk), main_trace_data }
-                                        })
-                                        .collect()
-                                });
-
                             trace_gen_sync.wait_for_turn(index);
 
-                            // Send the records to the phase 2 prover.
-                            let chunked_records = chunk_vec(records, opts.shard_batch_size);
-                            let chunked_main_trace_data = chunk_vec(main_trace_data, opts.shard_batch_size);
-                            chunked_records
-                                .into_iter()
-                                .zip(chunked_main_trace_data.into_iter())
-                                .for_each(|(records, main_trace_data)| {
+                            // Generate each record's traces and send it to the phase 2 prover
+                            // immediately, one record at a time, rather than generating the
+                            // whole checkpoint's traces up front and sending them as chunked
+                            // batches afterwards. `ProverSemaphore::new(opts.trace_gen_workers
+                            // .max(1))` gives this worker exactly one permit; `generate_main_traces`
+                            // holds a permit for as long as its returned `MainTraceData` is alive,
+                            // i.e. until the `ZkmShardData` wrapping it is sent downstream and
+                            // dropped. Generating a later record's traces (and so acquiring its
+                            // permit) while an earlier record's permit in the same checkpoint is
+                            // still held -- because it hasn't been sent yet, as the old
+                            // collect-then-chunk-then-send structure did -- deadlocks against that
+                            // single-permit capacity whenever a checkpoint yields more than one
+                            // record (e.g. a shard's own CPU execution plus a deferred precompile
+                            // shard split off in the same checkpoint).
+                            tracing::debug_span!("generate main traces", index).in_scope(|| {
+                                for record in records {
+                                    let main_trace_data =
+                                        async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
+                                            record.clone(),
+                                            shard_prover.max_log_row_count(),
+                                            prover_permits.clone(),
+                                        ));
+                                    let shard_data = ZkmShardData { pk: Arc::clone(&pk), main_trace_data };
                                     records_and_traces_tx
                                         .lock()
                                         .unwrap()
-                                        .send((records, main_trace_data))
+                                        .send((vec![record], vec![shard_data]))
                                         .unwrap();
-                                });
+                                }
+                            });
 
                             trace_gen_sync.advance_turn();
                         } else {
