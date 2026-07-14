@@ -217,6 +217,22 @@ pub enum DslIr<C: Config> {
     CircuitPoseidon2PermuteKoalaBear(Box<[Felt<C::F>; 16]>),
     /// Permutates an array of KoalaBear elements in the circuit using the skinny precompile.
     CircuitV2Poseidon2PermuteKoalaBear(Box<([Felt<C::F>; 16], [Felt<C::F>; 16])>),
+    /// Performs one external linear-layer round of Poseidon2 (output, input), using a chip. Row-
+    /// local (degree <= 3); should be used for wrap.
+    Poseidon2ExternalLinearLayer(Box<([Ext<C::F, C::EF>; 4], [Ext<C::F, C::EF>; 4])>),
+    /// Performs one internal linear-layer round of Poseidon2 (output, input), using a chip. Row-
+    /// local (degree <= 3); should be used for wrap.
+    Poseidon2InternalLinearLayer(Box<([Ext<C::F, C::EF>; 4], [Ext<C::F, C::EF>; 4])>),
+    /// Performs one external S-box application of Poseidon2 (output, input), using a chip. Row-
+    /// local (degree <= 3); should be used for wrap.
+    Poseidon2ExternalSBOX(Ext<C::F, C::EF>, Ext<C::F, C::EF>),
+    /// Performs one internal S-box application of Poseidon2 (output, input), using a chip. Row-
+    /// local (degree <= 3); should be used for wrap.
+    Poseidon2InternalSBOX(Ext<C::F, C::EF>, Ext<C::F, C::EF>),
+    /// Converts an ext to a slice of felts, using a chip. Should be used for wrap.
+    CircuitChipExt2Felt([Felt<C::F>; 4], Ext<C::F, C::EF>),
+    /// Converts a slice of felts to an ext, using a chip. Should be used for wrap.
+    CircuitChipFelt2Ext(Ext<C::F, C::EF>, [Felt<C::F>; 4]),
     /// Commits the public values.
     CircuitV2CommitPublicValues(Box<RecursionPublicValues<Felt<C::F>>>),
 

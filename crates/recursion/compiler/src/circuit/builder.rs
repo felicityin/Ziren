@@ -30,6 +30,31 @@ pub trait CircuitV2Builder<C: Config> {
         input: impl IntoIterator<Item = Felt<C::F>>,
     ) -> [Felt<C::F>; DIGEST_SIZE];
     fn ext2felt_v2(&mut self, ext: Ext<C::F, C::EF>) -> [Felt<C::F>; D];
+    /// Applies one external linear-layer round of Poseidon2, using a row-local chip. Should be
+    /// used for wrap.
+    fn poseidon2_external_linear_layer_v2(
+        &mut self,
+        input: [Ext<C::F, C::EF>; WIDTH / D],
+    ) -> [Ext<C::F, C::EF>; WIDTH / D];
+    /// Applies one internal linear-layer round of Poseidon2, using a row-local chip. Should be
+    /// used for wrap.
+    fn poseidon2_internal_linear_layer_v2(
+        &mut self,
+        input: [Ext<C::F, C::EF>; WIDTH / D],
+    ) -> [Ext<C::F, C::EF>; WIDTH / D];
+    /// Applies one external S-box application of Poseidon2, using a row-local chip. Should be
+    /// used for wrap.
+    fn poseidon2_external_sbox_v2(&mut self, input: Ext<C::F, C::EF>) -> Ext<C::F, C::EF>;
+    /// Applies one internal S-box application of Poseidon2, using a row-local chip. Should be
+    /// used for wrap.
+    fn poseidon2_internal_sbox_v2(&mut self, input: Ext<C::F, C::EF>) -> Ext<C::F, C::EF>;
+    /// Decomposes an ext into its felt coordinates, using a row-local chip. Unlike `ext2felt_v2`
+    /// (a hint operation requiring an explicit reconstruction check), correctness is enforced
+    /// structurally by the chip's own memory-lookup argument. Should be used for wrap.
+    fn ext2felt_chip_v2(&mut self, ext: Ext<C::F, C::EF>) -> [Felt<C::F>; D];
+    /// Composes an ext from its felt coordinates, using a row-local chip. Should be used for
+    /// wrap.
+    fn felt2ext_chip_v2(&mut self, felts: [Felt<C::F>; D]) -> Ext<C::F, C::EF>;
     fn add_curve_v2(
         &mut self,
         point1: SepticCurve<Felt<C::F>>,
@@ -196,6 +221,48 @@ impl<C: Config<F = KoalaBear>> CircuitV2Builder<C> for Builder<C> {
         self.assert_ext_eq(reconstructed_ext, ext);
 
         felts
+    }
+
+    fn poseidon2_external_linear_layer_v2(
+        &mut self,
+        input: [Ext<C::F, C::EF>; WIDTH / D],
+    ) -> [Ext<C::F, C::EF>; WIDTH / D] {
+        let output: [Ext<C::F, C::EF>; WIDTH / D] = core::array::from_fn(|_| self.uninit());
+        self.push_op(DslIr::Poseidon2ExternalLinearLayer(Box::new((output, input))));
+        output
+    }
+
+    fn poseidon2_internal_linear_layer_v2(
+        &mut self,
+        input: [Ext<C::F, C::EF>; WIDTH / D],
+    ) -> [Ext<C::F, C::EF>; WIDTH / D] {
+        let output: [Ext<C::F, C::EF>; WIDTH / D] = core::array::from_fn(|_| self.uninit());
+        self.push_op(DslIr::Poseidon2InternalLinearLayer(Box::new((output, input))));
+        output
+    }
+
+    fn poseidon2_external_sbox_v2(&mut self, input: Ext<C::F, C::EF>) -> Ext<C::F, C::EF> {
+        let output = self.uninit();
+        self.push_op(DslIr::Poseidon2ExternalSBOX(output, input));
+        output
+    }
+
+    fn poseidon2_internal_sbox_v2(&mut self, input: Ext<C::F, C::EF>) -> Ext<C::F, C::EF> {
+        let output = self.uninit();
+        self.push_op(DslIr::Poseidon2InternalSBOX(output, input));
+        output
+    }
+
+    fn ext2felt_chip_v2(&mut self, ext: Ext<C::F, C::EF>) -> [Felt<C::F>; D] {
+        let felts: [Felt<C::F>; D] = core::array::from_fn(|_| self.uninit());
+        self.push_op(DslIr::CircuitChipExt2Felt(felts, ext));
+        felts
+    }
+
+    fn felt2ext_chip_v2(&mut self, felts: [Felt<C::F>; D]) -> Ext<C::F, C::EF> {
+        let ext = self.uninit();
+        self.push_op(DslIr::CircuitChipFelt2Ext(ext, felts));
+        ext
     }
 
     /// Adds two septic elliptic curve points.

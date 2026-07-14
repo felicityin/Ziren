@@ -63,7 +63,7 @@ where
 }
 
 // eq mds_light_permutation
-pub(crate) fn external_linear_layer<AF: FieldAlgebra>(state: &mut [AF; WIDTH]) {
+pub fn external_linear_layer<AF: FieldAlgebra>(state: &mut [AF; WIDTH]) {
     for j in (0..WIDTH).step_by(4) {
         apply_m_4(&mut state[j..j + 4]);
     }
@@ -103,7 +103,7 @@ const POSEIDON2_INTERNAL_MATRIX_DIAG_16_KOALABEAR_MONTY: [KoalaBear; 16] = Koala
     127,
 ]);
 
-pub(crate) fn internal_linear_layer<F: FieldAlgebra>(state: &mut [F; WIDTH]) {
+pub fn internal_linear_layer<F: FieldAlgebra>(state: &mut [F; WIDTH]) {
     let matmul_constants: [<F as FieldAlgebra>::F; WIDTH] =
         POSEIDON2_INTERNAL_MATRIX_DIAG_16_KOALABEAR_MONTY
             .iter()

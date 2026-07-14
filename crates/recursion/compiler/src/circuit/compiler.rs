@@ -399,6 +399,61 @@ where
         })
     }
 
+    #[inline(always)]
+    fn poseidon2_linear_layer(
+        &mut self,
+        external: bool,
+        dst: [impl Reg<C>; WIDTH / D],
+        src: [impl Reg<C>; WIDTH / D],
+    ) -> Instruction<C::F> {
+        Instruction::Poseidon2LinearLayer(Box::new(Poseidon2LinearLayerInstr {
+            addrs: Poseidon2LinearLayerIo {
+                input: src.map(|r| r.read(self)),
+                output: dst.map(|r| r.write(self)),
+            },
+            mults: [C::F::ZERO; WIDTH / D],
+            external,
+        }))
+    }
+
+    #[inline(always)]
+    fn poseidon2_sbox(
+        &mut self,
+        external: bool,
+        dst: impl Reg<C>,
+        src: impl Reg<C>,
+    ) -> Instruction<C::F> {
+        Instruction::Poseidon2SBox(Poseidon2SBoxInstr {
+            addrs: Poseidon2SBoxIo { input: src.read(self), output: dst.write(self) },
+            mult: C::F::ZERO,
+            external,
+        })
+    }
+
+    /// Converts an extension element to `D` felts using the row-local `ConvertChip`, as opposed
+    /// to `ext2felts` (`HintExt2Felts`, a hint operation). Should be used for wrap.
+    fn ext2felt_chip(&mut self, felts: [impl Reg<C>; D], ext: impl Reg<C>) -> Instruction<C::F> {
+        let ext_addr = ext.read(self);
+        let felt_addrs = felts.map(|r| r.write(self));
+        Instruction::ExtFelt(ExtFeltInstr {
+            addrs: [ext_addr, felt_addrs[0], felt_addrs[1], felt_addrs[2], felt_addrs[3]],
+            mults: [C::F::ZERO; 5],
+            ext2felt: true,
+        })
+    }
+
+    /// Converts `D` felts to an extension element using the row-local `ConvertChip`. Should be
+    /// used for wrap.
+    fn felt2ext_chip(&mut self, ext: impl Reg<C>, felts: [impl Reg<C>; D]) -> Instruction<C::F> {
+        let ext_addr = ext.write(self);
+        let felt_addrs = felts.map(|r| r.read(self));
+        Instruction::ExtFelt(ExtFeltInstr {
+            addrs: [ext_addr, felt_addrs[0], felt_addrs[1], felt_addrs[2], felt_addrs[3]],
+            mults: [C::F::ZERO; 5],
+            ext2felt: false,
+        })
+    }
+
     fn hint(&mut self, output: &[impl Reg<C>]) -> Instruction<C::F> {
         Instruction::Hint(HintInstr {
             output_addrs_mults: output.iter().map(|r| (r.write(self), C::F::ZERO)).collect(),
@@ -495,6 +550,16 @@ where
             DslIr::CircuitV2Poseidon2PermuteKoalaBear(data) => {
                 f(self.poseidon2_permute(data.0, data.1))
             }
+            DslIr::Poseidon2ExternalLinearLayer(data) => {
+                f(self.poseidon2_linear_layer(true, data.0, data.1))
+            }
+            DslIr::Poseidon2InternalLinearLayer(data) => {
+                f(self.poseidon2_linear_layer(false, data.0, data.1))
+            }
+            DslIr::Poseidon2ExternalSBOX(dst, src) => f(self.poseidon2_sbox(true, dst, src)),
+            DslIr::Poseidon2InternalSBOX(dst, src) => f(self.poseidon2_sbox(false, dst, src)),
+            DslIr::CircuitChipExt2Felt(felts, ext) => f(self.ext2felt_chip(felts, ext)),
+            DslIr::CircuitChipFelt2Ext(ext, felts) => f(self.felt2ext_chip(ext, felts)),
             DslIr::CircuitV2HintBitsF(output, value) => {
                 f(self.hint_bit_decomposition(value, output))
             }
@@ -1123,6 +1188,91 @@ mod tests {
             for (lhs, rhs) in output_felts.into_iter().zip(expected) {
                 builder.assert_felt_eq(lhs, rhs);
             }
+        }
+        test_operations(builder.into_operations());
+    }
+
+    #[test]
+    fn test_poseidon2_linear_layer_chip() {
+        use zkm_recursion_core::chips::poseidon2_wide::{external_linear_layer, internal_linear_layer};
+
+        setup_logger();
+
+        let mut builder = AsmBuilder::<F, EF>::default();
+        let mut rng =
+            StdRng::seed_from_u64(0x1157E).sample_iter::<[F; 16], _>(rand::distributions::Standard);
+        for _ in 0..20 {
+            let input: [F; 16] = rng.next().unwrap();
+            let input_exts: [Ext<F, EF>; 4] =
+                core::array::from_fn(|i| builder.eval(EF::from_base_slice(&input[i * 4..i * 4 + 4]).cons()));
+
+            let mut external_expected = input;
+            external_linear_layer(&mut external_expected);
+            let external_output = builder.poseidon2_external_linear_layer_v2(input_exts);
+            for (i, out) in external_output.into_iter().enumerate() {
+                let expected: Ext<F, EF> =
+                    builder.eval(EF::from_base_slice(&external_expected[i * 4..i * 4 + 4]).cons());
+                builder.assert_ext_eq(out, expected);
+            }
+
+            let mut internal_expected = input;
+            internal_linear_layer(&mut internal_expected);
+            let internal_output = builder.poseidon2_internal_linear_layer_v2(input_exts);
+            for (i, out) in internal_output.into_iter().enumerate() {
+                let expected: Ext<F, EF> =
+                    builder.eval(EF::from_base_slice(&internal_expected[i * 4..i * 4 + 4]).cons());
+                builder.assert_ext_eq(out, expected);
+            }
+        }
+        test_operations(builder.into_operations());
+    }
+
+    #[test]
+    fn test_poseidon2_sbox_chip() {
+        setup_logger();
+
+        let mut builder = AsmBuilder::<F, EF>::default();
+        let mut rng =
+            StdRng::seed_from_u64(0x5B0F).sample_iter::<[F; 4], _>(rand::distributions::Standard);
+        for _ in 0..20 {
+            let input: [F; 4] = rng.next().unwrap();
+            let input_ext: Ext<F, EF> = builder.eval(EF::from_base_slice(&input).cons());
+            let cube = |x: F| x * x * x;
+
+            let external_expected = input.map(cube);
+            let external_output = builder.poseidon2_external_sbox_v2(input_ext);
+            let external_expected_ext: Ext<F, EF> =
+                builder.eval(EF::from_base_slice(&external_expected).cons());
+            builder.assert_ext_eq(external_output, external_expected_ext);
+
+            let internal_expected = [cube(input[0]), input[1], input[2], input[3]];
+            let internal_output = builder.poseidon2_internal_sbox_v2(input_ext);
+            let internal_expected_ext: Ext<F, EF> =
+                builder.eval(EF::from_base_slice(&internal_expected).cons());
+            builder.assert_ext_eq(internal_output, internal_expected_ext);
+        }
+        test_operations(builder.into_operations());
+    }
+
+    #[test]
+    fn test_ext_felt_convert_chip() {
+        setup_logger();
+
+        let mut builder = AsmBuilder::<F, EF>::default();
+        let mut rng =
+            StdRng::seed_from_u64(0xC0117E27).sample_iter::<[F; 4], _>(rand::distributions::Standard);
+        for _ in 0..20 {
+            let input: [F; 4] = rng.next().unwrap();
+            let input_ext: Ext<F, EF> = builder.eval(EF::from_base_slice(&input).cons());
+
+            let felts = builder.ext2felt_chip_v2(input_ext);
+            let expected_felts: Vec<Felt<F>> = input.iter().map(|&x| builder.eval(x)).collect();
+            for (lhs, rhs) in felts.into_iter().zip(expected_felts) {
+                builder.assert_felt_eq(lhs, rhs);
+            }
+
+            let round_trip = builder.felt2ext_chip_v2(felts);
+            builder.assert_ext_eq(round_trip, input_ext);
         }
         test_operations(builder.into_operations());
     }
