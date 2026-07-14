@@ -557,7 +557,7 @@ mod tests {
 
     use crate::{
         shard::RecursiveShardVerifier,
-        utils::tests::run_test_recursion,
+        utils::tests::run_test_recursion_with_max_log_row_count,
         witness::{WitnessBlock, Witnessable},
     };
 
@@ -726,6 +726,10 @@ mod tests {
 
         ZKMRecursiveVerifier::<C>::verify(&mut builder, &machine, input);
 
-        run_test_recursion(builder.into_operations(), witness_stream);
+        // The default recursion shard size (`ZKMCoreOpts::recursion().shard_size`, 1 << 21 rows)
+        // is sized for small synthetic recursion-core unit tests, not for a full, real
+        // `verify_shard` gadget chain: this circuit's `ExtAlu` chip alone emits over 17 million
+        // events (> 1 << 21 rows), so the default overflows `PaddedMle`'s row-count assertion.
+        run_test_recursion_with_max_log_row_count(builder.into_operations(), witness_stream, 24);
     }
 }
