@@ -6,8 +6,8 @@ use slop_challenger::{CanObserve, FieldChallenger, GrindingChallenger, IopCtx, V
 use slop_multilinear::{Mle, MultilinearPcsChallenger, Point};
 
 use crate::{
-    air::MachineAir, config::GKR_GRINDING_BITS, prover::Traces, Chip, ChipEvaluation, LogupGkrCpuCircuit,
-    LogupGkrCpuTraceGenerator, ShardContext,
+    air::MachineAir, config::GKR_GRINDING_BITS, prover::{Record, Traces}, record::MachineRecord, Chip,
+    ChipEvaluation, LogupGkrCpuCircuit, LogupGkrCpuTraceGenerator, ShardContext,
 };
 
 use super::{prove_gkr_round, LogUpEvaluations, LogUpGkrOutput, LogupGkrProof, LogupGkrRoundProof};
@@ -69,7 +69,9 @@ impl<GC: IopCtx, SC: ShardContext<GC>> GkrProverImpl<GC, SC> {
     ) -> LogupGkrProof<<GC::Challenger as GrindingChallenger>::Witness, GC::EF> {
         let max_interaction_arity =
             chips.iter().flat_map(|c| c.sends().iter().chain(c.receives().iter())).map(|i| i.values.len() + 1).max().unwrap();
-        let beta_seed_dim = max_interaction_arity.next_power_of_two().ilog2();
+        let max_public_values_interaction_arity = Record::<GC, SC>::max_public_values_interaction_arity();
+        let beta_seed_dim =
+            std::cmp::max(max_interaction_arity, max_public_values_interaction_arity).next_power_of_two().ilog2();
 
         let witness = challenger.grind(GKR_GRINDING_BITS);
 
