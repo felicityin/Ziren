@@ -39,7 +39,18 @@ fn clamp_shard_size(shard_size: usize) -> usize {
 // than strictly needed; on a very-high-memory machine it could conceivably still be too small).
 const RECURSION_MAX_SHARD_SIZE: usize = 1 << 22;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
-const DEFAULT_TRACE_GEN_WORKERS: usize = 1;
+// Was 1: with `trace_gen_workers` gating both the number of concurrent phase-2 trace-gen worker
+// threads (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`) and
+// how many shards' main traces can be held in memory / proved at once (the
+// `ProverSemaphore::new(opts.trace_gen_workers.max(1))` permit pool), a value of 1 serializes
+// shard proving to one shard at a time regardless of how many CPU cores are available -- a
+// 16-core dev machine measured this session sat mostly idle proving a real multi-shard program
+// this way. 4 was already the value hinted at (commented out) in `ZKMProverOpts::gpu`'s core
+// options; kept conservative here rather than scaling to all cores, to leave headroom for the
+// per-shard internal rayon parallelism each worker's trace generation already uses and to limit
+// how many shards' trace data are held concurrently (this same session hit an 86GB OOM kill from
+// a single, much lighter operation).
+const DEFAULT_TRACE_GEN_WORKERS: usize = 4;
 const DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY: usize = 128;
 const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = 1;
 
@@ -111,7 +122,10 @@ impl ZKMProverOpts {
         opts.core_opts.shard_batch_size = shard_batch_size;
 
         opts.core_opts.records_and_traces_channel_capacity = 1;
-        opts.core_opts.trace_gen_workers = 1;
+        // Was 1: see DEFAULT_TRACE_GEN_WORKERS's doc comment -- this explicit override was
+        // stomping the (also-1) default down to fully sequential shard proving regardless of
+        // available cores.
+        opts.core_opts.trace_gen_workers = DEFAULT_TRACE_GEN_WORKERS;
 
         let divisor = 1 << log2_divisor;
         opts.core_opts.split_opts.deferred /= divisor;
