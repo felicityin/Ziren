@@ -7,8 +7,9 @@ use std::{
 };
 
 use itertools::Itertools;
+use num_bigint::BigUint;
 use slop_air::{Air, BaseAir};
-use slop_algebra::{FieldAlgebra, PrimeField32, TwoAdicField};
+use slop_algebra::{Field, FieldAlgebra, PrimeField32, TwoAdicField};
 use slop_challenger::{CanObserve, FieldChallenger, IopCtx, VariableLengthChallenger};
 use slop_commit::Rounds;
 use slop_jagged::{JaggedPcsVerifier, JaggedPcsVerifierError};
@@ -82,6 +83,11 @@ pub enum ShardVerifierError<EF, PcsError> {
     /// The height is larger than `1 << max_log_row_count`.
     #[error("height is larger than maximum possible value")]
     HeightTooLarge,
+    /// The shard's total byte-lookup multiplicity could reach/exceed the field order, which
+    /// would let a cheating prover substitute a wrong-but-congruent-mod-p multiplicity and still
+    /// satisfy the LogUp balance equation.
+    #[error("byte lookup multiplicities may overflow the field order")]
+    ByteMultiplicityOverflow,
 }
 
 /// Derive the error type from the jagged config.
@@ -410,6 +416,23 @@ where
 
         if !self.machine().shape().chip_clusters.contains(&shard_chips) {
             return Err(ShardVerifierError::InvalidShape);
+        }
+
+        // Assert that the byte lookup multiplicities can't overflow the field order. Each
+        // chip's true byte-value multiplicity is a raw integer count materialized as a field
+        // element in the byte chip's LogUp lookup argument; if that count could reach the field
+        // order, a cheating prover could substitute a wrong-but-congruent-mod-p value and still
+        // satisfy the lookup balance equation. `heights[name]` is each chip's real row count
+        // (already decoded above from its bit-string `degree`), so `num_sent_byte_lookups() *
+        // row_count` bounds how large that chip's contribution to any single byte value's total
+        // multiplicity could be; summed across chips, the total must stay under the field order.
+        let mut max_byte_lookup_mult = BigUint::from(0u32);
+        for chip in shard_chips.iter() {
+            let row_count = heights[&chip.name()].as_canonical_u32();
+            max_byte_lookup_mult += BigUint::from(chip.num_sent_byte_lookups() as u64) * BigUint::from(row_count);
+        }
+        if max_byte_lookup_mult >= GC::F::order() {
+            return Err(ShardVerifierError::ByteMultiplicityOverflow);
         }
 
         let degrees = opened_values.chips.iter().map(|x| (x.0.clone(), x.1.degree.clone())).collect::<BTreeMap<_, _>>();
