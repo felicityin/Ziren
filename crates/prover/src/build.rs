@@ -1,34 +1,30 @@
-use p3_koala_bear::KoalaBear;
+//! Outer/Bn254 wrap-circuit artifact building (Plonk/Groth16/DvSnark).
+//!
+//! Every non-trivial function below builds the gnark wrap circuit (`build_outer_circuit`,
+//! removed) or produces a template proof to build it from (`dummy_proof`), both of which need
+//! `OuterSC` to implement `slop_challenger::IopCtx` so it can flow through
+//! `zkm_recursion_circuit::machine`'s now-hypercube-native `ZKMCompressWitnessValues`/
+//! `ZKMWrapVerifier`/`OuterWitness` machinery. `OuterSC` still aliases the old FRI-era
+//! `KoalaBearPoseidon2Outer`, which has no such impl -- a real replacement (`ZkmOuterGlobalContext`,
+//! wired through `slop_bn254::Poseidon2Bn254GlobalConfig`) is task #57 and is out of scope for
+//! 阶段5.1 (the user explicitly deferred regenerating VK/wrap artifacts). The public signatures
+//! here are kept intact (crates/sdk's cpu/cuda provers call them directly), but the bodies that
+//! actually need the missing `IopCtx` impl are stubbed out until task #57 lands.
 use std::{
-    borrow::Borrow,
     fs::{metadata, File},
     io::Write,
     path::PathBuf,
 };
-use zkm_core_executor::ZKMContext;
-use zkm_core_machine::io::ZKMStdin;
-use zkm_recursion_circuit::{
-    hash::FieldHasherVariable,
-    machine::{ZKMCompressWitnessValues, ZKMWrapVerifier},
-};
-use zkm_recursion_compiler::{
-    config::OuterConfig,
-    constraints::{Constraint, ConstraintCompiler},
-    ir::Builder,
-};
+use zkm_recursion_compiler::{config::OuterConfig, constraints::Constraint};
 
 pub use zkm_recursion_core::stark::{outer_perm, zkm_dev_mode, zkm_imm_wrap_vk_mode};
-use zkm_recursion_core::{air::RecursionPublicValues, hash_vkey_with_part_vk};
 
 pub use zkm_recursion_circuit::witness::{OuterWitness, Witnessable};
 
 use zkm_recursion_gnark_ffi::{DvSnarkBn254Prover, Groth16Bn254Prover, PlonkBn254Prover};
-use zkm_stark::{ShardProof, StarkVerifyingKey, ZKMProverOpts};
+use zkm_stark::{ShardProof, StarkVerifyingKey};
 
-use crate::{
-    utils::{koalabear_bytes_to_bn254, koalabears_to_bn254, words_to_bytes},
-    OuterSC, WrapAir, ZKMProver,
-};
+use crate::OuterSC;
 
 pub const PART_STARK_VK_PATH: &str = "part_stark_vk.bin";
 
@@ -172,99 +168,23 @@ pub fn build_groth16_bn254_artifacts_with_dummy(build_dir: impl Into<PathBuf>) {
 }
 
 /// Build the verifier constraints and template witness for the circuit.
+///
+/// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
 pub fn build_constraints_and_witness(
-    template_vk: &StarkVerifyingKey<OuterSC>,
-    template_proof: &ShardProof<OuterSC>,
+    _template_vk: &StarkVerifyingKey<OuterSC>,
+    _template_proof: &ShardProof<OuterSC>,
 ) -> (Vec<Constraint>, OuterWitness<OuterConfig>) {
-    tracing::info!("building verifier constraints");
-    let template_input = ZKMCompressWitnessValues {
-        vks_and_proofs: vec![(template_vk.clone(), template_proof.clone())],
-        is_complete: true,
-    };
-    let constraints =
-        tracing::info_span!("wrap circuit").in_scope(|| build_outer_circuit(&template_input));
-
-    let pv: &RecursionPublicValues<KoalaBear> = template_proof.public_values.as_slice().borrow();
-    let mut vkey_hash = koalabears_to_bn254(&pv.zkm_vk_digest);
-
-    if zkm_imm_wrap_vk_mode() {
-        vkey_hash = hash_vkey_with_part_vk(&template_vk.part_vk(), vkey_hash);
-    }
-
-    let committed_values_digest_bytes: [KoalaBear; 32] =
-        words_to_bytes(&pv.committed_value_digest).try_into().unwrap();
-    let committed_values_digest = koalabear_bytes_to_bn254(&committed_values_digest_bytes);
-
-    tracing::info!("building template witness");
-    let mut witness = OuterWitness::default();
-    template_input.write(&mut witness);
-    witness.write_committed_values_digest(committed_values_digest);
-    witness.write_vkey_hash(vkey_hash);
-
-    (constraints, witness)
+    unimplemented!(
+        "outer/Bn254 wrap circuit construction is blocked on task #57 (ZkmOuterGlobalContext)"
+    )
 }
 
 /// Generate a dummy proof that we can use to build the circuit. We need this to know the shape of
 /// the proof.
+///
+/// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
 pub fn dummy_proof() -> (StarkVerifyingKey<OuterSC>, ShardProof<OuterSC>) {
-    let elf = include_bytes!("../elf/mipsel-zkm-zkvm-elf");
-
-    tracing::info!("initializing prover");
-    let prover: ZKMProver = ZKMProver::new();
-    let opts = ZKMProverOpts::default();
-    let context = ZKMContext::default();
-
-    tracing::info!("setup elf");
-    let (_, pk_d, program, vk) = prover.setup(elf);
-
-    tracing::info!("prove core");
-    let mut stdin = ZKMStdin::new();
-    stdin.write(&500u32);
-    let core_proof = prover.prove_core(&pk_d, program, &stdin, opts, context).unwrap();
-
-    tracing::info!("compress");
-    let compressed_proof = prover.compress(&vk, core_proof, vec![], opts).unwrap();
-
-    tracing::info!("shrink");
-    let shrink_proof = prover.shrink(compressed_proof, opts).unwrap();
-
-    tracing::info!("wrap");
-    let wrapped_proof = prover.wrap_bn254(shrink_proof, opts).unwrap();
-
-    (wrapped_proof.vk, wrapped_proof.proof)
-}
-
-fn build_outer_circuit(template_input: &ZKMCompressWitnessValues<OuterSC>) -> Vec<Constraint> {
-    let wrap_machine = WrapAir::wrap_machine(OuterSC::default());
-
-    let wrap_span = tracing::debug_span!("build wrap circuit").entered();
-    let mut builder = Builder::<OuterConfig>::default();
-
-    // Get the value of the vk.
-    let template_vk = template_input.vks_and_proofs.first().unwrap().0.clone();
-    // Get an input variable.
-    let input = template_input.read(&mut builder);
-    // Fix the `wrap_vk` value to be the same as the template `vk`. Since the chip information and
-    // the ordering is already a constant, we just need to constrain the commitment and pc_start.
-
-    if !zkm_imm_wrap_vk_mode() {
-        // Get the vk variable from the input.
-        let vk = input.vks_and_proofs.first().unwrap().0.clone();
-        // Get the expected commitment.
-        let expected_commitment: [_; 1] = template_vk.commit.into();
-        let expected_commitment = expected_commitment.map(|x| builder.eval(x));
-        // Constrain `commit` to be the same as the template `vk`.
-        OuterSC::assert_digest_eq(&mut builder, expected_commitment, vk.commitment);
-        // Constrain `pc_start` to be the same as the template `vk`.
-        builder.assert_felt_eq(vk.pc_start, template_vk.pc_start);
-    }
-
-    // Verify the proof.
-    ZKMWrapVerifier::verify(&mut builder, &wrap_machine, input);
-
-    let mut backend = ConstraintCompiler::<OuterConfig>::default();
-    let operations = backend.emit(builder.into_operations());
-    wrap_span.exit();
-
-    operations
+    unimplemented!(
+        "outer/Bn254 wrap circuit construction is blocked on task #57 (ZkmOuterGlobalContext)"
+    )
 }

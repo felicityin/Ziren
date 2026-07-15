@@ -55,16 +55,15 @@ name = "build_groth16_bn254"
 path = "scripts/build_groth16_bn254.rs"
 
 [[bin]]
-name = "build_compress_vks"
-path = "scripts/build_compress_vks.rs"
-
-[[bin]]
 name = "post_trusted_setup"
 path = "scripts/post_trusted_setup.rs"
 
-[[bin]]
-name = "find_recursion_shapes"
-path = "scripts/find_recursion_shapes.rs"
+# `build_compress_vks` and `find_recursion_shapes` built the CoreShapeConfig-driven VK-catalog
+# (vk_map.bin) used by the old shape-quantization/VK-determinism system. That system was removed
+# from zkm_core_machine (task #24) with no hypercube-side replacement, and crates/prover/src/shapes.rs
+# was gutted accordingly (task #63, 阶段5.1). Both scripts depended on the removed
+# check_shapes/build_vk_map_to_file/ZKMCompressProgramShape APIs; out of scope for 阶段5.1 per the
+# user's explicit "skip VK regen" instruction.
 
 [features]
 default = ["native-gnark"]
