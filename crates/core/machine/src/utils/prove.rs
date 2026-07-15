@@ -440,25 +440,28 @@ pub fn prove_with_context(
         #[cfg(feature = "debug")]
         drop(all_records_tx);
 
-        // Spawn phase 2 prover worker threads. Previously this was a single thread
-        // draining `p2_records_and_traces_rx` one item at a time -- since each channel
-        // message holds exactly one shard's data (the trace-gen workers send
+        // Spawn phase 2 prover worker threads, sized by `prove_workers` -- a separate knob
+        // from `trace_gen_workers` (see `ZKMCoreOpts::prove_workers`'s doc comment), since
+        // trace generation and shard proving are different workloads with different scaling
+        // characteristics (trace generation is lighter/more memory-bound; shard proving's
+        // `commit_traces` step is heavier/more CPU-bound). Previously this was a single
+        // thread draining `p2_records_and_traces_rx` one item at a time -- since each
+        // channel message holds exactly one shard's data (the trace-gen workers send
         // immediately, one record at a time; see the comment above on why), that meant
-        // shards were proven strictly sequentially regardless of `trace_gen_workers`,
-        // which only parallelized the upstream trace-generation stage. Mirror the same
-        // "wrap the receiver in Arc<Mutex<_>>, spawn N workers that lock only for the
-        // brief recv()" pattern already used for `checkpoints_rx` above, so multiple
-        // shards' `prove_shard_with_data` calls (each itself already using rayon
-        // internally) can run concurrently, sharing rayon's global thread pool rather
-        // than competing with each other for whole worker threads. Proofs finish out of
-        // order across workers, so tag each with its `ExecutionRecord`'s `shard` index
-        // and sort by it afterward -- downstream verification requires proofs in
-        // strictly increasing shard order.
+        // shards were proven strictly sequentially no matter how many trace-gen workers fed
+        // the channel. Mirror the same "wrap the receiver in Arc<Mutex<_>>, spawn N workers
+        // that lock only for the brief recv()" pattern already used for `checkpoints_rx`
+        // above, so multiple shards' `prove_shard_with_data` calls (each itself already
+        // using rayon internally) can run concurrently, sharing rayon's global thread pool
+        // rather than competing with each other for whole worker threads. Proofs finish out
+        // of order across workers, so tag each with its `ExecutionRecord`'s `shard` index
+        // and sort by it afterward -- downstream verification requires proofs in strictly
+        // increasing shard order.
         let p2_prover_span = tracing::Span::current().clone();
         let p2_records_and_traces_rx = Arc::new(Mutex::new(p2_records_and_traces_rx));
         let all_shard_proofs_unordered = Arc::new(Mutex::new(Vec::new()));
         let mut p2_prover_handles = Vec::new();
-        for _ in 0..opts.trace_gen_workers.max(1) {
+        for _ in 0..opts.prove_workers.max(1) {
             let span = p2_prover_span.clone();
             let shard_prover = Arc::clone(&shard_prover);
             let rx = Arc::clone(&p2_records_and_traces_rx);

@@ -51,6 +51,12 @@ const MAX_SHARD_BATCH_SIZE: usize = 8;
 // how many shards' trace data are held concurrently (this same session hit an 86GB OOM kill from
 // a single, much lighter operation).
 const DEFAULT_TRACE_GEN_WORKERS: usize = 4;
+// How many shards can be proved concurrently by the phase-2 prover (see
+// `crates/core/machine/src/utils/prove.rs`'s `p2_prover_handles` loop). Previously reused
+// `trace_gen_workers` for this too, coupling two independent workloads (trace generation is
+// lighter/more memory-bound; shard proving -- commit_traces's FFT/Merkle-tree work -- is
+// heavier/more CPU-bound) to a single knob. Split out so each can be tuned independently.
+const DEFAULT_PROVE_WORKERS: usize = 2;
 const DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY: usize = 128;
 const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = 1;
 
@@ -135,6 +141,7 @@ impl ZKMProverOpts {
         // stomping the (also-1) default down to fully sequential shard proving regardless of
         // available cores.
         opts.core_opts.trace_gen_workers = DEFAULT_TRACE_GEN_WORKERS;
+        opts.core_opts.prove_workers = DEFAULT_PROVE_WORKERS;
 
         let divisor = 1 << log2_divisor;
         opts.core_opts.split_opts.deferred /= divisor;
@@ -146,6 +153,7 @@ impl ZKMProverOpts {
         opts.recursion_opts.shard_batch_size = 2;
         opts.recursion_opts.records_and_traces_channel_capacity = 1;
         opts.recursion_opts.trace_gen_workers = 1;
+        opts.recursion_opts.prove_workers = 1;
 
         opts
     }
@@ -195,6 +203,8 @@ pub struct ZKMCoreOpts {
     pub reconstruct_commitments: bool,
     /// The number of workers to use for generating traces.
     pub trace_gen_workers: usize,
+    /// The number of shards that can be proved concurrently by the phase-2 prover.
+    pub prove_workers: usize,
     /// The capacity of the channel for checkpoints.
     pub checkpoints_channel_capacity: usize,
     /// The capacity of the channel for records and traces.
@@ -224,6 +234,10 @@ impl Default for ZKMCoreOpts {
             trace_gen_workers: env::var("TRACE_GEN_WORKERS").map_or_else(
                 |_| DEFAULT_TRACE_GEN_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_TRACE_GEN_WORKERS),
+            ),
+            prove_workers: env::var("PROVE_WORKERS").map_or_else(
+                |_| DEFAULT_PROVE_WORKERS,
+                |s| s.parse::<usize>().unwrap_or(DEFAULT_PROVE_WORKERS),
             ),
             checkpoints_channel_capacity: env::var("CHECKPOINTS_CHANNEL_CAPACITY").map_or_else(
                 |_| DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY,
@@ -294,6 +308,10 @@ impl ZKMCoreOpts {
             trace_gen_workers: env::var("TRACE_GEN_WORKERS").map_or_else(
                 |_| DEFAULT_TRACE_GEN_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_TRACE_GEN_WORKERS),
+            ),
+            prove_workers: env::var("PROVE_WORKERS").map_or_else(
+                |_| DEFAULT_PROVE_WORKERS,
+                |s| s.parse::<usize>().unwrap_or(DEFAULT_PROVE_WORKERS),
             ),
             checkpoints_channel_capacity: env::var("CHECKPOINTS_CHANNEL_CAPACITY").map_or_else(
                 |_| DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY,
