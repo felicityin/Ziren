@@ -1,35 +1,44 @@
+use p3_koala_bear::KoalaBear;
 use zkm_core_machine::mips::MipsAir;
-use zkm_stark::{CpuProver, MachineProver, StarkGenericConfig};
+use zkm_hypercube::{
+    config::ZkmGlobalContext,
+    prover::{AirProver, ZkmShardProver},
+    shard_context::ShardContextImpl,
+};
 
-use crate::{CompressAir, CoreSC, InnerSC, OuterSC, ShrinkAir, WrapAir};
+use crate::{CompressAir, ShrinkAir};
+
+type MipsShardContext = ShardContextImpl<
+    ZkmGlobalContext,
+    zkm_hypercube::config::ZkmStackedPcs,
+    MipsAir<KoalaBear>,
+>;
+type CompressShardContext = ShardContextImpl<
+    ZkmGlobalContext,
+    zkm_hypercube::config::ZkmStackedPcs,
+    CompressAir<KoalaBear>,
+>;
+type ShrinkShardContext = ShardContextImpl<
+    ZkmGlobalContext,
+    zkm_hypercube::config::ZkmStackedPcs,
+    ShrinkAir<KoalaBear>,
+>;
 
 pub trait ZKMProverComponents: Send + Sync {
     /// The prover for making Ziren core proofs.
-    type CoreProver: MachineProver<CoreSC, MipsAir<<CoreSC as StarkGenericConfig>::Val>>
-        + Send
-        + Sync;
+    type CoreProver: AirProver<ZkmGlobalContext, MipsShardContext> + Send + Sync;
 
-    /// The prover for making Ziren recursive proofs.
-    type CompressProver: MachineProver<InnerSC, CompressAir<<InnerSC as StarkGenericConfig>::Val>>
-        + Send
-        + Sync;
+    /// The prover for making Ziren recursive (compress) proofs.
+    type CompressProver: AirProver<ZkmGlobalContext, CompressShardContext> + Send + Sync;
 
     /// The prover for shrinking compressed proofs.
-    type ShrinkProver: MachineProver<InnerSC, ShrinkAir<<InnerSC as StarkGenericConfig>::Val>>
-        + Send
-        + Sync;
-
-    /// The prover for wrapping compressed proofs into SNARK-friendly field elements.
-    type WrapProver: MachineProver<OuterSC, WrapAir<<OuterSC as StarkGenericConfig>::Val>>
-        + Send
-        + Sync;
+    type ShrinkProver: AirProver<ZkmGlobalContext, ShrinkShardContext> + Send + Sync;
 }
 
 pub struct DefaultProverComponents;
 
 impl ZKMProverComponents for DefaultProverComponents {
-    type CoreProver = CpuProver<CoreSC, MipsAir<<CoreSC as StarkGenericConfig>::Val>>;
-    type CompressProver = CpuProver<InnerSC, CompressAir<<InnerSC as StarkGenericConfig>::Val>>;
-    type ShrinkProver = CpuProver<InnerSC, ShrinkAir<<InnerSC as StarkGenericConfig>::Val>>;
-    type WrapProver = CpuProver<OuterSC, WrapAir<<OuterSC as StarkGenericConfig>::Val>>;
+    type CoreProver = ZkmShardProver<MipsAir<KoalaBear>>;
+    type CompressProver = ZkmShardProver<CompressAir<KoalaBear>>;
+    type ShrinkProver = ZkmShardProver<ShrinkAir<KoalaBear>>;
 }

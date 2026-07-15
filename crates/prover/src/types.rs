@@ -3,11 +3,15 @@ use std::{fs::File, path::Path};
 use anyhow::Result;
 use clap::ValueEnum;
 use p3_bn254_fr::Bn254Fr;
-use p3_commit::{Pcs, TwoAdicMultiplicativeCoset};
-use p3_field::{FieldAlgebra, PrimeField, PrimeField32, TwoAdicField};
+use p3_field::{PrimeField, PrimeField32};
 use p3_koala_bear::KoalaBear;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use zkm_core_machine::{io::ZKMStdin, reduce::ZKMReduceProof};
+use zkm_core_executor::ZKMReduceProof;
+use zkm_core_machine::io::ZKMStdin;
+use zkm_hypercube::{
+    config::ZkmGlobalContext, verifier::ZkmPcsProofInner, MachineVerifyingKey, ShardProof,
+    DIGEST_SIZE,
+};
 use zkm_primitives::{io::ZKMPublicValues, poseidon2_hash};
 
 use zkm_recursion_circuit::machine::{
@@ -17,26 +21,29 @@ use zkm_recursion_circuit::machine::{
 use zkm_recursion_gnark_ffi::proof::{Groth16Bn254Proof, PlonkBn254Proof};
 
 use thiserror::Error;
-use zkm_stark::{ShardProof, StarkGenericConfig, StarkProvingKey, StarkVerifyingKey, DIGEST_SIZE};
 
-use crate::{
-    utils::{koalabears_to_bn254, words_to_bytes_be},
-    CoreSC, InnerSC,
-};
+use crate::utils::{koalabears_to_bn254, words_to_bytes_be};
+
+/// The PCS opening proof type for the core machine (`MipsAir`), matching
+/// `zkm_verifier::proof::CorePcsProof`.
+pub type CorePcsProof = ZkmPcsProofInner;
 
 /// The information necessary to generate a proof for a given MIPS program.
+///
+/// TODO(阶段5.1): `pk` is a placeholder (re-derivable `Program`, not the actual preprocessed
+/// `zkm_hypercube::prover::ProvingKey`) until `setup()`'s exact return shape is settled while
+/// wiring up the core proving pipeline.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ZKMProvingKey {
-    pub pk: StarkProvingKey<CoreSC>,
     pub elf: Vec<u8>,
-    /// Verifying key is also included as we need it for recursion
+    /// Verifying key is also included as we need it for recursion.
     pub vk: ZKMVerifyingKey,
 }
 
 /// The information necessary to verify a proof for a given MIPS program.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ZKMVerifyingKey {
-    pub vk: StarkVerifyingKey<CoreSC>,
+    pub vk: MachineVerifyingKey<ZkmGlobalContext>,
 }
 
 /// A trait for keys that can be hashed into a digest.
@@ -44,8 +51,15 @@ pub trait HashableKey {
     /// Hash the key into a digest of KoalaBear elements.
     fn hash_koalabear(&self) -> [KoalaBear; DIGEST_SIZE];
 
-    /// Hash the key into a digest of  u32 elements.
-    fn hash_u32(&self) -> [u32; DIGEST_SIZE];
+    /// Hash the key into a digest of u32 elements.
+    fn hash_u32(&self) -> [u32; DIGEST_SIZE] {
+        self.hash_koalabear()
+            .into_iter()
+            .map(|n| n.as_canonical_u32())
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
 
     fn hash_bn254(&self) -> Bn254Fr {
         koalabears_to_bn254(&self.hash_koalabear())
@@ -66,44 +80,17 @@ impl HashableKey for ZKMVerifyingKey {
     fn hash_koalabear(&self) -> [KoalaBear; DIGEST_SIZE] {
         self.vk.hash_koalabear()
     }
-
-    fn hash_u32(&self) -> [u32; DIGEST_SIZE] {
-        self.vk.hash_u32()
-    }
 }
 
-impl<SC: StarkGenericConfig<Val = KoalaBear, Domain = TwoAdicMultiplicativeCoset<KoalaBear>>>
-    HashableKey for StarkVerifyingKey<SC>
-where
-    <SC::Pcs as Pcs<SC::Challenge, SC::Challenger>>::Commitment: AsRef<[KoalaBear; DIGEST_SIZE]>,
-{
+impl HashableKey for MachineVerifyingKey<ZkmGlobalContext> {
     fn hash_koalabear(&self) -> [KoalaBear; DIGEST_SIZE] {
-        let prep_domains = self.chip_information.iter().map(|(_, domain, _)| domain);
-        let num_inputs = DIGEST_SIZE + 1 + 14 + (4 * prep_domains.len());
-        let mut inputs = Vec::with_capacity(num_inputs);
-        inputs.extend(self.commit.as_ref());
+        let mut inputs = Vec::with_capacity(DIGEST_SIZE + 1 + 14);
+        inputs.extend(self.preprocessed_commit);
         inputs.push(self.pc_start);
         inputs.extend(self.initial_global_cumulative_sum.0.x.0);
         inputs.extend(self.initial_global_cumulative_sum.0.y.0);
-        for domain in prep_domains {
-            inputs.push(KoalaBear::from_canonical_usize(domain.log_n));
-            let size = 1 << domain.log_n;
-            inputs.push(KoalaBear::from_canonical_usize(size));
-            let g = KoalaBear::two_adic_generator(domain.log_n);
-            inputs.push(domain.shift);
-            inputs.push(g);
-        }
 
         poseidon2_hash(inputs)
-    }
-
-    fn hash_u32(&self) -> [u32; 8] {
-        self.hash_koalabear()
-            .into_iter()
-            .map(|n| n.as_canonical_u32())
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap()
     }
 }
 
@@ -150,13 +137,13 @@ pub type ZKMPlonkBn254Proof = ZKMProofWithMetadata<ZKMPlonkBn254ProofData>;
 pub type ZKMGroth16Bn254Proof = ZKMProofWithMetadata<ZKMGroth16Bn254ProofData>;
 
 /// A Ziren proof that has been wrapped into a single proof and can be verified onchain.
-pub type ZKMProof = ZKMProofWithMetadata<ZKMBn254ProofData>;
+pub type ZKMProofData = ZKMProofWithMetadata<ZKMBn254ProofData>;
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct ZKMCoreProofData(pub Vec<ShardProof<CoreSC>>);
+pub struct ZKMCoreProofData(pub Vec<ShardProof<ZkmGlobalContext, CorePcsProof>>);
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct ZKMReducedProofData(pub ShardProof<InnerSC>);
+pub struct ZKMReducedProofData(pub ShardProof<ZkmGlobalContext, CorePcsProof>);
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ZKMPlonkBn254ProofData(pub PlonkBn254Proof);
@@ -211,12 +198,10 @@ impl ProofSystem {
     }
 }
 
-/// A proof that can be reduced along with other proofs into one proof.
-#[derive(Serialize, Deserialize, Clone)]
-pub enum ZKMReduceProofWrapper {
-    Core(ZKMReduceProof<CoreSC>),
-    Recursive(ZKMReduceProof<InnerSC>),
-}
+/// A proof that can be reduced along with other proofs into one proof. Unlike the FRI-era
+/// version, there is only one (KoalaBear-native) recursion config now, so this is no longer an
+/// enum over a "core" vs. "recursive" `StarkGenericConfig`.
+pub type ZKMReduceProofWrapper = ZKMReduceProof<ZkmGlobalContext, CorePcsProof>;
 
 #[derive(Error, Debug)]
 pub enum ZKMRecursionProverError {
@@ -230,7 +215,7 @@ pub enum ZKMRecursionProverError {
 
 #[allow(clippy::large_enum_variant)]
 pub enum ZKMCircuitWitness {
-    Core(ZKMRecursionWitnessValues<CoreSC>),
-    Deferred(ZKMDeferredWitnessValues<InnerSC>),
-    Compress(ZKMCompressWitnessValues<InnerSC>),
+    Core(ZKMRecursionWitnessValues<ZkmGlobalContext, CorePcsProof>),
+    Deferred(ZKMDeferredWitnessValues<ZkmGlobalContext, CorePcsProof>),
+    Compress(ZKMCompressWitnessValues<ZkmGlobalContext, CorePcsProof>),
 }

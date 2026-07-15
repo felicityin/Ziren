@@ -10,20 +10,18 @@ use p3_bn254_fr::Bn254Fr;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_koala_bear::KoalaBear;
 use p3_symmetric::CryptographicHasher;
-use zkm_core_executor::{Executor, Program};
-use zkm_core_machine::{io::ZKMStdin, reduce::ZKMReduceProof};
+use zkm_core_executor::{Executor, Program, ZKMReduceProof};
+use zkm_core_machine::io::ZKMStdin;
+use zkm_hypercube::{config::ZkmGlobalContext, word::Word};
 use zkm_recursion_circuit::machine::RootPublicValues;
-use zkm_recursion_core::{
-    air::{RecursionPublicValues, NUM_PV_ELMS_TO_HASH},
-    stark::KoalaBearPoseidon2Outer,
-};
-use zkm_stark::{koala_bear_poseidon2::MyHash as InnerHash, Word, ZKMCoreOpts};
+use zkm_recursion_core::air::{RecursionPublicValues, NUM_PV_ELMS_TO_HASH};
+use zkm_stark::{koala_bear_poseidon2::MyHash as InnerHash, ZKMCoreOpts};
 
-use crate::{InnerSC, ZKMCoreProofData};
+use crate::{CorePcsProof, InnerSC, ZKMCoreProofData};
 
 /// Get the Ziren vkey KoalaBear Poseidon2 digest this reduce proof is representing.
 pub fn zkm_vkey_digest_koalabear(
-    proof: &ZKMReduceProof<KoalaBearPoseidon2Outer>,
+    proof: &ZKMReduceProof<ZkmGlobalContext, CorePcsProof>,
 ) -> [KoalaBear; 8] {
     let proof = &proof.proof;
     let pv: &RecursionPublicValues<KoalaBear> = proof.public_values.as_slice().borrow();
@@ -31,7 +29,7 @@ pub fn zkm_vkey_digest_koalabear(
 }
 
 /// Get the Ziren vkey Bn Poseidon2 digest this reduce proof is representing.
-pub fn zkm_vkey_digest_bn254(proof: &ZKMReduceProof<KoalaBearPoseidon2Outer>) -> Bn254Fr {
+pub fn zkm_vkey_digest_bn254(proof: &ZKMReduceProof<ZkmGlobalContext, CorePcsProof>) -> Bn254Fr {
     koalabears_to_bn254(&zkm_vkey_digest_koalabear(proof))
 }
 
@@ -90,12 +88,12 @@ pub fn is_recursion_public_values_valid(
 
 /// Get the committed values Bn Poseidon2 digest this reduce proof is representing.
 pub fn zkm_committed_values_digest_bn254(
-    proof: &ZKMReduceProof<KoalaBearPoseidon2Outer>,
+    proof: &ZKMReduceProof<ZkmGlobalContext, CorePcsProof>,
 ) -> Bn254Fr {
     let proof = &proof.proof;
     let pv: &RecursionPublicValues<KoalaBear> = proof.public_values.as_slice().borrow();
     let committed_values_digest_bytes: [KoalaBear; 32] =
-        words_to_bytes(&pv.committed_value_digest).try_into().unwrap();
+        words_to_bytes(pv.committed_value_digest.as_slice()).try_into().unwrap();
     koalabear_bytes_to_bn254(&committed_values_digest_bytes)
 }
 
