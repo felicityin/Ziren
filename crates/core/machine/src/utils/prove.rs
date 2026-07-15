@@ -26,7 +26,6 @@ use zkm_core_executor::{
 };
 use zkm_primitives::io::ZKMPublicValues;
 
-use p3_maybe_rayon::prelude::*;
 use slop_challenger::IopCtx;
 use zkm_hypercube::{
     air::PublicValues,
@@ -168,6 +167,12 @@ pub fn prove_with_context(
                         checkpoints_tx
                             .send((index, checkpoint_file, done, runtime.state.global_clk))
                             .unwrap();
+                        tracing::info!(
+                            "checkpoint {} generated at {:?} (clk={})",
+                            index,
+                            proving_start.elapsed(),
+                            runtime.state.global_clk,
+                        );
 
                         // If we've reached the final checkpoint, break out of the loop.
                         if done {
@@ -435,24 +440,60 @@ pub fn prove_with_context(
         #[cfg(feature = "debug")]
         drop(all_records_tx);
 
-        // Spawn the phase 2 prover thread.
+        // Spawn phase 2 prover worker threads. Previously this was a single thread
+        // draining `p2_records_and_traces_rx` one item at a time -- since each channel
+        // message holds exactly one shard's data (the trace-gen workers send
+        // immediately, one record at a time; see the comment above on why), that meant
+        // shards were proven strictly sequentially regardless of `trace_gen_workers`,
+        // which only parallelized the upstream trace-generation stage. Mirror the same
+        // "wrap the receiver in Arc<Mutex<_>>, spawn N workers that lock only for the
+        // brief recv()" pattern already used for `checkpoints_rx` above, so multiple
+        // shards' `prove_shard_with_data` calls (each itself already using rayon
+        // internally) can run concurrently, sharing rayon's global thread pool rather
+        // than competing with each other for whole worker threads. Proofs finish out of
+        // order across workers, so tag each with its `ExecutionRecord`'s `shard` index
+        // and sort by it afterward -- downstream verification requires proofs in
+        // strictly increasing shard order.
         let p2_prover_span = tracing::Span::current().clone();
-        let p2_shard_prover = Arc::clone(&shard_prover);
-        let p2_prover_handle = s.spawn(move || {
-            let _span = p2_prover_span.enter();
-            let mut all_shard_proofs = Vec::new();
-            tracing::debug_span!("phase 2 prover").in_scope(|| {
-                for (_records, shard_data) in p2_records_and_traces_rx.into_iter() {
-                    all_shard_proofs.par_extend(shard_data.into_par_iter().map(|data| {
+        let p2_records_and_traces_rx = Arc::new(Mutex::new(p2_records_and_traces_rx));
+        let all_shard_proofs_unordered = Arc::new(Mutex::new(Vec::new()));
+        let mut p2_prover_handles = Vec::new();
+        for _ in 0..opts.trace_gen_workers.max(1) {
+            let span = p2_prover_span.clone();
+            let shard_prover = Arc::clone(&shard_prover);
+            let rx = Arc::clone(&p2_records_and_traces_rx);
+            let all_shard_proofs_unordered = Arc::clone(&all_shard_proofs_unordered);
+            let handle = s.spawn(move || {
+                let _span = span.enter();
+                tracing::debug_span!("phase 2 prover").in_scope(|| loop {
+                    let received = { rx.lock().unwrap().recv() };
+                    let Ok((records, shard_data)) = received else {
+                        break;
+                    };
+                    for (record, data) in records.into_iter().zip(shard_data) {
+                        let shard_index = record.public_values.shard;
+                        let shard_start = Instant::now();
                         let mut challenger = ZkmGlobalContext::default_challenger();
                         data.pk.vk.observe_into(&mut challenger);
-                        let (proof, _permit) = p2_shard_prover.prove_shard_with_data(data, challenger);
-                        proof
-                    }));
-                }
+                        let (proof, _permit) = shard_prover.prove_shard_with_data(data, challenger);
+                        tracing::info!(
+                            "shard {} proved in {:?} (total elapsed {:?})",
+                            shard_index,
+                            shard_start.elapsed(),
+                            proving_start.elapsed(),
+                        );
+                        let mut all_shard_proofs_unordered = all_shard_proofs_unordered.lock().unwrap();
+                        all_shard_proofs_unordered.push((shard_index, proof));
+                        tracing::info!(
+                            "shards proved so far: {} (total elapsed {:?})",
+                            all_shard_proofs_unordered.len(),
+                            proving_start.elapsed(),
+                        );
+                    }
+                });
             });
-            all_shard_proofs
-        });
+            p2_prover_handles.push(handle);
+        }
 
         // Wait until the checkpoint generator handle has fully finished.
         let public_values_stream = checkpoint_generator_handle.join().unwrap()?;
@@ -462,8 +503,17 @@ pub fn prove_with_context(
             handle.join().unwrap()?;
         }
 
-        // Wait until the phase 2 collector has finished.
-        let all_shard_proofs = p2_prover_handle.join().unwrap();
+        // Wait until all phase 2 prover workers have finished, then restore shard order.
+        for handle in p2_prover_handles {
+            handle.join().unwrap();
+        }
+        let mut all_shard_proofs_unordered = match Arc::try_unwrap(all_shard_proofs_unordered) {
+            Ok(mutex) => mutex.into_inner().unwrap(),
+            Err(_) => panic!("all_shard_proofs_unordered still has outstanding references"),
+        };
+        all_shard_proofs_unordered.sort_by_key(|(shard_index, _)| *shard_index);
+        let all_shard_proofs: Vec<_> =
+            all_shard_proofs_unordered.into_iter().map(|(_, proof)| proof).collect();
 
         // Log some of the `ExecutionReport` information.
         let report_aggregate = report_aggregate.lock().unwrap();
