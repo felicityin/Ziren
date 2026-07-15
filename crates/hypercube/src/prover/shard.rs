@@ -548,7 +548,7 @@ impl<GC: IopCtx, SC: ShardContext<GC>, C: DefaultJaggedProver<GC, SC::Config>> S
 
         // Commit to the traces.
         let (main_commit, main_data) = {
-            let _span = tracing::debug_span!("commit traces").entered();
+            let _span = tracing::info_span!("commit traces").entered();
             self.commit_traces(&traces)
         };
         // Observe the commitments.
@@ -566,7 +566,7 @@ impl<GC: IopCtx, SC: ShardContext<GC>, C: DefaultJaggedProver<GC, SC::Config>> S
         }
 
         let logup_gkr_proof = {
-            let _span = tracing::debug_span!("logup gkr proof").entered();
+            let _span = tracing::info_span!("logup gkr proof").entered();
             self.inner.logup_gkr_prover.prove_logup_gkr(
                 &shard_chips,
                 &pk.preprocessed_data.preprocessed_traces,
@@ -582,7 +582,7 @@ impl<GC: IopCtx, SC: ShardContext<GC>, C: DefaultJaggedProver<GC, SC::Config>> S
 
         // Generate the zerocheck proof.
         let (shard_open_values, zerocheck_partial_sumcheck_proof) = {
-            let _span = tracing::debug_span!("zerocheck").entered();
+            let _span = tracing::info_span!("zerocheck").entered();
             self.zerocheck(
                 &shard_chips,
                 pk.preprocessed_data.preprocessed_traces.clone(),
@@ -625,7 +625,7 @@ impl<GC: IopCtx, SC: ShardContext<GC>, C: DefaultJaggedProver<GC, SC::Config>> S
 
         // Generate the evaluation proof.
         let evaluation_proof = {
-            let _span = tracing::debug_span!("prove evaluation claims").entered();
+            let _span = tracing::info_span!("prove evaluation claims").entered();
             self.inner
                 .pcs_prover
                 .prove_trusted_evaluations(evaluation_point, round_evaluation_claims, round_prover_data, &mut challenger)
