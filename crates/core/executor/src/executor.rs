@@ -2469,8 +2469,8 @@ impl<'a> Executor<'a> {
             let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &self.costs);
             if padded_lde_size > self.lde_size_threshold {
                 tracing::warn!(
-                    "stopping shard early due to lde size: {} Gib",
-                    (padded_lde_size as f64) / (1 << 9) as f64,
+                    "stopping shard early due to lde size: {:.2} GiB",
+                    (padded_lde_size as f64) / (1 << 30) as f64,
                 );
                 shape_match_found = false;
             }
