@@ -13,8 +13,6 @@ use zkm_core_executor::{ExecutionRecord, Program};
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
-#[cfg(feature = "picus")]
-use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{
     air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
     lookup::LookupKind,

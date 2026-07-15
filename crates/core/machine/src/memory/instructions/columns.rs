@@ -8,8 +8,6 @@ use crate::{
     memory::MemoryReadWriteCols,
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
 };
-#[cfg(feature = "picus")]
-use zkm_hypercube::air::PicusInfo;
 
 pub const NUM_MEMORY_INSTRUCTIONS_COLUMNS: usize = size_of::<MemoryInstructionsColumns<u8>>();
 

@@ -12,8 +12,6 @@ use crate::{
         XorOperation,
     },
 };
-#[cfg(feature = "picus")]
-use zkm_hypercube::air::PicusInfo;
 
 pub const NUM_SHA_COMPRESS_COLS: usize = size_of::<ShaCompressCols<u8>>();
 

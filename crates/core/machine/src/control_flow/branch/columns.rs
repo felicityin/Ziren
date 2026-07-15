@@ -5,8 +5,6 @@ use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
 use crate::operations::KoalaBearWordRangeChecker;
-#[cfg(feature = "picus")]
-use zkm_hypercube::air::PicusInfo;
 
 pub const NUM_BRANCH_COLS: usize = size_of::<BranchColumns<u8>>();
 

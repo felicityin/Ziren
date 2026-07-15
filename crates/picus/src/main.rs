@@ -16,7 +16,10 @@ use zkm_picus::{
         ColumnOutputMode, ExtractionPhase, PicusBuilder, ShrCarrySummaryMode, SubmoduleMode,
     },
 };
-use zkm_stark::{Chip, MachineAir, PicusInfo};
+use zkm_hypercube::{
+    air::{MachineAir, PicusInfo},
+    Chip,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

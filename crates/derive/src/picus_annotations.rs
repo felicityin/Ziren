@@ -378,8 +378,8 @@ pub fn picus_annotations_derive(input: TokenStream) -> TokenStream {
     let expanded = quote! {
         // Implement on the concrete instantiation where *type* params are `u8`
         impl #impl_gens #self_conc #where_clause {
-            pub fn picus_info() -> PicusInfo {
-                let mut info = PicusInfo::default();
+            pub fn picus_info() -> zkm_hypercube::air::PicusInfo {
+                let mut info = zkm_hypercube::air::PicusInfo::default();
                 let mut cur: usize = 0; // 1 column == 1 byte
                 #(#steps)*
                 info
@@ -493,7 +493,7 @@ pub fn picus_projection_derive(input: TokenStream) -> TokenStream {
 
         steps.push(quote! {{
             let start: usize =
-                zkm_stark::PicusProjectionStart::projection_start(&((#col_map).#path_expr));
+                zkm_hypercube::air::PicusProjectionStart::projection_start(&((#col_map).#path_expr));
             let width: usize = ::core::mem::size_of::<#field_ty>();
             let end = start + width;
             info.name_to_colrange.insert(#f_name.to_string(), (start, end));
@@ -507,8 +507,8 @@ pub fn picus_projection_derive(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #impl_generics #ident #ty_generics #where_clause {
-            pub fn picus_projection_info() -> zkm_stark::PicusProjectionInfo {
-                let mut info = zkm_stark::PicusProjectionInfo::default();
+            pub fn picus_projection_info() -> zkm_hypercube::air::PicusProjectionInfo {
+                let mut info = zkm_hypercube::air::PicusProjectionInfo::default();
                 let _ = ::core::mem::size_of::<#source_ty>();
                 #(#steps)*
                 info

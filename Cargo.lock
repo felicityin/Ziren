@@ -8377,6 +8377,7 @@ dependencies = [
  "p3-matrix",
  "zkm-core-executor",
  "zkm-core-machine",
+ "zkm-hypercube",
  "zkm-stark",
 ]
 

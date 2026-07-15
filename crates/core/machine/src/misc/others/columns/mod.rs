@@ -16,8 +16,6 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
-#[cfg(feature = "picus")]
-use zkm_hypercube::air::PicusInfo;
 pub const NUM_MISC_INSTR_COLS: usize = size_of::<MiscInstrColumns<u8>>();
 
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]

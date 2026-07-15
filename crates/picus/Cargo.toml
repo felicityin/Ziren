@@ -10,6 +10,7 @@ categories = { workspace = true }
 [dependencies]
 zkm-core-machine = { workspace = true, features = ["picus"] }
 zkm-core-executor = {workspace = true}
+zkm-hypercube = {workspace = true}
 zkm-stark = {workspace = true}
 p3-air = { workspace = true  }
 p3-matrix = { workspace = true  }

@@ -6,8 +6,6 @@ use crate::operations::KoalaBearWordRangeChecker;
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
-#[cfg(feature = "picus")]
-use zkm_hypercube::air::PicusInfo;
 
 /// Poseidon2MemCols is the column layout for the poseidon2 permutation.
 #[derive(Debug, Clone, AlignedBorrow)]

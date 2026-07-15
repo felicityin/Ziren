@@ -12,9 +12,11 @@ use p3_air::{AirBuilder, AirBuilderWithPublicValues, PairBuilder};
 use p3_matrix::dense::{DenseMatrix, RowMajorMatrix};
 use p3_matrix::Matrix;
 use zkm_core_executor::{ByteOpcode, Opcode};
-use zkm_stark::{
-    AirLookup, Chip, LookupKind, MachineAir, MessageBuilder, OperationSummaryAirBuilder, Word,
-    ZKM_PROOF_NUM_PV_ELTS,
+use zkm_hypercube::{
+    air::{AirLookup, MachineAir, MessageBuilder, OperationSummaryAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    lookup::LookupKind,
+    word::Word,
+    Chip,
 };
 
 /// Controls how instruction and syscall lookups are represented during extraction.
@@ -1239,7 +1241,7 @@ impl<'chips, A: MachineAir<Felt>> AirBuilderWithPublicValues for PicusBuilder<'c
 }
 
 impl<'chips, A: MachineAir<Felt>> MessageBuilder<AirLookup<PicusExpr>> for PicusBuilder<'chips, A> {
-    fn send(&mut self, message: AirLookup<PicusExpr>, _scope: zkm_stark::LookupScope) {
+    fn send(&mut self, message: AirLookup<PicusExpr>, _scope: zkm_hypercube::air::LookupScope) {
         // The "top" extraction path is meant to preserve only polynomial constraints
         // emitted directly by the chip AIR. Interaction lowering adds derived ports,
         // helper calls, and sub-chip routing, all of which should be absent there.
@@ -1344,7 +1346,7 @@ impl<'chips, A: MachineAir<Felt>> MessageBuilder<AirLookup<PicusExpr>> for Picus
         }
     }
 
-    fn receive(&mut self, message: AirLookup<PicusExpr>, _scope: zkm_stark::LookupScope) {
+    fn receive(&mut self, message: AirLookup<PicusExpr>, _scope: zkm_hypercube::air::LookupScope) {
         let specialized_values: Vec<PicusExpr> =
             message.values.iter().map(|expr| self.specialize_expr(expr)).collect();
         let specialized_multiplicity = self.specialize_expr(&message.multiplicity);
@@ -1620,7 +1622,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
     fn try_emit_projected_summary<F>(
         &mut self,
         module_name: &str,
-        projection_info: &zkm_stark::PicusProjectionInfo,
+        projection_info: &zkm_hypercube::air::PicusProjectionInfo,
         current_inputs: &[Self::Expr],
         current_outputs: &[Self::Expr],
         source_width: usize,
@@ -1643,7 +1645,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
     fn try_emit_projected_summary_with_hidden_consts<F>(
         &mut self,
         module_name: &str,
-        projection_info: &zkm_stark::PicusProjectionInfo,
+        projection_info: &zkm_hypercube::air::PicusProjectionInfo,
         current_inputs: &[Self::Expr],
         current_outputs: &[Self::Expr],
         source_width: usize,
@@ -1736,7 +1738,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
     fn try_emit_hidden_subair_summary<F>(
         &mut self,
         module_name: &str,
-        projection_info: &zkm_stark::PicusProjectionInfo,
+        projection_info: &zkm_hypercube::air::PicusProjectionInfo,
         current_inputs: &[Self::Expr],
         current_outputs: &[Self::Expr],
         source_width: usize,
