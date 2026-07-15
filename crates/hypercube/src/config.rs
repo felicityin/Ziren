@@ -31,8 +31,10 @@ pub const ZKM_TARGET_BITS_OF_SECURITY: usize = 100;
 /// security level by one bit's worth. Mirrors SP1's `SP1_PROOF_OF_WORK_BITS`.
 pub const ZKM_PROOF_OF_WORK_BITS: usize = 16;
 
-/// The log2 of FRI's blowup (rate inverse) for the core (MIPS) machine.
-pub const DEFAULT_LOG_BLOWUP: usize = 1;
+/// The log2 of FRI's blowup (rate inverse) for the core (MIPS) machine. Mirrors SP1's
+/// `CORE_LOG_BLOWUP`; at [`ZKM_PROOF_OF_WORK_BITS`] grinding this needs 124 queries to hit
+/// [`ZKM_TARGET_BITS_OF_SECURITY`], versus 203 at the previous log_blowup=1 setting.
+pub const DEFAULT_LOG_BLOWUP: usize = 2;
 
 /// The log2 of FRI's blowup (rate inverse) for the compress/recursion machines.
 pub const COMPRESSED_LOG_BLOWUP: usize = 2;
@@ -113,7 +115,7 @@ mod tests {
 
     #[test]
     fn unique_decoding_queries_matches_target_bits() {
-        assert_eq!(unique_decoding_queries(DEFAULT_LOG_BLOWUP), 203);
+        assert_eq!(unique_decoding_queries(DEFAULT_LOG_BLOWUP), 124);
         assert_eq!(unique_decoding_queries(COMPRESSED_LOG_BLOWUP), 124);
         assert_eq!(unique_decoding_queries(ULTRA_COMPRESSED_LOG_BLOWUP), 102);
     }
@@ -127,7 +129,7 @@ mod tests {
         if std::env::var("FRI_QUERIES").is_ok() {
             return;
         }
-        assert_eq!(default_fri_config().num_queries, 203);
+        assert_eq!(default_fri_config().num_queries, 124);
         assert_eq!(compressed_fri_config().num_queries, 124);
         assert_eq!(ultra_compressed_fri_config().num_queries, 102);
     }

@@ -21,7 +21,7 @@ use zkm_core_machine::utils::log2_strict_usize;
 #[cfg(not(feature = "dummy-vk-map"))]
 use zkm_hypercube::verifier::verify_merkle_proof;
 use zkm_hypercube::{
-    config::{default_fri_config, ZkmGlobalContext},
+    config::{compressed_fri_config, ZkmGlobalContext},
     verifier::ZkmPcsProofInner,
     ShardVerifier, DIGEST_SIZE,
 };
@@ -70,7 +70,7 @@ pub(crate) fn verify_compressed_proof(
     // Verify the shard proof.
     let machine = CompressAir::<KoalaBear>::compress_machine();
     let shard_verifier = ShardVerifier::from_basefold_parameters(
-        default_fri_config(),
+        compressed_fri_config(),
         RECURSION_LOG_STACKING_HEIGHT,
         RECURSION_MAX_LOG_ROW_COUNT,
         machine,

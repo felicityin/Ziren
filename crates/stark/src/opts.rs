@@ -3,7 +3,30 @@ use std::env;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
+// Must stay strictly below `1 << zkm_core_machine::cpu::MAX_CPU_LOG_DEGREE` (currently 22, not
+// importable here without a circular dependency on `zkm-core-machine`): the core verifier
+// decodes each shard's real CPU row count and rejects it once its log-degree exceeds that bound
+// (`ZKMVerificationError::CpuLogDegreeTooLarge`). At exactly `1 << 22`, the executor's
+// clk-based shard-cutting (a soft boundary that can overshoot by a row or more, e.g. across a
+// branch delay slot or an unconstrained precompile-hint block) has zero headroom left before
+// `next_power_of_two()` pushes the reported log-degree to 23 and every proof fails
+// verification. `shard_size` must be clamped to this value everywhere it's derived (see
+// `clamp_shard_size` and `get_memory_opts`'s top RAM tier below) rather than left to whatever an
+// env var or memory-scaled heuristic picks.
 const MAX_SHARD_SIZE: usize = 1 << 21;
+
+/// Clamps a candidate `shard_size` to [`MAX_SHARD_SIZE`], warning if it had to.
+fn clamp_shard_size(shard_size: usize) -> usize {
+    if shard_size > MAX_SHARD_SIZE {
+        tracing::warn!(
+            "shard_size {shard_size} exceeds the maximum safe value {MAX_SHARD_SIZE}; clamping \
+             to avoid spurious CpuLogDegreeTooLarge verification failures"
+        );
+        MAX_SHARD_SIZE
+    } else {
+        shard_size
+    }
+}
 // Measured 2026-07-15 (task #17, 阶段5.3) against the first real recursion program this
 // migration has actually traced: verifying a single core shard (whose own shard_size can scale
 // up to 1 << 22 on a machine with enough RAM, via `get_memory_opts`) pushed the compress
@@ -70,7 +93,9 @@ impl ZKMProverOpts {
             33..49 => (20, 1, 2),
             49..65 => (21, 1, 3),
             65..81 => (21, 3, 1),
-            81.. => (22, 4, 1),
+            // Was (22, 4, 1): log2_shard_size=22 selects shard_size == 1 << MAX_CPU_LOG_DEGREE
+            // with zero headroom, see MAX_SHARD_SIZE's doc comment.
+            81.. => (21, 4, 1),
         }
     }
 
@@ -164,10 +189,10 @@ impl Default for ZKMCoreOpts {
             ZKMProverOpts::get_memory_opts(cpu_ram_gb as usize);
 
         let mut opts = Self {
-            shard_size: env::var("SHARD_SIZE").map_or_else(
+            shard_size: clamp_shard_size(env::var("SHARD_SIZE").map_or_else(
                 |_| 1 << default_log2_shard_size,
                 |s| s.parse::<usize>().unwrap_or(1 << default_log2_shard_size),
-            ),
+            )),
             shard_batch_size: env::var("SHARD_BATCH_SIZE").map_or_else(
                 |_| default_shard_batch_size,
                 |s| s.parse::<usize>().unwrap_or(default_shard_batch_size),
@@ -231,8 +256,10 @@ impl ZKMCoreOpts {
             .unwrap_or(MAX_DEFERRED_SPLIT_THRESHOLD)
             .max(MAX_DEFERRED_SPLIT_THRESHOLD);
 
-        let shard_size = env::var("SHARD_SIZE")
-            .map_or_else(|_| MAX_SHARD_SIZE, |s| s.parse::<usize>().unwrap_or(MAX_SHARD_SIZE));
+        let shard_size = clamp_shard_size(
+            env::var("SHARD_SIZE")
+                .map_or_else(|_| MAX_SHARD_SIZE, |s| s.parse::<usize>().unwrap_or(MAX_SHARD_SIZE)),
+        );
 
         Self {
             shard_size,

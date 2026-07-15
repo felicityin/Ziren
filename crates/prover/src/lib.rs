@@ -41,7 +41,7 @@ use zkm_core_machine::{
     utils::{prove_with_context, ZKMCoreProverError},
 };
 use zkm_hypercube::{
-    config::{default_fri_config, ZkmGlobalContext},
+    config::{compressed_fri_config, default_fri_config, ultra_compressed_fri_config, ZkmGlobalContext},
     prover::{AirProver, ProverSemaphore, ZkmShardProver},
     verifier::ShardVerifier,
     word::Word,
@@ -165,7 +165,7 @@ impl ZKMProver<DefaultProverComponents> {
 
         let compress_prover = ZkmShardProver::<CompressAir<KoalaBear>>::new(
             ShardVerifier::from_basefold_parameters(
-                default_fri_config(),
+                compressed_fri_config(),
                 RECURSION_LOG_STACKING_HEIGHT,
                 recursion_max_log_row_count(),
                 CompressAir::<KoalaBear>::compress_machine(),
@@ -174,7 +174,7 @@ impl ZKMProver<DefaultProverComponents> {
 
         let shrink_prover = ZkmShardProver::<ShrinkAir<KoalaBear>>::new(
             ShardVerifier::from_basefold_parameters(
-                default_fri_config(),
+                ultra_compressed_fri_config(),
                 RECURSION_LOG_STACKING_HEIGHT,
                 recursion_max_log_row_count(),
                 ShrinkAir::<KoalaBear>::shrink_machine(),
@@ -309,7 +309,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         CompressAir<KoalaBear>,
     > {
         RecursiveShardVerifier::from_basefold_parameters(
-            default_fri_config(),
+            compressed_fri_config(),
             RECURSION_LOG_STACKING_HEIGHT,
             recursion_max_log_row_count(),
             self.compress_prover.machine().clone(),
@@ -1034,6 +1034,39 @@ pub mod tests {
             opts,
             Test::Shrink,
         )
+    }
+
+    /// Compiles (but does not prove) the first-layer recursion program that verifies a single
+    /// core shard, to measure real per-chip row counts for `RecursionShapeConfig`'s
+    /// `allowed_shapes` tables (`crates/recursion/core/src/shape.rs`) without paying for actual
+    /// STARK proving of the recursion program, which is the dominant cost of a full compress run.
+    /// If the configured shape table is too small for the real heights, `recursion_program`'s
+    /// call to `RecursionShapeConfig::fix_shape` panics with `"no shape found for heights:
+    /// {heights:?}"`, which reports the exact real heights needed.
+    #[test]
+    #[serial]
+    #[ignore]
+    fn measure_recursion_program_heights() -> Result<()> {
+        let elf = test_artifacts::HELLO_WORLD_ELF;
+        setup_logger();
+        let opts = ZKMProverOpts::default();
+        let prover = ZKMProver::<DefaultProverComponents>::new();
+        let context = ZKMContext::default();
+
+        let (_, program, vk) = prover.setup(elf);
+        let core_proof = prover.prove_core(program, &ZKMStdin::default(), opts, context)?;
+        prover.verify(&core_proof.proof, &vk)?;
+
+        let shard_proofs = &core_proof.proof.0;
+        let inputs = prover.get_first_layer_inputs(&vk, shard_proofs, &[], 1);
+        let input = match &inputs[0] {
+            ZKMCircuitWitness::Core(input) => input,
+            _ => panic!("expected a core witness for a single-shard proof"),
+        };
+
+        let _recursion_program = prover.recursion_program(input);
+        println!("recursion program compiled and fit the configured shape table");
+        Ok(())
     }
 
     /// Tests an end-to-end workflow of proving a program across the entire proof generation

@@ -11,7 +11,7 @@ use zkm_core_executor::subproof::SubproofVerifier;
 use zkm_core_machine::{cpu::MAX_CPU_LOG_DEGREE, mips::MipsAir};
 use zkm_hypercube::{
     air::{PublicValues, POSEIDON_NUM_WORDS, PV_DIGEST_NUM_WORDS},
-    config::{default_fri_config, ZkmGlobalContext},
+    config::{compressed_fri_config, default_fri_config, ultra_compressed_fri_config, ZkmGlobalContext},
     verifier::{ShardVerifier, ShardVerifierConfigError},
     word::Word,
     ZkmStackedPcs,
@@ -288,7 +288,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         let ZKMReduceProofWrapper { vk: compress_vk, proof: shard_proof, vk_merkle_proof } = proof;
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
-            default_fri_config(),
+            compressed_fri_config(),
             RECURSION_LOG_STACKING_HEIGHT,
             recursion_max_log_row_count(),
             CompressAir::<KoalaBear>::compress_machine(),
@@ -357,7 +357,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         let ZKMReduceProofWrapper { vk: shrink_vk, proof: shard_proof, vk_merkle_proof } = proof;
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
-            default_fri_config(),
+            ultra_compressed_fri_config(),
             RECURSION_LOG_STACKING_HEIGHT,
             recursion_max_log_row_count(),
             ShrinkAir::<KoalaBear>::shrink_machine(),
