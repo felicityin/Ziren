@@ -8658,8 +8658,10 @@ dependencies = [
  "zkm-core-executor",
  "zkm-core-machine",
  "zkm-cuda",
+ "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-prover",
+ "zkm-recursion-circuit",
  "zkm-stark",
 ]
 

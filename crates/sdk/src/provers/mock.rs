@@ -1,23 +1,24 @@
 #![allow(unused_variables)]
-use hashbrown::HashMap;
-use zkm_core_executor::{ZKMContext, ZKMReduceProof};
+use std::collections::BTreeSet;
+
+use zkm_core_executor::ZKMContext;
 use zkm_core_machine::io::ZKMStdin;
-use zkm_stark::{ShardCommitment, ShardOpenedValues, ShardProof, StarkVerifyingKey};
+use zkm_hypercube::{config::default_fri_config, verifier::MerkleProof};
 
 use crate::{
     Prover, ZKMProof, ZKMProofKind, ZKMProofWithPublicValues, ZKMProvingKey, ZKMVerificationError,
     ZKMVerifyingKey,
 };
 use anyhow::Result;
-use p3_field::{FieldAlgebra, PrimeField};
-use p3_fri::FriProof;
+use p3_field::PrimeField;
 use p3_koala_bear::KoalaBear;
 use zkm_prover::{
     components::DefaultProverComponents,
     verify::{verify_groth16_bn254_public_inputs, verify_plonk_bn254_public_inputs},
-    DvSnarkBn254Proof, Groth16Bn254Proof, HashableKey, PlonkBn254Proof, ZKMProver,
+    CompressAir, DvSnarkBn254Proof, Groth16Bn254Proof, HashableKey, PlonkBn254Proof, ZKMProver,
+    ZKMReduceProofWrapper,
 };
-use zkm_stark::septic_digest::SepticDigest;
+use zkm_recursion_circuit::dummy::{dummy_shard_proof, dummy_vk};
 
 use super::{ProofOpts, ProverType};
 
@@ -40,7 +41,7 @@ impl Prover<DefaultProverComponents> for MockProver {
     }
 
     fn setup(&self, elf: &[u8]) -> (ZKMProvingKey, ZKMVerifyingKey) {
-        let (pk, _, _, vk) = self.prover.setup(elf);
+        let (pk, _, vk) = self.prover.setup(elf);
         (pk, vk)
     }
 
@@ -72,34 +73,24 @@ impl Prover<DefaultProverComponents> for MockProver {
             ZKMProofKind::Compressed => {
                 let (public_values, _) = self.prover.execute(&pk.elf, &stdin, context)?;
 
-                let shard_proof = ShardProof {
-                    commitment: ShardCommitment {
-                        main_commit: [KoalaBear::ZERO; 8].into(),
-                        permutation_commit: [KoalaBear::ZERO; 8].into(),
-                        quotient_commit: [KoalaBear::ZERO; 8].into(),
-                    },
-                    opened_values: ShardOpenedValues { chips: vec![] },
-                    opening_proof: FriProof {
-                        commit_phase_commits: vec![],
-                        query_proofs: vec![],
-                        final_poly: Default::default(),
-                        pow_witness: KoalaBear::ZERO,
-                    },
-                    chip_ordering: HashMap::new(),
-                    public_values: vec![],
-                };
+                // A syntactically-valid but cryptographically-meaningless shard proof: the mock
+                // prover never actually verifies proof content (see `verify()` below), so an
+                // empty-chip-set dummy proof is enough to satisfy the type.
+                let shard_proof = dummy_shard_proof::<CompressAir<KoalaBear>>(
+                    BTreeSet::new(),
+                    1,
+                    default_fri_config(),
+                    4,
+                    &[],
+                    &[],
+                );
+                let reduce_vk = dummy_vk();
+                let vk_merkle_proof = MerkleProof { index: 0, path: vec![] };
 
-                let reduce_vk = StarkVerifyingKey {
-                    commit: [KoalaBear::ZERO; 8].into(),
-                    pc_start: KoalaBear::ZERO,
-                    chip_information: vec![],
-                    chip_ordering: HashMap::new(),
-                    initial_global_cumulative_sum: SepticDigest::zero(),
-                };
-
-                let proof = ZKMProof::Compressed(Box::new(ZKMReduceProof {
+                let proof = ZKMProof::Compressed(Box::new(ZKMReduceProofWrapper {
                     vk: reduce_vk,
                     proof: shard_proof,
+                    vk_merkle_proof,
                 }));
 
                 Ok((

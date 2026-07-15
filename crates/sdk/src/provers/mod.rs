@@ -17,12 +17,13 @@ use thiserror::Error;
 use zkm_core_executor::ExecutionReport;
 use zkm_core_executor::ZKMContext;
 use zkm_core_machine::{io::ZKMStdin, ZKM_CIRCUIT_VERSION};
+use zkm_hypercube::{air::PublicValues, word::Word};
 use zkm_primitives::io::ZKMPublicValues;
 use zkm_prover::{
     components::{DefaultProverComponents, ZKMProverComponents},
-    CoreSC, InnerSC, ZKMCoreProofData, ZKMProver, ZKMProvingKey, ZKMVerifyingKey,
+    ZKMCoreProofData, ZKMProver, ZKMProvingKey, ZKMVerifyingKey,
 };
-use zkm_stark::{air::PublicValues, MachineVerificationError, Word, ZKMProverOpts};
+use zkm_stark::ZKMProverOpts;
 
 use crate::install::try_install_circuit_artifacts;
 use crate::ProverClient;
@@ -53,9 +54,9 @@ pub enum ZKMVerificationError {
     #[error("Version mismatch")]
     VersionMismatch(String),
     #[error("Core machine verification error: {0}")]
-    Core(MachineVerificationError<CoreSC>),
+    Core(zkm_prover::verify::ZKMVerificationError),
     #[error("Recursion verification error: {0}")]
-    Recursion(MachineVerificationError<InnerSC>),
+    Recursion(zkm_prover::verify::ZKMVerificationError),
     #[error("Plonk verification error: {0}")]
     Plonk(anyhow::Error),
     #[error("Groth16 verification error: {0}")]

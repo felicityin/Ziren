@@ -21,9 +21,10 @@ use twirp::{
     url::Url,
     Client, ClientError, Middleware, Next,
 };
-use zkm_core_machine::{io::ZKMStdin, reduce::ZKMReduceProof, utils::ZKMCoreProverError};
+use zkm_core_machine::{io::ZKMStdin, utils::ZKMCoreProverError};
 use zkm_prover::{
-    InnerSC, OuterSC, ZKMCoreProof, ZKMProvingKey, ZKMRecursionProverError, ZKMVerifyingKey,
+    ZKMCoreProof, ZKMProvingKey, ZKMRecursionProverError, ZKMReduceProofWrapper, ZKMVerifyingKey,
+    ZKMWrapProof,
 };
 
 use crate::api::{ProverServiceClient, ReadyRequest};
@@ -103,7 +104,7 @@ pub struct CompressRequestPayload {
     /// The core proof.
     pub proof: ZKMCoreProof,
     /// The deferred proofs.
-    pub deferred_proofs: Vec<ZKMReduceProof<InnerSC>>,
+    pub deferred_proofs: Vec<ZKMReduceProofWrapper>,
 }
 
 /// The payload for the [zkm_prover::ZKMProver::shrink] method.
@@ -111,7 +112,7 @@ pub struct CompressRequestPayload {
 /// This object is used to serialize and deserialize the payloads for the GPU server.
 #[derive(Serialize, Deserialize)]
 pub struct ShrinkRequestPayload {
-    pub reduced_proof: ZKMReduceProof<InnerSC>,
+    pub reduced_proof: ZKMReduceProofWrapper,
 }
 
 /// The payload for the [zkm_prover::ZKMProver::wrap_bn254] method.
@@ -119,7 +120,7 @@ pub struct ShrinkRequestPayload {
 /// This object is used to serialize and deserialize the payloads for the GPU server.
 #[derive(Serialize, Deserialize)]
 pub struct WrapRequestPayload {
-    pub reduced_proof: ZKMReduceProof<InnerSC>,
+    pub reduced_proof: ZKMReduceProofWrapper,
 }
 
 /// Defines how the GPU server is created.
@@ -337,13 +338,13 @@ impl ZKMCudaProver {
         &self,
         vk: &ZKMVerifyingKey,
         proof: ZKMCoreProof,
-        deferred_proofs: Vec<ZKMReduceProof<InnerSC>>,
-    ) -> Result<ZKMReduceProof<InnerSC>, ZKMRecursionProverError> {
+        deferred_proofs: Vec<ZKMReduceProofWrapper>,
+    ) -> Result<ZKMReduceProofWrapper, ZKMRecursionProverError> {
         let payload = CompressRequestPayload { vk: vk.clone(), proof, deferred_proofs };
         let request = crate::api::CompressRequest { data: bincode::serialize(&payload).unwrap() };
 
         let response = block_on(async { self.client.compress(request).await }).unwrap();
-        let proof: ZKMReduceProof<InnerSC> = bincode::deserialize(&response.result).unwrap();
+        let proof: ZKMReduceProofWrapper = bincode::deserialize(&response.result).unwrap();
         Ok(proof)
     }
 
@@ -352,13 +353,13 @@ impl ZKMCudaProver {
     /// You will need at least 24GB of VRAM to run this method.
     pub fn shrink(
         &self,
-        reduced_proof: ZKMReduceProof<InnerSC>,
-    ) -> Result<ZKMReduceProof<InnerSC>, ZKMRecursionProverError> {
+        reduced_proof: ZKMReduceProofWrapper,
+    ) -> Result<ZKMReduceProofWrapper, ZKMRecursionProverError> {
         let payload = ShrinkRequestPayload { reduced_proof: reduced_proof.clone() };
         let request = crate::api::ShrinkRequest { data: bincode::serialize(&payload).unwrap() };
 
         let response = block_on(async { self.client.shrink(request).await }).unwrap();
-        let proof: ZKMReduceProof<InnerSC> = bincode::deserialize(&response.result).unwrap();
+        let proof: ZKMReduceProofWrapper = bincode::deserialize(&response.result).unwrap();
         Ok(proof)
     }
 
@@ -367,13 +368,13 @@ impl ZKMCudaProver {
     /// You will need at least 24GB of VRAM to run this method.
     pub fn wrap_bn254(
         &self,
-        reduced_proof: ZKMReduceProof<InnerSC>,
-    ) -> Result<ZKMReduceProof<OuterSC>, ZKMRecursionProverError> {
+        reduced_proof: ZKMReduceProofWrapper,
+    ) -> Result<ZKMWrapProof, ZKMRecursionProverError> {
         let payload = WrapRequestPayload { reduced_proof: reduced_proof.clone() };
         let request = crate::api::WrapRequest { data: bincode::serialize(&payload).unwrap() };
 
         let response = block_on(async { self.client.wrap(request).await }).unwrap();
-        let proof: ZKMReduceProof<OuterSC> = bincode::deserialize(&response.result).unwrap();
+        let proof: ZKMWrapProof = bincode::deserialize(&response.result).unwrap();
         Ok(proof)
     }
 }
