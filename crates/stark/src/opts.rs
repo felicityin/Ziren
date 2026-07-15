@@ -60,17 +60,26 @@ pub const MAX_DEFERRED_SPLIT_THRESHOLD: usize = 1 << 15;
 /// The default maximum estimated trace area (in bytes, via
 /// `zkm_core_executor::cost::estimate_mips_lde_size`) before a shard is stopped early.
 ///
-/// This is a correctness bound, not just an OOM guard: the jagged PCS commits a shard's *total*
-/// padded cell count (preprocessed + main trace, summed across every chip in the chosen cluster)
-/// and rejects the proof with `AreaOutOfBounds` once that total needs 30 bits to represent (i.e.
-/// exceeds `2^29` cells; see `slop_jagged::verifier::JaggedPcsVerifierError::AreaOutOfBounds`).
-/// `estimate_mips_lde_size` reports `cells * 8` (`size_of::<KoalaBear>() << 1`), so the threshold
-/// here is set to roughly 450M cells' worth of bytes, comfortably under that 2^29 (~537M) hard
-/// limit -- this value was inherited from the old FRI-based backend (whose LDE blowup had a much
-/// larger safe margin) and was never recalibrated for the jagged/basefold backend's tighter
-/// area bound, which let CPU/ALU-dense shards (e.g. a Keccak-heavy program exercising many ALU
-/// and memory instructions per cycle) silently exceed it.
-pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 3_600_000_000;
+/// This is a correctness bound, not just an OOM guard: the jagged PCS rejects a proof with
+/// `AreaOutOfBounds` once a round's padded cell count (row count times column count, summed
+/// across every chip in the chosen cluster) reaches `2^30` -- see
+/// `slop_jagged::verifier::Verifier::verify_shard`'s `round_areas.iter().any(|&area| area == 0
+/// || area >= (1 << 30))` check (an earlier revision of this comment said `2^29`, off by one
+/// bit; verified against the actual verifier source 2026-07-15). The check is per-round
+/// (currently one round for preprocessed columns, one for main columns, each independently
+/// bounded below `2^30`), while `estimate_mips_lde_size` folds `preprocessed_width +
+/// main_width` together per chip (confirmed via `Chip::cost()`,
+/// `crates/hypercube/src/chip.rs`) into a single combined cell count -- so comparing that
+/// combined estimate against one round's `2^30` ceiling is a conservative (not maximally tight)
+/// proxy, not an exact match to the two independent checks.
+///
+/// `estimate_mips_lde_size` reports `cells * 8` (`size_of::<KoalaBear>() << 1`), so the combined
+/// ceiling in bytes is `2^30 * 8 = 2^33` (8 GiB). The threshold here is set to 7 GiB (87.5% of
+/// that ceiling, 12.5% margin) -- this value was inherited from the old FRI-based backend (whose
+/// LDE blowup had a much larger safe margin) and was never recalibrated for the jagged/basefold
+/// backend's tighter area bound, which let CPU/ALU-dense shards (e.g. a Keccak-heavy program
+/// exercising many ALU and memory instructions per cycle) silently exceed it.
+pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 7 * (1 << 30);
 
 /// Options to configure the Ziren prover for core and recursive proofs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
