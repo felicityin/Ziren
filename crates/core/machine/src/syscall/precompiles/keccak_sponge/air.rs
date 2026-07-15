@@ -529,6 +529,7 @@ impl KeccakSpongeChip {
         builder: &mut AB,
         local: &KeccakSpongeCols<AB::Var>,
     ) {
+        let expr_2_pow_8 = AB::Expr::from_canonical_u32(2u32.pow(8));
         let base = [
             local.shard.into(),
             local.clk.into(),
@@ -559,15 +560,27 @@ impl KeccakSpongeChip {
             LookupScope::Local,
         );
 
+        // Must carry the same raw (pre-XOR) value that the send side transmits
+        // (`a_prime_prime_prime`, i.e. the ending state of block i's Keccak-f) -- not
+        // `local.keccak.a`, which for the rate lanes has already been XORed with the newly-read
+        // input block by `eval_state_keccakf`'s round-0 bridging. `original_state` is exactly
+        // this raw carry-over (trace-gen writes the un-XORed permutation output straight into
+        // it), for both rate and capacity lanes alike, so recompute the same u32-pair -> 4x u16
+        // limb packing `eval_state_keccakf` uses, from `original_state` instead of `keccak.a`.
         let receive_values = base
             .iter()
             .cloned()
             .chain(once(local.already_absorbed_u32s.into()))
             .chain(once(local.input_address.into()))
-            .chain((0..5).flat_map(|y| {
-                (0..5).flat_map(move |x| {
-                    (0..U64_LIMBS).map(move |limb| local.keccak.a[y][x][limb].into())
-                })
+            .chain((0..(KECCAK_STATE_U32S / 2) as u32).flat_map(|i| {
+                let least_sig_word = local.original_state[(i * 2) as usize];
+                let most_sig_word = local.original_state[(i * 2 + 1) as usize];
+                [
+                    least_sig_word[0] + least_sig_word[1] * expr_2_pow_8.clone(),
+                    least_sig_word[2] + least_sig_word[3] * expr_2_pow_8.clone(),
+                    most_sig_word[0] + most_sig_word[1] * expr_2_pow_8.clone(),
+                    most_sig_word[2] + most_sig_word[3] * expr_2_pow_8.clone(),
+                ]
             }))
             .collect::<Vec<_>>();
         // Gate = `(1 - first_block) * first_step * is_real`, rewritten as the affine combination
