@@ -86,6 +86,32 @@ where
     }
 }
 
+// `FieldMerkleTreeProver`'s `ComputeTcsOpenings`/`TensorCsProver` impls (in
+// `slop_merkle_tree::p3sync`) need the bare-array `CryptographicHasher`/`PseudoCompressionFunction`
+// forms in addition to the `Hash`-wrapped ones above (used by `MerkleTreeTcs`/
+// `MultiField32Challenger`), so forward straight through to the inner hasher/compressor, which
+// already implements them.
+impl<F: Clone, PF, Inner, const N: usize> CryptographicHasher<F, [PF; N]> for HashWrapped<Inner>
+where
+    Inner: CryptographicHasher<F, [PF; N]>,
+{
+    fn hash_iter<I>(&self, input: I) -> [PF; N]
+    where
+        I: IntoIterator<Item = F>,
+    {
+        self.0.hash_iter(input)
+    }
+}
+
+impl<PF, Inner, const N: usize> PseudoCompressionFunction<[PF; N], 2> for HashWrapped<Inner>
+where
+    Inner: PseudoCompressionFunction<[PF; N], 2>,
+{
+    fn compress(&self, input: [[PF; N]; 2]) -> [PF; N] {
+        self.0.compress(input)
+    }
+}
+
 impl<F: PrimeField32, EF: ExtensionField<F>> IopCtx for Poseidon2Bn254GlobalConfig<F, EF> {
     type F = F;
 
