@@ -23,10 +23,23 @@ use zkm_recursion_gnark_ffi::proof::{Groth16Bn254Proof, PlonkBn254Proof};
 use thiserror::Error;
 
 use crate::utils::{koalabears_to_bn254, words_to_bytes_be};
+use crate::OuterSC;
 
 /// The PCS opening proof type for the core machine (`MipsAir`), matching
 /// `zkm_verifier::proof::CorePcsProof`.
 pub type CorePcsProof = ZkmPcsProofInner;
+
+/// A wrapped (outer/Bn254) proof, in the shape the old FRI-era `ZKMReduceProof<OuterSC>` used to
+/// have (`{vk, proof}`, both over `OuterSC`). The real outer pipeline is blocked on task #57
+/// (`ZkmOuterGlobalContext` -- `OuterSC` isn't a `slop_challenger::IopCtx`, so it can't use the
+/// new hypercube-native `ZKMReduceProof<GC, Proof>`); this placeholder exists only so
+/// `crate::build` and `crates/sdk`'s wrap-proof call sites keep a stable field layout to compile
+/// against until that lands.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ZKMWrapProof {
+    pub vk: zkm_stark::StarkVerifyingKey<OuterSC>,
+    pub proof: zkm_stark::ShardProof<OuterSC>,
+}
 
 /// The information necessary to generate a proof for a given MIPS program.
 ///

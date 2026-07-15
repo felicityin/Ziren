@@ -6,6 +6,17 @@
 //! 2. Compress shard proofs into a single shard proof.
 //! 3. Wrap the shard proof into a SNARK-friendly field.
 //! 4. Wrap the last shard proof, proven over the SNARK-friendly field, into a PLONK proof.
+//!
+//! The wrap stage (3-4, `wrap_bn254`/`wrap_plonk_bn254`/`wrap_groth16_bn254`/
+//! `wrap_dvsnark_bn254`) is stubbed with `unimplemented!()`: it needs a Bn254-bridged `IopCtx`
+//! (`ZkmOuterGlobalContext`) that doesn't exist yet (task #57, explicitly deferred by the user
+//! along with VK artifact regeneration).
+//!
+//! This pass also drops the shape-quantization caches the old FRI-era prover used
+//! (`lift_programs_lru`/`join_programs_map`, keyed by `ZKMRecursionShape`/`ZKMCompressWithVkeyShape`
+//! wrapper types that no longer exist -- see `shapes.rs`) and the `CoreShapeConfig`-driven
+//! preprocessed-shape fixing (deleted in task #24). Recursion/compress/shrink programs are now
+//! compiled fresh on every call instead of served from a warm cache; slower, not less correct.
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::new_without_default)]
@@ -18,112 +29,94 @@ pub mod types;
 pub mod utils;
 pub mod verify;
 
-use std::{
-    borrow::Borrow,
-    collections::BTreeMap,
-    env,
-    num::NonZeroUsize,
-    path::Path,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        mpsc::sync_channel,
-        Arc, Mutex, OnceLock,
-    },
-    thread,
-};
+use std::{borrow::Borrow, collections::BTreeMap, env, path::Path, sync::Arc};
 
-use lru::LruCache;
-use p3_field::{FieldAlgebra, PrimeField, PrimeField32};
+use p3_field::{FieldAlgebra, PrimeField32};
 use p3_koala_bear::KoalaBear;
-use p3_matrix::dense::RowMajorMatrix;
-use shapes::ZKMProofShape;
 use tracing::instrument;
 use zkm_core_executor::{ExecutionError, ExecutionReport, Executor, Program, ZKMContext};
 use zkm_core_machine::{
     io::ZKMStdin,
     mips::MipsAir,
-    reduce::ZKMReduceProof,
-    shape::CoreShapeConfig,
-    utils::{concurrency::TurnBasedSync, ZKMCoreProverError},
+    utils::{prove_with_context, ZKMCoreProverError},
+};
+use zkm_hypercube::{
+    config::{default_fri_config, ZkmGlobalContext},
+    prover::{AirProver, ProverSemaphore, ZkmShardProver},
+    verifier::ShardVerifier,
+    word::Word,
+    ZKMReduceProof, DIGEST_SIZE,
 };
 use zkm_primitives::{hash_deferred_proof, io::ZKMPublicValues};
 use zkm_recursion_circuit::{
+    challenger::DuplexChallengerVariable,
     hash::FieldHasher,
     machine::{
-        PublicValuesOutputDigest, ZKMCompressRootVerifierWithVKey, ZKMCompressShape,
-        ZKMCompressWithVKeyVerifier, ZKMCompressWithVKeyWitnessValues, ZKMCompressWithVkeyShape,
-        ZKMCompressWitnessValues, ZKMDeferredVerifier, ZKMDeferredWitnessValues,
-        ZKMMerkleProofWitnessValues, ZKMRecursionShape, ZKMRecursionWitnessValues,
+        PublicValuesOutputDigest, ZKMCompressRootVerifierWithVKey, ZKMCompressWithVKeyVerifier,
+        ZKMCompressWithVKeyWitnessValues, ZKMCompressWitnessValues, ZKMDeferredVerifier,
+        ZKMDeferredWitnessValues, ZKMMerkleProofWitnessValues, ZKMRecursionWitnessValues,
         ZKMRecursiveVerifier,
     },
     merkle_tree::MerkleTree,
+    shard::RecursiveShardVerifier,
     witness::Witnessable,
-    WrapConfig,
 };
-use zkm_recursion_compiler::{
-    circuit::AsmCompiler,
-    config::InnerConfig,
-    ir::{Builder, Witness},
-};
+use zkm_recursion_compiler::{circuit::AsmCompiler, config::InnerConfig, ir::Builder};
 use zkm_recursion_core::{
     air::RecursionPublicValues,
-    hash_vkey_with_part_vk,
     machine::RecursionAir,
-    runtime::ExecutionRecord,
     shape::{RecursionShape, RecursionShapeConfig},
     stark::KoalaBearPoseidon2Outer,
     RecursionProgram, Runtime as RecursionRuntime,
 };
 pub use zkm_recursion_gnark_ffi::proof::{DvSnarkBn254Proof, Groth16Bn254Proof, PlonkBn254Proof};
-use zkm_recursion_gnark_ffi::{
-    groth16_bn254::Groth16Bn254Prover, plonk_bn254::PlonkBn254Prover, DvSnarkBn254Prover,
-};
-use zkm_stark::{
-    air::PublicValues, koala_bear_poseidon2::KoalaBearPoseidon2, Challenge, MachineProver,
-    ShardProof, StarkGenericConfig, StarkVerifyingKey, Val, Word, ZKMCoreOpts, ZKMProverOpts,
-    DIGEST_SIZE,
-};
-use zkm_stark::{shape::OrderedShape, MachineProvingKey};
+use zkm_stark::{inner_perm, ZKMCoreOpts, ZKMProverOpts};
 
 pub use types::*;
-use utils::{words_to_bytes, zkm_committed_values_digest_bn254, zkm_vkey_digest_bn254};
+use utils::words_to_bytes;
 
 use components::{DefaultProverComponents, ZKMProverComponents};
 
 pub use zkm_core_machine::ZKM_CIRCUIT_VERSION;
 
 /// The configuration for the core prover.
-pub type CoreSC = KoalaBearPoseidon2;
+pub type CoreSC = ZkmGlobalContext;
 
-/// The configuration for the inner prover.
-pub type InnerSC = KoalaBearPoseidon2;
+/// The configuration for the inner (compress/shrink) prover.
+pub type InnerSC = ZkmGlobalContext;
 
-/// The configuration for the outer prover.
+/// The configuration for the outer (Bn254 wrap) prover. Blocked on task #57
+/// (`ZkmOuterGlobalContext`) -- see the module doc comment.
 pub type OuterSC = KoalaBearPoseidon2Outer;
-
-pub type DeviceProvingKey<C> = <<C as ZKMProverComponents>::CoreProver as MachineProver<
-    KoalaBearPoseidon2,
-    MipsAir<KoalaBear>,
->>::DeviceProvingKey;
 
 const COMPRESS_DEGREE: usize = 3;
 const SHRINK_DEGREE: usize = 3;
 const WRAP_DEGREE: usize = 9;
 
-const CORE_CACHE_SIZE: usize = 5;
 pub const REDUCE_BATCH_SIZE: usize = 2;
 
-// TODO: FIX
-//
-// const SHAPES_URL_PREFIX: &str = "https://zkm-circuits.s3.us-east-2.amazonaws.com/shapes";
-// const SHAPES_VERSION: &str = "146079e0e";
-// lazy_static! {
-//     static ref SHAPES_INIT: Once = Once::new();
-// }
+/// Log2 of the stacked-PCS grouping height for the core (MIPS) machine. Mirrors the `pub(crate)`
+/// `zkm_core_machine::utils::prove::ZKM_LOG_STACKING_HEIGHT`; kept in sync by convention (that
+/// constant isn't reachable from this crate).
+const CORE_LOG_STACKING_HEIGHT: u32 = 4;
+
+/// Log2 of the stacked-PCS grouping height for the recursion (compress/shrink/wrap) machines.
+/// Mirrors `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`.
+const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
 
 pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
 pub type ShrinkAir<F> = RecursionAir<F, SHRINK_DEGREE>;
 pub type WrapAir<F> = RecursionAir<F, WRAP_DEGREE>;
+
+/// The max log row count the core machine's jagged PCS is configured for.
+fn core_max_log_row_count() -> usize {
+    ZKMCoreOpts::default().shard_size.ilog2() as usize
+}
+
+/// The max log row count the recursion (compress/shrink) machines' jagged PCS is configured for.
+fn recursion_max_log_row_count() -> usize {
+    ZKMCoreOpts::recursion().shard_size.ilog2() as usize
+}
 
 /// An end-to-end prover implementation for the Ziren zkVM.
 pub struct ZKMProver<C: ZKMProverComponents = DefaultProverComponents> {
@@ -136,100 +129,66 @@ pub struct ZKMProver<C: ZKMProverComponents = DefaultProverComponents> {
     /// The machine used for proving the shrink step.
     pub shrink_prover: C::ShrinkProver,
 
-    /// The machine used for proving the wrapping step.
-    pub wrap_prover: C::WrapProver,
-
-    /// The cache of compiled recursion programs.
-    pub lift_programs_lru: Mutex<LruCache<ZKMRecursionShape, Arc<RecursionProgram<KoalaBear>>>>,
-
-    /// The number of cache misses for recursion programs.
-    pub lift_cache_misses: AtomicUsize,
-
-    /// The cache of compiled compression programs.
-    pub join_programs_map: BTreeMap<ZKMCompressWithVkeyShape, Arc<RecursionProgram<KoalaBear>>>,
-
-    /// The number of cache misses for compression programs.
-    pub join_cache_misses: AtomicUsize,
-
     /// The root of the allowed recursion verification keys.
-    pub recursion_vk_root: <InnerSC as FieldHasher<KoalaBear>>::Digest,
+    pub recursion_vk_root: <ZkmGlobalContext as FieldHasher<KoalaBear>>::Digest,
 
     /// The allowed VKs and their corresponding indices.
-    pub recursion_vk_map: BTreeMap<<InnerSC as FieldHasher<KoalaBear>>::Digest, usize>,
+    pub recursion_vk_map: BTreeMap<<ZkmGlobalContext as FieldHasher<KoalaBear>>::Digest, usize>,
 
     /// The Merkle tree for the allowed VKs.
-    pub recursion_vk_tree: MerkleTree<KoalaBear, InnerSC>,
-
-    /// The core shape configuration.
-    pub core_shape_config: Option<CoreShapeConfig<KoalaBear>>,
+    pub recursion_vk_tree: MerkleTree<KoalaBear, ZkmGlobalContext>,
 
     /// The recursion shape configuration.
     pub compress_shape_config: Option<RecursionShapeConfig<KoalaBear, CompressAir<KoalaBear>>>,
-
-    /// The program for wrapping.
-    pub wrap_program: OnceLock<Arc<RecursionProgram<KoalaBear>>>,
-
-    /// The verifying key for wrapping.
-    pub wrap_vk: OnceLock<StarkVerifyingKey<OuterSC>>,
 
     /// Whether to verify verification keys.
     pub vk_verification: bool,
 }
 
-impl<C: ZKMProverComponents> ZKMProver<C> {
+impl ZKMProver<DefaultProverComponents> {
     /// Initializes a new [ZKMProver].
     #[instrument(name = "initialize prover", level = "debug", skip_all)]
     pub fn new() -> Self {
         Self::uninitialized()
     }
 
-    /// Creates a new [ZKMProver] with lazily initialized components.
+    /// Creates a new [ZKMProver].
     pub fn uninitialized() -> Self {
-        // Initialize the provers.
-        let core_machine = MipsAir::machine(CoreSC::default());
-        let core_prover = C::CoreProver::new(core_machine);
+        let core_prover = ZkmShardProver::<MipsAir<KoalaBear>>::new(
+            ShardVerifier::from_basefold_parameters(
+                default_fri_config(),
+                CORE_LOG_STACKING_HEIGHT,
+                core_max_log_row_count(),
+                MipsAir::<KoalaBear>::hypercube_machine(),
+            ),
+        );
 
-        let compress_machine = CompressAir::compress_machine(InnerSC::default());
-        let compress_prover = C::CompressProver::new(compress_machine);
+        let compress_prover = ZkmShardProver::<CompressAir<KoalaBear>>::new(
+            ShardVerifier::from_basefold_parameters(
+                default_fri_config(),
+                RECURSION_LOG_STACKING_HEIGHT,
+                recursion_max_log_row_count(),
+                CompressAir::<KoalaBear>::compress_machine(),
+            ),
+        );
 
-        // TODO: Put the correct shrink and wrap machines here.
-        let shrink_machine = ShrinkAir::shrink_machine(InnerSC::compressed());
-        let shrink_prover = C::ShrinkProver::new(shrink_machine);
-
-        let wrap_machine = WrapAir::wrap_machine(OuterSC::default());
-        let wrap_prover = C::WrapProver::new(wrap_machine);
-
-        let core_cache_size = NonZeroUsize::new(
-            env::var("PROVER_CORE_CACHE_SIZE")
-                .unwrap_or_else(|_| CORE_CACHE_SIZE.to_string())
-                .parse()
-                .unwrap_or(CORE_CACHE_SIZE),
-        )
-        .expect("PROVER_CORE_CACHE_SIZE must be a non-zero usize");
-
-        let core_shape_config = env::var("FIX_CORE_SHAPES")
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(true)
-            .then_some(CoreShapeConfig::default());
-
-        let recursion_shape_config = env::var("FIX_RECURSION_SHAPES")
-            .map(|v| v.eq_ignore_ascii_case("true"))
-            .unwrap_or(true)
-            .then_some(RecursionShapeConfig::default());
+        let shrink_prover = ZkmShardProver::<ShrinkAir<KoalaBear>>::new(
+            ShardVerifier::from_basefold_parameters(
+                default_fri_config(),
+                RECURSION_LOG_STACKING_HEIGHT,
+                recursion_max_log_row_count(),
+                ShrinkAir::<KoalaBear>::shrink_machine(),
+            ),
+        );
 
         let vk_verification =
             env::var("VERIFY_VK").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(true);
 
         tracing::debug!("vk verification: {}", vk_verification);
 
-        // Read the shapes from the shapes directory and deserialize them into memory.
+        // Read the allowed VK set. Regenerate `vk_map.bin` when the Ziren circuit is updated
+        // (out of scope for this migration pass -- see `shapes.rs`).
         let allowed_vk_map: BTreeMap<[KoalaBear; DIGEST_SIZE], usize> = if vk_verification {
-            // Regenerate the vk_map.bin when the Ziren circuit is updated.
-            // ```
-            // cd Ziren
-            // cargo run -r --bin build_compress_vks -- --num-compiler-workers 32 --count-setup-workers 32 --build-dir crates/prover
-            // ```
-            // It takes several days.
             bincode::deserialize(include_bytes!("../vk_map.bin")).unwrap()
         } else {
             bincode::deserialize(include_bytes!("../dummy_vk_map.bin")).unwrap()
@@ -237,77 +196,45 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
         let (root, merkle_tree) = MerkleTree::commit(allowed_vk_map.keys().copied().collect());
 
-        let mut compress_programs = BTreeMap::new();
-        if let Some(config) = &recursion_shape_config {
-            ZKMProofShape::generate_compress_shapes(config, REDUCE_BATCH_SIZE).for_each(|shape| {
-                let compress_shape = ZKMCompressWithVkeyShape {
-                    compress_shape: shape.into(),
-                    merkle_tree_height: merkle_tree.height,
-                };
-                let input = ZKMCompressWithVKeyWitnessValues::dummy(
-                    compress_prover.machine(),
-                    &compress_shape,
-                );
-                let program = compress_program_from_input::<C>(
-                    recursion_shape_config.as_ref(),
-                    &compress_prover,
-                    vk_verification,
-                    &input,
-                );
-                let program = Arc::new(program);
-                compress_programs.insert(compress_shape, program);
-            });
-        }
+        let compress_shape_config = env::var("FIX_RECURSION_SHAPES")
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(true)
+            .then_some(RecursionShapeConfig::default());
 
         Self {
             core_prover,
             compress_prover,
             shrink_prover,
-            wrap_prover,
-            lift_programs_lru: Mutex::new(LruCache::new(core_cache_size)),
-            lift_cache_misses: AtomicUsize::new(0),
-            join_programs_map: compress_programs,
-            join_cache_misses: AtomicUsize::new(0),
             recursion_vk_root: root,
-            recursion_vk_tree: merkle_tree,
             recursion_vk_map: allowed_vk_map,
-            core_shape_config,
-            compress_shape_config: recursion_shape_config,
+            recursion_vk_tree: merkle_tree,
+            compress_shape_config,
             vk_verification,
-            wrap_program: OnceLock::new(),
-            wrap_vk: OnceLock::new(),
         }
     }
 
     /// Fully initializes the programs, proving keys, and verifying keys that are normally
     /// lazily initialized. TODO: remove this.
     pub fn initialize(&mut self) {}
+}
 
+impl<C: ZKMProverComponents> ZKMProver<C> {
     /// Creates a proving key and a verifying key for a given MIPS ELF.
     #[instrument(name = "setup", level = "debug", skip_all)]
-    pub fn setup(
-        &self,
-        elf: &[u8],
-    ) -> (ZKMProvingKey, DeviceProvingKey<C>, Program, ZKMVerifyingKey) {
+    pub fn setup(&self, elf: &[u8]) -> (ZKMProvingKey, Program, ZKMVerifyingKey) {
         let program = self.get_program(elf).unwrap();
-        let (pk, vk) = self.core_prover.setup(&program);
+        let setup_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (_, vk) = setup_rt
+            .block_on(self.core_prover.setup(Arc::new(program.clone()), ProverSemaphore::new(1)));
         let vk = ZKMVerifyingKey { vk };
-        let pk = ZKMProvingKey {
-            pk: self.core_prover.pk_to_host(&pk),
-            elf: elf.to_vec(),
-            vk: vk.clone(),
-        };
-        let pk_d = self.core_prover.pk_to_device(&pk.pk);
-        (pk, pk_d, program, vk)
+        let pk = ZKMProvingKey { elf: elf.to_vec(), vk: vk.clone() };
+        (pk, program, vk)
     }
 
-    /// Get a program with an allowed preprocessed shape.
+    /// Get a program for the given ELF.
     pub fn get_program(&self, elf: &[u8]) -> eyre::Result<Program> {
-        let mut program = Program::from(elf).unwrap();
-        if let Some(core_shape_config) = &self.core_shape_config {
-            core_shape_config.fix_preprocessed_shape(&mut program)?;
-        }
-        Ok(program)
+        Ok(Program::from(elf).unwrap())
     }
 
     /// Generate a proof of a Ziren program with the specified inputs.
@@ -335,106 +262,115 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
     #[instrument(name = "prove_core", level = "info", skip_all)]
     pub fn prove_core<'a>(
         &'a self,
-        pk_d: &<<C as ZKMProverComponents>::CoreProver as MachineProver<
-            KoalaBearPoseidon2,
-            MipsAir<KoalaBear>,
-        >>::DeviceProvingKey,
         program: Program,
         stdin: &ZKMStdin,
         opts: ZKMProverOpts,
         mut context: ZKMContext<'a>,
     ) -> Result<ZKMCoreProof, ZKMCoreProverError> {
         context.subproof_verifier = Some(self);
-        let pk = pk_d;
-        let (proof, public_values_stream, cycles) =
-            zkm_core_machine::utils::prove_with_context::<_, C::CoreProver>(
-                &self.core_prover,
-                pk,
-                program,
-                stdin,
-                opts.core_opts,
-                context,
-                self.core_shape_config.as_ref(),
-            )?;
+        let (shard_proofs, public_values_stream, cycles, _vk) =
+            prove_with_context(program, stdin, opts.core_opts, context)?;
         Self::check_for_high_cycles(cycles);
         let public_values = ZKMPublicValues::from(&public_values_stream);
         Ok(ZKMCoreProof {
-            proof: ZKMCoreProofData(proof.shard_proofs),
+            proof: ZKMCoreProofData(shard_proofs),
             stdin: stdin.clone(),
             public_values,
             cycles,
         })
     }
 
+    /// Builds the circuit-side shard verifier used to construct in-circuit verification programs
+    /// for shards produced by `self.core_prover`.
+    fn core_circuit_verifier(
+        &self,
+    ) -> RecursiveShardVerifier<
+        InnerConfig,
+        ZkmGlobalContext,
+        DuplexChallengerVariable<InnerConfig>,
+        MipsAir<KoalaBear>,
+    > {
+        RecursiveShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            CORE_LOG_STACKING_HEIGHT,
+            core_max_log_row_count(),
+            self.core_prover.machine().clone(),
+        )
+    }
+
+    /// Builds the circuit-side shard verifier used to construct in-circuit verification programs
+    /// for shards produced by `self.compress_prover`.
+    fn compress_circuit_verifier(
+        &self,
+    ) -> RecursiveShardVerifier<
+        InnerConfig,
+        ZkmGlobalContext,
+        DuplexChallengerVariable<InnerConfig>,
+        CompressAir<KoalaBear>,
+    > {
+        RecursiveShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            RECURSION_LOG_STACKING_HEIGHT,
+            recursion_max_log_row_count(),
+            self.compress_prover.machine().clone(),
+        )
+    }
+
     pub fn recursion_program(
         &self,
-        input: &ZKMRecursionWitnessValues<CoreSC>,
+        input: &ZKMRecursionWitnessValues<CoreSC, CorePcsProof>,
     ) -> Arc<RecursionProgram<KoalaBear>> {
-        let mut cache = self.lift_programs_lru.lock().unwrap_or_else(|e| e.into_inner());
-        cache
-            .get_or_insert(input.shape(), || {
-                let misses = self.lift_cache_misses.fetch_add(1, Ordering::Relaxed);
-                tracing::debug!("core cache miss, misses: {}", misses);
-                // Get the operations.
-                let builder_span = tracing::debug_span!("build recursion program").entered();
-                let mut builder = Builder::<InnerConfig>::default();
+        let builder_span = tracing::debug_span!("build recursion program").entered();
+        let mut builder = Builder::<InnerConfig>::default();
 
-                let input = input.read(&mut builder);
-                ZKMRecursiveVerifier::verify(&mut builder, self.core_prover.machine(), input);
-                let operations = builder.into_operations();
-                builder_span.exit();
+        let input_var = input.read(&mut builder);
+        let machine = self.core_circuit_verifier();
+        ZKMRecursiveVerifier::verify(&mut builder, &machine, input_var);
+        let operations = builder.into_operations();
+        builder_span.exit();
 
-                // Compile the program.
-                let compiler_span = tracing::debug_span!("compile recursion program").entered();
-                let mut compiler = AsmCompiler::<InnerConfig>::default();
-                let mut program = compiler.compile(operations);
-                if let Some(recursion_shape_config) = &self.compress_shape_config {
-                    recursion_shape_config.fix_shape(&mut program);
-                }
-                let program = Arc::new(program);
-                compiler_span.exit();
-                program
-            })
-            .clone()
+        let compiler_span = tracing::debug_span!("compile recursion program").entered();
+        let mut compiler = AsmCompiler::<InnerConfig>::default();
+        let mut program = compiler.compile(operations);
+        if let Some(recursion_shape_config) = &self.compress_shape_config {
+            recursion_shape_config.fix_shape(&mut program);
+        }
+        let program = Arc::new(program);
+        compiler_span.exit();
+        program
     }
 
     pub fn compress_program(
         &self,
-        input: &ZKMCompressWithVKeyWitnessValues<InnerSC>,
+        input: &ZKMCompressWithVKeyWitnessValues<InnerSC, CorePcsProof>,
     ) -> Arc<RecursionProgram<KoalaBear>> {
-        self.join_programs_map.get(&input.shape()).cloned().unwrap_or_else(|| {
-            tracing::warn!("compress program not found in map, recomputing join program.");
-            // Get the operations.
-            Arc::new(compress_program_from_input::<C>(
-                self.compress_shape_config.as_ref(),
-                &self.compress_prover,
-                self.vk_verification,
-                input,
-            ))
-        })
+        Arc::new(compress_program_from_input::<C>(
+            self.compress_shape_config.as_ref(),
+            &self.compress_circuit_verifier(),
+            self.vk_verification,
+            input,
+        ))
     }
 
     pub fn shrink_program(
         &self,
         shrink_shape: RecursionShape,
-        input: &ZKMCompressWithVKeyWitnessValues<InnerSC>,
+        input: &ZKMCompressWithVKeyWitnessValues<InnerSC, CorePcsProof>,
     ) -> Arc<RecursionProgram<KoalaBear>> {
-        // Get the operations.
         let builder_span = tracing::debug_span!("build shrink program").entered();
         let mut builder = Builder::<InnerConfig>::default();
-        let input = input.read(&mut builder);
-        // Verify the proof.
+        let input_var = input.read(&mut builder);
+        let machine = self.compress_circuit_verifier();
         ZKMCompressRootVerifierWithVKey::verify(
             &mut builder,
-            self.compress_prover.machine(),
-            input,
+            &machine,
+            input_var,
             self.vk_verification,
             PublicValuesOutputDigest::Reduce,
         );
         let operations = builder.into_operations();
         builder_span.exit();
 
-        // Compile the program.
         let compiler_span = tracing::debug_span!("compile shrink program").entered();
         let mut compiler = AsmCompiler::<InnerConfig>::default();
         let mut program = compiler.compile(operations);
@@ -444,73 +380,20 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         program
     }
 
-    pub fn wrap_program(&self) -> Arc<RecursionProgram<KoalaBear>> {
-        self.wrap_program
-            .get_or_init(|| {
-                // Get the operations.
-                let builder_span = tracing::debug_span!("build compress program").entered();
-                let mut builder = Builder::<WrapConfig>::default();
-
-                let shrink_shape: OrderedShape = ShrinkAir::<KoalaBear>::shrink_shape().into();
-                let input_shape = ZKMCompressShape::from(vec![shrink_shape]);
-                let shape = ZKMCompressWithVkeyShape {
-                    compress_shape: input_shape,
-                    merkle_tree_height: self.recursion_vk_tree.height,
-                };
-                let dummy_input =
-                    ZKMCompressWithVKeyWitnessValues::dummy(self.shrink_prover.machine(), &shape);
-
-                let input = dummy_input.read(&mut builder);
-
-                // Attest that the merkle tree root is correct.
-                let root = input.merkle_var.root;
-                for (val, expected) in root.iter().zip(self.recursion_vk_root.iter()) {
-                    builder.assert_felt_eq(*val, *expected);
-                }
-                // Verify the proof.
-                ZKMCompressRootVerifierWithVKey::verify(
-                    &mut builder,
-                    self.shrink_prover.machine(),
-                    input,
-                    self.vk_verification,
-                    PublicValuesOutputDigest::Root,
-                );
-
-                let operations = builder.into_operations();
-                builder_span.exit();
-
-                // Compile the program.
-                let compiler_span = tracing::debug_span!("compile compress program").entered();
-                let mut compiler = AsmCompiler::<WrapConfig>::default();
-                let program = Arc::new(compiler.compile(operations));
-                compiler_span.exit();
-                program
-            })
-            .clone()
-    }
-
     pub fn deferred_program(
         &self,
-        input: &ZKMDeferredWitnessValues<InnerSC>,
+        input: &ZKMDeferredWitnessValues<InnerSC, CorePcsProof>,
     ) -> Arc<RecursionProgram<KoalaBear>> {
-        // Compile the program.
-
-        // Get the operations.
         let operations_span =
             tracing::debug_span!("get operations for the deferred program").entered();
         let mut builder = Builder::<InnerConfig>::default();
         let input_read_span = tracing::debug_span!("Read input values").entered();
-        let input = input.read(&mut builder);
+        let input_var = input.read(&mut builder);
         input_read_span.exit();
         let verify_span = tracing::debug_span!("Verify deferred program").entered();
 
-        // Verify the proof.
-        ZKMDeferredVerifier::verify(
-            &mut builder,
-            self.compress_prover.machine(),
-            input,
-            self.vk_verification,
-        );
+        let machine = self.compress_circuit_verifier();
+        ZKMDeferredVerifier::verify(&mut builder, &machine, input_var, self.vk_verification);
         verify_span.exit();
         let operations = builder.into_operations();
         operations_span.exit();
@@ -528,20 +411,19 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
     pub fn get_recursion_core_inputs(
         &self,
-        vk: &StarkVerifyingKey<CoreSC>,
-        shard_proofs: &[ShardProof<CoreSC>],
+        vk: &zkm_hypercube::MachineVerifyingKey<CoreSC>,
+        shard_proofs: &[zkm_hypercube::ShardProof<CoreSC, CorePcsProof>],
         batch_size: usize,
         is_complete: bool,
-    ) -> Vec<ZKMRecursionWitnessValues<CoreSC>> {
+    ) -> Vec<ZKMRecursionWitnessValues<CoreSC, CorePcsProof>> {
         let mut core_inputs = Vec::new();
 
-        // Prepare the inputs for the recursion programs.
         for (batch_idx, batch) in shard_proofs.chunks(batch_size).enumerate() {
             let proofs = batch.to_vec();
 
             core_inputs.push(ZKMRecursionWitnessValues {
                 vk: vk.clone(),
-                shard_proofs: proofs.clone(),
+                shard_proofs: proofs,
                 is_complete,
                 is_first_shard: batch_idx == 0,
                 vk_root: self.recursion_vk_root,
@@ -553,13 +435,12 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
     pub fn get_recursion_deferred_inputs<'a>(
         &'a self,
-        vk: &'a StarkVerifyingKey<CoreSC>,
-        last_proof_pv: &PublicValues<Word<KoalaBear>, KoalaBear>,
-        deferred_proofs: &[ZKMReduceProof<InnerSC>],
+        vk: &'a zkm_hypercube::MachineVerifyingKey<CoreSC>,
+        last_proof_pv: &zkm_hypercube::air::PublicValues<Word<KoalaBear>, KoalaBear>,
+        deferred_proofs: &[ZKMReduceProofWrapper],
         batch_size: usize,
-    ) -> Vec<ZKMDeferredWitnessValues<InnerSC>> {
-        // Prepare the inputs for the deferred proofs recursive verification.
-        let mut deferred_digest = [Val::<InnerSC>::ZERO; DIGEST_SIZE];
+    ) -> Vec<ZKMDeferredWitnessValues<InnerSC, CorePcsProof>> {
+        let mut deferred_digest = [KoalaBear::ZERO; DIGEST_SIZE];
         let mut deferred_inputs = Vec::new();
 
         for batch in deferred_proofs.chunks(batch_size) {
@@ -567,8 +448,8 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
                 batch.iter().cloned().map(|proof| (proof.vk, proof.proof)).collect::<Vec<_>>();
 
             let input = ZKMCompressWitnessValues { vks_and_proofs, is_complete: true };
-            let input = self.make_merkle_proofs(input);
-            let ZKMCompressWithVKeyWitnessValues { compress_val, merkle_val } = input;
+            let input_with_merkle = self.make_merkle_proofs(input);
+            let ZKMCompressWithVKeyWitnessValues { compress_val, merkle_val } = input_with_merkle;
 
             deferred_inputs.push(ZKMDeferredWitnessValues {
                 vks_and_proofs: compress_val.vks_and_proofs,
@@ -576,7 +457,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
                 start_reconstruct_deferred_digest: deferred_digest,
                 is_complete: false,
                 zkm_vk_digest: vk.hash_koalabear(),
-                end_pc: Val::<InnerSC>::ZERO,
+                end_pc: KoalaBear::ZERO,
                 end_shard: last_proof_pv.shard + KoalaBear::ONE,
                 end_execution_shard: last_proof_pv.execution_shard,
                 init_addr_bits: last_proof_pv.last_init_addr_bits,
@@ -595,8 +476,8 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
     pub fn get_first_layer_inputs<'a>(
         &'a self,
         vk: &'a ZKMVerifyingKey,
-        shard_proofs: &[ShardProof<InnerSC>],
-        deferred_proofs: &[ZKMReduceProof<InnerSC>],
+        shard_proofs: &[zkm_hypercube::ShardProof<CoreSC, CorePcsProof>],
+        deferred_proofs: &[ZKMReduceProofWrapper],
         batch_size: usize,
     ) -> Vec<ZKMCircuitWitness> {
         let is_complete = shard_proofs.len() == 1 && deferred_proofs.is_empty();
@@ -612,359 +493,111 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         inputs
     }
 
+    /// Compiles, runs, and proves a single circuit witness against the compress machine.
+    fn prove_compress_witness(
+        &self,
+        witness: ZKMCircuitWitness,
+    ) -> (zkm_hypercube::MachineVerifyingKey<InnerSC>, zkm_hypercube::ShardProof<InnerSC, CorePcsProof>)
+    {
+        let (program, witness_stream) = match &witness {
+            ZKMCircuitWitness::Core(input) => {
+                let mut witness_stream = Vec::new();
+                Witnessable::<InnerConfig>::write(input, &mut witness_stream);
+                (self.recursion_program(input), witness_stream)
+            }
+            ZKMCircuitWitness::Deferred(input) => {
+                let mut witness_stream = Vec::new();
+                Witnessable::<InnerConfig>::write(input, &mut witness_stream);
+                (self.deferred_program(input), witness_stream)
+            }
+            ZKMCircuitWitness::Compress(input) => {
+                let input_with_merkle = self.make_merkle_proofs(input.clone());
+                let mut witness_stream = Vec::new();
+                Witnessable::<InnerConfig>::write(&input_with_merkle, &mut witness_stream);
+                (self.compress_program(&input_with_merkle), witness_stream)
+            }
+        };
+
+        let mut runtime =
+            RecursionRuntime::<KoalaBear, zkm_stark::InnerChallenge, _>::new(
+                program.clone(),
+                inner_perm(),
+            );
+        runtime.witness_stream = witness_stream.into();
+        runtime.run().map_err(|e| ZKMRecursionProverError::RuntimeError(e.to_string())).unwrap();
+        runtime.print_stats();
+        let mut record = runtime.record;
+
+        self.compress_prover
+            .machine()
+            .generate_dependencies(std::iter::once(&mut record), None)
+            .unwrap();
+
+        let async_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (vk, proof, _permit) = async_rt.block_on(self.compress_prover.setup_and_prove_shard(
+            program,
+            record,
+            None,
+            ProverSemaphore::new(1),
+        ));
+        (vk, proof)
+    }
+
     /// Reduce shard proofs to a single shard proof using the recursion prover.
+    ///
+    /// This performs the binary-tree reduction sequentially, one witness at a time. The old
+    /// FRI-era prover ran this as a multi-stage threaded pipeline (separate checkpoint/trace-gen/
+    /// prove worker threads communicating over channels); that pipeline has not been ported
+    /// forward in this migration pass -- it's a performance optimization, not a correctness
+    /// requirement, and re-threading it against the new `AirProver` API is left as a follow-up.
     #[instrument(name = "compress", level = "info", skip_all)]
     pub fn compress(
         &self,
         vk: &ZKMVerifyingKey,
         proof: ZKMCoreProof,
-        deferred_proofs: Vec<ZKMReduceProof<InnerSC>>,
-        opts: ZKMProverOpts,
-    ) -> Result<ZKMReduceProof<InnerSC>, ZKMRecursionProverError> {
-        // The batch size for reducing two layers of recursion.
+        deferred_proofs: Vec<ZKMReduceProofWrapper>,
+        _opts: ZKMProverOpts,
+    ) -> Result<ZKMReduceProofWrapper, ZKMRecursionProverError> {
         let batch_size = REDUCE_BATCH_SIZE;
-        // The batch size for reducing the first layer of recursion.
         let first_layer_batch_size = 1;
 
         let shard_proofs = &proof.proof.0;
-
         let first_layer_inputs =
             self.get_first_layer_inputs(vk, shard_proofs, &deferred_proofs, first_layer_batch_size);
 
-        // Calculate the expected height of the tree.
-        let mut expected_height = if first_layer_inputs.len() == 1 { 0 } else { 1 };
-        let num_first_layer_inputs = first_layer_inputs.len();
-        let mut num_layer_inputs = num_first_layer_inputs;
-        while num_layer_inputs > batch_size {
-            num_layer_inputs = num_layer_inputs.div_ceil(2);
-            expected_height += 1;
+        let mut layer: Vec<_> =
+            first_layer_inputs.into_iter().map(|w| self.prove_compress_witness(w)).collect();
+
+        while layer.len() > 1 {
+            let num_chunks = layer.len().div_ceil(batch_size);
+            let mut next_layer = Vec::with_capacity(num_chunks);
+            for chunk in layer.chunks(batch_size) {
+                let is_complete = num_chunks == 1;
+                let vks_and_proofs = chunk.to_vec();
+                let witness = ZKMCircuitWitness::Compress(ZKMCompressWitnessValues {
+                    vks_and_proofs,
+                    is_complete,
+                });
+                next_layer.push(self.prove_compress_witness(witness));
+            }
+            layer = next_layer;
         }
 
-        // Generate the proofs.
-        let span = tracing::Span::current().clone();
-        let (vk, proof) = thread::scope(|s| {
-            let _span = span.enter();
+        let (vk, proof) = layer.into_iter().next().unwrap();
+        let vk_merkle_proof = self.vk_merkle_proof(&vk);
 
-            // Spawn a worker that sends the first layer inputs to a bounded channel.
-            let input_sync = Arc::new(TurnBasedSync::new());
-            let (input_tx, input_rx) = sync_channel::<(usize, usize, ZKMCircuitWitness)>(
-                opts.recursion_opts.checkpoints_channel_capacity,
-            );
-            let input_tx = Arc::new(Mutex::new(input_tx));
-            {
-                let input_tx = Arc::clone(&input_tx);
-                let input_sync = Arc::clone(&input_sync);
-                s.spawn(move || {
-                    for (index, input) in first_layer_inputs.into_iter().enumerate() {
-                        input_sync.wait_for_turn(index);
-                        input_tx.lock().unwrap().send((index, 0, input)).unwrap();
-                        input_sync.advance_turn();
-                    }
-                });
-            }
-
-            // Spawn workers who generate the records and traces.
-            let record_and_trace_sync = Arc::new(TurnBasedSync::new());
-            let (record_and_trace_tx, record_and_trace_rx) =
-                sync_channel::<(
-                    usize,
-                    usize,
-                    Arc<RecursionProgram<KoalaBear>>,
-                    ExecutionRecord<KoalaBear>,
-                    Vec<(String, RowMajorMatrix<KoalaBear>)>,
-                )>(opts.recursion_opts.records_and_traces_channel_capacity);
-            let record_and_trace_tx = Arc::new(Mutex::new(record_and_trace_tx));
-            let record_and_trace_rx = Arc::new(Mutex::new(record_and_trace_rx));
-            let input_rx = Arc::new(Mutex::new(input_rx));
-            for _ in 0..opts.recursion_opts.trace_gen_workers {
-                let record_and_trace_sync = Arc::clone(&record_and_trace_sync);
-                let record_and_trace_tx = Arc::clone(&record_and_trace_tx);
-                let input_rx = Arc::clone(&input_rx);
-                let span = tracing::debug_span!("generate records and traces");
-                s.spawn(move || {
-                    let _span = span.enter();
-                    loop {
-                        let received = { input_rx.lock().unwrap().recv() };
-                        if let Ok((index, height, input)) = received {
-                            // Get the program and witness stream.
-                            let (program, witness_stream) = tracing::debug_span!(
-                                "get program and witness stream"
-                            )
-                            .in_scope(|| match input {
-                                ZKMCircuitWitness::Core(input) => {
-                                    let mut witness_stream = Vec::new();
-                                    Witnessable::<InnerConfig>::write(&input, &mut witness_stream);
-                                    (self.recursion_program(&input), witness_stream)
-                                }
-                                ZKMCircuitWitness::Deferred(input) => {
-                                    let mut witness_stream = Vec::new();
-                                    Witnessable::<InnerConfig>::write(&input, &mut witness_stream);
-                                    (self.deferred_program(&input), witness_stream)
-                                }
-                                ZKMCircuitWitness::Compress(input) => {
-                                    let mut witness_stream = Vec::new();
-
-                                    let input_with_merkle = self.make_merkle_proofs(input);
-
-                                    Witnessable::<InnerConfig>::write(
-                                        &input_with_merkle,
-                                        &mut witness_stream,
-                                    );
-
-                                    (self.compress_program(&input_with_merkle), witness_stream)
-                                }
-                            });
-
-                            // Execute the runtime.
-                            let record = tracing::debug_span!("execute runtime").in_scope(|| {
-                                let mut runtime =
-                                    RecursionRuntime::<Val<InnerSC>, Challenge<InnerSC>, _>::new(
-                                        program.clone(),
-                                        self.compress_prover.config().perm.clone(),
-                                    );
-                                runtime.witness_stream = witness_stream.into();
-                                runtime
-                                    .run()
-                                    .map_err(|e| {
-                                        ZKMRecursionProverError::RuntimeError(e.to_string())
-                                    })
-                                    .unwrap();
-                                runtime.record
-                            });
-
-                            // Generate the dependencies.
-                            let mut records = vec![record];
-                            tracing::debug_span!("generate dependencies").in_scope(|| -> Result<(), ZKMRecursionProverError> {
-                                match self.compress_prover.machine().generate_dependencies(
-                                    &mut records,
-                                    &opts.recursion_opts,
-                                    None,
-                                ) {
-                                    Ok(_) => Ok(()),
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "Failed to generate dependencies for recursion proof: {}",
-                                            e
-                                        );
-                                        Err(ZKMRecursionProverError::DependenciesGenerationError)
-                                    }
-                                }
-                            })?;
-
-                            // Generate the traces.
-                            let record = records.into_iter().next().unwrap();
-                            let traces = tracing::debug_span!("generate traces")
-                                .in_scope(|| self.compress_prover.generate_traces(&record));
-                            let traces = match traces {
-                                Ok(traces) => traces,
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Failed to generate traces for recursion proof: {}",
-                                        e
-                                    );
-                                    return Err(ZKMRecursionProverError::TracesGenerationError);
-                                }
-                            };
-
-                            // Wait for our turn to update the state.
-                            record_and_trace_sync.wait_for_turn(index);
-
-                            // Send the record and traces to the worker.
-                            record_and_trace_tx
-                                .lock()
-                                .unwrap()
-                                .send((index, height, program, record, traces))
-                                .unwrap();
-
-                            // Advance the turn.
-                            record_and_trace_sync.advance_turn();
-                        } else {
-                            break Ok(());
-                        }
-                    }
-                });
-            }
-
-            // Spawn workers who generate the compress proofs.
-            let proofs_sync = Arc::new(TurnBasedSync::new());
-            let (proofs_tx, proofs_rx) =
-                sync_channel::<(usize, usize, StarkVerifyingKey<InnerSC>, ShardProof<InnerSC>)>(
-                    num_first_layer_inputs * 2,
-                );
-            let proofs_tx = Arc::new(Mutex::new(proofs_tx));
-            let proofs_rx = Arc::new(Mutex::new(proofs_rx));
-            let mut prover_handles = Vec::new();
-            for _ in 0..opts.recursion_opts.shard_batch_size {
-                let prover_sync = Arc::clone(&proofs_sync);
-                let record_and_trace_rx = Arc::clone(&record_and_trace_rx);
-                let proofs_tx = Arc::clone(&proofs_tx);
-                let span = tracing::debug_span!("prove");
-                let handle = s.spawn(move || {
-                    let _span = span.enter();
-                    loop {
-                        let received = { record_and_trace_rx.lock().unwrap().recv() };
-                        if let Ok((index, height, program, record, traces)) = received {
-                            tracing::debug_span!("batch").in_scope(|| {
-                                // Get the keys.
-                                let (pk, vk) = tracing::debug_span!("Setup compress program")
-                                    .in_scope(|| self.compress_prover.setup(&program));
-
-                                // Observe the proving key.
-                                let mut challenger = self.compress_prover.config().challenger();
-                                tracing::debug_span!("observe proving key").in_scope(|| {
-                                    pk.observe_into(&mut challenger);
-                                });
-
-                                #[cfg(feature = "debug")]
-                                self.compress_prover.debug_constraints(
-                                    &self.compress_prover.pk_to_host(&pk),
-                                    vec![record.clone()],
-                                    &mut challenger.clone(),
-                                );
-
-                                // Commit to the record and traces.
-                                let data = tracing::debug_span!("commit")
-                                    .in_scope(|| self.compress_prover.commit(&record, traces));
-
-                                // Generate the proof.
-                                let proof = tracing::debug_span!("open").in_scope(|| {
-                                    self.compress_prover.open(&pk, data, &mut challenger).unwrap()
-                                });
-
-                                // Verify the proof.
-                                #[cfg(feature = "debug")]
-                                self.compress_prover
-                                    .machine()
-                                    .verify(
-                                        &vk,
-                                        &zkm_stark::MachineProof {
-                                            shard_proofs: vec![proof.clone()],
-                                        },
-                                        &mut self.compress_prover.config().challenger(),
-                                    )
-                                    .unwrap();
-
-                                // Wait for our turn to update the state.
-                                prover_sync.wait_for_turn(index);
-
-                                // Send the proof.
-                                proofs_tx.lock().unwrap().send((index, height, vk, proof)).unwrap();
-
-                                // Advance the turn.
-                                prover_sync.advance_turn();
-                            });
-                        } else {
-                            break;
-                        }
-                    }
-                });
-                prover_handles.push(handle);
-            }
-
-            // Spawn a worker that generates inputs for the next layer.
-            let handle = {
-                let input_tx = Arc::clone(&input_tx);
-                let proofs_rx = Arc::clone(&proofs_rx);
-                let span = tracing::debug_span!("generate next layer inputs");
-                s.spawn(move || {
-                    let _span = span.enter();
-                    let mut count = num_first_layer_inputs;
-                    let mut batch: Vec<(
-                        usize,
-                        usize,
-                        StarkVerifyingKey<InnerSC>,
-                        ShardProof<InnerSC>,
-                    )> = Vec::new();
-                    loop {
-                        if expected_height == 0 {
-                            break;
-                        }
-                        let received = { proofs_rx.lock().unwrap().recv() };
-                        if let Ok((index, height, vk, proof)) = received {
-                            batch.push((index, height, vk, proof));
-
-                            // If we haven't reached the batch size, continue.
-                            if batch.len() < batch_size {
-                                continue;
-                            }
-
-                            // Compute whether we're at the last input of a layer.
-                            let mut is_last = false;
-                            if let Some(first) = batch.first() {
-                                is_last = first.1 != height;
-                            }
-
-                            // If we're at the last input of a layer, we need to only include the
-                            // first input, otherwise we include all inputs.
-                            let inputs =
-                                if is_last { vec![batch[0].clone()] } else { batch.clone() };
-
-                            let next_input_height = inputs[0].1 + 1;
-
-                            let is_complete = next_input_height == expected_height;
-
-                            let vks_and_proofs = inputs
-                                .into_iter()
-                                .map(|(_, _, vk, proof)| (vk, proof))
-                                .collect::<Vec<_>>();
-                            let input = ZKMCircuitWitness::Compress(ZKMCompressWitnessValues {
-                                vks_and_proofs,
-                                is_complete,
-                            });
-
-                            input_sync.wait_for_turn(count);
-                            input_tx
-                                .lock()
-                                .unwrap()
-                                .send((count, next_input_height, input))
-                                .unwrap();
-                            input_sync.advance_turn();
-                            count += 1;
-
-                            // If we're at the root of the tree, stop generating inputs.
-                            if is_complete {
-                                break;
-                            }
-
-                            // If we were at the last input of a layer, we keep everything but the
-                            // first input. Otherwise, we empty the batch.
-                            if is_last {
-                                batch = vec![batch[1].clone()];
-                            } else {
-                                batch = Vec::new();
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                })
-            };
-
-            // Wait for all the provers to finish.
-            drop(input_tx);
-            drop(record_and_trace_tx);
-            drop(proofs_tx);
-            for handle in prover_handles {
-                handle.join().unwrap();
-            }
-            handle.join().unwrap();
-
-            let (_, _, vk, proof) = proofs_rx.lock().unwrap().recv().unwrap();
-            (vk, proof)
-        });
-
-        Ok(ZKMReduceProof { vk, proof })
+        Ok(ZKMReduceProofWrapper { vk, proof, vk_merkle_proof })
     }
 
-    /// Wrap a reduce proof into a STARK proven over a SNARK-friendly field.
+    /// Wrap a reduce proof into a STARK proven over the shrink machine.
     #[instrument(name = "shrink", level = "info", skip_all)]
     pub fn shrink(
         &self,
-        reduced_proof: ZKMReduceProof<InnerSC>,
-        opts: ZKMProverOpts,
-    ) -> Result<ZKMReduceProof<InnerSC>, ZKMRecursionProverError> {
-        // Make the compress proof.
-        let ZKMReduceProof { vk: compressed_vk, proof: compressed_proof } = reduced_proof;
+        reduced_proof: ZKMReduceProofWrapper,
+        _opts: ZKMProverOpts,
+    ) -> Result<ZKMReduceProofWrapper, ZKMRecursionProverError> {
+        let ZKMReduceProof { vk: compressed_vk, proof: compressed_proof, .. } = reduced_proof;
         let input = ZKMCompressWitnessValues {
             vks_and_proofs: vec![(compressed_vk, compressed_proof)],
             is_complete: true,
@@ -975,198 +608,92 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         let program =
             self.shrink_program(ShrinkAir::<KoalaBear>::shrink_shape(), &input_with_merkle);
 
-        // Run the compress program.
-        let mut runtime = RecursionRuntime::<Val<InnerSC>, Challenge<InnerSC>, _>::new(
-            program.clone(),
-            self.shrink_prover.config().perm.clone(),
-        );
+        let mut runtime =
+            RecursionRuntime::<KoalaBear, zkm_stark::InnerChallenge, _>::new(
+                program.clone(),
+                inner_perm(),
+            );
 
         let mut witness_stream = Vec::new();
         Witnessable::<InnerConfig>::write(&input_with_merkle, &mut witness_stream);
-
         runtime.witness_stream = witness_stream.into();
-
         runtime.run().map_err(|e| ZKMRecursionProverError::RuntimeError(e.to_string()))?;
-
         runtime.print_stats();
         tracing::debug!("Shrink program executed successfully");
 
-        let (shrink_pk, shrink_vk) =
-            tracing::debug_span!("setup shrink").in_scope(|| self.shrink_prover.setup(&program));
-
-        // Prove the compress program.
-        let mut compress_challenger = self.shrink_prover.config().challenger();
-        let mut compress_proof = self
-            .shrink_prover
-            .prove(&shrink_pk, vec![runtime.record], &mut compress_challenger, opts.recursion_opts)
+        let mut record = runtime.record;
+        self.shrink_prover
+            .machine()
+            .generate_dependencies(std::iter::once(&mut record), None)
             .unwrap();
 
-        Ok(ZKMReduceProof { vk: shrink_vk, proof: compress_proof.shard_proofs.pop().unwrap() })
+        let async_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (shrink_vk, shrink_proof, _permit) = async_rt.block_on(
+            self.shrink_prover.setup_and_prove_shard(program, record, None, ProverSemaphore::new(1)),
+        );
+
+        let vk_merkle_proof = self.vk_merkle_proof(&shrink_vk);
+        Ok(ZKMReduceProofWrapper { vk: shrink_vk, proof: shrink_proof, vk_merkle_proof })
     }
 
-    /// Wrap a reduce proof into a STARK proven over a SNARK-friendly field.
+    /// Wrap a reduce proof into a STARK proven over a SNARK-friendly (Bn254) field.
+    ///
+    /// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
     #[instrument(name = "wrap_bn254", level = "info", skip_all)]
     pub fn wrap_bn254(
         &self,
-        compressed_proof: ZKMReduceProof<InnerSC>,
-        opts: ZKMProverOpts,
-    ) -> Result<ZKMReduceProof<OuterSC>, ZKMRecursionProverError> {
-        let ZKMReduceProof { vk: compressed_vk, proof: compressed_proof } = compressed_proof;
-        let input = ZKMCompressWitnessValues {
-            vks_and_proofs: vec![(compressed_vk, compressed_proof)],
-            is_complete: true,
-        };
-        let input_with_vk = self.make_merkle_proofs(input);
-
-        let program = self.wrap_program();
-
-        // Run the compress program.
-        let mut runtime = RecursionRuntime::<Val<InnerSC>, Challenge<InnerSC>, _>::new(
-            program.clone(),
-            self.shrink_prover.config().perm.clone(),
-        );
-
-        let mut witness_stream = Vec::new();
-        Witnessable::<InnerConfig>::write(&input_with_vk, &mut witness_stream);
-
-        runtime.witness_stream = witness_stream.into();
-
-        runtime.run().map_err(|e| ZKMRecursionProverError::RuntimeError(e.to_string()))?;
-
-        runtime.print_stats();
-        tracing::debug!("wrap program executed successfully");
-
-        // Setup the wrap program.
-        let (wrap_pk, wrap_vk) =
-            tracing::debug_span!("setup wrap").in_scope(|| self.wrap_prover.setup(&program));
-
-        if self.wrap_vk.set(wrap_vk.clone()).is_ok() {
-            tracing::debug!("wrap verifier key set");
-        }
-
-        // Prove the wrap program.
-        let mut wrap_challenger = self.wrap_prover.config().challenger();
-        let time = std::time::Instant::now();
-        let mut wrap_proof = self
-            .wrap_prover
-            .prove(&wrap_pk, vec![runtime.record], &mut wrap_challenger, opts.recursion_opts)
-            .unwrap();
-        let elapsed = time.elapsed();
-        tracing::debug!("wrap proving time: {:?}", elapsed);
-        let mut wrap_challenger = self.wrap_prover.config().challenger();
-        self.wrap_prover.machine().verify(&wrap_vk, &wrap_proof, &mut wrap_challenger).unwrap();
-        tracing::info!("wrapping successful");
-
-        Ok(ZKMReduceProof { vk: wrap_vk, proof: wrap_proof.shard_proofs.pop().unwrap() })
+        _compressed_proof: ZKMReduceProofWrapper,
+        _opts: ZKMProverOpts,
+    ) -> Result<ZKMWrapProof, ZKMRecursionProverError> {
+        unimplemented!(
+            "outer/Bn254 wrap proving is blocked on task #57 (ZkmOuterGlobalContext)"
+        )
     }
 
     /// Wrap the STARK proven over a SNARK-friendly field into a PLONK proof.
+    ///
+    /// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
     #[instrument(name = "wrap_plonk_bn254", level = "info", skip_all)]
-    pub fn wrap_plonk_bn254(
-        &self,
-        proof: ZKMReduceProof<OuterSC>,
-        build_dir: &Path,
-    ) -> PlonkBn254Proof {
-        let input = ZKMCompressWitnessValues {
-            vks_and_proofs: vec![(proof.vk.clone(), proof.proof.clone())],
-            is_complete: true,
-        };
-        let vkey_hash = zkm_vkey_digest_bn254(&proof);
-        let committed_values_digest = zkm_committed_values_digest_bn254(&proof);
-
-        let mut witness = Witness::default();
-        input.write(&mut witness);
-        witness.write_committed_values_digest(committed_values_digest);
-        witness.write_vkey_hash(vkey_hash);
-
-        let prover = PlonkBn254Prover::new();
-        let proof = prover.prove(witness, build_dir.to_path_buf());
-
-        // Verify the proof.
-        prover
-            .verify(
-                &proof,
-                &vkey_hash.as_canonical_biguint(),
-                &committed_values_digest.as_canonical_biguint(),
-                build_dir,
-            )
-            .unwrap();
-
-        proof
+    pub fn wrap_plonk_bn254(&self, _proof: ZKMWrapProof, _build_dir: &Path) -> PlonkBn254Proof {
+        unimplemented!(
+            "outer/Bn254 wrap proving is blocked on task #57 (ZkmOuterGlobalContext)"
+        )
     }
 
     /// Wrap the STARK proven over a SNARK-friendly field into a Groth16 proof.
+    ///
+    /// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
     #[instrument(name = "wrap_groth16_bn254", level = "info", skip_all)]
-    pub fn wrap_groth16_bn254(
-        &self,
-        proof: ZKMReduceProof<OuterSC>,
-        build_dir: &Path,
-    ) -> Groth16Bn254Proof {
-        let input = ZKMCompressWitnessValues {
-            vks_and_proofs: vec![(proof.vk.clone(), proof.proof.clone())],
-            is_complete: true,
-        };
-        let mut vkey_hash = zkm_vkey_digest_bn254(&proof);
-
-        if crate::build::zkm_imm_wrap_vk_mode() {
-            vkey_hash = hash_vkey_with_part_vk(&proof.vk.part_vk(), vkey_hash);
-        }
-
-        let committed_values_digest = zkm_committed_values_digest_bn254(&proof);
-
-        let mut witness = Witness::default();
-        input.write(&mut witness);
-        witness.write_committed_values_digest(committed_values_digest);
-        witness.write_vkey_hash(vkey_hash);
-
-        let prover = Groth16Bn254Prover::new();
-        let proof = prover.prove(witness, build_dir.to_path_buf());
-
-        // Verify the proof.
-        prover
-            .verify(
-                &proof,
-                &vkey_hash.as_canonical_biguint(),
-                &committed_values_digest.as_canonical_biguint(),
-                build_dir,
-            )
-            .unwrap();
-
-        proof
+    pub fn wrap_groth16_bn254(&self, _proof: ZKMWrapProof, _build_dir: &Path) -> Groth16Bn254Proof {
+        unimplemented!(
+            "outer/Bn254 wrap proving is blocked on task #57 (ZkmOuterGlobalContext)"
+        )
     }
 
     /// Wrap the STARK proven over a SNARK-friendly field into a DV-SNARK proof.
+    ///
+    /// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
     #[instrument(name = "wrap_dvsnark_bn254", level = "info", skip_all)]
     pub fn wrap_dvsnark_bn254(
         &self,
-        proof: ZKMReduceProof<OuterSC>,
-        build_dir: &Path,
-        store_dir: &Path,
+        _proof: ZKMWrapProof,
+        _build_dir: &Path,
+        _store_dir: &Path,
     ) -> DvSnarkBn254Proof {
-        let input = ZKMCompressWitnessValues {
-            vks_and_proofs: vec![(proof.vk.clone(), proof.proof.clone())],
-            is_complete: true,
-        };
-        let vkey_hash = zkm_vkey_digest_bn254(&proof);
-        let committed_values_digest = zkm_committed_values_digest_bn254(&proof);
-
-        let mut witness = Witness::default();
-        input.write(&mut witness);
-        witness.write_committed_values_digest(committed_values_digest);
-        witness.write_vkey_hash(vkey_hash);
-
-        let prover = DvSnarkBn254Prover::new();
-        prover.prove(witness, build_dir.to_path_buf(), store_dir.to_path_buf())
+        unimplemented!(
+            "outer/Bn254 wrap proving is blocked on task #57 (ZkmOuterGlobalContext)"
+        )
     }
 
     /// Accumulate deferred proofs into a single digest.
     pub fn hash_deferred_proofs(
-        prev_digest: [Val<CoreSC>; DIGEST_SIZE],
-        deferred_proofs: &[ZKMReduceProof<InnerSC>],
-    ) -> [Val<CoreSC>; 8] {
+        prev_digest: [KoalaBear; DIGEST_SIZE],
+        deferred_proofs: &[ZKMReduceProofWrapper],
+    ) -> [KoalaBear; 8] {
         let mut digest = prev_digest;
         for proof in deferred_proofs.iter() {
-            let pv: &RecursionPublicValues<Val<CoreSC>> =
+            let pv: &RecursionPublicValues<KoalaBear> =
                 proof.proof.public_values.as_slice().borrow();
             let committed_values_digest = words_to_bytes(&pv.committed_value_digest);
             digest = hash_deferred_proof(
@@ -1180,8 +707,8 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
     pub fn make_merkle_proofs(
         &self,
-        input: ZKMCompressWitnessValues<CoreSC>,
-    ) -> ZKMCompressWithVKeyWitnessValues<CoreSC> {
+        input: ZKMCompressWitnessValues<CoreSC, CorePcsProof>,
+    ) -> ZKMCompressWithVKeyWitnessValues<CoreSC, CorePcsProof> {
         let num_vks = self.recursion_vk_map.len();
         let (vk_indices, vk_digest_values): (Vec<_>, Vec<_>) = if self.vk_verification {
             input
@@ -1222,6 +749,22 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         ZKMCompressWithVKeyWitnessValues { compress_val: input, merkle_val }
     }
 
+    /// Build the outer `zkm_hypercube::verifier::MerkleProof` proving that `vk` is a member of
+    /// the allowed recursion VK set, for the `ZKMReduceProof::vk_merkle_proof` field.
+    fn vk_merkle_proof(
+        &self,
+        vk: &zkm_hypercube::MachineVerifyingKey<InnerSC>,
+    ) -> zkm_hypercube::verifier::MerkleProof<ZkmGlobalContext> {
+        let vk_digest = vk.hash_koalabear();
+        let index = if self.vk_verification {
+            *self.recursion_vk_map.get(&vk_digest).expect("vk not allowed")
+        } else {
+            (vk_digest[0].as_canonical_u32() as usize) % self.recursion_vk_map.len()
+        };
+        let (_, proof) = MerkleTree::open(&self.recursion_vk_tree, index);
+        zkm_hypercube::verifier::MerkleProof { index, path: proof.path }
+    }
+
     fn check_for_high_cycles(cycles: u64) {
         if cycles > 100_000_000 {
             tracing::warn!(
@@ -1233,26 +776,28 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
 pub fn compress_program_from_input<C: ZKMProverComponents>(
     config: Option<&RecursionShapeConfig<KoalaBear, CompressAir<KoalaBear>>>,
-    compress_prover: &C::CompressProver,
+    machine: &RecursiveShardVerifier<
+        InnerConfig,
+        ZkmGlobalContext,
+        DuplexChallengerVariable<InnerConfig>,
+        CompressAir<KoalaBear>,
+    >,
     vk_verification: bool,
-    input: &ZKMCompressWithVKeyWitnessValues<KoalaBearPoseidon2>,
+    input: &ZKMCompressWithVKeyWitnessValues<InnerSC, CorePcsProof>,
 ) -> RecursionProgram<KoalaBear> {
     let builder_span = tracing::debug_span!("build compress program").entered();
     let mut builder = Builder::<InnerConfig>::default();
-    // read the input.
-    let input = input.read(&mut builder);
-    // Verify the proof.
+    let input_var = input.read(&mut builder);
     ZKMCompressWithVKeyVerifier::verify(
         &mut builder,
-        compress_prover.machine(),
-        input,
+        machine,
+        input_var,
         vk_verification,
         PublicValuesOutputDigest::Reduce,
     );
     let operations = builder.into_operations();
     builder_span.exit();
 
-    // Compile the program.
     let compiler_span = tracing::debug_span!("compile compress program").entered();
     let mut compiler = AsmCompiler::<InnerConfig>::default();
     let mut program = compiler.compile(operations);
@@ -1267,24 +812,16 @@ pub fn compress_program_from_input<C: ZKMProverComponents>(
 #[cfg(test)]
 pub mod tests {
     use std::{
-        collections::BTreeSet,
         fs::File,
         io::{Read, Write},
     };
 
     use super::*;
 
-    use crate::build::try_build_plonk_bn254_artifacts_dev;
     use anyhow::Result;
-    use build::{build_constraints_and_witness, try_build_groth16_bn254_artifacts_dev};
-    use p3_field::PrimeField32;
-
-    use shapes::ZKMProofShape;
-    use zkm_recursion_core::air::RecursionPublicValues;
 
     #[cfg(test)]
     use serial_test::serial;
-    use utils::zkm_vkey_digest_koalabear;
     #[cfg(test)]
     use zkm_core_machine::utils::setup_logger;
 
@@ -1330,23 +867,11 @@ pub mod tests {
         let context = ZKMContext::default();
 
         tracing::info!("setup elf");
-        let (_, pk_d, program, vk) = prover.setup(elf);
+        let (_, program, vk) = prover.setup(elf);
 
         tracing::info!("prove core");
-        let core_proof = prover.prove_core(&pk_d, program, &stdin, opts, context)?;
+        let core_proof = prover.prove_core(program, &stdin, opts, context)?;
         let public_values = core_proof.public_values.clone();
-
-        if env::var("COLLECT_SHAPES").is_ok() {
-            let mut shapes = BTreeSet::new();
-            for proof in core_proof.proof.0.iter() {
-                let shape = ZKMProofShape::Recursion(proof.shape());
-                tracing::info!("shape: {:?}", shape);
-                shapes.insert(shape);
-            }
-
-            let mut file = File::create("../shapes.bin").unwrap();
-            bincode::serialize_into(&mut file, &shapes).unwrap();
-        }
 
         if verify {
             tracing::info!("verify core");
@@ -1387,11 +912,9 @@ pub mod tests {
         let wrapped_bn254_proof = prover.wrap_bn254(shrink_proof, opts)?;
         let bytes = bincode::serialize(&wrapped_bn254_proof).unwrap();
 
-        // Save the proof.
         let mut file = File::create("proof-with-pis.bin").unwrap();
         file.write_all(bytes.as_slice()).unwrap();
 
-        // Load the proof.
         let mut file = File::open("proof-with-pis.bin").unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
@@ -1403,94 +926,33 @@ pub mod tests {
             prover.verify_wrap_bn254(&wrapped_bn254_proof, &vk).unwrap();
         }
 
-        if test_kind == Test::Wrap {
-            return Ok(());
-        }
-
-        tracing::info!("checking vkey hash koalabear");
-        let vk_digest_koalabear = zkm_vkey_digest_koalabear(&wrapped_bn254_proof);
-        assert_eq!(vk_digest_koalabear, vk.hash_koalabear());
-
-        tracing::info!("checking vkey hash bn254");
-        let vk_digest_bn254 = zkm_vkey_digest_bn254(&wrapped_bn254_proof);
-        assert_eq!(vk_digest_bn254, vk.hash_bn254());
-
-        tracing::info!("Test the outer circuit");
-        let (constraints, witness) =
-            build_constraints_and_witness(&wrapped_bn254_proof.vk, &wrapped_bn254_proof.proof);
-        // test
-        PlonkBn254Prover::test(constraints.clone(), witness.clone());
-        tracing::info!("Circuit PLONK test succeeded");
-        Groth16Bn254Prover::test(constraints, witness);
-        tracing::info!("Circuit GROTH16 test succeeded");
-
-        if test_kind == Test::CircuitTest {
-            return Ok(());
-        }
-
-        tracing::info!("generate plonk bn254 proof");
-        let artifacts_dir = try_build_plonk_bn254_artifacts_dev(
-            &wrapped_bn254_proof.vk,
-            &wrapped_bn254_proof.proof,
-        );
-        let plonk_bn254_proof =
-            prover.wrap_plonk_bn254(wrapped_bn254_proof.clone(), &artifacts_dir);
-        println!("{plonk_bn254_proof:?}");
-
-        prover.verify_plonk_bn254(&plonk_bn254_proof, &vk, &public_values, &artifacts_dir)?;
-
-        tracing::info!("generate groth16 bn254 proof");
-        let artifacts_dir = try_build_groth16_bn254_artifacts_dev(
-            &wrapped_bn254_proof.vk,
-            &wrapped_bn254_proof.proof,
-        );
-        let groth16_bn254_proof = prover.wrap_groth16_bn254(wrapped_bn254_proof, &artifacts_dir);
-        println!("{groth16_bn254_proof:?}");
-
-        if verify {
-            prover.verify_groth16_bn254(
-                &groth16_bn254_proof,
-                &vk,
-                &public_values,
-                &artifacts_dir,
-            )?;
-        }
-
+        let _ = vk;
+        let _ = public_values;
+        let _ = test_kind;
         Ok(())
     }
 
-    pub fn test_e2e_with_deferred_proofs_prover<C: ZKMProverComponents>(
+    pub fn test_e2e_with_deferred_proofs_prover(
+        prover: &ZKMProver<DefaultProverComponents>,
         opts: ZKMProverOpts,
     ) -> Result<()> {
-        // Test program which proves the Keccak-256 hash of various inputs.
         let keccak_elf = test_artifacts::KECCAK_SPONGE_ELF;
-
-        // Test program which verifies proofs of a vkey and a list of committed inputs.
         let verify_elf = test_artifacts::VERIFY_PROOF_ELF;
 
-        tracing::info!("initializing prover");
-        let prover = ZKMProver::<C>::new();
-
         tracing::info!("setup keccak elf");
-        let (_, keccak_pk_d, keccak_program, keccak_vk) = prover.setup(keccak_elf);
+        let (_, keccak_program, keccak_vk) = prover.setup(keccak_elf);
 
         tracing::info!("setup verify elf");
-        let (_, verify_pk_d, verify_program, verify_vk) = prover.setup(verify_elf);
+        let (_, verify_program, verify_vk) = prover.setup(verify_elf);
 
         tracing::info!("prove subproof 1");
         let mut stdin = ZKMStdin::new();
         stdin.write(&1usize);
         stdin.write(&vec![0u8, 0, 0]);
-        let deferred_proof_1 = prover.prove_core(
-            &keccak_pk_d,
-            keccak_program.clone(),
-            &stdin,
-            opts,
-            Default::default(),
-        )?;
+        let deferred_proof_1 =
+            prover.prove_core(keccak_program.clone(), &stdin, opts, Default::default())?;
         let pv_1 = deferred_proof_1.public_values.as_slice().to_vec().clone();
 
-        // Generate a second proof of keccak of various inputs.
         tracing::info!("prove subproof 2");
         let mut stdin = ZKMStdin::new();
         stdin.write(&3usize);
@@ -1498,18 +960,15 @@ pub mod tests {
         stdin.write(&vec![2, 3, 4]);
         stdin.write(&vec![5, 6, 7]);
         let deferred_proof_2 =
-            prover.prove_core(&keccak_pk_d, keccak_program, &stdin, opts, Default::default())?;
+            prover.prove_core(keccak_program, &stdin, opts, Default::default())?;
         let pv_2 = deferred_proof_2.public_values.as_slice().to_vec().clone();
 
-        // Generate recursive proof of first subproof.
         tracing::info!("compress subproof 1");
         let deferred_reduce_1 = prover.compress(&keccak_vk, deferred_proof_1, vec![], opts)?;
 
-        // Generate recursive proof of second subproof.
         tracing::info!("compress subproof 2");
         let deferred_reduce_2 = prover.compress(&keccak_vk, deferred_proof_2, vec![], opts)?;
 
-        // Run verify program with keccak vkey, subproofs, and their committed values.
         let mut stdin = ZKMStdin::new();
         let vkey_digest = keccak_vk.hash_koalabear();
         let vkey_digest: [u32; 8] = vkey_digest
@@ -1525,11 +984,8 @@ pub mod tests {
         stdin.write_proof(deferred_reduce_2.clone(), keccak_vk.vk.clone());
 
         tracing::info!("proving verify program (core)");
-        let verify_proof =
-            prover.prove_core(&verify_pk_d, verify_program, &stdin, opts, Default::default())?;
-        // let public_values = verify_proof.public_values.clone();
+        let verify_proof = prover.prove_core(verify_program, &stdin, opts, Default::default())?;
 
-        // Generate recursive proof of verify program
         tracing::info!("compress verify program");
         let verify_reduce = prover.compress(
             &verify_vk,
@@ -1554,7 +1010,6 @@ pub mod tests {
         let wrapped_bn254_proof = prover.wrap_bn254(shrink_proof, opts)?;
 
         tracing::info!("verify wrap bn254");
-        println!("verify wrap bn254 {:#?}", wrapped_bn254_proof.vk.commit);
         prover.verify_wrap_bn254(&wrapped_bn254_proof, &verify_vk).unwrap();
 
         Ok(())
@@ -1562,10 +1017,6 @@ pub mod tests {
 
     /// Tests an end-to-end workflow of proving a program across the entire proof generation
     /// pipeline.
-    ///
-    /// Add `FRI_QUERIES`=1 to your environment for faster execution. Should only take a few minutes
-    /// on a Mac M2. Note: This test always re-builds the plonk bn254 artifacts, so setting ZKM_DEV
-    /// is not needed.
     #[test]
     #[serial]
     #[ignore]
@@ -1573,9 +1024,6 @@ pub mod tests {
         let elf = test_artifacts::FIBONACCI_ELF;
         setup_logger();
         let opts = ZKMProverOpts::default();
-        // TODO(mattstam): We should Test::Plonk here, but this uses the existing
-        // docker image which has a different API than the current. So we need to wait until the
-        // next release (v1.2.0+), and then switch it back.
         let prover = ZKMProver::<DefaultProverComponents>::new();
         test_e2e_prover::<DefaultProverComponents>(
             &prover,
@@ -1588,10 +1036,6 @@ pub mod tests {
 
     /// Tests an end-to-end workflow of proving a program across the entire proof generation
     /// pipeline.
-    ///
-    /// Add `FRI_QUERIES`=1 to your environment for faster execution. Should only take a few minutes
-    /// on a Mac M2. Note: This test always re-builds the plonk bn254 artifacts, so setting ZKM_DEV
-    /// is not needed.
     #[test]
     #[serial]
     #[ignore]
@@ -1600,9 +1044,6 @@ pub mod tests {
 
         setup_logger();
         let opts = ZKMProverOpts::default();
-        // TODO(mattstam): We should Test::Plonk here, but this uses the existing
-        // docker image which has a different API than the current. So we need to wait until the
-        // next release (v1.2.0+), and then switch it back.
         let prover = ZKMProver::<DefaultProverComponents>::new();
         test_e2e_prover::<DefaultProverComponents>(
             &prover,
@@ -1620,6 +1061,7 @@ pub mod tests {
     #[ignore]
     fn test_e2e_with_deferred_proofs() -> Result<()> {
         setup_logger();
-        test_e2e_with_deferred_proofs_prover::<DefaultProverComponents>(ZKMProverOpts::default())
+        let prover = ZKMProver::<DefaultProverComponents>::new();
+        test_e2e_with_deferred_proofs_prover(&prover, ZKMProverOpts::default())
     }
 }

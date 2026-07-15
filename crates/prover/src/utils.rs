@@ -15,9 +15,9 @@ use zkm_core_machine::io::ZKMStdin;
 use zkm_hypercube::{config::ZkmGlobalContext, word::Word};
 use zkm_recursion_circuit::machine::RootPublicValues;
 use zkm_recursion_core::air::{RecursionPublicValues, NUM_PV_ELMS_TO_HASH};
-use zkm_stark::{koala_bear_poseidon2::MyHash as InnerHash, ZKMCoreOpts};
+use zkm_stark::{inner_perm, koala_bear_poseidon2::MyHash as InnerHash, ZKMCoreOpts};
 
-use crate::{CorePcsProof, InnerSC, ZKMCoreProofData};
+use crate::{CorePcsProof, ZKMCoreProofData};
 
 /// Get the Ziren vkey KoalaBear Poseidon2 digest this reduce proof is representing.
 pub fn zkm_vkey_digest_koalabear(
@@ -35,19 +35,15 @@ pub fn zkm_vkey_digest_bn254(proof: &ZKMReduceProof<ZkmGlobalContext, CorePcsPro
 
 /// Compute the digest of the public values.
 pub fn recursion_public_values_digest(
-    config: &InnerSC,
     public_values: &RecursionPublicValues<KoalaBear>,
 ) -> [KoalaBear; 8] {
-    let hash = InnerHash::new(config.perm.clone());
+    let hash = InnerHash::new(inner_perm());
     let pv_array = public_values.as_array();
     hash.hash_slice(&pv_array[0..NUM_PV_ELMS_TO_HASH])
 }
 
-pub fn root_public_values_digest(
-    config: &InnerSC,
-    public_values: &RootPublicValues<KoalaBear>,
-) -> [KoalaBear; 8] {
-    let hash = InnerHash::new(config.perm.clone());
+pub fn root_public_values_digest(public_values: &RootPublicValues<KoalaBear>) -> [KoalaBear; 8] {
+    let hash = InnerHash::new(inner_perm());
     let input = (*public_values.zkm_vk_digest())
         .into_iter()
         .chain(
@@ -59,11 +55,8 @@ pub fn root_public_values_digest(
     hash.hash_slice(&input)
 }
 
-pub fn is_root_public_values_valid(
-    config: &InnerSC,
-    public_values: &RootPublicValues<KoalaBear>,
-) -> bool {
-    let expected_digest = root_public_values_digest(config, public_values);
+pub fn is_root_public_values_valid(public_values: &RootPublicValues<KoalaBear>) -> bool {
+    let expected_digest = root_public_values_digest(public_values);
     for (value, expected) in public_values.digest().iter().copied().zip_eq(expected_digest) {
         if value != expected {
             return false;
@@ -73,11 +66,8 @@ pub fn is_root_public_values_valid(
 }
 
 /// Check if the digest of the public values is correct.
-pub fn is_recursion_public_values_valid(
-    config: &InnerSC,
-    public_values: &RecursionPublicValues<KoalaBear>,
-) -> bool {
-    let expected_digest = recursion_public_values_digest(config, public_values);
+pub fn is_recursion_public_values_valid(public_values: &RecursionPublicValues<KoalaBear>) -> bool {
+    let expected_digest = recursion_public_values_digest(public_values);
     for (value, expected) in public_values.digest.iter().copied().zip_eq(expected_digest) {
         if value != expected {
             return false;

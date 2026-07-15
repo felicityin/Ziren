@@ -19,6 +19,7 @@ zkm-core-machine = { workspace = true }
 zkm-hypercube = { workspace = true }
 zkm-stark = { workspace = true }
 p3-symmetric = { workspace = true }
+slop-challenger = { workspace = true }
 zkm-core-executor = { workspace = true }
 zkm-primitives = { workspace = true }
 p3-field = { workspace = true }
@@ -41,6 +42,7 @@ thiserror = "1.0.63"
 rayon = "1.10.0"
 lru = "0.12.4"
 eyre = "0.6.12"
+tokio = { workspace = true, features = ["rt", "time"] }
 
 [dev-dependencies]
 test-artifacts = { workspace = true }
