@@ -34,15 +34,17 @@ use crate::proof::{HashableKey, ZKMVerifyingKey};
 const COMPRESS_DEGREE: usize = 3;
 pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
 
-/// The log2 of the number of rows each stacked-PCS column is grouped into for the compress
-/// machine. Mirrors `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`, kept in
-/// sync by convention.
-const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
-
 /// The max log row count the compress machine's jagged PCS is configured for. Mirrors
 /// `zkm_stark::ZKMCoreOpts::recursion().shard_size`'s log2 (`RECURSION_MAX_SHARD_SIZE = 1 << 22`
 /// in `crates/stark/src/opts.rs`).
 const RECURSION_MAX_LOG_ROW_COUNT: usize = 22;
+
+/// The log2 of the number of rows each stacked-PCS column is grouped into for the compress
+/// machine. Was a fixed `4` (copied from a throwaway test value, see
+/// `zkm_core_machine::utils::prove::stacking_height_for`'s doc comment for why that made
+/// `commit_traces` catastrophically slow); mirrors that function, one less than
+/// `RECURSION_MAX_LOG_ROW_COUNT`.
+const RECURSION_LOG_STACKING_HEIGHT: u32 = RECURSION_MAX_LOG_ROW_COUNT as u32 - 1;
 
 pub static VK_MAP: Lazy<&'static [u8]> = Lazy::new(|| {
     #[cfg(feature = "dummy-vk-map")]

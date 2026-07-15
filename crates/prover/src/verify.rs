@@ -26,10 +26,10 @@ use zkm_recursion_gnark_ffi::{
 use crate::{
     build::zkm_imm_wrap_vk_mode,
     components::ZKMProverComponents,
-    core_max_log_row_count, recursion_max_log_row_count,
+    core_max_log_row_count, recursion_max_log_row_count, stacking_height_for,
     utils::is_recursion_public_values_valid,
     CompressAir, HashableKey, ShrinkAir, ZKMCoreProofData, ZKMProver, ZKMReduceProofWrapper,
-    ZKMVerifyingKey, ZKMWrapProof, CORE_LOG_STACKING_HEIGHT, RECURSION_LOG_STACKING_HEIGHT,
+    ZKMVerifyingKey, ZKMWrapProof,
 };
 
 /// Errors that can occur when verifying a native (KoalaBear) STARK-level Ziren proof.
@@ -264,7 +264,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         // Verify the shard proofs.
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             default_fri_config(),
-            CORE_LOG_STACKING_HEIGHT,
+            stacking_height_for(core_max_log_row_count()),
             core_max_log_row_count(),
             MipsAir::<KoalaBear>::hypercube_machine(),
         );
@@ -289,7 +289,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             compressed_fri_config(),
-            RECURSION_LOG_STACKING_HEIGHT,
+            stacking_height_for(recursion_max_log_row_count()),
             recursion_max_log_row_count(),
             CompressAir::<KoalaBear>::compress_machine(),
         );
@@ -358,7 +358,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             ultra_compressed_fri_config(),
-            RECURSION_LOG_STACKING_HEIGHT,
+            stacking_height_for(recursion_max_log_row_count()),
             recursion_max_log_row_count(),
             ShrinkAir::<KoalaBear>::shrink_machine(),
         );

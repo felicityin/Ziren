@@ -39,9 +39,26 @@ use zkm_hypercube::{
     ShardContextImpl, ShardProof, ShardVerifier, ZkmSC,
 };
 
-/// The log2 of the number of rows each stacked-PCS column is grouped into. Matches the value
-/// used by `zkm-hypercube`'s own basic construction tests.
-pub(crate) const ZKM_LOG_STACKING_HEIGHT: u32 = 4;
+/// The log2 of the number of rows each stacked-PCS column is grouped into, for a machine whose
+/// jagged PCS is configured for `max_log_row_count`.
+///
+/// This used to be a fixed constant (`4`, copied from a `zkm-hypercube` unit test's throwaway
+/// value) hardcoded into the real proving path. At that height, a real shard's ~287M-cell trace
+/// gets fragmented by `interleave_multilinears_with_fixed_rate` into hundreds of thousands of
+/// 16-row stripes instead of a handful of well-amortized ones, which is why `commit_traces`
+/// (Reed-Solomon encoding + Merkle commitment) measured 70s for a single isolated shard and
+/// 191-343s under 4-way concurrency in this session's benchmarking -- roughly 40x slower per
+/// cycle than SP1's equivalent step, which uses a stacking height close to its own
+/// `max_log_row_count` (`CORE_LOG_STACKING_HEIGHT = 21` for `CORE_MAX_LOG_ROW_COUNT = 22`,
+/// `RECURSION_LOG_STACKING_HEIGHT = 20` for `RECURSION_MAX_LOG_ROW_COUNT = 21`; see
+/// `sp1_prover::components`). Deriving this from `max_log_row_count` (one less, mirroring SP1's
+/// ratio) rather than hardcoding a fixed value also keeps it valid across Ziren's
+/// memory-scaled shard sizes (`ZKMProverOpts::get_memory_opts` picks `shard_size` anywhere from
+/// `1 << 19` to `1 << 21` depending on available RAM), where a fixed constant tuned for one tier
+/// could exceed `max_log_row_count` on a smaller one.
+pub(crate) fn stacking_height_for(max_log_row_count: usize) -> u32 {
+    (max_log_row_count as u32).saturating_sub(1)
+}
 
 /// The concrete shard-proof type produced by Ziren's own (`KoalaBear`, jagged/basefold) shard
 /// prover.
@@ -90,7 +107,7 @@ pub fn prove_with_context(
     let max_log_row_count = opts.shard_size.ilog2() as usize;
     let shard_verifier = ShardVerifier::from_basefold_parameters(
         default_fri_config(),
-        ZKM_LOG_STACKING_HEIGHT,
+        stacking_height_for(max_log_row_count),
         max_log_row_count,
         machine,
     );
@@ -537,7 +554,7 @@ pub fn run_test_core(
     let max_log_row_count = ZKMCoreOpts::default().shard_size.ilog2() as usize;
     let shard_verifier = ShardVerifier::from_basefold_parameters(
         default_fri_config(),
-        ZKM_LOG_STACKING_HEIGHT,
+        stacking_height_for(max_log_row_count),
         max_log_row_count,
         machine,
     );
