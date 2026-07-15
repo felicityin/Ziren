@@ -1357,28 +1357,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
-name = "crossbeam"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1137cd7e7fc0fb5d3c5a8678be38ec56e819125d8d7907411fe24ccb943faca8"
-dependencies = [
- "crossbeam-channel",
- "crossbeam-deque",
- "crossbeam-epoch",
- "crossbeam-queue",
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-channel"
-version = "0.5.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d85363c37faeca707aef026efa9f3b34d077bce547e48f770770625c6013679e"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,15 +1371,6 @@ name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-queue"
-version = "0.3.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "803d13fb3b09d88be9f4dbc29062c66b19bf7170867ceb746d2a8689bf6c7a26"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1494,7 +1463,7 @@ dependencies = [
  "rustc_version 0.4.1",
  "subtle",
  "zeroize",
- "zkm-lib 1.2.7 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -1695,17 +1664,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
-]
-
-[[package]]
-name = "derive-where"
-version = "1.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d08b3a0bcc0d079199cd476b2cae8435016ec11d1c0986c6901c5ac223041534"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -3787,7 +3745,7 @@ dependencies = [
  "once_cell",
  "sha2 0.10.8",
  "signature",
- "zkm-lib 1.2.7 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -4495,7 +4453,7 @@ dependencies = [
  "hex",
  "primeorder",
  "sha2 0.10.8",
- "zkm-lib 1.2.7 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -5903,7 +5861,7 @@ dependencies = [
  "spki 0.7.3",
  "subtle",
  "zeroize",
- "zkm-lib 1.2.7 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -6603,333 +6561,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "slop-air"
-version = "1.2.7"
-dependencies = [
- "p3-air",
-]
-
-[[package]]
-name = "slop-algebra"
-version = "1.2.7"
-dependencies = [
- "itertools 0.13.0",
- "p3-field",
- "serde",
-]
-
-[[package]]
-name = "slop-alloc"
-version = "1.2.7"
-dependencies = [
- "serde",
- "slop-algebra",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "slop-basefold"
-version = "1.2.7"
-dependencies = [
- "derive-where",
- "itertools 0.13.0",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-bn254",
- "slop-challenger",
- "slop-koala-bear",
- "slop-merkle-tree",
- "slop-multilinear",
- "slop-primitives",
- "slop-tensor",
- "slop-utils",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "slop-basefold-prover"
-version = "1.2.7"
-dependencies = [
- "derive-where",
- "itertools 0.13.0",
- "rand 0.8.5",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-basefold",
- "slop-bn254",
- "slop-challenger",
- "slop-commit",
- "slop-dft",
- "slop-fri",
- "slop-futures",
- "slop-koala-bear",
- "slop-merkle-tree",
- "slop-multilinear",
- "slop-tensor",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "slop-bn254"
-version = "1.2.7"
-dependencies = [
- "ff 0.13.1",
- "p3-bn254-fr",
- "serde",
- "slop-algebra",
- "slop-challenger",
- "slop-poseidon2",
- "slop-symmetric",
-]
-
-[[package]]
-name = "slop-challenger"
-version = "1.2.7"
-dependencies = [
- "futures",
- "p3-challenger",
- "serde",
- "slop-algebra",
- "slop-symmetric",
-]
-
-[[package]]
-name = "slop-commit"
-version = "1.2.7"
-dependencies = [
- "p3-commit",
- "serde",
- "slop-alloc",
-]
-
-[[package]]
-name = "slop-dft"
-version = "1.2.7"
-dependencies = [
- "p3-dft",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-matrix",
- "slop-tensor",
-]
-
-[[package]]
-name = "slop-fri"
-version = "1.2.7"
-dependencies = [
- "p3-fri",
-]
-
-[[package]]
-name = "slop-futures"
-version = "1.2.7"
-dependencies = [
- "crossbeam",
- "futures",
- "pin-project",
- "rayon",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "slop-jagged"
-version = "1.2.7"
-dependencies = [
- "derive-where",
- "futures",
- "itertools 0.13.0",
- "num_cpus",
- "rand 0.8.5",
- "rayon",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-basefold",
- "slop-basefold-prover",
- "slop-bn254",
- "slop-challenger",
- "slop-commit",
- "slop-futures",
- "slop-koala-bear",
- "slop-merkle-tree",
- "slop-multilinear",
- "slop-stacked",
- "slop-sumcheck",
- "slop-symmetric",
- "slop-tensor",
- "slop-utils",
- "thiserror 1.0.69",
- "tracing",
-]
-
-[[package]]
-name = "slop-koala-bear"
-version = "1.2.7"
-dependencies = [
- "lazy_static",
- "p3-koala-bear",
- "serde",
- "slop-algebra",
- "slop-challenger",
- "slop-poseidon2",
- "slop-symmetric",
-]
-
-[[package]]
-name = "slop-matrix"
-version = "1.2.7"
-dependencies = [
- "p3-matrix",
-]
-
-[[package]]
-name = "slop-maybe-rayon"
-version = "1.2.7"
-dependencies = [
- "p3-maybe-rayon",
-]
-
-[[package]]
-name = "slop-merkle-tree"
-version = "1.2.7"
-dependencies = [
- "derive-where",
- "itertools 0.13.0",
- "p3-merkle-tree",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-bn254",
- "slop-challenger",
- "slop-commit",
- "slop-futures",
- "slop-koala-bear",
- "slop-matrix",
- "slop-poseidon2",
- "slop-symmetric",
- "slop-tensor",
- "slop-utils",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "slop-multilinear"
-version = "1.2.7"
-dependencies = [
- "derive-where",
- "futures",
- "num_cpus",
- "rand 0.8.5",
- "rayon",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-challenger",
- "slop-commit",
- "slop-futures",
- "slop-matrix",
- "slop-tensor",
-]
-
-[[package]]
-name = "slop-poseidon2"
-version = "1.2.7"
-dependencies = [
- "p3-poseidon2",
-]
-
-[[package]]
-name = "slop-primitives"
-version = "1.2.7"
-dependencies = [
- "slop-algebra",
-]
-
-[[package]]
-name = "slop-stacked"
-version = "1.2.7"
-dependencies = [
- "derive-where",
- "futures",
- "itertools 0.13.0",
- "rayon",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-basefold",
- "slop-basefold-prover",
- "slop-challenger",
- "slop-commit",
- "slop-futures",
- "slop-merkle-tree",
- "slop-multilinear",
- "slop-tensor",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "slop-sumcheck"
-version = "1.2.7"
-dependencies = [
- "futures",
- "itertools 0.13.0",
- "rayon",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-challenger",
- "slop-koala-bear",
- "slop-multilinear",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "slop-symmetric"
-version = "1.2.7"
-dependencies = [
- "p3-symmetric",
-]
-
-[[package]]
-name = "slop-tensor"
-version = "1.2.7"
-dependencies = [
- "arrayvec 0.7.6",
- "derive-where",
- "itertools 0.13.0",
- "rand 0.8.5",
- "rayon",
- "serde",
- "slop-algebra",
- "slop-alloc",
- "slop-futures",
- "slop-matrix",
- "thiserror 1.0.69",
- "transpose",
-]
-
-[[package]]
-name = "slop-uni-stark"
-version = "1.2.7"
-dependencies = [
- "p3-uni-stark",
-]
-
-[[package]]
-name = "slop-utils"
-version = "1.2.7"
-dependencies = [
- "p3-util",
- "tracing-forest",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7129,7 +6760,7 @@ dependencies = [
  "num-bigint 0.4.6",
  "rand 0.8.5",
  "rustc-hex",
- "zkm-lib 1.2.7 (git+https://github.com/ProjectZKM/Ziren)",
+ "zkm-lib 1.2.4",
 ]
 
 [[package]]
@@ -7427,12 +7058,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
 ]
-
-[[package]]
-name = "thousands"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
 
 [[package]]
 name = "thread_local"
@@ -8990,7 +8615,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.8",
- "slop-algebra",
  "strum",
  "strum_macros",
  "thiserror 1.0.69",
@@ -9000,7 +8624,6 @@ dependencies = [
  "typenum",
  "vec_map",
  "zkm-curves",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-stark",
 ]
@@ -9037,11 +8660,6 @@ dependencies = [
  "serde",
  "serde_json",
  "size",
- "slop-air",
- "slop-algebra",
- "slop-alloc",
- "slop-challenger",
- "slop-koala-bear",
  "snowbridge-amcl",
  "static_assertions",
  "strum",
@@ -9049,7 +8667,6 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tiny-keccak",
- "tokio",
  "tracing",
  "tracing-forest",
  "tracing-subscriber",
@@ -9058,7 +8675,6 @@ dependencies = [
  "zkm-core-executor",
  "zkm-curves",
  "zkm-derive",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-stark",
 ]
@@ -9113,51 +8729,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "zkm-hypercube"
-version = "1.2.7"
+name = "zkm-lib"
+version = "1.2.4"
+source = "git+https://github.com/ProjectZKM/Ziren#1d43121312d4b93c0989984bf0c7ab77d9a0ce04"
 dependencies = [
- "arrayref",
- "derive-where",
- "hashbrown 0.14.5",
- "itertools 0.13.0",
- "num-bigint 0.4.6",
- "num-traits",
- "num_cpus",
- "p3-field",
- "p3-maybe-rayon",
- "p3-util",
- "rayon",
- "rayon-scan",
+ "bincode",
+ "cfg-if",
+ "elliptic-curve",
  "serde",
- "slop-air",
- "slop-algebra",
- "slop-alloc",
- "slop-basefold",
- "slop-basefold-prover",
- "slop-challenger",
- "slop-commit",
- "slop-futures",
- "slop-jagged",
- "slop-koala-bear",
- "slop-matrix",
- "slop-maybe-rayon",
- "slop-merkle-tree",
- "slop-multilinear",
- "slop-poseidon2",
- "slop-primitives",
- "slop-stacked",
- "slop-sumcheck",
- "slop-symmetric",
- "slop-tensor",
- "slop-uni-stark",
- "strum",
- "strum_macros",
- "thiserror 1.0.69",
- "thousands",
- "tokio",
- "tracing",
- "zkm-derive",
- "zkm-zkvm",
+ "sha2 0.10.8",
+ "zkm-primitives 1.2.4",
 ]
 
 [[package]]
@@ -9173,21 +8754,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "zkm-lib"
-version = "1.2.7"
-source = "git+https://github.com/ProjectZKM/Ziren#e6945a76b084e87570b7be55e4479ce98603f43a"
-dependencies = [
- "bincode",
- "cfg-if",
- "elliptic-curve",
- "serde",
- "sha2 0.10.8",
- "zkm-primitives 1.2.7 (git+https://github.com/ProjectZKM/Ziren)",
-]
-
-[[package]]
 name = "zkm-primitives"
-version = "1.2.7"
+version = "1.2.4"
+source = "git+https://github.com/ProjectZKM/Ziren#1d43121312d4b93c0989984bf0c7ab77d9a0ce04"
 dependencies = [
  "bincode",
  "hex",
@@ -9196,16 +8765,15 @@ dependencies = [
  "p3-field",
  "p3-koala-bear",
  "p3-monty-31",
+ "p3-poseidon2",
  "p3-symmetric",
  "serde",
  "sha2 0.10.8",
- "slop-koala-bear",
 ]
 
 [[package]]
 name = "zkm-primitives"
 version = "1.2.7"
-source = "git+https://github.com/ProjectZKM/Ziren#e6945a76b084e87570b7be55e4479ce98603f43a"
 dependencies = [
  "bincode",
  "hex",
@@ -9243,14 +8811,11 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
- "slop-challenger",
  "thiserror 1.0.69",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "zkm-core-executor",
  "zkm-core-machine",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-recursion-circuit",
  "zkm-recursion-compiler",
@@ -9280,26 +8845,10 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "serde",
- "slop-air",
- "slop-algebra",
- "slop-alloc",
- "slop-basefold",
- "slop-challenger",
- "slop-commit",
- "slop-jagged",
- "slop-koala-bear",
- "slop-matrix",
- "slop-merkle-tree",
- "slop-multilinear",
- "slop-primitives",
- "slop-stacked",
- "slop-sumcheck",
- "slop-tensor",
  "tracing",
  "zkm-core-executor",
  "zkm-core-machine",
  "zkm-derive",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-recursion-compiler",
  "zkm-recursion-core",
@@ -9321,7 +8870,6 @@ dependencies = [
  "tracing",
  "vec_map",
  "zkm-core-machine",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-recursion-core",
  "zkm-recursion-derive",
@@ -9353,8 +8901,6 @@ dependencies = [
  "p3-util",
  "rand 0.8.5",
  "serde",
- "slop-algebra",
- "slop-koala-bear",
  "static_assertions",
  "thiserror 1.0.69",
  "tracing",
@@ -9362,7 +8908,6 @@ dependencies = [
  "zkhash",
  "zkm-core-machine",
  "zkm-derive",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-stark",
 ]
@@ -9439,10 +8984,8 @@ dependencies = [
  "zkm-core-executor",
  "zkm-core-machine",
  "zkm-cuda",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-prover",
- "zkm-recursion-circuit",
  "zkm-stark",
 ]
 
@@ -9483,7 +9026,6 @@ dependencies = [
  "tracing-forest",
  "tracing-subscriber",
  "zkm-derive",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-zkvm",
 ]
@@ -9507,13 +9049,11 @@ dependencies = [
  "rayon",
  "serde",
  "sha2 0.10.8",
- "slop-challenger",
  "strum_macros",
  "substrate-bn",
  "thiserror 2.0.18",
  "zkm-core-executor",
  "zkm-core-machine",
- "zkm-hypercube",
  "zkm-primitives 1.2.7",
  "zkm-recursion-core",
  "zkm-stark",
