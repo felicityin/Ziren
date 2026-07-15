@@ -40,9 +40,9 @@ pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
 const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
 
 /// The max log row count the compress machine's jagged PCS is configured for. Mirrors
-/// `zkm_stark::ZKMCoreOpts::recursion().shard_size`'s log2 (`RECURSION_MAX_SHARD_SIZE = 1 << 21`
+/// `zkm_stark::ZKMCoreOpts::recursion().shard_size`'s log2 (`RECURSION_MAX_SHARD_SIZE = 1 << 22`
 /// in `crates/stark/src/opts.rs`).
-const RECURSION_MAX_LOG_ROW_COUNT: usize = 21;
+const RECURSION_MAX_LOG_ROW_COUNT: usize = 22;
 
 pub static VK_MAP: Lazy<&'static [u8]> = Lazy::new(|| {
     #[cfg(feature = "dummy-vk-map")]

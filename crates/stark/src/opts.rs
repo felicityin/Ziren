@@ -4,7 +4,17 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 const MAX_SHARD_SIZE: usize = 1 << 21;
-const RECURSION_MAX_SHARD_SIZE: usize = 1 << 21;
+// Measured 2026-07-15 (task #17, 阶段5.3) against the first real recursion program this
+// migration has actually traced: verifying a single core shard (whose own shard_size can scale
+// up to 1 << 22 on a machine with enough RAM, via `get_memory_opts`) pushed the compress
+// machine's ExtAlu chip past 1 << 21 real rows (measured 2556571, i.e. ceil(log2) == 22) for
+// even the smallest possible guest program (`HELLO_WORLD_ELF`). Unlike `MAX_SHARD_SIZE`, this
+// bound is not memory-scaled -- it's a fixed cap that has to be big enough for whatever the
+// largest actual core shard_size in play turns out to be, so this fix is necessarily a point
+// estimate, not a proof that 1 << 22 is sufficient in general (e.g. on a lower-memory machine
+// where core's own shard_size stays at its 1 << 21 default, this may end up being more headroom
+// than strictly needed; on a very-high-memory machine it could conceivably still be too small).
+const RECURSION_MAX_SHARD_SIZE: usize = 1 << 22;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
 const DEFAULT_TRACE_GEN_WORKERS: usize = 1;
 const DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY: usize = 128;

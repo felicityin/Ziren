@@ -1015,6 +1015,27 @@ pub mod tests {
         Ok(())
     }
 
+    /// Tests the core -> compress -> shrink pipeline (everything migrated to the hypercube
+    /// backend so far), stopping short of the outer/Bn254 wrap stage. `wrap_bn254` and friends
+    /// are `unimplemented!()` pending task #57 (`ZkmOuterGlobalContext`) -- see the module doc
+    /// comment -- so `Test::All`/`Test::Wrap` would panic here.
+    #[test]
+    #[serial]
+    #[ignore]
+    fn test_e2e_up_to_shrink() -> Result<()> {
+        let elf = test_artifacts::HELLO_WORLD_ELF;
+        setup_logger();
+        let opts = ZKMProverOpts::default();
+        let prover = ZKMProver::<DefaultProverComponents>::new();
+        test_e2e_prover::<DefaultProverComponents>(
+            &prover,
+            elf,
+            ZKMStdin::default(),
+            opts,
+            Test::Shrink,
+        )
+    }
+
     /// Tests an end-to-end workflow of proving a program across the entire proof generation
     /// pipeline.
     #[test]

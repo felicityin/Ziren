@@ -2,7 +2,7 @@ use std::{borrow::Borrow, path::Path, str::FromStr};
 
 use anyhow::Result;
 use num_bigint::BigUint;
-use p3_field::{FieldAlgebra, PrimeField};
+use p3_field::{FieldAlgebra, PrimeField, PrimeField32};
 use p3_koala_bear::KoalaBear;
 use thiserror::Error;
 
@@ -94,9 +94,16 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         }
 
         // CPU log degree bound constraints.
+        //
+        // `degree` is a fixed-width (max_log_row_count + 1) big-endian bit decomposition of the
+        // chip's real row count (see `Point::from_usize`/`bit_string_evaluation` and
+        // `crates/hypercube/src/prover/shard.rs`'s `chip_heights` construction) -- its *length*
+        // is constant across every chip in the machine and says nothing about this chip's actual
+        // height, so it must be decoded via `bit_string_evaluation()`, not read off `.dimension()`.
         for shard_proof in proof.0.iter() {
             if let Some(cpu) = shard_proof.opened_values.chips.get("Cpu") {
-                let log_degree_cpu = cpu.degree.dimension();
+                let cpu_row_count = cpu.degree.bit_string_evaluation().as_canonical_u32() as u64;
+                let log_degree_cpu = cpu_row_count.next_power_of_two().trailing_zeros() as usize;
                 if log_degree_cpu > MAX_CPU_LOG_DEGREE {
                     return Err(ZKMVerificationError::CpuLogDegreeTooLarge(log_degree_cpu));
                 }
@@ -305,18 +312,26 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
             return Err(ZKMVerificationError::InvalidPublicValues("vk_root mismatch"));
         }
 
-        if self.vk_verification
-            && !self.recursion_vk_map.contains_key(&compress_vk.hash_koalabear())
-        {
-            return Err(ZKMVerificationError::InvalidVerificationKey);
-        }
+        if self.vk_verification {
+            if !self.recursion_vk_map.contains_key(&compress_vk.hash_koalabear()) {
+                return Err(ZKMVerificationError::InvalidVerificationKey);
+            }
 
-        zkm_hypercube::verifier::verify_merkle_proof(
-            vk_merkle_proof,
-            compress_vk.hash_koalabear(),
-            self.recursion_vk_root,
-        )
-        .map_err(|_| ZKMVerificationError::InvalidVerificationKey)?;
+            // Only meaningful when `vk_verification` is on: `vk_merkle_proof` was built against
+            // `self.recursion_vk_tree`/`self.recursion_vk_map`, so this checks that
+            // `compress_vk` is genuinely at the tree position the proof claims. In dev mode
+            // (`vk_verification` off), `ZKMProver::vk_merkle_proof` builds the proof for an
+            // unrelated modulo-derived index instead of a real lookup (there's no real "allowed
+            // VK set" to look up against), so the leaf value this proof actually authenticates
+            // isn't `compress_vk` at all -- checking it here would reject every proof produced
+            // in dev mode, not just genuinely invalid ones.
+            zkm_hypercube::verifier::verify_merkle_proof(
+                vk_merkle_proof,
+                compress_vk.hash_koalabear(),
+                self.recursion_vk_root,
+            )
+            .map_err(|_| ZKMVerificationError::InvalidVerificationKey)?;
+        }
 
         // `is_complete` should be 1. In the reduce program, this ensures that the proof is fully
         // reduced.
@@ -366,17 +381,20 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
             return Err(ZKMVerificationError::InvalidPublicValues("vk_root mismatch"));
         }
 
-        if self.vk_verification && !self.recursion_vk_map.contains_key(&shrink_vk.hash_koalabear())
-        {
-            return Err(ZKMVerificationError::InvalidVerificationKey);
-        }
+        if self.vk_verification {
+            if !self.recursion_vk_map.contains_key(&shrink_vk.hash_koalabear()) {
+                return Err(ZKMVerificationError::InvalidVerificationKey);
+            }
 
-        zkm_hypercube::verifier::verify_merkle_proof(
-            vk_merkle_proof,
-            shrink_vk.hash_koalabear(),
-            self.recursion_vk_root,
-        )
-        .map_err(|_| ZKMVerificationError::InvalidVerificationKey)?;
+            // See the matching comment in `verify_compressed`: only meaningful when
+            // `vk_verification` is on.
+            zkm_hypercube::verifier::verify_merkle_proof(
+                vk_merkle_proof,
+                shrink_vk.hash_koalabear(),
+                self.recursion_vk_root,
+            )
+            .map_err(|_| ZKMVerificationError::InvalidVerificationKey)?;
+        }
 
         // Verify that the proof is for the Ziren vkey we are expecting.
         let vkey_hash = vk.hash_koalabear();
