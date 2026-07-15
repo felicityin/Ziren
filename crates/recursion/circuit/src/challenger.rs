@@ -113,7 +113,7 @@ pub struct DuplexChallengerVariable<C: Config> {
     pub output_buffer: Vec<Felt<C::F>>,
 }
 
-impl<C: Config<F = KoalaBear>> DuplexChallengerVariable<C> {
+impl<C: CircuitConfig<F = KoalaBear>> DuplexChallengerVariable<C> {
     /// Creates a new duplex challenger with the default state.
     pub fn new(builder: &mut Builder<C>) -> Self {
         DuplexChallengerVariable::<C> {
@@ -197,13 +197,13 @@ impl<C: Config<F = KoalaBear>> DuplexChallengerVariable<C> {
     }
 }
 
-impl<C: Config<F = KoalaBear>> CanCopyChallenger<C> for DuplexChallengerVariable<C> {
+impl<C: CircuitConfig<F = KoalaBear>> CanCopyChallenger<C> for DuplexChallengerVariable<C> {
     fn copy(&self, builder: &mut Builder<C>) -> Self {
         DuplexChallengerVariable::copy(self, builder)
     }
 }
 
-impl<C: Config<F = KoalaBear>> CanObserveVariable<C, Felt<C::F>> for DuplexChallengerVariable<C> {
+impl<C: CircuitConfig<F = KoalaBear>> CanObserveVariable<C, Felt<C::F>> for DuplexChallengerVariable<C> {
     fn observe(&mut self, builder: &mut Builder<C>, value: Felt<C::F>) {
         DuplexChallengerVariable::observe(self, builder, value);
     }
@@ -219,7 +219,7 @@ impl<C: Config<F = KoalaBear>> CanObserveVariable<C, Felt<C::F>> for DuplexChall
     }
 }
 
-impl<C: Config<F = KoalaBear>, const N: usize> CanObserveVariable<C, [Felt<C::F>; N]>
+impl<C: CircuitConfig<F = KoalaBear>, const N: usize> CanObserveVariable<C, [Felt<C::F>; N]>
     for DuplexChallengerVariable<C>
 {
     fn observe(&mut self, builder: &mut Builder<C>, values: [Felt<C::F>; N]) {
@@ -229,13 +229,13 @@ impl<C: Config<F = KoalaBear>, const N: usize> CanObserveVariable<C, [Felt<C::F>
     }
 }
 
-impl<C: Config<F = KoalaBear>> CanSampleVariable<C, Felt<C::F>> for DuplexChallengerVariable<C> {
+impl<C: CircuitConfig<F = KoalaBear>> CanSampleVariable<C, Felt<C::F>> for DuplexChallengerVariable<C> {
     fn sample(&mut self, builder: &mut Builder<C>) -> Felt<C::F> {
         DuplexChallengerVariable::sample(self, builder)
     }
 }
 
-impl<C: Config<F = KoalaBear>> CanSampleBitsVariable<C, Felt<C::F>>
+impl<C: CircuitConfig<F = KoalaBear>> CanSampleBitsVariable<C, Felt<C::F>>
     for DuplexChallengerVariable<C>
 {
     fn sample_bits(&mut self, builder: &mut Builder<C>, nb_bits: usize) -> Vec<Felt<C::F>> {
@@ -243,7 +243,7 @@ impl<C: Config<F = KoalaBear>> CanSampleBitsVariable<C, Felt<C::F>>
     }
 }
 
-impl<C: Config<F = KoalaBear>> FieldChallengerVariable<C, Felt<C::F>>
+impl<C: CircuitConfig<F = KoalaBear>> FieldChallengerVariable<C, Felt<C::F>>
     for DuplexChallengerVariable<C>
 {
     fn sample_ext(&mut self, builder: &mut Builder<C>) -> Ext<C::F, C::EF> {
@@ -273,7 +273,7 @@ impl<C: Config<F = KoalaBear>> FieldChallengerVariable<C, Felt<C::F>>
         self.sponge_state[0..self.input_buffer.len()].copy_from_slice(self.input_buffer.as_slice());
         self.input_buffer.clear();
 
-        self.sponge_state = builder.poseidon2_permute_v2(self.sponge_state);
+        self.sponge_state = C::poseidon2_permute_v2(builder, self.sponge_state);
 
         self.output_buffer.clear();
         self.output_buffer.extend_from_slice(&self.sponge_state[..HASH_RATE]);

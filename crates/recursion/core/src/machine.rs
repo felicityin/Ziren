@@ -151,10 +151,18 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
         Self::compress_machine()
     }
 
-    /// A machine with dynamic chip sizes that includes the skinny variant of the Poseidon2 chip.
+    /// A machine with dynamic chip sizes that verifies the wrap-stage recursion program.
     ///
     /// This machine assumes that the `shrink` stage has a fixed shape, so there is no need to
     /// fix the trace sizes.
+    ///
+    /// Unlike `compress_machine`/`machine_wide_with_all_chips`, this uses the row-local
+    /// `Poseidon2LinearLayerChip`/`Poseidon2SBoxChip`/`ConvertChip` (degree <= 3 by construction)
+    /// instead of a monolithic `Poseidon2Skinny`/`Poseidon2Wide` chip -- at `DEGREE = 9`, every
+    /// DEGREE-parameterized chip's dummy degree-normalization constraints alone would exceed
+    /// `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE`, independent of `Poseidon2SkinnyChip`'s own
+    /// (also degree-exceeding) internal S-box chain. See `WrapConfig::poseidon2_permute_v2` in
+    /// `crates/recursion/circuit` for the DSL-level gadget that emits these chips' instructions.
     pub fn wrap_machine() -> Machine<F, Self>
     where
         F: slop_algebra::Field,
@@ -164,7 +172,9 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::MemoryVar(MemoryVarChip::default()),
             RecursionAir::BaseAlu(BaseAluChip),
             RecursionAir::ExtAlu(ExtAluChip),
-            RecursionAir::Poseidon2Skinny(Poseidon2SkinnyChip::<DEGREE>::default()),
+            RecursionAir::Poseidon2LinearLayer(Poseidon2LinearLayerChip),
+            RecursionAir::Poseidon2SBox(Poseidon2SBoxChip),
+            RecursionAir::ExtFeltConvert(ConvertChip),
             RecursionAir::Select(SelectChip),
             RecursionAir::PublicValues(PublicValuesChip),
         ]

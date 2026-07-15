@@ -112,11 +112,16 @@ pub struct Builder<C: Config> {
     pub(crate) debug: bool,
     pub(crate) is_sub_builder: bool,
     pub program_type: RecursionProgramType,
+    /// Poseidon2 round constants, saved ahead of time by `Config::initialize` (used by
+    /// `WrapConfig`'s row-local Poseidon2 gadget so each round doesn't re-derive its constants).
+    pub poseidon2_constants: Vec<Ext<C::F, C::EF>>,
 }
 
 impl<C: Config> Default for Builder<C> {
     fn default() -> Self {
-        Self::new(RecursionProgramType::Core)
+        let mut builder = Self::new(RecursionProgramType::Core);
+        C::initialize(&mut builder);
+        builder
     }
 }
 
@@ -150,6 +155,7 @@ impl<C: Config> Builder<C> {
             debug: false,
             is_sub_builder: false,
             program_type,
+            poseidon2_constants: vec![],
         };
 
         new_builder.p2_hash_num = new_builder.uninit();

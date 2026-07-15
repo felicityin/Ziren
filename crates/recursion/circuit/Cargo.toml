@@ -39,6 +39,7 @@ slop-basefold = { workspace = true }
 slop-challenger = { workspace = true }
 slop-commit = { workspace = true }
 slop-jagged = { workspace = true }
+slop-koala-bear = { workspace = true }
 slop-matrix = { workspace = true }
 slop-merkle-tree = { workspace = true }
 slop-multilinear = { workspace = true }

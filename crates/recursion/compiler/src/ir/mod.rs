@@ -25,4 +25,8 @@ pub trait Config: Clone + Default {
     type N: PrimeField;
     type F: PrimeField32 + TwoAdicField;
     type EF: ExtensionField<Self::F> + TwoAdicField;
+
+    /// Called on initialization of a top-level `Builder`. Used by `WrapConfig` to save Poseidon2
+    /// round constants ahead of time.
+    fn initialize(_: &mut Builder<Self>) {}
 }

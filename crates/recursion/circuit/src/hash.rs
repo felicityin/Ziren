@@ -7,10 +7,7 @@ use p3_koala_bear::KoalaBear;
 
 use p3_bn254_fr::Bn254Fr;
 use p3_symmetric::Permutation;
-use zkm_recursion_compiler::{
-    circuit::CircuitV2Builder,
-    ir::{Builder, Config, DslIr, Felt, Var},
-};
+use zkm_recursion_compiler::ir::{Builder, Config, DslIr, Felt, Var};
 use zkm_recursion_core::stark::{outer_perm, OUTER_MULTI_FIELD_CHALLENGER_WIDTH};
 use zkm_recursion_core::{stark::KoalaBearPoseidon2Outer, DIGEST_SIZE};
 use zkm_recursion_core::{HASH_RATE, PERMUTATION_WIDTH};
@@ -86,7 +83,7 @@ impl<C: CircuitConfig<F = KoalaBear>> Poseidon2KoalaBearHasherVariable<C> for Ko
         builder: &mut Builder<C>,
         input: [Felt<<C>::F>; PERMUTATION_WIDTH],
     ) -> [Felt<<C>::F>; PERMUTATION_WIDTH] {
-        builder.poseidon2_permute_v2(input)
+        C::poseidon2_permute_v2(builder, input)
     }
 }
 
@@ -114,7 +111,7 @@ impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> FieldHasherVariable
         builder: &mut Builder<C>,
         input: [Self::DigestVariable; 2],
     ) -> Self::DigestVariable {
-        builder.poseidon2_compress_v2(input.into_iter().flatten())
+        C::poseidon2_compress_v2(builder, input.into_iter().flatten())
     }
 
     fn assert_digest_eq(
@@ -173,7 +170,7 @@ impl<C: CircuitConfig<F = KoalaBear>> Poseidon2KoalaBearHasherVariable<C> for Zk
         builder: &mut Builder<C>,
         input: [Felt<<C>::F>; PERMUTATION_WIDTH],
     ) -> [Felt<<C>::F>; PERMUTATION_WIDTH] {
-        builder.poseidon2_permute_v2(input)
+        C::poseidon2_permute_v2(builder, input)
     }
 }
 
@@ -190,7 +187,7 @@ impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> FieldHasherVariable
         builder: &mut Builder<C>,
         input: [Self::DigestVariable; 2],
     ) -> Self::DigestVariable {
-        builder.poseidon2_compress_v2(input.into_iter().flatten())
+        C::poseidon2_compress_v2(builder, input.into_iter().flatten())
     }
 
     fn assert_digest_eq(

@@ -8485,6 +8485,7 @@ dependencies = [
  "slop-challenger",
  "slop-commit",
  "slop-jagged",
+ "slop-koala-bear",
  "slop-matrix",
  "slop-merkle-tree",
  "slop-multilinear",
