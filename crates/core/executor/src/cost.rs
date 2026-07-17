@@ -94,10 +94,16 @@ pub fn estimate_record_trace_bytes(
         cells += (precompile_event_count as u64).next_power_of_two() * max_precompile_cost;
     }
 
-    // Flat safety margin: this estimator's job is to gate a memory budget, so it must never
-    // undercount. 25% covers this function's own approximations (precompile control chips,
-    // multi-row-per-event precompiles) without materially shrinking effective concurrency.
-    cells += cells / 4;
+    // Safety multiplier: the budget this feeds needs to bound *peak resident memory while a
+    // shard is actively being committed/proved*, not just the padded main traces' own storage
+    // size. `commit_traces` keeps its main traces, an interleaved-MLE copy, and a 4x-blown-up
+    // (`log_blowup`) FRI codeword over the extension field all resident *for the rest of the
+    // shard's proof* (the codeword isn't freed until FRI's query-opening phase, at the very end
+    // of `prove_evaluation_claims`); LogUp-GKR and zerocheck each stack a further transient
+    // extension-field-width peak on top of that already-resident baseline before their own
+    // buffers free. 10x approximates that combined peak; it must never undercount, since the
+    // budget this feeds has no other signal for how large a shard actually gets while active.
+    cells *= 10;
 
     cells * ((core::mem::size_of::<KoalaBear>() << 1) as u64)
 }

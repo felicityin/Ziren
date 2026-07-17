@@ -9,10 +9,15 @@ use zkm_stark::total_system_memory_bytes;
 const TRACE_BUDGET_UNIT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Fraction of total system RAM the trace-memory budget defaults to, absent
-/// `ZKM_TRACE_MEMORY_BUDGET_MB`. Conservative: this budget only gates padded main-trace data
-/// (`crates/hypercube/src/prover/trace.rs`'s `Traces`), not the executor's own memory
-/// (checkpoints, in-flight `ExecutionRecord`s) or anything else resident in the process.
-const DEFAULT_TRACE_BUDGET_RAM_FRACTION: u64 = 2;
+/// `ZKM_TRACE_MEMORY_BUDGET_MB`. This budget only gates the estimated size of shards actively
+/// materializing/committing/proving -- not the executor's own memory (checkpoints, in-flight
+/// `ExecutionRecord`s) or anything else resident in the process -- so it must leave real
+/// headroom below total system RAM for everything it doesn't cover. Trace generation
+/// (`trace_gen_workers`) is also typically much faster than proving (`prove_workers`), so every
+/// trace-gen worker can race ahead and hold a permit well before any prove worker finishes and
+/// frees one; too generous a fraction here lets that gap alone push total memory usage far past
+/// what the budget's own share would suggest.
+const DEFAULT_TRACE_BUDGET_RAM_FRACTION: u64 = 6;
 
 struct TraceMemoryBudget {
     semaphore: ProverSemaphore,
