@@ -2,16 +2,18 @@ use std::{borrow::Borrow, path::Path, str::FromStr};
 
 use anyhow::Result;
 use num_bigint::BigUint;
-use p3_field::{FieldAlgebra, PrimeField, PrimeField32};
+use p3_field::{FieldAlgebra, PrimeField};
 use p3_koala_bear::KoalaBear;
 use thiserror::Error;
 
 use slop_challenger::IopCtx;
 use zkm_core_executor::subproof::SubproofVerifier;
-use zkm_core_machine::{cpu::MAX_CPU_LOG_DEGREE, mips::MipsAir};
+use zkm_core_machine::mips::MipsAir;
 use zkm_hypercube::{
     air::{PublicValues, POSEIDON_NUM_WORDS, PV_DIGEST_NUM_WORDS},
-    config::{compressed_fri_config, default_fri_config, ultra_compressed_fri_config, ZkmGlobalContext},
+    config::{
+        compressed_fri_config, default_fri_config, ultra_compressed_fri_config, ZkmGlobalContext,
+    },
     verifier::{ShardVerifier, ShardVerifierConfigError},
     word::Word,
     ZkmStackedPcs,
@@ -24,10 +26,8 @@ use zkm_recursion_gnark_ffi::{
 };
 
 use crate::{
-    build::zkm_imm_wrap_vk_mode,
-    components::ZKMProverComponents,
-    core_max_log_row_count, recursion_max_log_row_count, stacking_height_for,
-    utils::is_recursion_public_values_valid,
+    build::zkm_imm_wrap_vk_mode, components::ZKMProverComponents, core_max_log_row_count,
+    recursion_max_log_row_count, stacking_height_for, utils::is_recursion_public_values_valid,
     CompressAir, HashableKey, ShrinkAir, ZKMCoreProofData, ZKMProver, ZKMReduceProofWrapper,
     ZKMVerifyingKey, ZKMWrapProof,
 };
@@ -39,8 +39,6 @@ pub enum ZKMVerificationError {
     EmptyProof,
     #[error("first shard is missing CPU")]
     MissingCpuInFirstShard,
-    #[error("cpu log degree {0} exceeds the maximum")]
-    CpuLogDegreeTooLarge(usize),
     #[error("invalid public values: {0}")]
     InvalidPublicValues(&'static str),
     #[error("invalid verification key")]
@@ -87,27 +85,12 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         if proof.0.is_empty() {
             return Err(ZKMVerificationError::EmptyProof);
         }
-        // First shard has a "CPU" constraint.
+        // The first shard must retire at least one instruction.
         let first_shard = proof.0.first().unwrap();
-        if !first_shard.opened_values.chips.contains_key("Cpu") {
+        let first_shard_public_values: &PublicValues<Word<_>, _> =
+            first_shard.public_values.as_slice().borrow();
+        if first_shard_public_values.is_execution_shard == KoalaBear::ZERO {
             return Err(ZKMVerificationError::MissingCpuInFirstShard);
-        }
-
-        // CPU log degree bound constraints.
-        //
-        // `degree` is a fixed-width (max_log_row_count + 1) big-endian bit decomposition of the
-        // chip's real row count (see `Point::from_usize`/`bit_string_evaluation` and
-        // `crates/hypercube/src/prover/shard.rs`'s `chip_heights` construction) -- its *length*
-        // is constant across every chip in the machine and says nothing about this chip's actual
-        // height, so it must be decoded via `bit_string_evaluation()`, not read off `.dimension()`.
-        for shard_proof in proof.0.iter() {
-            if let Some(cpu) = shard_proof.opened_values.chips.get("Cpu") {
-                let cpu_row_count = cpu.degree.bit_string_evaluation().as_canonical_u32() as u64;
-                let log_degree_cpu = cpu_row_count.next_power_of_two().trailing_zeros() as usize;
-                if log_degree_cpu > MAX_CPU_LOG_DEGREE {
-                    return Err(ZKMVerificationError::CpuLogDegreeTooLarge(log_degree_cpu));
-                }
-            }
         }
 
         // Shard constraints.
@@ -131,7 +114,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         for shard_proof in proof.0.iter() {
             let public_values: &PublicValues<Word<_>, _> =
                 shard_proof.public_values.as_slice().borrow();
-            if shard_proof.opened_values.chips.contains_key("Cpu") {
+            if public_values.is_execution_shard != KoalaBear::ZERO {
                 current_execution_shard += KoalaBear::ONE;
                 if public_values.execution_shard != current_execution_shard {
                     return Err(ZKMVerificationError::InvalidPublicValues(
@@ -146,7 +129,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         for (i, shard_proof) in proof.0.iter().enumerate() {
             let public_values: &PublicValues<Word<_>, _> =
                 shard_proof.public_values.as_slice().borrow();
-            let contains_cpu = shard_proof.opened_values.chips.contains_key("Cpu");
+            let contains_cpu = public_values.is_execution_shard != KoalaBear::ZERO;
             if i == 0 && public_values.start_pc != vk.vk.pc_start {
                 return Err(ZKMVerificationError::InvalidPublicValues(
                     "start_pc != vk.start_pc: program counter should start at vk.start_pc",
@@ -226,7 +209,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         for shard_proof in proof.0.iter() {
             let public_values: &PublicValues<Word<_>, _> =
                 shard_proof.public_values.as_slice().borrow();
-            let contains_cpu = shard_proof.opened_values.chips.contains_key("Cpu");
+            let contains_cpu = public_values.is_execution_shard != KoalaBear::ZERO;
             if committed_value_digest_prev != zero_committed_value_digest
                 && public_values.committed_value_digest != committed_value_digest_prev
             {
@@ -512,9 +495,11 @@ fn groth16_vk_hash(vk: &ZKMVerifyingKey) -> Result<BigUint> {
     let vk_hash = vk.hash_bn254();
 
     if zkm_imm_wrap_vk_mode() {
-        let part_stark_vk: zkm_stark::PartStarkVerifyingKey<zkm_recursion_core::stark::KoalaBearPoseidon2Outer> =
-            bincode::deserialize(PART_STARK_VK_BYTES)?;
-        Ok(zkm_recursion_core::hash_vkey_with_part_vk(&part_stark_vk, vk_hash).as_canonical_biguint())
+        let part_stark_vk: zkm_stark::PartStarkVerifyingKey<
+            zkm_recursion_core::stark::KoalaBearPoseidon2Outer,
+        > = bincode::deserialize(PART_STARK_VK_BYTES)?;
+        Ok(zkm_recursion_core::hash_vkey_with_part_vk(&part_stark_vk, vk_hash)
+            .as_canonical_biguint())
     } else {
         Ok(vk_hash.as_canonical_biguint())
     }
@@ -534,16 +519,21 @@ impl<C: ZKMProverComponents> SubproofVerifier for ZKMProver<C> {
         // in effect, assertions that the deferred proof's public values don't match what the
         // calling program committed to.
         if vk.hash_u32() != vk_hash {
-            return Err(ShardVerifierConfigError::<ZkmGlobalContext, ZkmStackedPcs>::InvalidPublicValues);
+            return Err(
+                ShardVerifierConfigError::<ZkmGlobalContext, ZkmStackedPcs>::InvalidPublicValues,
+            );
         }
         // Check that proof is valid.
-        self.verify_compressed(proof, &ZKMVerifyingKey { vk: vk.clone() })
-            .map_err(|_| ShardVerifierConfigError::<ZkmGlobalContext, ZkmStackedPcs>::InvalidPublicValues)?;
+        self.verify_compressed(proof, &ZKMVerifyingKey { vk: vk.clone() }).map_err(|_| {
+            ShardVerifierConfigError::<ZkmGlobalContext, ZkmStackedPcs>::InvalidPublicValues
+        })?;
         // Check that the committed value digest matches the one from syscall.
         let public_values: &RecursionPublicValues<_> =
             proof.proof.public_values.as_slice().borrow();
         if public_values.vk_root != self.recursion_vk_root {
-            return Err(ShardVerifierConfigError::<ZkmGlobalContext, ZkmStackedPcs>::InvalidPublicValues);
+            return Err(
+                ShardVerifierConfigError::<ZkmGlobalContext, ZkmStackedPcs>::InvalidPublicValues,
+            );
         }
         for (i, word) in public_values.committed_value_digest.iter().enumerate() {
             if *word != committed_value_digest[i].into() {

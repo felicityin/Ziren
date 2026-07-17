@@ -91,7 +91,12 @@ where
     /// as the one witnessed here.
     pub fn verify(
         builder: &mut Builder<C>,
-        machine: &RecursiveShardVerifier<C, ZkmGlobalContext, DuplexChallengerVariable<C>, MipsAir<C::F>>,
+        machine: &RecursiveShardVerifier<
+            C,
+            ZkmGlobalContext,
+            DuplexChallengerVariable<C>,
+            MipsAir<C::F>,
+        >,
         input: ZKMRecursionWitnessVariable<C>,
     ) where
         MipsAir<C::F>: for<'b> Air<RecursiveVerifierConstraintFolder<'b, C>>,
@@ -141,7 +146,7 @@ where
 
         // Verify proofs.
         for (i, shard_proof) in shard_proofs.into_iter().enumerate() {
-            let contains_cpu = shard_proof.contains_cpu();
+            let contains_cpu = shard_proof.is_execution_shard;
             let contains_memory_init = shard_proof.contains_memory_init();
             let contains_memory_finalize = shard_proof.contains_memory_finalize();
 
@@ -526,8 +531,10 @@ where
             recursion_public_values.vk_root = vk_root;
 
             // Calculate the digest and set it in the public values.
-            recursion_public_values.digest =
-                recursion_public_values_digest::<C, ZkmGlobalContext>(builder, recursion_public_values);
+            recursion_public_values.digest = recursion_public_values_digest::<C, ZkmGlobalContext>(
+                builder,
+                recursion_public_values,
+            );
 
             assert_complete(builder, recursion_public_values, is_complete);
 
@@ -623,11 +630,12 @@ mod tests {
         // `state.initial_timestamp`/`state.last_timestamp` computation in
         // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. These anchor the
         // CPU chip's `LookupKind::State` chain boundary in `eval_public_values`.
-        let first_cpu_event = record.cpu_events.first().unwrap();
-        let last_cpu_event = record.cpu_events.last().unwrap();
-        record.public_values.initial_timestamp = first_cpu_event.clk;
-        record.public_values.last_timestamp =
-            last_cpu_event.clk + 5 + last_cpu_event.num_extra_cycles;
+        //
+        // Uses the migration-safe `first_instruction_clk`/`last_timestamp` bookkeeping (tracked
+        // independent of which chip retires an instruction) rather than `cpu_events`, since
+        // `cpu_events` is permanently empty once every opcode has migrated off `CpuChip`.
+        record.public_values.initial_timestamp = record.first_instruction_clk.unwrap();
+        record.public_values.last_timestamp = record.last_timestamp;
         // `Executor::run`/`execute` never calls chip-level `generate_dependencies`, so
         // cross-chip-derived public values that depend on the actual event contents --
         // `GlobalChip`'s `global_count`/`global_cumulative_sum_{x,y}` and
@@ -669,17 +677,15 @@ mod tests {
         let fri_config = test_fri_config();
         let max_log_row_count = opts.shard_size.ilog2() as usize;
         let native_machine = MipsAir::<KoalaBear>::hypercube_machine();
-        let shard_prover = ZkmShardProver::<MipsAir<KoalaBear>>::new(
-            ShardVerifier::from_basefold_parameters(
+        let shard_prover =
+            ZkmShardProver::<MipsAir<KoalaBear>>::new(ShardVerifier::from_basefold_parameters(
                 fri_config,
                 CORE_LOG_STACKING_HEIGHT,
                 max_log_row_count,
                 native_machine,
-            ),
-        );
+            ));
 
-        let setup_rt =
-            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
         let (vk, proof, _permit) = setup_rt.block_on(shard_prover.setup_and_prove_shard(
             Arc::new(program),
             record,

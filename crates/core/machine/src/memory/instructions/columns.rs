@@ -5,6 +5,8 @@ use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
 use crate::{
+    adapter::InstructionCols,
+    adapter::{CpuState, RegisterReader},
     memory::MemoryReadWriteCols,
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
 };
@@ -15,15 +17,19 @@ pub const NUM_MEMORY_INSTRUCTIONS_COLUMNS: usize = size_of::<MemoryInstructionsC
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct MemoryInstructionsColumns<T> {
+pub struct MemoryInstructionsColumns<T: Copy> {
+    /// The current shard and clk.
+    pub state: CpuState<T>,
+
+    /// The raw fetched instruction.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`/`c`.
+    pub reader: RegisterReader<T>,
+
     /// The current/next program counter of the instruction.
     pub pc: T,
     pub next_pc: T,
-
-    /// The shard number.
-    pub shard: T,
-    /// The clock cycle number.
-    pub clk: T,
 
     /// The value of the first operand.
     pub op_a_value: Word<T>,

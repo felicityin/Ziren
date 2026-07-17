@@ -61,17 +61,15 @@ pub mod sponge_tests {
         // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. Left at their
         // zero defaults, `eval_public_values`'s `State` boundary-anchor interaction won't match
         // `Cpu`'s own last-row send, producing a spurious debug-harness discrepancy.
-        let first_cpu_event = cpu_record.cpu_events.first().unwrap();
-        let last_cpu_event = cpu_record.cpu_events.last().unwrap();
-        cpu_record.public_values.initial_timestamp = first_cpu_event.clk;
-        cpu_record.public_values.last_timestamp =
-            last_cpu_event.clk + 5 + last_cpu_event.num_extra_cycles;
+        //
+        // Uses the migration-safe `first_instruction_clk`/`last_timestamp` bookkeeping (tracked
+        // independent of which chip retires an instruction) rather than `cpu_events`, since
+        // `cpu_events` is permanently empty once every opcode has migrated off `CpuChip`.
+        cpu_record.public_values.initial_timestamp = cpu_record.first_instruction_clk.unwrap();
+        cpu_record.public_values.last_timestamp = cpu_record.last_timestamp;
         let mut deferred = cpu_record.defer();
-        assert!(!cpu_record.cpu_events.is_empty());
-        // NOTE: `PrecompileEvents::is_empty()` checks its internal `HashMap`'s key count, not
-        // whether every syscall code's event `Vec` is empty -- `Default` pre-populates a key per
-        // syscall code, so it's never actually `true` here. Use `all_events()` instead.
-        assert_eq!(cpu_record.precompile_events.all_events().count(), 0);
+        assert!(cpu_record.contains_cpu());
+        assert!(cpu_record.precompile_events.is_empty());
 
         let split_records = deferred.split(true, None, ZKMCoreOpts::default().split_opts);
         let keccak_record = split_records

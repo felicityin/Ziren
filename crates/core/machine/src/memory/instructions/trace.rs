@@ -6,13 +6,14 @@ use p3_field::PrimeField32;
 use p3_matrix::dense::RowMajorMatrix;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord, MemInstrEvent},
+    events::{ByteLookupEvent, ByteRecord, MemInstrEvent, MemoryRecordEnum},
     ByteOpcode, ExecutionRecord, Opcode, Program, NUM_REGISTERS,
 };
 use zkm_hypercube::air::MachineAir;
 use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
+    memory::MemoryCols,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -70,7 +71,13 @@ impl<F: PrimeField32> MachineAir<F> for MemoryInstructionsChip {
 
                         if idx < input.memory_instr_events.len() {
                             let event = &input.memory_instr_events[idx];
-                            self.event_to_row(event, cols, &mut blu);
+                            self.event_to_row(event, cols, &mut blu, &input.program);
+                        } else {
+                            // Padding row: force the register reader's b/c memory-access
+                            // multiplicities to zero (see
+                            // cpuchip-migration-register-reader-gotchas memory).
+                            cols.instruction.imm_b = F::ONE;
+                            cols.instruction.imm_c = F::ONE;
                         }
                     },
                 );
@@ -99,10 +106,31 @@ impl MemoryInstructionsChip {
         event: &MemInstrEvent,
         cols: &mut MemoryInstructionsColumns<F>,
         blu: &mut HashMap<ByteLookupEvent, usize>,
+        program: &Program,
     ) {
-        cols.shard = F::from_canonical_u32(event.shard);
-        assert!(cols.shard != F::ZERO);
-        cols.clk = F::from_canonical_u32(event.clk);
+        // Every `memory_instr_events` row is a real, retired instruction -- nothing ever
+        // produces a synthetic dependency row here.
+        cols.state.populate(blu, event.shard, event.clk);
+        assert!(cols.state.shard != F::ZERO);
+
+        let instruction = program.fetch(event.pc);
+        cols.instruction.populate(&instruction);
+
+        *cols.reader.op_a_access.value_mut() = event.a.into();
+        *cols.reader.op_b_access.value_mut() = event.b.into();
+        *cols.reader.op_c_access.value_mut() = event.c.into();
+
+        if let Some(record) = event.a_record {
+            cols.reader.op_a_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+            cols.reader.op_b_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+            cols.reader.op_c_access.populate(record, blu);
+        }
+        cols.reader.populate_op_a_range_checks(blu);
+
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
         cols.op_a_value = event.a.into();

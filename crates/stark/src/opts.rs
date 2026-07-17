@@ -3,59 +3,24 @@ use std::env;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
-// Must stay strictly below `1 << zkm_core_machine::cpu::MAX_CPU_LOG_DEGREE` (currently 22, not
-// importable here without a circular dependency on `zkm-core-machine`): the core verifier
-// decodes each shard's real CPU row count and rejects it once its log-degree exceeds that bound
-// (`ZKMVerificationError::CpuLogDegreeTooLarge`). At exactly `1 << 22`, the executor's
-// clk-based shard-cutting (a soft boundary that can overshoot by a row or more, e.g. across a
-// branch delay slot or an unconstrained precompile-hint block) has zero headroom left before
-// `next_power_of_two()` pushes the reported log-degree to 23 and every proof fails
-// verification. `shard_size` must be clamped to this value everywhere it's derived (see
-// `clamp_shard_size` and `get_memory_opts`'s top RAM tier below) rather than left to whatever an
-// env var or memory-scaled heuristic picks.
-const MAX_SHARD_SIZE: usize = 1 << 21;
-
-/// Clamps a candidate `shard_size` to [`MAX_SHARD_SIZE`], warning if it had to.
-fn clamp_shard_size(shard_size: usize) -> usize {
-    if shard_size > MAX_SHARD_SIZE {
-        tracing::warn!(
-            "shard_size {shard_size} exceeds the maximum safe value {MAX_SHARD_SIZE}; clamping \
-             to avoid spurious CpuLogDegreeTooLarge verification failures"
-        );
-        MAX_SHARD_SIZE
-    } else {
-        shard_size
-    }
-}
-// Measured 2026-07-15 (task #17, 阶段5.3) against the first real recursion program this
-// migration has actually traced: verifying a single core shard (whose own shard_size can scale
-// up to 1 << 22 on a machine with enough RAM, via `get_memory_opts`) pushed the compress
-// machine's ExtAlu chip past 1 << 21 real rows (measured 2556571, i.e. ceil(log2) == 22) for
-// even the smallest possible guest program (`HELLO_WORLD_ELF`). Unlike `MAX_SHARD_SIZE`, this
-// bound is not memory-scaled -- it's a fixed cap that has to be big enough for whatever the
-// largest actual core shard_size in play turns out to be, so this fix is necessarily a point
-// estimate, not a proof that 1 << 22 is sufficient in general (e.g. on a lower-memory machine
-// where core's own shard_size stays at its 1 << 21 default, this may end up being more headroom
-// than strictly needed; on a very-high-memory machine it could conceivably still be too small).
+// A recursion shard's compress-machine ExtAlu chip can exceed 1 << 21 real rows even for the
+// smallest guest program, once core's own shard_size scales up via `get_memory_opts`. Unlike
+// core's own shard_size, this bound isn't memory-scaled -- it's a fixed cap sized for the
+// largest actual core shard_size in play.
 const RECURSION_MAX_SHARD_SIZE: usize = 1 << 22;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
-// Was 1: with `trace_gen_workers` gating both the number of concurrent phase-2 trace-gen worker
-// threads (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`) and
-// how many shards' main traces can be held in memory / proved at once (the
-// `ProverSemaphore::new(opts.trace_gen_workers.max(1))` permit pool), a value of 1 serializes
-// shard proving to one shard at a time regardless of how many CPU cores are available -- a
-// 16-core dev machine measured this session sat mostly idle proving a real multi-shard program
-// this way. 4 was already the value hinted at (commented out) in `ZKMProverOpts::gpu`'s core
-// options; kept conservative here rather than scaling to all cores, to leave headroom for the
-// per-shard internal rayon parallelism each worker's trace generation already uses and to limit
-// how many shards' trace data are held concurrently (this same session hit an 86GB OOM kill from
-// a single, much lighter operation).
+// `trace_gen_workers` gates both the number of concurrent phase-2 trace-gen worker threads
+// (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`) and how many
+// shards' main traces can be held in memory / proved at once (the
+// `ProverSemaphore::new(opts.trace_gen_workers.max(1))` permit pool). Kept conservative rather
+// than scaling to all cores, to leave headroom for each worker's own internal rayon parallelism
+// and limit how many shards' trace data are held concurrently.
 const DEFAULT_TRACE_GEN_WORKERS: usize = 4;
 // How many shards can be proved concurrently by the phase-2 prover (see
-// `crates/core/machine/src/utils/prove.rs`'s `p2_prover_handles` loop). Previously reused
-// `trace_gen_workers` for this too, coupling two independent workloads (trace generation is
-// lighter/more memory-bound; shard proving -- commit_traces's FFT/Merkle-tree work -- is
-// heavier/more CPU-bound) to a single knob. Split out so each can be tuned independently.
+// `crates/core/machine/src/utils/prove.rs`'s `p2_prover_handles` loop). Kept separate from
+// `trace_gen_workers` since the two workloads have different resource profiles: trace generation
+// is lighter/more memory-bound, while shard proving (`commit_traces`'s FFT/Merkle-tree work) is
+// heavier/more CPU-bound.
 const DEFAULT_PROVE_WORKERS: usize = 2;
 const DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY: usize = 128;
 const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = 1;
@@ -70,21 +35,10 @@ pub const MAX_DEFERRED_SPLIT_THRESHOLD: usize = 1 << 15;
 /// `AreaOutOfBounds` once a round's padded cell count (row count times column count, summed
 /// across every chip in the chosen cluster) reaches `2^30` -- see
 /// `slop_jagged::verifier::Verifier::verify_shard`'s `round_areas.iter().any(|&area| area == 0
-/// || area >= (1 << 30))` check (an earlier revision of this comment said `2^29`, off by one
-/// bit; verified against the actual verifier source 2026-07-15). The check is per-round
-/// (currently one round for preprocessed columns, one for main columns, each independently
-/// bounded below `2^30`), while `estimate_mips_lde_size` folds `preprocessed_width +
-/// main_width` together per chip (confirmed via `Chip::cost()`,
-/// `crates/hypercube/src/chip.rs`) into a single combined cell count -- so comparing that
-/// combined estimate against one round's `2^30` ceiling is a conservative (not maximally tight)
-/// proxy, not an exact match to the two independent checks.
-///
-/// `estimate_mips_lde_size` reports `cells * 8` (`size_of::<KoalaBear>() << 1`), so the combined
-/// ceiling in bytes is `2^30 * 8 = 2^33` (8 GiB). The threshold here is set to 7 GiB (87.5% of
-/// that ceiling, 12.5% margin) -- this value was inherited from the old FRI-based backend (whose
-/// LDE blowup had a much larger safe margin) and was never recalibrated for the jagged/basefold
-/// backend's tighter area bound, which let CPU/ALU-dense shards (e.g. a Keccak-heavy program
-/// exercising many ALU and memory instructions per cycle) silently exceed it.
+/// || area >= (1 << 30))` check. `estimate_mips_lde_size` folds `preprocessed_width +
+/// main_width` per chip into one combined cell count, a conservative (not maximally tight) proxy
+/// for the two independent per-round checks; at `cells * 8` bytes, the combined ceiling is 8 GiB.
+/// The threshold here is 7 GiB (12.5% margin below that ceiling).
 pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 7 * (1 << 30);
 
 /// Options to configure the Ziren prover for core and recursive proofs.
@@ -119,8 +73,9 @@ impl ZKMProverOpts {
             33..49 => (20, 1, 2),
             49..65 => (21, 1, 3),
             65..81 => (21, 3, 1),
-            // Was (22, 4, 1): log2_shard_size=22 selects shard_size == 1 << MAX_CPU_LOG_DEGREE
-            // with zero headroom, see MAX_SHARD_SIZE's doc comment.
+            // `shard_size` no longer has a hard architectural ceiling (the `CpuChip`-derived
+            // cap that used to force this tier down from (22, 4, 1) is gone), but this tier is
+            // left as-is pending separate performance tuning of the memory-scaled defaults.
             81.. => (21, 4, 1),
         }
     }
@@ -222,10 +177,10 @@ impl Default for ZKMCoreOpts {
             ZKMProverOpts::get_memory_opts(cpu_ram_gb as usize);
 
         let mut opts = Self {
-            shard_size: clamp_shard_size(env::var("SHARD_SIZE").map_or_else(
+            shard_size: env::var("SHARD_SIZE").map_or_else(
                 |_| 1 << default_log2_shard_size,
                 |s| s.parse::<usize>().unwrap_or(1 << default_log2_shard_size),
-            )),
+            ),
             shard_batch_size: env::var("SHARD_BATCH_SIZE").map_or_else(
                 |_| default_shard_batch_size,
                 |s| s.parse::<usize>().unwrap_or(default_shard_batch_size),
@@ -293,9 +248,9 @@ impl ZKMCoreOpts {
             .unwrap_or(MAX_DEFERRED_SPLIT_THRESHOLD)
             .max(MAX_DEFERRED_SPLIT_THRESHOLD);
 
-        let shard_size = clamp_shard_size(
-            env::var("SHARD_SIZE")
-                .map_or_else(|_| MAX_SHARD_SIZE, |s| s.parse::<usize>().unwrap_or(MAX_SHARD_SIZE)),
+        let shard_size = env::var("SHARD_SIZE").map_or_else(
+            |_| RECURSION_MAX_SHARD_SIZE,
+            |s| s.parse::<usize>().unwrap_or(RECURSION_MAX_SHARD_SIZE),
         );
 
         Self {

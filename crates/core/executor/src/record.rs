@@ -35,6 +35,21 @@ pub struct ExecutionRecord {
     pub program: Arc<Program>,
     /// A trace of the CPU events which get emitted during execution.
     pub cpu_events: Vec<CpuEvent>,
+    /// The `pc` of this record's first retired instruction, if any. Updated once per
+    /// instruction in `Executor::emit_events` independent of which per-opcode event `Vec` (or
+    /// `cpu_events`) the instruction also lands in, so it stays correct even for opcodes that
+    /// don't push a [`CpuEvent`].
+    pub first_instruction_pc: Option<u32>,
+    /// The `clk` of this record's first retired instruction, if any. Set alongside
+    /// [`Self::first_instruction_pc`].
+    pub first_instruction_clk: Option<u32>,
+    /// The `next_pc` of this record's most recently retired instruction.
+    pub last_next_pc: u32,
+    /// The `exit_code` of this record's most recently retired instruction.
+    pub last_exit_code: u32,
+    /// The expected `clk` of the instruction following this record's most recently retired one
+    /// (`clk + 5 + num_extra_cycles`), mirroring [`zkm_hypercube::air::PublicValues::last_timestamp`].
+    pub last_timestamp: u32,
     /// A trace of the ADD, ADDU, ADDI, ADDIU, SUB and SUBU events.
     pub add_sub_events: Vec<AluEvent>,
     /// A trace of the MUL, MULT and MULTU events.
@@ -255,10 +270,10 @@ impl ExecutionRecord {
         shards
     }
 
-    /// Determines whether the execution record contains CPU events.
+    /// Determines whether the execution record retired any instructions.
     #[must_use]
     pub fn contains_cpu(&self) -> bool {
-        !self.cpu_events.is_empty()
+        self.first_instruction_pc.is_some()
     }
 
     #[inline]
@@ -336,9 +351,7 @@ impl MachineRecord for ExecutionRecord {
             self.global_memory_finalize_events.len(),
         );
         stats.insert("local_memory_access_events".to_string(), self.cpu_local_memory_access.len());
-        if !self.cpu_events.is_empty() {
-            stats.insert("byte_lookups".to_string(), self.byte_lookups.len());
-        }
+        stats.insert("byte_lookups".to_string(), self.byte_lookups.len());
         // Filter out the empty events.
         stats.retain(|_, v| *v != 0);
         stats
@@ -407,19 +420,22 @@ impl MachineRecord for ExecutionRecord {
         // the shard's first real CPU row has nothing in-shard to receive its incoming state from,
         // and the last real row has nothing in-shard to receive its outgoing state -- these two
         // sends/receives close that chain against public values instead. A shard boundary is only
-        // ever sequential (see `CpuChip::eval_pc`), so the paired pc is always `pc + 4`.
+        // ever sequential (see `CpuChip::eval_pc`), so the paired pc is always `pc + 4`. Gated on
+        // `is_execution_shard` so a shard that retired no instructions contributes nothing to the
+        // chain, rather than relying on `start_pc == next_pc` / `initial_timestamp ==
+        // last_timestamp` to self-cancel.
         let pc_inc = AB::Expr::from_canonical_u32(DEFAULT_PC_INC);
         builder.send_state(
             public_values.initial_timestamp,
             public_values.start_pc,
             public_values.start_pc.into() + pc_inc.clone(),
-            AB::Expr::one(),
+            public_values.is_execution_shard.into(),
         );
         builder.receive_state(
             public_values.last_timestamp,
             public_values.next_pc,
             public_values.next_pc.into() + pc_inc,
-            AB::Expr::one(),
+            public_values.is_execution_shard.into(),
         );
 
         // Anchor `MemoryGlobalChip`'s (Init and Finalize instantiations) `index`-keyed

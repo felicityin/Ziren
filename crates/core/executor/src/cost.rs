@@ -19,10 +19,6 @@ pub fn estimate_mips_lde_size(
     // Compute the program chip contribution.
     cells += MAX_PROGRAM_SIZE * costs_per_air[&MipsAirId::Program];
 
-    // Compute the cpu chip contribution.
-    cells +=
-        (num_events_per_air[MipsAirId::Cpu]).next_power_of_two() * costs_per_air[&MipsAirId::Cpu];
-
     // Compute the addsub chip contribution.
     cells += (num_events_per_air[MipsAirId::AddSub]).next_power_of_two()
         * costs_per_air[&MipsAirId::AddSub];
@@ -98,15 +94,11 @@ pub fn estimate_mips_lde_size(
 /// Maps the opcode counts to the number of events in each air.
 #[must_use]
 pub fn estimate_mips_event_counts(
-    cpu_cycles: u64,
     touched_addresses: u64,
     syscalls_sent: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
     let mut events_counts: EnumMap<MipsAirId, u64> = EnumMap::default();
-    // Compute the number of events in the cpu chip.
-    events_counts[MipsAirId::Cpu] = cpu_cycles;
-
     // Compute the number of events in the add sub chip.
     events_counts[MipsAirId::AddSub] = opcode_counts[Opcode::ADD] + opcode_counts[Opcode::SUB];
 
@@ -206,7 +198,6 @@ pub fn pad_mips_event_counts(
     num_cycles: u64,
 ) -> EnumMap<MipsAirId, u64> {
     event_counts.iter_mut().for_each(|(k, v)| match k {
-        MipsAirId::Cpu => *v += num_cycles,
         MipsAirId::AddSub => *v += 5 * num_cycles,
         MipsAirId::Mul => *v += 4 * num_cycles,
         MipsAirId::Bitwise => *v += 3 * num_cycles,

@@ -65,9 +65,10 @@ use core::{
     mem::size_of,
 };
 
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
+use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
     events::{ByteLookupEvent, ByteRecord, MemoryAccessPosition, MemoryRecordEnum},
     get_msb, get_quotient_and_remainder, is_signed_operation, ByteOpcode, ExecutionRecord, Opcode,
@@ -80,14 +81,21 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_hypercube::{air::MachineAir, word::Word};
+use zkm_hypercube::{
+    air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
+    word::Word,
+};
 use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
+    adapter::InstructionCols,
+    adapter::{
+        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+    },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
     operations::{IsEqualWordOperation, IsZeroWordOperation},
-    utils::{next_power_of_two, pad_rows_fixed},
+    utils::next_power_of_two,
 };
 
 /// The number of main trace columns for `DivRemChip`.
@@ -100,6 +108,12 @@ const BYTE_SIZE: usize = 8;
 const LONG_WORD_SIZE: usize = 2 * WORD_SIZE;
 
 /// A chip that implements addition for the opcodes DIV/REM.
+///
+/// Unlike `AddSubChip`/`MulChip`, no other chip ever emits a synthetic dependency row into
+/// `divrem_events` (DivRem's own internal checks are the other direction: it sends synthetic
+/// ADD/MULT/MULTU/SLTU rows to those chips, see the `send_alu`/`send_alu_with_hi` calls below).
+/// Every row here is therefore a real, retired instruction -- no `is_real_instruction` split is
+/// needed, unlike the other migrated ALU chips.
 #[derive(Default)]
 pub struct DivRemChip;
 
@@ -107,10 +121,19 @@ pub struct DivRemChip;
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct DivRemCols<T> {
+pub struct DivRemCols<T: Copy> {
+    /// The current shard and clk. Only meaningful when `is_real` is set.
+    pub state: CpuState<T>,
+
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
+
+    /// The raw fetched instruction. Only meaningful when `is_real` is set.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`/`c`. Only meaningful when `is_real` is set.
+    pub reader: RegisterReader<T>,
 
     /// The first input operand.
     pub b: Word<T>,
@@ -197,11 +220,6 @@ pub struct DivRemCols<T> {
 
     /// Access to hi register
     pub op_hi_access: MemoryReadWriteCols<T>,
-
-    /// The shard number.
-    pub shard: T,
-    /// The clock cycle number.
-    pub clk: T,
 }
 
 impl<F: PrimeField32> MachineAir<F> for DivRemChip {
@@ -235,7 +253,9 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
         output: &mut ExecutionRecord,
     ) -> Result<RowMajorMatrix<F>, Self::Error> {
         // Generate the trace rows for each event.
-        let mut rows: Vec<[F; NUM_DIVREM_COLS]> = vec![];
+        let padded_nb_rows = <DivRemChip as MachineAir<F>>::num_rows(self, input).unwrap();
+        let nb_rows = input.divrem_events.len();
+        let mut rows: Vec<[F; NUM_DIVREM_COLS]> = Vec::with_capacity(padded_nb_rows);
         let divrem_events = input.divrem_events.clone();
         for event in divrem_events.iter() {
             assert!(
@@ -259,14 +279,32 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                 cols.is_mod = F::from_bool(event.opcode == Opcode::MOD);
                 cols.is_c_0.populate(event.c);
 
+                cols.state.populate(output, event.shard, event.clk);
+
+                let instruction = input.program.fetch(event.pc);
+                cols.instruction.populate(&instruction);
+
+                *cols.reader.op_a_access.value_mut() = event.a.into();
+                *cols.reader.op_b_access.value_mut() = event.b.into();
+                *cols.reader.op_c_access.value_mut() = event.c.into();
+
+                if let Some(record) = event.a_record {
+                    cols.reader.op_a_access.populate(record, output);
+                }
+                if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+                    cols.reader.op_b_access.populate(record, output);
+                }
+                if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+                    cols.reader.op_c_access.populate(record, output);
+                }
+                cols.reader.populate_op_a_range_checks(output);
+
                 if event.opcode == Opcode::DIVU || event.opcode == Opcode::DIV {
                     // DivRem Chip is only used for DIV and DIVU instruction currently.
                     let mut blu_events: Vec<ByteLookupEvent> = vec![];
                     cols.op_hi_access
                         .populate(MemoryRecordEnum::Write(event.hi_record), &mut blu_events);
                     output.add_byte_lookup_events(blu_events);
-                    cols.shard = F::from_canonical_u32(event.shard);
-                    cols.clk = F::from_canonical_u32(event.clk);
                 }
             }
 
@@ -367,12 +405,19 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
         }
 
         // Pad the trace to a power of two depending on the proof shape in `input`.
-        pad_rows_fixed(
-            &mut rows,
-            || [F::ZERO; NUM_DIVREM_COLS],
-            None,
-            <DivRemChip as MachineAir<F>>::name(self).as_str(),
-        );
+        let padded_row_template = {
+            let mut row = [F::ZERO; NUM_DIVREM_COLS];
+            let cols: &mut DivRemCols<F> = row.as_mut_slice().borrow_mut();
+            // Padding row: force the register reader's b/c memory-access multiplicities to zero
+            // (see cpuchip-migration-register-reader-gotchas memory).
+            cols.instruction.imm_b = F::ONE;
+            cols.instruction.imm_c = F::ONE;
+            row
+        };
+        rows.resize(padded_nb_rows, padded_row_template);
+        debug_assert_eq!(rows.len(), padded_nb_rows);
+        let _ = nb_rows;
+
         // Convert the trace to a row major matrix.
         Ok(RowMajorMatrix::new(rows.into_iter().flatten().collect::<Vec<_>>(), NUM_DIVREM_COLS))
     }
@@ -394,7 +439,7 @@ impl<F> BaseAir<F> for DivRemChip {
 
 impl<AB> Air<AB> for DivRemChip
 where
-    AB: ZKMCoreAirBuilder,
+    AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -403,6 +448,11 @@ where
         let base = AB::F::from_canonical_u32(1 << 8);
         let one: AB::Expr = AB::F::ONE.into();
         let zero: AB::Expr = AB::F::ZERO.into();
+
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
 
         let is_real = local.is_div + local.is_divu + local.is_mod + local.is_modu;
         // Calculate whether b, remainder, and c are negative.
@@ -701,95 +751,125 @@ where
             }
         }
 
-        // Receive the arguments.
-        {
-            // Exactly one of the opcode flags must be on.
-            builder.when(is_real.clone()).assert_eq(
-                one.clone(),
-                local.is_divu + local.is_div + local.is_mod + local.is_modu,
-            );
+        // Exactly one of the opcode flags must be on.
+        builder
+            .when(is_real.clone())
+            .assert_eq(one.clone(), local.is_divu + local.is_div + local.is_mod + local.is_modu);
 
-            let opcode = {
-                let divu: AB::Expr = AB::F::from_canonical_u32(Opcode::DIVU as u32).into();
-                let div: AB::Expr = AB::F::from_canonical_u32(Opcode::DIV as u32).into();
-                let modi: AB::Expr = AB::F::from_canonical_u32(Opcode::MOD as u32).into();
-                let modu: AB::Expr = AB::F::from_canonical_u32(Opcode::MODU as u32).into();
+        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        // No `AddSubChip`/`MulChip`-style synthetic-row split is needed here: nothing ever
+        // produces a synthetic `divrem_events` row (see this chip's doc comment), so `is_real`
+        // already means "real instruction".
+        let clk = clk_expr::<AB>(&local.state);
 
-                local.is_divu * divu
-                    + local.is_div * div
-                    + local.is_mod * modi
-                    + local.is_modu * modu
-            };
+        builder.send_program(local.pc, local.instruction, is_real.clone());
 
-            // DivRem Chip is only used for DIV and DIVU instruction currently. So is_write_hi will always be true.
-            builder.receive_instruction(
-                local.shard,
-                local.clk,
-                local.pc,
-                local.next_pc,
-                local.next_pc + AB::Expr::from_canonical_u32(4),
-                AB::Expr::zero(),
-                opcode.clone(),
-                local.quotient,
-                local.b,
-                local.c,
-                local.remainder,
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::one(),
-                AB::Expr::zero(),
-                AB::Expr::one(),
-                local.is_div + local.is_divu,
-            );
+        // The register write is `quotient` for DIV/DIVU and `remainder` for MOD/MODU -- already
+        // zero by construction on non-real rows since `is_div + is_divu`/`is_mod + is_modu` are
+        // themselves zero there.
+        let is_div_or_divu: AB::Expr = local.is_div + local.is_divu;
+        let is_mod_or_modu: AB::Expr = local.is_mod + local.is_modu;
+        let op_a_value: Word<AB::Expr> = Word(core::array::from_fn(|i| {
+            is_div_or_divu.clone() * local.quotient[i].into()
+                + is_mod_or_modu.clone() * local.remainder[i].into()
+        }));
 
-            builder.receive_instruction(
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                local.pc,
-                local.next_pc,
-                local.next_pc + AB::Expr::from_canonical_u32(4),
-                AB::Expr::zero(),
-                opcode,
-                local.remainder,
-                local.b,
-                local.c,
-                Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::one(),
-                local.is_mod + local.is_modu,
-            );
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            op_a_value,
+            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
+            AB::Expr::zero(),
+            AB::Expr::zero(),
+            is_real.clone(),
+        );
 
-            // Write the HI register, the register can only be Register::HI（33）.
-            builder.eval_memory_access(
-                local.shard,
-                local.clk + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
-                AB::F::from_canonical_u32(33),
-                &local.op_hi_access,
-                local.is_div + local.is_divu,
-            );
-            builder
-                .when(local.is_div + local.is_divu)
-                .assert_word_eq(local.remainder, *local.op_hi_access.value());
-        }
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            is_real.clone(),
+        );
+
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk.clone(),
+            local.pc.into(),
+            local.next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            AB::Expr::from_canonical_u32(5),
+            is_real.clone(),
+        );
+
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_c_val(), local.c.map(Into::into));
+
+        // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
+        // can't claim the wrong div/mod variant while still passing the program lookup.
+        builder
+            .when(local.is_div)
+            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::DIV as u32));
+        builder
+            .when(local.is_divu)
+            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::DIVU as u32));
+        builder
+            .when(local.is_mod)
+            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::MOD as u32));
+        builder
+            .when(local.is_modu)
+            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::MODU as u32));
+
+        // Write the HI register, the register can only be Register::HI（33）.
+        builder.eval_memory_access(
+            local.state.shard,
+            clk + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
+            AB::F::from_canonical_u32(33),
+            &local.op_hi_access,
+            local.is_div + local.is_divu,
+        );
+        builder
+            .when(local.is_div + local.is_divu)
+            .assert_word_eq(local.remainder, *local.op_hi_access.value());
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{events::CompAluEvent, ExecutionRecord, Opcode};
+    use zkm_core_executor::{events::CompAluEvent, ExecutionRecord, Instruction, Opcode, Program};
 
     use super::DivRemChip;
     use zkm_hypercube::air::MachineAir;
 
     #[test]
     fn generate_trace() {
-        let mut shard = ExecutionRecord::default();
-        shard.divrem_events = vec![CompAluEvent::new(0, Opcode::DIVU, 2, 17, 3)];
+        // Every `divrem_events` row is a real, retired instruction (see this chip's doc
+        // comment), so trace-gen always does a real program lookup -- unlike the other migrated
+        // ALU chips' tests, this needs an actual single-instruction `Program`, not `UNUSED_PC`.
+        let program = Arc::new(Program {
+            instructions: vec![Instruction::new(Opcode::DIVU, 0, 0, 0, false, false)],
+            pc_start: 0,
+            pc_base: 0,
+            ..Default::default()
+        });
+        let shard = ExecutionRecord {
+            program,
+            divrem_events: vec![CompAluEvent::new(0, Opcode::DIVU, 2, 17, 3)],
+            ..Default::default()
+        };
         let chip = DivRemChip::default();
         let trace: RowMajorMatrix<KoalaBear> =
             chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();

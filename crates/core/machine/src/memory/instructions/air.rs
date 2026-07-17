@@ -1,11 +1,16 @@
 use std::borrow::Borrow;
 
-use p3_air::{Air, AirBuilder};
+use p3_air::AirBuilder;
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
-use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
+use slop_air::{Air, AirBuilderWithPublicValues};
+use zkm_hypercube::{
+    air::{PublicValues, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    word::Word,
+};
 
 use crate::{
+    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
@@ -16,7 +21,7 @@ use super::{columns::MemoryInstructionsColumns, MemoryInstructionsChip};
 
 impl<AB> Air<AB> for MemoryInstructionsChip
 where
-    AB: ZKMAirBuilder,
+    AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
     AB::Var: Sized,
 {
     #[inline(never)]
@@ -24,6 +29,11 @@ where
         let main = builder.main();
         let local = main.row_slice(0);
         let local: &MemoryInstructionsColumns<AB::Var> = (*local).borrow();
+
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
 
         // SAFETY: All selectors are checked to be boolean.
         // Each "real" row has exactly one selector turned on, as `is_real`, the sum of all the selectors, is boolean.
@@ -64,61 +74,83 @@ where
         self.eval_memory_load::<AB>(builder, local);
         self.eval_memory_store::<AB>(builder, local);
 
-        let opcode = self.compute_opcode::<AB>(local);
+        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        let clk = clk_expr::<AB>(&local.state);
 
-        // SAFETY: This checks the following.
-        // - `shard`, `clk` are correctly received from the CpuChip
-        // - `next_pc = pc + 4`
-        // - `num_extra_cycles = 0`
-        // - `op_a_immutable = is_sb + is_sh + is_sw + local.is_swl + local.is_swr`, as these store instructions keep `op_a` immutable
-        // - `is_rw_a = 1`
-        // - `is_syscall = 0`
-        // - `is_halt = 0`
-        // `op_a_value` when the instruction is load still has to be constrained, as well as memory opcode behavior.
-        builder.receive_instruction(
-            local.shard,
-            local.clk,
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            opcode,
-            local.op_a_value,
-            local.op_b_value,
-            local.op_c_value,
-            local.prev_a_val,
-            local.is_sb + local.is_sh + local.is_sw + local.is_swl + local.is_swr,
+        builder.send_program(local.pc, local.instruction, is_real.clone());
+
+        // Store instructions (except SC) keep `op_a` immutable (they only read it); every memory
+        // instruction is a read-modify-write of `op_a` (`is_rw_a = 1`), with `prev_a_val` -- used
+        // extensively above by LWL/LWR/SC -- cross-checked against the register's real previous
+        // value via `hi_or_prev_a`.
+        let op_a_immutable =
+            local.is_sb + local.is_sh + local.is_sw + local.is_swl + local.is_swr;
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            local.op_a_value.map(Into::into),
+            local.prev_a_val.map(Into::into),
             AB::Expr::one(),
-            AB::Expr::one(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
-            is_real,
+            op_a_immutable,
+            is_real.clone(),
         );
+
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            is_real.clone(),
+        );
+
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk,
+            local.pc.into(),
+            local.next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            AB::Expr::from_canonical_u32(5),
+            is_real.clone(),
+        );
+
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
+
+        // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
+        // can't claim the wrong memory-instruction variant while still passing the program
+        // lookup.
+        let opcode_bindings: [(AB::Var, Opcode); 14] = [
+            (local.is_lb, Opcode::LB),
+            (local.is_lbu, Opcode::LBU),
+            (local.is_lh, Opcode::LH),
+            (local.is_lhu, Opcode::LHU),
+            (local.is_lw, Opcode::LW),
+            (local.is_lwl, Opcode::LWL),
+            (local.is_lwr, Opcode::LWR),
+            (local.is_ll, Opcode::LL),
+            (local.is_sb, Opcode::SB),
+            (local.is_sh, Opcode::SH),
+            (local.is_sw, Opcode::SW),
+            (local.is_swl, Opcode::SWL),
+            (local.is_swr, Opcode::SWR),
+            (local.is_sc, Opcode::SC),
+        ];
+        for (selector, op) in opcode_bindings {
+            builder.when(selector).assert_eq(local.instruction.opcode, op.as_field::<AB::F>());
+        }
     }
 }
 
 impl MemoryInstructionsChip {
-    /// Computes the opcode based on the instruction selectors.
-    pub(crate) fn compute_opcode<AB: ZKMAirBuilder>(
-        &self,
-        local: &MemoryInstructionsColumns<AB::Var>,
-    ) -> AB::Expr {
-        local.is_lb * Opcode::LB.as_field::<AB::F>()
-            + local.is_lbu * Opcode::LBU.as_field::<AB::F>()
-            + local.is_lh * Opcode::LH.as_field::<AB::F>()
-            + local.is_lhu * Opcode::LHU.as_field::<AB::F>()
-            + local.is_lw * Opcode::LW.as_field::<AB::F>()
-            + local.is_lwl * Opcode::LWL.as_field::<AB::F>()
-            + local.is_lwr * Opcode::LWR.as_field::<AB::F>()
-            + local.is_ll * Opcode::LL.as_field::<AB::F>()
-            + local.is_sb * Opcode::SB.as_field::<AB::F>()
-            + local.is_sh * Opcode::SH.as_field::<AB::F>()
-            + local.is_sw * Opcode::SW.as_field::<AB::F>()
-            + local.is_swl * Opcode::SWL.as_field::<AB::F>()
-            + local.is_swr * Opcode::SWR.as_field::<AB::F>()
-            + local.is_sc * Opcode::SC.as_field::<AB::F>()
-    }
-
     /// Constrains the addr_aligned, addr_offset, and addr_word memory columns.
     ///
     /// This method will do the following:
@@ -202,8 +234,9 @@ impl MemoryInstructionsChip {
         // For operations that require reading from memory (not registers), we need to read the
         // value into the memory columns.
         builder.eval_memory_access(
-            local.shard,
-            local.clk + AB::F::from_canonical_u32(MemoryAccessPosition::Memory as u32),
+            local.state.shard,
+            clk_expr::<AB>(&local.state)
+                + AB::F::from_canonical_u32(MemoryAccessPosition::Memory as u32),
             local.addr_aligned,
             &local.memory_access,
             is_real.clone(),

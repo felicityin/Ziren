@@ -14,11 +14,11 @@
 )]
 #![warn(unused_extern_crates)]
 
+pub mod adapter;
 pub mod air;
 pub mod alu;
 pub mod bytes;
 pub mod control_flow;
-pub mod cpu;
 pub mod global;
 pub mod io;
 pub mod memory;
@@ -32,7 +32,6 @@ pub mod programs;
 pub mod sys;
 pub mod syscall;
 pub mod utils;
-pub use cpu::*;
 pub use mips::*;
 
 use serde::{Deserialize, Serialize};

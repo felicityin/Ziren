@@ -1,16 +1,14 @@
 use p3_koala_bear::KoalaBear;
 use zkm_core_executor::events::{
-    AluEvent, BranchEvent, CompAluEvent, CpuEventFfi, JumpEvent, MemInstrEvent,
-    MemoryInitializeFinalizeEvent, MemoryLocalEvent, MiscEvent, MovCondEvent, SyscallEvent,
+    AluEvent, BranchEvent, CompAluEvent, JumpEvent, MemInstrEvent, MemoryInitializeFinalizeEvent,
+    MemoryLocalEvent, MiscEvent, MovCondEvent, SyscallEvent,
 };
-use zkm_core_executor::InstructionFfi;
 
 use crate::alu::{BitwiseCols, CloClzCols, DivRemCols};
 use crate::memory::columns::MemoryInstructionsColumns;
 use crate::{
     alu::{AddSubCols, LtCols, MulCols, ShiftLeftCols, ShiftRightCols},
     control_flow::{BranchColumns, JumpColumns},
-    cpu::columns::CpuCols,
     memory::{MemoryInitCols, SingleMemoryLocal},
     misc::columns::MiscInstrColumns,
     misc::mov_cond::MovCondCols,
@@ -20,12 +18,6 @@ use crate::{
 
 #[link(name = "zkm-core-machine-sys", kind = "static")]
 extern "C-unwind" {
-    pub fn cpu_event_to_row_koalabear(
-        event: CpuEventFfi,
-        shard: u32,
-        instruction: InstructionFfi,
-        cols: &mut CpuCols<KoalaBear>,
-    );
     pub fn add_sub_event_to_row_koalabear(event: &AluEvent, cols: &mut AddSubCols<KoalaBear>);
     pub fn memory_local_event_to_row_koalabear(
         event: &MemoryLocalEvent,

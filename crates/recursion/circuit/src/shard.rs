@@ -1,4 +1,5 @@
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, BTreeSet},
     marker::PhantomData,
 };
@@ -10,9 +11,12 @@ use slop_commit::Rounds;
 use slop_multilinear::{Evaluations, MleEval};
 use slop_sumcheck::PartialSumcheckProof;
 use zkm_hypercube::{
-    air::MachineAir, septic_curve::SepticCurve, septic_digest::SepticDigest,
+    air::{MachineAir, PublicValues},
+    septic_curve::SepticCurve,
+    septic_digest::SepticDigest,
     septic_extension::SepticExtension,
     verifier::{MachineVerifyingKey, ShardProof},
+    word::Word,
     LogupGkrProof, Machine, ShardOpenedValues,
 };
 use zkm_recursion_compiler::{
@@ -52,13 +56,14 @@ pub struct ShardProofVariable<C: CircuitConfig, HV: FieldHasherVariable<C>> {
     /// The evaluation proof.
     pub evaluation_proof:
         JaggedPcsProofVariable<C::F, C::EF, RecursiveBasefoldProof<C, HV>, HV::DigestVariable>,
+    /// Whether this shard retired at least one real instruction, decoded natively (from
+    /// `PublicValues::is_execution_shard`) at witnessing time -- no chip is named `"Cpu"` to
+    /// check for via `opened_values.chips`, unlike `contains_memory_init`/
+    /// `contains_memory_finalize` below, whose chips still genuinely exist.
+    pub is_execution_shard: bool,
 }
 
 impl<C: CircuitConfig, HV: FieldHasherVariable<C>> ShardProofVariable<C, HV> {
-    pub fn contains_cpu(&self) -> bool {
-        self.opened_values.chips.contains_key("Cpu")
-    }
-
     pub fn contains_memory_init(&self) -> bool {
         self.opened_values.chips.contains_key("MemoryGlobalInit")
     }
@@ -147,6 +152,7 @@ where
             zerocheck_proof,
             public_values,
             logup_gkr_proof,
+            is_execution_shard: _,
         } = proof;
 
         // Convert height bits to felts.
@@ -516,6 +522,11 @@ where
         let public_values = self.public_values.read(builder);
         let logup_gkr_proof = self.logup_gkr_proof.read(builder);
         let evaluation_proof = self.evaluation_proof.read(builder);
+        // Decoded natively (the real, non-circuit `PublicValues`) here, since no chip is named
+        // `"Cpu"` to check for anymore -- see `is_execution_shard`'s doc comment.
+        let native_public_values: &PublicValues<Word<GC::F>, GC::F> =
+            self.public_values.as_slice().borrow();
+        let is_execution_shard = native_public_values.is_execution_shard != GC::F::ZERO;
         ShardProofVariable {
             main_commitment,
             opened_values,
@@ -523,6 +534,7 @@ where
             public_values,
             logup_gkr_proof,
             evaluation_proof,
+            is_execution_shard,
         }
     }
 

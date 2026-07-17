@@ -13,7 +13,8 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    air::WordAirBuilder,
+    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    air::{ProgramAirBuilder, WordAirBuilder},
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
 };
 
@@ -29,49 +30,86 @@ where
         let main = builder.main();
         let local = main.row_slice(0);
         let local: &SyscallInstrColumns<AB::Var> = (*local).borrow();
+        let is_real: AB::Expr = local.is_real.into();
 
         let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
             core::array::from_fn(|i| builder.public_values()[i]);
         let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
             public_values_slice.as_slice().borrow();
 
-        // SAFETY: Only `SYSCALL` opcode can be received in this chip.
-        // `is_real` is checked to be boolean, and the `opcode` matches the corresponding opcode.
+        // SAFETY: `is_real` is checked to be boolean, and `instruction.opcode` matches
+        // `Opcode::SYSCALL` on every real row (asserted below).
         builder.assert_bool(local.is_real);
 
         // Verify that local.is_halt is correct.
         self.eval_is_halt_syscall(builder, local);
 
-        // SAFETY: This checks the following.
-        // - `shard`, `clk` are correctly received from the CpuChip
-        // - `op_a_immutable = 0`
-        // - `is_syscall = 1`
-        // `next_pc`, `num_extra_cycles`, `op_a_val`, `is_halt` need to be constrained. We outline the checks below.
-        // `next_pc` is constrained for the case where `is_halt` is true to be `0` in `eval_is_halt_unimpl`.
-        // `next_pc` is constrained for the case where `is_halt` is false to be `pc + 4` in `eval`.
-        // `num_extra_cycles` is checked to be equal to the return value of `get_num_extra_syscall_cycles`, in `eval`.
-        // `op_a_val` is constrained in `eval_syscall`.
-        // `is_halt` is checked to be correct in `eval_is_halt_syscall`.
-        let is_sequential = AB::Expr::one() - local.is_halt;
-        builder.receive_instruction(
-            local.shard,
-            local.clk,
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            local.num_extra_cycles,
-            Opcode::SYSCALL.as_field::<AB::F>(),
-            local.op_a_value,
-            local.op_b_value,
-            local.op_c_value,
-            local.prev_a_value,
+        let clk = clk_expr::<AB>(&local.state);
+
+        builder.send_program(local.pc, local.instruction, is_real.clone());
+
+        // SYSCALL is a read-modify-write of `op_a` (`is_rw_a = 1`); `prev_a_value` is
+        // cross-checked against the register's real previous value.
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            local.op_a_value.map(Into::into),
+            local.prev_a_value.map(Into::into),
+            AB::Expr::one(),
             AB::Expr::zero(),
-            AB::Expr::one(),
-            AB::Expr::one(),
-            local.is_halt,
-            is_sequential,
-            local.is_real,
+            is_real.clone(),
         );
+
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            is_real.clone(),
+        );
+
+        // `next_pc` is overwritten to the public sentinel `0` when halting (see
+        // `eval_halt_unimpl`), so the state chain's incoming value must substitute `pc + 4`
+        // there instead -- witnessed separately since `LookupKind::State` values must stay
+        // affine in the trace columns (mirrors `CpuChip::eval_state_chain`'s identical
+        // halt-sentinel mechanism).
+        builder.assert_eq(
+            local.state_chain_next_pc,
+            local.next_pc.into()
+                + local.is_halt.into() * (local.pc + AB::Expr::from_canonical_u32(4)),
+        );
+
+        // We already assert that `local.state.clk < 2^24`. `num_extra_cycles` is an entry of a
+        // word and therefore less than `2^8`, this means that the sum cannot overflow in a 31
+        // bit field.
+        let clk_increment = AB::Expr::from_canonical_u32(5) + local.num_extra_cycles;
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk,
+            local.pc.into(),
+            local.state_chain_next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            clk_increment,
+            is_real.clone(),
+        );
+
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
+
+        // SAFETY: Bind `is_real` to the row's actual fetched opcode, so a real-instruction row
+        // can't claim to be a SYSCALL while the program lookup fetched something else.
+        builder
+            .when(is_real.clone())
+            .assert_eq(local.instruction.opcode, Opcode::SYSCALL.as_field::<AB::F>());
 
         // `num_extra_cycles` is checked to be equal to the return value of `get_num_extra_syscall_cycles`
         builder.assert_eq::<AB::Var, AB::Expr>(
@@ -193,8 +231,8 @@ impl SyscallInstrsChip {
         );
 
         builder.send_syscall(
-            local.shard,
-            local.clk,
+            local.state.shard,
+            clk_expr::<AB>(&local.state),
             syscall_id.clone(),
             local.op_b_value.reduce::<AB>(),
             local.op_c_value.reduce::<AB>(),
@@ -205,8 +243,8 @@ impl SyscallInstrsChip {
         // Send full Word bytes for linux syscalls to link op_a (result), op_b (a0), op_c (a1)
         // with SysLinuxChip via SyscallChip bridge.
         builder.send_syscall_result(
-            local.shard,
-            local.clk,
+            local.state.shard,
+            clk_expr::<AB>(&local.state),
             local.op_a_value,
             local.op_b_value,
             local.op_c_value,
@@ -269,7 +307,7 @@ impl SyscallInstrsChip {
         // SAFETY: This leaves the case where syscall is `HINT_LEN`.
         // In this case, `op_a`'s value can be arbitrary, but it still must be a valid word if `is_real = 1`.
         // This is due to `op_a_val` being connected to the CpuChip.
-        // In the CpuChip, `op_a_val` is constrained to be a valid word via `eval_registers`.
+        // In the CpuChip, `op_a_val` is constrained to be a valid word via `RegisterReader::eval`.
         // As this is a syscall for HINT, the value itself being arbitrary is fine, as long as it is a valid word.
 
         // The old operand_range_check is now subsumed by op_b_range_check (for halt)

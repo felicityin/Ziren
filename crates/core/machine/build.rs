@@ -161,7 +161,6 @@ mod sys {
             .include_item("BranchColumns")
             .include_item("BranchEvent")
             .include_item("CloClzCols")
-            .include_item("CpuEventFfi")
             .include_item("CompAluEvent")
             .include_item("DivRemCols")
             .include_item("Ghost")
@@ -170,7 +169,6 @@ mod sys {
             .include_item("GlobalInteractionOperation")
             .include_item("GlobalLookupEvent")
             .include_item("INTERACTION_KIND_GLOBAL")
-            .include_item("InstructionFfi")
             .include_item("JumpColumns")
             .include_item("JumpEvent")
             .include_item("KoalaBear")
@@ -199,7 +197,7 @@ mod sys {
             .include_item("SepticExtension")
             .include_item("ShiftLeftCols")
             .include_item("ShiftRightCols")
-            .include_item("SyscallCode") // Required for populating the CPU columns for ECALL.
+            .include_item("SyscallCode") // Required for populating the SyscallInstrs columns for ECALL.
             .include_item("SyscallInstrColumns")
             .with_namespace("zkm_core_machine_sys")
             .with_crate(crate_dir)

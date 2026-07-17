@@ -4,18 +4,34 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 use zkm_hypercube::{air::PV_DIGEST_NUM_WORDS, word::Word};
 
-use crate::operations::{IsZeroOperation, KoalaBearWordRangeChecker};
+use crate::{
+    adapter::{CpuState, InstructionCols, RegisterReader},
+    operations::{IsZeroOperation, KoalaBearWordRangeChecker},
+};
 
 pub const NUM_SYSCALL_INSTR_COLS: usize = size_of::<SyscallInstrColumns<u8>>();
 
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct SyscallInstrColumns<T> {
+pub struct SyscallInstrColumns<T: Copy> {
+    /// The current shard and clk.
+    pub state: CpuState<T>,
+
+    /// The raw fetched instruction.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`/`c`.
+    pub reader: RegisterReader<T>,
+
     pub pc: T,
     pub next_pc: T,
-    pub shard: T,
-    pub clk: T,
+
+    /// `next_pc + is_halt * (pc + 4)`, witnessed separately since `LookupKind::State`
+    /// interaction values must stay affine in the trace columns -- mirrors
+    /// `CpuChip::eval_state_chain`'s identical halt-sentinel mechanism.
+    pub state_chain_next_pc: T,
+
     pub num_extra_cycles: T,
 
     /// Whether the current instruction is a halt instruction.

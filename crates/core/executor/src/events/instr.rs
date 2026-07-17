@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct AluEvent {
+    /// The shard number.
+    pub shard: u32,
+    /// The clock cycle.
+    pub clk: u32,
     pub pc: u32,
     pub next_pc: u32,
     /// The opcode.
@@ -23,13 +27,34 @@ pub struct AluEvent {
     pub b: u32,
     /// The second input operand.
     pub c: u32,
+    /// The memory access record for the output operand `a`.
+    pub a_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the first input operand `b`, if it's a register (not an
+    /// immediate).
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the second input operand `c`, if it's a register (not an
+    /// immediate).
+    pub c_record: Option<MemoryRecordEnum>,
 }
 
 impl AluEvent {
     /// Create a new [`AluEvent`].
     #[must_use]
     pub fn new(pc: u32, opcode: Opcode, a: u32, b: u32, c: u32) -> Self {
-        Self { pc, next_pc: pc + 4, opcode, a, b, c, hi: 0 }
+        Self {
+            shard: 0,
+            clk: 0,
+            pc,
+            next_pc: pc + 4,
+            opcode,
+            a,
+            b,
+            c,
+            hi: 0,
+            a_record: None,
+            b_record: None,
+            c_record: None,
+        }
     }
 
     /// Create a new [`AluEvent`].
@@ -37,7 +62,20 @@ impl AluEvent {
     /// DIV DIVU MULT MULLTU
     #[must_use]
     pub fn new_with_hi(pc: u32, opcode: Opcode, a: u32, b: u32, c: u32, hi: u32) -> Self {
-        Self { pc, next_pc: pc + 4, opcode, a, b, c, hi }
+        Self {
+            shard: 0,
+            clk: 0,
+            pc,
+            next_pc: pc + 4,
+            opcode,
+            a,
+            b,
+            c,
+            hi,
+            a_record: None,
+            b_record: None,
+            c_record: None,
+        }
     }
 }
 
@@ -70,6 +108,15 @@ pub struct CompAluEvent {
     /// The `op_hi` memory write record.
     pub hi_record: MemoryWriteRecord,
     pub hi_record_is_real: bool,
+
+    /// The memory access record for the output operand `a`.
+    pub a_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the first input operand `b`, if it's a register (not an
+    /// immediate).
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the second input operand `c`, if it's a register (not an
+    /// immediate).
+    pub c_record: Option<MemoryRecordEnum>,
 }
 
 impl CompAluEvent {
@@ -88,6 +135,9 @@ impl CompAluEvent {
             c,
             hi_record_is_real: false,
             hi_record: MemoryWriteRecord::default(),
+            a_record: None,
+            b_record: None,
+            c_record: None,
         }
     }
 
@@ -104,6 +154,9 @@ impl CompAluEvent {
             c,
             hi_record_is_real: false,
             hi_record: MemoryWriteRecord::default(),
+            a_record: None,
+            b_record: None,
+            c_record: None,
         }
     }
 }
@@ -133,6 +186,14 @@ pub struct MemInstrEvent {
     pub mem_access: MemoryRecordEnum,
     /// The memory access record for memory operations.
     pub prev_a_val: u32,
+    /// The memory access record for the output operand `a`.
+    pub a_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the first input operand `b`, if it's a register (not an
+    /// immediate).
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the second input operand `c`, if it's a register (not an
+    /// immediate).
+    pub c_record: Option<MemoryRecordEnum>,
 }
 
 impl MemInstrEvent {
@@ -151,7 +212,21 @@ impl MemInstrEvent {
         mem_access: MemoryRecordEnum,
         prev_a_val: u32,
     ) -> Self {
-        Self { shard, clk, pc, next_pc, opcode, a, b, c, mem_access, prev_a_val }
+        Self {
+            shard,
+            clk,
+            pc,
+            next_pc,
+            opcode,
+            a,
+            b,
+            c,
+            mem_access,
+            prev_a_val,
+            a_record: None,
+            b_record: None,
+            c_record: None,
+        }
     }
 }
 
@@ -161,6 +236,10 @@ impl MemInstrEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct BranchEvent {
+    /// The shard number.
+    pub shard: u32,
+    /// The clock cycle.
+    pub clk: u32,
     /// The program counter.
     pub pc: u32,
     /// The next program counter.
@@ -175,6 +254,14 @@ pub struct BranchEvent {
     pub b: u32,
     /// The third operand value.
     pub c: u32,
+    /// The memory access record for the output operand `a`.
+    pub a_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the first input operand `b`, if it's a register (not an
+    /// immediate).
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the second input operand `c`, if it's a register (not an
+    /// immediate).
+    pub c_record: Option<MemoryRecordEnum>,
 }
 
 impl BranchEvent {
@@ -182,6 +269,8 @@ impl BranchEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        shard: u32,
+        clk: u32,
         pc: u32,
         next_pc: u32,
         next_next_pc: u32,
@@ -190,7 +279,20 @@ impl BranchEvent {
         b: u32,
         c: u32,
     ) -> Self {
-        Self { pc, next_pc, next_next_pc, opcode, a, b, c }
+        Self {
+            shard,
+            clk,
+            pc,
+            next_pc,
+            next_next_pc,
+            opcode,
+            a,
+            b,
+            c,
+            a_record: None,
+            b_record: None,
+            c_record: None,
+        }
     }
 }
 
@@ -200,6 +302,10 @@ impl BranchEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct JumpEvent {
+    /// The shard number.
+    pub shard: u32,
+    /// The clock cycle.
+    pub clk: u32,
     /// The program counter.
     pub pc: u32,
     /// The next program counter.
@@ -214,6 +320,14 @@ pub struct JumpEvent {
     pub b: u32,
     /// The third operand value.
     pub c: u32,
+    /// The memory access record for the output operand `a`.
+    pub a_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the first input operand `b`, if it's a register (not an
+    /// immediate).
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the second input operand `c`, if it's a register (not an
+    /// immediate).
+    pub c_record: Option<MemoryRecordEnum>,
 }
 
 impl JumpEvent {
@@ -221,6 +335,8 @@ impl JumpEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        shard: u32,
+        clk: u32,
         pc: u32,
         next_pc: u32,
         next_next_pc: u32,
@@ -229,7 +345,20 @@ impl JumpEvent {
         b: u32,
         c: u32,
     ) -> Self {
-        Self { pc, next_pc, next_next_pc, opcode, a, b, c }
+        Self {
+            shard,
+            clk,
+            pc,
+            next_pc,
+            next_next_pc,
+            opcode,
+            a,
+            b,
+            c,
+            a_record: None,
+            b_record: None,
+            c_record: None,
+        }
     }
 }
 
@@ -258,6 +387,14 @@ pub struct MiscEvent {
     pub prev_a: u32,
     /// The hi operand memory record.
     pub hi_record: MemoryWriteRecord,
+    /// The memory access record for the output operand `a`.
+    pub a_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the first input operand `b`, if it's a register (not an
+    /// immediate).
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the second input operand `c`, if it's a register (not an
+    /// immediate).
+    pub c_record: Option<MemoryRecordEnum>,
 }
 
 impl MiscEvent {
@@ -276,7 +413,21 @@ impl MiscEvent {
         prev_a: u32,
         hi_record: MemoryWriteRecord,
     ) -> Self {
-        Self { clk, shard, pc, next_pc, opcode, a, b, c, prev_a, hi_record }
+        Self {
+            clk,
+            shard,
+            pc,
+            next_pc,
+            opcode,
+            a,
+            b,
+            c,
+            prev_a,
+            hi_record,
+            a_record: None,
+            b_record: None,
+            c_record: None,
+        }
     }
 }
 
@@ -286,6 +437,10 @@ impl MiscEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MovCondEvent {
+    /// The shard number.
+    pub shard: u32,
+    /// The clock cycle.
+    pub clk: u32,
     /// The program counter.
     pub pc: u32,
     pub next_pc: u32,
@@ -299,13 +454,44 @@ pub struct MovCondEvent {
     pub c: u32,
     /// The third operand value.
     pub prev_a: u32,
+    /// The memory access record for the output operand `a`.
+    pub a_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the first input operand `b`, if it's a register (not an
+    /// immediate).
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The memory access record for the second input operand `c`, if it's a register (not an
+    /// immediate).
+    pub c_record: Option<MemoryRecordEnum>,
 }
 
 impl MovCondEvent {
     /// Create a new [`MovCondEvent`].
     #[must_use]
     #[allow(clippy::too_many_arguments)]
-    pub fn new(pc: u32, next_pc: u32, opcode: Opcode, a: u32, b: u32, c: u32, prev_a: u32) -> Self {
-        Self { pc, next_pc, opcode, a, b, c, prev_a }
+    pub fn new(
+        shard: u32,
+        clk: u32,
+        pc: u32,
+        next_pc: u32,
+        opcode: Opcode,
+        a: u32,
+        b: u32,
+        c: u32,
+        prev_a: u32,
+    ) -> Self {
+        Self {
+            shard,
+            clk,
+            pc,
+            next_pc,
+            opcode,
+            a,
+            b,
+            c,
+            prev_a,
+            a_record: None,
+            b_record: None,
+            c_record: None,
+        }
     }
 }

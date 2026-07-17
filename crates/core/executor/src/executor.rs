@@ -1115,30 +1115,108 @@ impl<'a> Executor<'a> {
         syscall_code: u32,
         num_extra_cycles: u32,
     ) {
-        self.emit_cpu(
-            clk,
-            pc,
-            next_pc,
-            next_next_pc,
-            a,
-            b,
-            c,
-            hi_or_prev_a,
-            record,
-            exit_code,
-            num_extra_cycles,
+        self.record.first_instruction_pc.get_or_insert(pc);
+        self.record.first_instruction_clk.get_or_insert(clk);
+        self.record.last_next_pc = next_pc;
+        self.record.last_exit_code = exit_code;
+        self.record.last_timestamp = clk + 5 + num_extra_cycles;
+
+        // Opcodes whose chip has been migrated off of `CpuChip` (see
+        // `zkm_core_machine::adapter`) no longer need a `CpuEvent`: their own chip does its own
+        // program lookup, state chaining, and register access.
+        let migrated_off_cpu_chip = matches!(
+            instruction.opcode,
+            Opcode::ADD
+                | Opcode::SUB
+                | Opcode::SLL
+                | Opcode::XOR
+                | Opcode::OR
+                | Opcode::AND
+                | Opcode::NOR
+                | Opcode::SRL
+                | Opcode::SRA
+                | Opcode::ROR
+                | Opcode::SLT
+                | Opcode::SLTU
+                | Opcode::CLZ
+                | Opcode::CLO
+                | Opcode::MUL
+                | Opcode::MULT
+                | Opcode::MULTU
+                | Opcode::DIV
+                | Opcode::DIVU
+                | Opcode::MOD
+                | Opcode::MODU
+                | Opcode::BEQ
+                | Opcode::BNE
+                | Opcode::BLTZ
+                | Opcode::BGEZ
+                | Opcode::BLEZ
+                | Opcode::BGTZ
+                | Opcode::Jump
+                | Opcode::Jumpi
+                | Opcode::JumpDirect
+                | Opcode::LB
+                | Opcode::LBU
+                | Opcode::LH
+                | Opcode::LHU
+                | Opcode::LW
+                | Opcode::LWL
+                | Opcode::LWR
+                | Opcode::LL
+                | Opcode::SB
+                | Opcode::SH
+                | Opcode::SW
+                | Opcode::SWL
+                | Opcode::SWR
+                | Opcode::SC
+                | Opcode::MEQ
+                | Opcode::MNE
+                | Opcode::WSBH
+                | Opcode::SEXT
+                | Opcode::EXT
+                | Opcode::INS
+                | Opcode::MADDU
+                | Opcode::MSUBU
+                | Opcode::MADD
+                | Opcode::MSUB
+                | Opcode::TEQ
+                | Opcode::SYSCALL
         );
+        if !migrated_off_cpu_chip {
+            self.emit_cpu(
+                clk,
+                pc,
+                next_pc,
+                next_next_pc,
+                a,
+                b,
+                c,
+                hi_or_prev_a,
+                record,
+                exit_code,
+                num_extra_cycles,
+            );
+        }
 
         if instruction.is_alu_instruction() {
-            self.emit_alu_event(clk, instruction.opcode, hi_or_prev_a, a, b, c, record.hi);
+            self.emit_alu_event(clk, instruction.opcode, hi_or_prev_a, a, b, c, record);
         } else if instruction.is_memory_load_instruction()
             || instruction.is_memory_store_instruction()
         {
-            self.emit_mem_instr_event(instruction.opcode, a, b, c, hi_or_prev_a.unwrap_or(0));
+            self.emit_mem_instr_event(
+                clk,
+                instruction.opcode,
+                a,
+                b,
+                c,
+                hi_or_prev_a.unwrap_or(0),
+                record,
+            );
         } else if instruction.is_branch_instruction() {
-            self.emit_branch_event(instruction.opcode, a, b, c, next_pc, next_next_pc);
+            self.emit_branch_event(clk, instruction.opcode, a, b, c, next_pc, next_next_pc, record);
         } else if instruction.is_jump_instruction() {
-            self.emit_jump_event(instruction.opcode, a, b, c, next_pc, next_next_pc);
+            self.emit_jump_event(clk, instruction.opcode, a, b, c, next_pc, next_next_pc, record);
         } else if instruction.is_misc_instruction() {
             self.emit_misc_event(
                 clk,
@@ -1147,10 +1225,10 @@ impl<'a> Executor<'a> {
                 b,
                 c,
                 hi_or_prev_a.unwrap_or(0),
-                record.hi,
+                record,
             );
         } else if instruction.is_syscall_instruction() {
-            self.emit_syscall_event(clk, record.a, syscall_code, b, c, next_pc);
+            self.emit_syscall_event(clk, record, syscall_code, b, c, next_pc);
         } else {
             log::debug!("wrong {}\n", instruction.opcode);
             unreachable!()
@@ -1204,9 +1282,11 @@ impl<'a> Executor<'a> {
         a: u32,
         b: u32,
         c: u32,
-        hi_record: Option<MemoryRecordEnum>,
+        record: MemoryAccessRecord,
     ) {
         let event = AluEvent {
+            shard: self.shard(),
+            clk,
             pc: self.state.pc,
             next_pc: self.state.next_pc,
             opcode,
@@ -1214,9 +1294,12 @@ impl<'a> Executor<'a> {
             a,
             b,
             c,
+            a_record: record.a,
+            b_record: record.b,
+            c_record: record.c,
         };
 
-        let (hi_access, hi_record_is_real) = match hi_record {
+        let (hi_access, hi_record_is_real) = match record.hi {
             Some(MemoryRecordEnum::Write(record)) => (record, true),
             _ => (MemoryWriteRecord::default(), false),
         };
@@ -1233,6 +1316,9 @@ impl<'a> Executor<'a> {
             c,
             hi_record: hi_access,
             hi_record_is_real,
+            a_record: record.a,
+            b_record: record.b,
+            c_record: record.c,
         };
 
         match opcode {
@@ -1268,10 +1354,20 @@ impl<'a> Executor<'a> {
 
     /// Emit a memory instruction event.
     #[inline]
-    fn emit_mem_instr_event(&mut self, opcode: Opcode, a: u32, b: u32, c: u32, prev_a_val: u32) {
+    #[allow(clippy::too_many_arguments)]
+    fn emit_mem_instr_event(
+        &mut self,
+        clk: u32,
+        opcode: Opcode,
+        a: u32,
+        b: u32,
+        c: u32,
+        prev_a_val: u32,
+        record: MemoryAccessRecord,
+    ) {
         let event = MemInstrEvent {
             shard: self.shard(),
-            clk: self.state.clk,
+            clk,
             pc: self.state.pc,
             next_pc: self.state.next_pc,
             opcode,
@@ -1280,6 +1376,9 @@ impl<'a> Executor<'a> {
             c,
             mem_access: self.memory_accesses.memory.expect("Must have memory access"),
             prev_a_val,
+            a_record: record.a,
+            b_record: record.b,
+            c_record: record.c,
         };
 
         self.record.memory_instr_events.push(event);
@@ -1295,14 +1394,29 @@ impl<'a> Executor<'a> {
     #[allow(clippy::too_many_arguments)]
     fn emit_branch_event(
         &mut self,
+        clk: u32,
         opcode: Opcode,
         a: u32,
         b: u32,
         c: u32,
         next_pc: u32,
         next_next_pc: u32,
+        record: MemoryAccessRecord,
     ) {
-        let event = BranchEvent { pc: self.state.pc, next_pc, next_next_pc, opcode, a, b, c };
+        let event = BranchEvent {
+            shard: self.shard(),
+            clk,
+            pc: self.state.pc,
+            next_pc,
+            next_next_pc,
+            opcode,
+            a,
+            b,
+            c,
+            a_record: record.a,
+            b_record: record.b,
+            c_record: record.c,
+        };
         self.record.branch_events.push(event);
         emit_branch_dependencies(self, event);
     }
@@ -1312,14 +1426,29 @@ impl<'a> Executor<'a> {
     #[allow(clippy::too_many_arguments)]
     fn emit_jump_event(
         &mut self,
+        clk: u32,
         opcode: Opcode,
         a: u32,
         b: u32,
         c: u32,
         next_pc: u32,
         next_next_pc: u32,
+        record: MemoryAccessRecord,
     ) {
-        let event = JumpEvent::new(self.state.pc, next_pc, next_next_pc, opcode, a, b, c);
+        let mut event = JumpEvent::new(
+            self.shard(),
+            clk,
+            self.state.pc,
+            next_pc,
+            next_next_pc,
+            opcode,
+            a,
+            b,
+            c,
+        );
+        event.a_record = record.a;
+        event.b_record = record.b;
+        event.c_record = record.c;
         self.record.jump_events.push(event);
         emit_jump_dependencies(self, event);
     }
@@ -1335,19 +1464,31 @@ impl<'a> Executor<'a> {
         b: u32,
         c: u32,
         prev_a: u32,
-        hi_record: Option<MemoryRecordEnum>,
+        record: MemoryAccessRecord,
     ) {
         if matches!(opcode, Opcode::MNE | Opcode::MEQ | Opcode::WSBH) {
-            let event =
-                MovCondEvent::new(self.state.pc, self.state.next_pc, opcode, a, b, c, prev_a);
+            let mut event = MovCondEvent::new(
+                self.shard(),
+                clk,
+                self.state.pc,
+                self.state.next_pc,
+                opcode,
+                a,
+                b,
+                c,
+                prev_a,
+            );
+            event.a_record = record.a;
+            event.b_record = record.b;
+            event.c_record = record.c;
             self.record.movcond_events.push(event);
         } else {
-            let hi_access = match hi_record {
+            let hi_access = match record.hi {
                 Some(MemoryRecordEnum::Write(record)) => record,
                 _ => MemoryWriteRecord::default(),
             };
 
-            let event = MiscEvent::new(
+            let mut event = MiscEvent::new(
                 clk,
                 self.shard(),
                 self.state.pc,
@@ -1359,6 +1500,9 @@ impl<'a> Executor<'a> {
                 prev_a,
                 hi_access,
             );
+            event.a_record = record.a;
+            event.b_record = record.b;
+            event.c_record = record.c;
             self.record.misc_events.push(event);
             emit_misc_dependencies(self, event);
         }
@@ -1387,6 +1531,8 @@ impl<'a> Executor<'a> {
             clk,
             a_record: write,
             a_record_is_real: is_real,
+            b_record: None,
+            c_record: None,
             syscall_id,
             arg1,
             arg2,
@@ -1397,13 +1543,15 @@ impl<'a> Executor<'a> {
     fn emit_syscall_event(
         &mut self,
         clk: u32,
-        a_record: Option<MemoryRecordEnum>,
+        record: MemoryAccessRecord,
         syscall_id: u32,
         arg1: u32,
         arg2: u32,
         next_pc: u32,
     ) {
-        let syscall_event = self.syscall_event(clk, a_record, next_pc, syscall_id, arg1, arg2);
+        let mut syscall_event = self.syscall_event(clk, record.a, next_pc, syscall_id, arg1, arg2);
+        syscall_event.b_record = record.b;
+        syscall_event.c_record = record.c;
 
         self.record.syscall_events.push(syscall_event);
     }
@@ -2402,8 +2550,8 @@ impl<'a> Executor<'a> {
             log::debug!("last step {}", self.state.global_clk);
         }
 
-        // Push the remaining execution record, if there are any CPU events.
-        if !self.record.cpu_events.is_empty() {
+        // Push the remaining execution record, if it retired any instructions.
+        if self.record.contains_cpu() {
             self.bump_record();
         }
 
@@ -2416,16 +2564,17 @@ impl<'a> Executor<'a> {
             record.public_values.committed_value_digest = public_values.committed_value_digest;
             record.public_values.deferred_proofs_digest = public_values.deferred_proofs_digest;
             record.public_values.execution_shard = start_shard + i as u32;
-            if record.cpu_events.is_empty() {
+            record.public_values.is_execution_shard = record.contains_cpu() as u32;
+            if let Some(first_pc) = record.first_instruction_pc {
+                record.public_values.start_pc = first_pc;
+                record.public_values.next_pc = record.last_next_pc;
+                record.public_values.exit_code = record.last_exit_code;
+                last_next_pc = record.public_values.next_pc;
+                last_exit_code = record.public_values.exit_code;
+            } else {
                 record.public_values.start_pc = last_next_pc;
                 record.public_values.next_pc = last_next_pc;
                 record.public_values.exit_code = last_exit_code;
-            } else {
-                record.public_values.start_pc = record.cpu_events[0].pc;
-                record.public_values.next_pc = record.cpu_events.last().unwrap().next_pc;
-                record.public_values.exit_code = record.cpu_events.last().unwrap().exit_code;
-                last_next_pc = record.public_values.next_pc;
-                last_exit_code = record.public_values.exit_code;
             }
         }
 
@@ -2457,7 +2606,6 @@ impl<'a> Executor<'a> {
         if self.state.global_clk.is_multiple_of(self.shape_check_frequency) {
             // Estimate the number of events in the trace.
             let event_counts = estimate_mips_event_counts(
-                (self.state.clk / 5) as u64,
                 self.local_counts.local_mem as u64,
                 self.local_counts.syscalls_sent as u64,
                 *self.local_counts.event_counts,

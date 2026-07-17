@@ -1,4 +1,4 @@
-use super::MemoryWriteRecord;
+use super::{MemoryRecordEnum, MemoryWriteRecord};
 use serde::{Deserialize, Serialize};
 
 /// Syscall Event.
@@ -20,6 +20,10 @@ pub struct SyscallEvent {
     pub a_record: MemoryWriteRecord,
     /// Whether the `op_a` memory write record is real.
     pub a_record_is_real: bool,
+    /// The `op_b` memory read record, when this event backs a real SYSCALL instruction row.
+    pub b_record: Option<MemoryRecordEnum>,
+    /// The `op_c` memory read record, when this event backs a real SYSCALL instruction row.
+    pub c_record: Option<MemoryRecordEnum>,
     /// The syscall id.
     pub syscall_id: u32,
     /// The first argument.

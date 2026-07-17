@@ -13,11 +13,11 @@ use p3_air::{Air, BaseAir, PairBuilder};
 use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
-use zkm_core_executor::{ExecutionRecord, Program};
+use zkm_core_executor::{ExecutionRecord, Program, UNUSED_PC};
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::{MachineAir, ZKMAirBuilder};
 
-use crate::cpu::columns::InstructionCols;
+use crate::adapter::InstructionCols;
 
 /// The number of preprocessed program columns.
 pub const NUM_PROGRAM_PREPROCESSED_COLS: usize = size_of::<ProgramPreprocessedCols<u8>>();
@@ -116,10 +116,82 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
     ) -> Result<RowMajorMatrix<F>, Self::Error> {
         // Generate the trace rows for each event.
 
-        // Collect the number of times each instruction is called from the cpu events.
+        // Collect the number of times each instruction is called. Most opcodes still route
+        // through `cpu_events`, but opcodes whose chip has been migrated off of `CpuChip` (see
+        // `zkm_core_machine::adapter`) do their own `send_program` and must be counted from
+        // their own event list instead -- `add_sub_events` also contains synthetic
+        // dependency-check rows (see `AddSubChip`'s doc comment) at the `UNUSED_PC` sentinel,
+        // which don't consume a real program-lookup slot and are excluded here.
         // Store it as a map of PC -> count.
         let mut instruction_counts = HashMap::new();
         input.cpu_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.add_sub_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.shift_left_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.bitwise_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.shift_right_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.lt_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.cloclz_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.mul_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.divrem_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        // `branch_events`/`jump_events` are always real instructions (no synthetic-dependency
+        // producer targets either vector), so no `UNUSED_PC` filter is needed here.
+        input.branch_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.jump_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        // `memory_instr_events` is always real instructions (no synthetic-dependency producer
+        // targets it), so no `UNUSED_PC` filter is needed here.
+        input.memory_instr_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        // `movcond_events` is always real instructions (no synthetic-dependency producer
+        // targets it), so no `UNUSED_PC` filter is needed here.
+        input.movcond_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        // `misc_events` is always real instructions (no synthetic-dependency producer targets
+        // it -- this chip is itself a dependency producer), so no `UNUSED_PC` filter is needed
+        // here.
+        input.misc_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        // `syscall_events` is always real instructions (no synthetic-dependency producer
+        // targets it), so no `UNUSED_PC` filter is needed here.
+        input.syscall_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });

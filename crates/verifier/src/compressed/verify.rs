@@ -40,9 +40,7 @@ pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
 const RECURSION_MAX_LOG_ROW_COUNT: usize = 22;
 
 /// The log2 of the number of rows each stacked-PCS column is grouped into for the compress
-/// machine. Was a fixed `4` (copied from a throwaway test value, see
-/// `zkm_core_machine::utils::prove::stacking_height_for`'s doc comment for why that made
-/// `commit_traces` catastrophically slow); mirrors that function, one less than
+/// machine. Mirrors `zkm_core_machine::utils::prove::stacking_height_for`: one less than
 /// `RECURSION_MAX_LOG_ROW_COUNT`.
 const RECURSION_LOG_STACKING_HEIGHT: u32 = RECURSION_MAX_LOG_ROW_COUNT as u32 - 1;
 

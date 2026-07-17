@@ -30,7 +30,6 @@ pub(crate) mod mips_chips {
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
-        cpu::CpuChip,
         memory::{MemoryGlobalChip, MemoryInstructionsChip},
         misc::{MiscInstrsChip, MovCondChip},
         program::ProgramChip,
@@ -78,8 +77,6 @@ pub const MAX_NUMBER_OF_SHARDS: usize = 1 << MAX_LOG_NUMBER_OF_SHARDS;
 pub enum MipsAir<F: PrimeField32> {
     /// An AIR that contains a preprocessed program table and a lookup for the instructions.
     Program(ProgramChip),
-    /// An AIR for the MIPS CPU. Each row represents a cpu cycle.
-    Cpu(CpuChip),
     /// An AIR for the MIPS Add and SUB instruction.
     Add(AddSubChip),
     /// An AIR for MIPS Bitwise instructions.
@@ -258,7 +255,6 @@ impl<F: PrimeField32> MipsAir<F> {
             Program,
             ByteLookup,
             Global,
-            Cpu,
             Add,
             Bitwise,
             Mul,
@@ -294,7 +290,9 @@ impl<F: PrimeField32> MipsAir<F> {
             .into_iter()
             .flat_map(|k| core_cluster_exts.iter().copied().combinations(k).collect::<Vec<_>>())
             .map(|ext_set| {
-                ext_set.into_iter().fold(core_cluster.clone(), |set, variants| extend(&set, variants))
+                ext_set
+                    .into_iter()
+                    .fold(core_cluster.clone(), |set, variants| extend(&set, variants))
             });
 
         // A specific extra combination beyond the `core_cluster_exts` combinatorics above: a
@@ -385,10 +383,6 @@ impl<F: PrimeField32> MipsAir<F> {
 
         // The order of the chips is used to determine the order of trace generation.
         let mut chips = vec![];
-        let cpu = Chip::new(MipsAir::Cpu(CpuChip::default()));
-        costs.insert(cpu.name(), cpu.cost());
-        chips.push(cpu);
-
         let program = Chip::new(MipsAir::Program(ProgramChip::default()));
         costs.insert(program.name(), program.cost());
         chips.push(program);

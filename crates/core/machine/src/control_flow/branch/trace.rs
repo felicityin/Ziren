@@ -6,7 +6,7 @@ use p3_field::PrimeField32;
 use p3_matrix::dense::RowMajorMatrix;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use zkm_core_executor::{
-    events::{BranchEvent, ByteLookupEvent, ByteRecord},
+    events::{BranchEvent, ByteLookupEvent, ByteRecord, MemoryRecordEnum},
     ExecutionRecord, Opcode, Program,
 };
 #[cfg(feature = "picus")]
@@ -14,6 +14,7 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
+    memory::MemoryCols,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -66,7 +67,13 @@ impl<F: PrimeField32> MachineAir<F> for BranchChip {
 
                     if idx < input.branch_events.len() {
                         let event = &input.branch_events[idx];
-                        self.event_to_row(event, cols, &mut blu);
+                        self.event_to_row(event, cols, &mut blu, &input.program);
+                    } else {
+                        // Padding row: force the register reader's b/c memory-access
+                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
+                        // memory).
+                        cols.instruction.imm_b = F::ONE;
+                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -95,8 +102,32 @@ impl BranchChip {
         event: &BranchEvent,
         cols: &mut BranchColumns<F>,
         blu: &mut HashMap<ByteLookupEvent, usize>,
+        program: &Program,
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
+
+        // Every `branch_events` row is a real, retired instruction -- nothing ever produces a
+        // synthetic dependency row here (see this chip's `Air::eval` doc comment).
+        cols.state.populate(blu, event.shard, event.clk);
+
+        let instruction = program.fetch(event.pc);
+        cols.instruction.populate(&instruction);
+
+        *cols.reader.op_a_access.value_mut() = event.a.into();
+        *cols.reader.op_b_access.value_mut() = event.b.into();
+        *cols.reader.op_c_access.value_mut() = event.c.into();
+
+        if let Some(record) = event.a_record {
+            cols.reader.op_a_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+            cols.reader.op_b_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+            cols.reader.op_c_access.populate(record, blu);
+        }
+        cols.reader.populate_op_a_range_checks(blu);
+
         cols.is_beq = F::from_bool(matches!(event.opcode, Opcode::BEQ));
         cols.is_bne = F::from_bool(matches!(event.opcode, Opcode::BNE));
         cols.is_bltz = F::from_bool(matches!(event.opcode, Opcode::BLTZ));

@@ -5,12 +5,13 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{FieldAlgebra, PrimeField, PrimeField32};
+use p3_air::AirBuilder;
+use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
+use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord, MovCondEvent},
+    events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum, MovCondEvent},
     ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
@@ -19,11 +20,19 @@ use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{
-    air::{BaseAirBuilder, MachineAir, ZKMAirBuilder},
+    air::{BaseAirBuilder, MachineAir, PublicValues, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
     word::Word,
 };
 
-use crate::{air::WordAirBuilder, CoreChipError};
+use crate::{
+    adapter::InstructionCols,
+    adapter::{
+        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+    },
+    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    memory::MemoryCols,
+    CoreChipError,
+};
 
 use crate::operations::IsZeroWordOperation;
 
@@ -32,7 +41,11 @@ use crate::utils::{next_power_of_two, zeroed_f_vec};
 /// The number of main trace columns for `MovCondChip`.
 pub const NUM_MOV_COND_COLS: usize = size_of::<MovCondCols<u8>>();
 
-/// A chip that implements condition mov for the opcode MNE，MEQ.
+/// A chip that implements condition mov for the opcode MNE，MEQ (and the unrelated WSBH,
+/// grouped here for chip-size reasons).
+///
+/// Nothing ever emits a synthetic dependency row into `movcond_events` and this chip never
+/// produces one either -- every row here is a real, retired instruction.
 #[derive(Default)]
 pub struct MovCondChip;
 
@@ -40,7 +53,16 @@ pub struct MovCondChip;
 #[derive(AlignedBorrow, Default, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct MovCondCols<T> {
+pub struct MovCondCols<T: Copy> {
+    /// The current shard and clk.
+    pub state: CpuState<T>,
+
+    /// The raw fetched instruction.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`/`c`.
+    pub reader: RegisterReader<T>,
+
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
@@ -115,7 +137,13 @@ impl<F: PrimeField32> MachineAir<F> for MovCondChip {
 
                     if idx < input.movcond_events.len() {
                         let event = &input.movcond_events[idx];
-                        self.event_to_row(event, cols, &mut blu);
+                        self.event_to_row(event, cols, &mut blu, &input.program);
+                    } else {
+                        // Padding row: force the register reader's b/c memory-access
+                        // multiplicities to zero (see
+                        // cpuchip-migration-register-reader-gotchas memory).
+                        cols.instruction.imm_b = F::ONE;
+                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -139,14 +167,37 @@ impl<F: PrimeField32> MachineAir<F> for MovCondChip {
 
 impl MovCondChip {
     /// Create a row from an event.
-    fn event_to_row<F: PrimeField>(
+    fn event_to_row<F: PrimeField32>(
         &self,
         event: &MovCondEvent,
         cols: &mut MovCondCols<F>,
-        _blu: &mut impl ByteRecord,
+        blu: &mut impl ByteRecord,
+        program: &Program,
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
+
+        // Every `movcond_events` row is a real, retired instruction -- nothing ever produces a
+        // synthetic dependency row here.
+        cols.state.populate(blu, event.shard, event.clk);
+
+        let instruction = program.fetch(event.pc);
+        cols.instruction.populate(&instruction);
+
+        *cols.reader.op_a_access.value_mut() = event.a.into();
+        *cols.reader.op_b_access.value_mut() = event.b.into();
+        *cols.reader.op_c_access.value_mut() = event.c.into();
+
+        if let Some(record) = event.a_record {
+            cols.reader.op_a_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+            cols.reader.op_b_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+            cols.reader.op_c_access.populate(record, blu);
+        }
+        cols.reader.populate_op_a_range_checks(blu);
 
         cols.op_a_value = event.a.into();
         cols.op_b_value = event.b.into();
@@ -169,7 +220,7 @@ impl<F> BaseAir<F> for MovCondChip {
 
 impl<AB> Air<AB> for MovCondChip
 where
-    AB: ZKMAirBuilder,
+    AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -177,29 +228,70 @@ where
         let local: &MovCondCols<AB::Var> = (*local).borrow();
         let is_real = local.is_mne + local.is_meq + local.is_wsbh;
 
-        let cpu_opcode = local.is_wsbh * Opcode::WSBH.as_field::<AB::F>()
-            + local.is_meq * Opcode::MEQ.as_field::<AB::F>()
-            + local.is_mne * Opcode::MNE.as_field::<AB::F>();
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
 
-        builder.receive_instruction(
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            cpu_opcode.clone(),
-            local.op_a_value,
-            local.op_b_value,
-            local.op_c_value,
-            local.prev_a_value,
-            AB::Expr::zero(),
+        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        let clk = clk_expr::<AB>(&local.state);
+
+        builder.send_program(local.pc, local.instruction, is_real.clone());
+
+        // MEQ/MNE are read-modify-write of `op_a` (`is_rw_a = 1`, `prev_a_value` cross-checked
+        // against the register's real previous value via `hi_or_prev_a`) -- this is what lets
+        // `op_a` keep its old value when the move condition is false. WSBH is a fresh write.
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            local.op_a_value.map(Into::into),
+            local.prev_a_value.map(Into::into),
             local.is_mne + local.is_meq,
             AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
             is_real.clone(),
         );
+
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            is_real.clone(),
+        );
+
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk,
+            local.pc.into(),
+            local.next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            AB::Expr::from_canonical_u32(5),
+            is_real.clone(),
+        );
+
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
+
+        // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
+        // can't claim the wrong mov-cond/WSBH variant while still passing the program lookup.
+        builder
+            .when(local.is_meq)
+            .assert_eq(local.instruction.opcode, Opcode::MEQ.as_field::<AB::F>());
+        builder
+            .when(local.is_mne)
+            .assert_eq(local.instruction.opcode, Opcode::MNE.as_field::<AB::F>());
+        builder
+            .when(local.is_wsbh)
+            .assert_eq(local.instruction.opcode, Opcode::WSBH.as_field::<AB::F>());
 
         IsZeroWordOperation::<AB::F>::eval(
             builder,

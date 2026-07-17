@@ -155,6 +155,8 @@ mod tests {
             clk: hi_ts,
             a_record: MemoryWriteRecord::default(),
             a_record_is_real: false,
+            b_record: None,
+            c_record: None,
             syscall_id: syscall_code.syscall_id(),
             arg1: a_ptr,
             arg2: b_ptr,

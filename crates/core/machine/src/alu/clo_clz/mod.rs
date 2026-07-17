@@ -15,22 +15,31 @@ use core::{
     mem::size_of,
 };
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
+use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord},
-    ByteOpcode, ExecutionRecord, Opcode, Program,
+    events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum},
+    ByteOpcode, ExecutionRecord, Opcode, Program, UNUSED_PC,
 };
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_hypercube::{air::MachineAir, word::Word};
+use zkm_hypercube::{
+    air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
+    word::Word,
+};
 
 use crate::{
-    air::ZKMCoreAirBuilder,
+    adapter::InstructionCols,
+    adapter::{
+        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+    },
+    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    memory::MemoryCols,
     utils::{next_power_of_two, pad_rows_fixed},
     CoreChipError,
 };
@@ -39,6 +48,13 @@ use crate::{
 pub const NUM_CLOCLZ_COLS: usize = size_of::<CloClzCols<u8>>();
 
 /// A chip that implements addition for the opcodes CLO/CLZ.
+///
+/// As with `AddSubChip`, not every row is a real retired instruction -- though as of this
+/// writing no other chip emits a synthetic dependency row into `cloclz_events`, the
+/// `is_real_instruction` flag is kept for consistency with the other opcode-family chips. Note
+/// this chip is itself a synthetic-dependency *producer* for `ShiftRightChip` (the `send_alu`
+/// call below verifying `bb >> (31 - result) == 1`), which is unrelated to and untouched by this
+/// real/synthetic split.
 #[derive(Default)]
 pub struct CloClzChip;
 
@@ -49,10 +65,23 @@ pub struct CloClzChip;
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct CloClzCols<T> {
+pub struct CloClzCols<T: Copy> {
+    /// The current shard and clk. Only meaningful when `is_real_instruction` is set.
+    pub state: CpuState<T>,
+
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
+
+    /// The raw fetched instruction. Only meaningful when `is_real_instruction` is set.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`. Only meaningful when `is_real_instruction` is set.
+    pub reader: RegisterReader<T>,
+
+    /// Whether this row is a real, retired CLZ/CLO instruction (as opposed to an internal
+    /// dependency check from another chip, or padding).
+    pub is_real_instruction: T,
 
     /// The result
     pub a: Word<T>,
@@ -124,6 +153,36 @@ impl<F: PrimeField32> MachineAir<F> for CloClzChip {
             cols.is_real = F::ONE;
             cols.is_clz = F::from_bool(event.opcode == Opcode::CLZ);
 
+            // Default: not a real instruction, so the register reader's b/c memory accesses
+            // have zero multiplicity unless overwritten by a real fetched instruction's actual
+            // immediate flags just below.
+            cols.instruction.imm_b = F::ONE;
+            cols.instruction.imm_c = F::ONE;
+
+            let is_real_instruction = event.pc != UNUSED_PC;
+            cols.is_real_instruction = F::from_bool(is_real_instruction);
+            if is_real_instruction {
+                cols.state.populate(output, event.shard, event.clk);
+
+                let instruction = input.program.fetch(event.pc);
+                cols.instruction.populate(&instruction);
+
+                *cols.reader.op_a_access.value_mut() = event.a.into();
+                *cols.reader.op_b_access.value_mut() = event.b.into();
+                *cols.reader.op_c_access.value_mut() = event.c.into();
+
+                if let Some(record) = event.a_record {
+                    cols.reader.op_a_access.populate(record, output);
+                }
+                if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+                    cols.reader.op_b_access.populate(record, output);
+                }
+                if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+                    cols.reader.op_c_access.populate(record, output);
+                }
+                cols.reader.populate_op_a_range_checks(output);
+            }
+
             let bb = if event.opcode == Opcode::CLZ { event.b } else { 0xffffffff - event.b };
             cols.bb = Word::from(bb);
 
@@ -164,6 +223,8 @@ impl<F: PrimeField32> MachineAir<F> for CloClzChip {
             // is_bb_zero=1 ensures send_alu for SRL has zero multiplicity.
             cols.a = Word::from(32);
             cols.is_bb_zero = F::ONE;
+            cols.instruction.imm_b = F::ONE;
+            cols.instruction.imm_c = F::ONE;
 
             row
         };
@@ -188,7 +249,7 @@ impl<F> BaseAir<F> for CloClzChip {
 
 impl<AB> Air<AB> for CloClzChip
 where
-    AB: ZKMCoreAirBuilder,
+    AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
@@ -196,6 +257,11 @@ where
         let local: &CloClzCols<AB::Var> = (*local).borrow();
         let one: AB::Expr = AB::F::ONE.into();
         let zero: AB::Expr = AB::F::ZERO.into();
+
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
 
         // Derive is_clo from is_real and is_clz.
         let is_clo: AB::Expr = local.is_real.into() - local.is_clz.into();
@@ -231,6 +297,72 @@ where
         let cpu_opcode = is_clo.clone() * Opcode::CLO.as_field::<AB::F>()
             + local.is_clz * Opcode::CLZ.as_field::<AB::F>();
 
+        builder.assert_bool(local.is_real_instruction);
+        builder.when_not(local.is_real).assert_zero(local.is_real_instruction);
+
+        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        let clk = clk_expr::<AB>(&local.state);
+
+        builder.send_program(local.pc, local.instruction, local.is_real_instruction);
+
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
+            // reader.op_a_val())` fires unconditionally whenever `op_a_0` is unset, which it is
+            // by default on synthetic rows (their `instruction` column is never populated) --
+            // an ungated `op_a_value` would then have to equal `reader.op_a_val()` (always zero
+            // on synthetic rows) even when the true result is nonzero.
+            local.a.map(|x| local.is_real_instruction.into() * Into::<AB::Expr>::into(x)),
+            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
+            AB::Expr::zero(),
+            AB::Expr::zero(),
+            local.is_real_instruction.into(),
+        );
+
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            local.is_real_instruction.into(),
+        );
+
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk,
+            local.pc.into(),
+            local.next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            AB::Expr::from_canonical_u32(5),
+            local.is_real_instruction.into(),
+        );
+
+        builder
+            .when(local.is_real_instruction)
+            .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
+
+        // Bind the row's actual fetched opcode to whichever variant is real, so a
+        // real-instruction row can't claim the wrong CLZ/CLO variant while still passing the
+        // program lookup. These gates are plain assertions (not interaction
+        // values/multiplicities), so the product `is_real_instruction * is_X` (degree 2) is
+        // fine here.
+        builder
+            .when(Into::<AB::Expr>::into(local.is_real_instruction) * local.is_clz)
+            .assert_eq(local.instruction.opcode, Opcode::CLZ.as_field::<AB::F>());
+        builder
+            .when(Into::<AB::Expr>::into(local.is_real_instruction) * is_clo.clone())
+            .assert_eq(local.instruction.opcode, Opcode::CLO.as_field::<AB::F>());
+
+        // ---- Synthetic dependency path: matches whichever chip generated this internal check via
+        // `send_alu` (always at the `UNUSED_PC` sentinel, shard/clk zero). No current producer
+        // targets `cloclz_events`, so this multiplicity is always zero today, but the wiring is
+        // kept for consistency and to stay sound if a future dependency producer is added. ----
         builder.receive_instruction(
             AB::Expr::zero(),
             AB::Expr::zero(),
@@ -248,7 +380,7 @@ where
             AB::Expr::zero(),
             AB::Expr::zero(),
             AB::Expr::one(),
-            local.is_real,
+            local.is_real - local.is_real_instruction,
         );
 
         // if is_bb_zero == 1, bb == 0, and result is 32
@@ -292,7 +424,7 @@ mod tests {
     // use crate::utils::{uni_stark_prove, uni_stark_verify};
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode};
+    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode, UNUSED_PC};
     use zkm_hypercube::air::MachineAir;
     // use zkm_stark::{
     //     air::MachineAir, koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig,
@@ -304,12 +436,12 @@ mod tests {
     fn generate_trace() {
         let mut shard = ExecutionRecord::default();
         shard.cloclz_events = vec![
-            AluEvent::new(0, Opcode::CLZ, 32, 0, 0),
-            AluEvent::new(0, Opcode::CLZ, 8, 0x00800000, 0),
-            AluEvent::new(0, Opcode::CLZ, 0, 0xffffffff, 0),
-            AluEvent::new(0, Opcode::CLO, 32, 0xffffffff, 0),
-            AluEvent::new(0, Opcode::CLO, 8, 0xff7fffff, 0),
-            AluEvent::new(0, Opcode::CLO, 0, 0, 0),
+            AluEvent::new(UNUSED_PC, Opcode::CLZ, 32, 0, 0),
+            AluEvent::new(UNUSED_PC, Opcode::CLZ, 8, 0x00800000, 0),
+            AluEvent::new(UNUSED_PC, Opcode::CLZ, 0, 0xffffffff, 0),
+            AluEvent::new(UNUSED_PC, Opcode::CLO, 32, 0xffffffff, 0),
+            AluEvent::new(UNUSED_PC, Opcode::CLO, 8, 0xff7fffff, 0),
+            AluEvent::new(UNUSED_PC, Opcode::CLO, 0, 0, 0),
         ];
         let chip = CloClzChip::default();
         let trace: RowMajorMatrix<KoalaBear> =

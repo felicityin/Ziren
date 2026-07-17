@@ -15,8 +15,6 @@ use strum::{EnumIter, IntoEnumIterator};
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, PartialOrd, Ord, Enum,
 )]
 pub enum MipsAirId {
-    /// The CPU chip.
-    Cpu = 0,
     /// The program chip.
     Program = 1,
     /// The SHA-256 extend control chip.
@@ -124,7 +122,6 @@ impl MipsAirId {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Cpu => "Cpu",
             Self::Program => "Program",
             Self::ShaExtend => "ShaExtend",
             Self::ShaCompress => "ShaCompress",

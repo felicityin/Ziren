@@ -43,6 +43,11 @@ pub struct PublicValues<W, T> {
     /// The execution shard number.
     pub execution_shard: T,
 
+    /// Whether this shard retired any instructions. Replaces checking chip presence by name
+    /// (e.g. a `"Cpu"` chip) as the "is this a real-execution shard" signal, since no single
+    /// chip is guaranteed to be present in every execution shard.
+    pub is_execution_shard: T,
+
     /// The bits of the largest address that is witnessed for initialization in the previous shard.
     pub previous_init_addr_bits: [T; 32],
 
@@ -107,6 +112,7 @@ impl PublicValues<u32, u32> {
         let mut copy = *self;
         copy.shard = 0;
         copy.execution_shard = 0;
+        copy.is_execution_shard = 0;
         copy.start_pc = 0;
         copy.next_pc = 0;
         copy.initial_timestamp = 0;
@@ -160,6 +166,7 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             exit_code,
             shard,
             execution_shard,
+            is_execution_shard,
             previous_init_addr_bits,
             last_init_addr_bits,
             previous_finalize_addr_bits,
@@ -185,6 +192,7 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let exit_code = F::from_canonical_u32(exit_code);
         let shard = F::from_canonical_u32(shard);
         let execution_shard = F::from_canonical_u32(execution_shard);
+        let is_execution_shard = F::from_canonical_u32(is_execution_shard);
         let previous_init_addr_bits = previous_init_addr_bits.map(F::from_canonical_u32);
         let last_init_addr_bits = last_init_addr_bits.map(F::from_canonical_u32);
         let previous_finalize_addr_bits = previous_finalize_addr_bits.map(F::from_canonical_u32);
@@ -205,6 +213,7 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             exit_code,
             shard,
             execution_shard,
+            is_execution_shard,
             previous_init_addr_bits,
             last_init_addr_bits,
             previous_finalize_addr_bits,

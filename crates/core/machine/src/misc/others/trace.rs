@@ -12,6 +12,7 @@ use zkm_core_executor::{
 use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
+    memory::MemoryCols,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -71,7 +72,13 @@ impl<F: PrimeField32> MachineAir<F> for MiscInstrsChip {
 
                     if idx < input.misc_events.len() {
                         let event = &input.misc_events[idx];
-                        self.event_to_row(event, cols, &mut blu);
+                        self.event_to_row(event, cols, &mut blu, &input.program);
+                    } else {
+                        // Padding row: force the register reader's b/c memory-access
+                        // multiplicities to zero (see
+                        // cpuchip-migration-register-reader-gotchas memory).
+                        cols.instruction.imm_b = F::ONE;
+                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -95,16 +102,38 @@ impl MiscInstrsChip {
         event: &MiscEvent,
         cols: &mut MiscInstrColumns<F>,
         blu: &mut impl ByteRecord,
+        program: &Program,
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
+
+        // Every `misc_events` row is a real, retired instruction -- nothing ever produces a
+        // synthetic dependency row here (this chip is itself a dependency *producer*, see
+        // `MiscInstrsChip::eval`'s `send_alu`/`send_alu_with_hi` calls).
+        cols.state.populate(blu, event.shard, event.clk);
+
+        let instruction = program.fetch(event.pc);
+        cols.instruction.populate(&instruction);
+
+        *cols.reader.op_a_access.value_mut() = event.a.into();
+        *cols.reader.op_b_access.value_mut() = event.b.into();
+        *cols.reader.op_c_access.value_mut() = event.c.into();
+
+        if let Some(record) = event.a_record {
+            cols.reader.op_a_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+            cols.reader.op_b_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+            cols.reader.op_c_access.populate(record, blu);
+        }
+        cols.reader.populate_op_a_range_checks(blu);
 
         cols.op_a_value = event.a.into();
         cols.op_b_value = event.b.into();
         cols.op_c_value = event.c.into();
         cols.prev_a_value = event.prev_a.into();
-        cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
 
         cols.is_sext = F::from_bool(matches!(event.opcode, Opcode::SEXT));
         cols.is_ext = F::from_bool(matches!(event.opcode, Opcode::EXT));

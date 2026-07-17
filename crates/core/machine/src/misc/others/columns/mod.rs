@@ -16,16 +16,23 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
+use crate::adapter::{CpuState, InstructionCols, RegisterReader};
+
 pub const NUM_MISC_INSTR_COLS: usize = size_of::<MiscInstrColumns<u8>>();
 
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct MiscInstrColumns<T: Copy> {
-    /// The shard number.
-    pub shard: T,
-    /// The clock cycle number.
-    pub clk: T,
+    /// The current shard and clk.
+    pub state: CpuState<T>,
+
+    /// The raw fetched instruction.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`/`c`.
+    pub reader: RegisterReader<T>,
+
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,

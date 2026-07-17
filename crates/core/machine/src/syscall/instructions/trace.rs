@@ -6,7 +6,7 @@ use p3_field::PrimeField32;
 use p3_matrix::dense::RowMajorMatrix;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord, SyscallEvent},
+    events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum, SyscallEvent},
     syscalls::SyscallCode,
     ExecutionRecord, Program,
 };
@@ -15,6 +15,7 @@ use zkm_hypercube::air::MachineAir;
 use zkm_hypercube::air::PicusInfo;
 
 use crate::{
+    memory::MemoryCols,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -70,7 +71,13 @@ impl<F: PrimeField32> MachineAir<F> for SyscallInstrsChip {
 
                     if idx < input.syscall_events.len() {
                         let event = &input.syscall_events[idx];
-                        self.event_to_row(event, cols, &mut blu);
+                        self.event_to_row(event, cols, &mut blu, &input.program);
+                    } else {
+                        // Padding row: force the register reader's b/c memory-access
+                        // multiplicities to zero (see
+                        // cpuchip-migration-register-reader-gotchas memory).
+                        cols.instruction.imm_b = F::ONE;
+                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -93,13 +100,28 @@ impl SyscallInstrsChip {
         &self,
         event: &SyscallEvent,
         cols: &mut SyscallInstrColumns<F>,
-        _blu: &mut impl ByteRecord,
+        blu: &mut impl ByteRecord,
+        program: &Program,
     ) {
         cols.is_real = F::ONE;
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
-        cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
+
+        cols.state.populate(blu, event.shard, event.clk);
+
+        let instruction = program.fetch(event.pc);
+        cols.instruction.populate(&instruction);
+
+        *cols.reader.op_b_access.value_mut() = event.arg1.into();
+        *cols.reader.op_c_access.value_mut() = event.arg2.into();
+        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+            cols.reader.op_b_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+            cols.reader.op_c_access.populate(record, blu);
+        }
+        cols.reader.op_a_access.populate_write(event.a_record, blu);
+        cols.reader.populate_op_a_range_checks(blu);
 
         cols.op_a_value = event.a_record.value.into();
         cols.op_b_value = event.arg1.into();
@@ -114,6 +136,12 @@ impl SyscallInstrsChip {
             syscall_id == F::from_canonical_u32(SyscallCode::HALT.syscall_id())
                 || syscall_id == F::from_canonical_u32(SyscallCode::SYS_EXT_GROUP.syscall_id()),
         );
+
+        cols.state_chain_next_pc = if cols.is_halt == F::ONE {
+            F::from_canonical_u32(event.pc + 4)
+        } else {
+            cols.next_pc
+        };
 
         cols.is_sys_linux = F::from_bool(event.a_record.prev_value & 0x0ff00 != 0);
 

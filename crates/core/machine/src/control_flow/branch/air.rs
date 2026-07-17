@@ -1,15 +1,20 @@
 use std::borrow::Borrow;
 
-use p3_air::{Air, AirBuilder};
+use p3_air::AirBuilder;
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
+use slop_air::{Air, AirBuilderWithPublicValues};
 use zkm_core_executor::Opcode;
 use zkm_hypercube::{
-    air::{BaseAirBuilder, ZKMAirBuilder},
+    air::{BaseAirBuilder, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
     word::Word,
 };
 
-use crate::{air::WordAirBuilder, operations::KoalaBearWordRangeChecker};
+use crate::{
+    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    operations::KoalaBearWordRangeChecker,
+};
 
 use super::{BranchChip, BranchColumns};
 
@@ -24,7 +29,7 @@ use super::{BranchChip, BranchColumns};
 ///
 impl<AB> Air<AB> for BranchChip
 where
-    AB: ZKMAirBuilder,
+    AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
     AB::Var: Sized,
 {
     #[inline(never)]
@@ -32,6 +37,11 @@ where
         let main = builder.main();
         let local = main.row_slice(0);
         let local: &BranchColumns<AB::Var> = (*local).borrow();
+
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
 
         // SAFETY: All selectors `is_beq`, `is_bne`, `is_bltz`, `is_bgez`, `is_blez`, `is_bgtz` are checked to be boolean.
         // Each "real" row has exactly one selector turned on, as `is_real`, the sum of the six selectors, is boolean.
@@ -50,40 +60,76 @@ where
             + local.is_bgtz;
         builder.assert_bool(is_real.clone());
 
-        let opcode = local.is_beq * Opcode::BEQ.as_field::<AB::F>()
-            + local.is_bne * Opcode::BNE.as_field::<AB::F>()
-            + local.is_bltz * Opcode::BLTZ.as_field::<AB::F>()
-            + local.is_bgez * Opcode::BGEZ.as_field::<AB::F>()
-            + local.is_blez * Opcode::BLEZ.as_field::<AB::F>()
-            + local.is_bgtz * Opcode::BGTZ.as_field::<AB::F>();
+        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        let clk = clk_expr::<AB>(&local.state);
 
-        // SAFETY: This checks the following.
-        // - `num_extra_cycles = 0`
-        // - `op_a_val` will be constrained in the BranchChip as `op_a_immutable = 1`
-        // - `op_a_immutable = 1`, as this is a branch instruction
-        // - `is_rw_a = 0`
-        // - `is_syscall = 0`
-        // - `is_halt = 0`
-        // `next_pc` still has to be constrained, and this is done below.
-        builder.receive_instruction(
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.pc,
-            local.next_pc.reduce::<AB>(),
-            local.next_next_pc.reduce::<AB>(),
-            AB::Expr::zero(),
-            opcode,
-            local.op_a_value,
-            local.op_b_value,
-            local.op_c_value,
+        builder.send_program(local.pc, local.instruction, is_real.clone());
+
+        // Branch instructions only read `op_a` (for the comparison); `op_a_immutable = 1` means
+        // the register access must re-affirm the existing value rather than write a new one.
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            local.op_a_value.map(Into::into),
             Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
+            AB::Expr::zero(),
             AB::Expr::one(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
             is_real.clone(),
         );
+
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            is_real.clone(),
+        );
+
+        // Unlike every other migrated chip, `outgoing_next_next_pc` here is NOT `next_pc + 4` --
+        // it's the branch-resolved value this chip's own logic below already fully derives and
+        // constrains (`target_pc`/`is_branching`), fed straight into the state chain instead of
+        // being validated against a value pulled in from `CpuChip`.
+        eval_state_chain(
+            builder,
+            clk,
+            local.pc.into(),
+            local.next_pc.reduce::<AB>(),
+            local.next_pc.reduce::<AB>(),
+            local.next_next_pc.reduce::<AB>(),
+            AB::Expr::from_canonical_u32(5),
+            is_real.clone(),
+        );
+
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
+
+        // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
+        // can't claim the wrong branch variant while still passing the program lookup.
+        builder
+            .when(local.is_beq)
+            .assert_eq(local.instruction.opcode, Opcode::BEQ.as_field::<AB::F>());
+        builder
+            .when(local.is_bne)
+            .assert_eq(local.instruction.opcode, Opcode::BNE.as_field::<AB::F>());
+        builder
+            .when(local.is_bltz)
+            .assert_eq(local.instruction.opcode, Opcode::BLTZ.as_field::<AB::F>());
+        builder
+            .when(local.is_bgez)
+            .assert_eq(local.instruction.opcode, Opcode::BGEZ.as_field::<AB::F>());
+        builder
+            .when(local.is_blez)
+            .assert_eq(local.instruction.opcode, Opcode::BLEZ.as_field::<AB::F>());
+        builder
+            .when(local.is_bgtz)
+            .assert_eq(local.instruction.opcode, Opcode::BGTZ.as_field::<AB::F>());
 
         // Evaluate program counter constraints.
         {

@@ -1,15 +1,20 @@
 use std::borrow::Borrow;
 
 use crate::{memory::MemoryCols, operations::IsEqualWordOperation};
-use p3_air::{Air, AirBuilder};
+use p3_air::AirBuilder;
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
+use slop_air::{Air, AirBuilderWithPublicValues};
 use zkm_core_executor::{events::MemoryAccessPosition, ByteOpcode, Opcode};
 use zkm_primitives::consts::WORD_SIZE;
-use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
+use zkm_hypercube::{
+    air::{PublicValues, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    word::Word,
+};
 
 use crate::{
-    air::{MemoryAirBuilder, WordAirBuilder},
+    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    air::{MemoryAirBuilder, WordAirBuilder, ZKMCoreAirBuilder},
     operations::AddDoubleOperation,
 };
 
@@ -17,7 +22,7 @@ use super::{columns::MiscInstrColumns, MiscInstrsChip};
 
 impl<AB> Air<AB> for MiscInstrsChip
 where
-    AB: ZKMAirBuilder,
+    AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
     AB::Var: Sized,
 {
     #[inline(never)]
@@ -26,14 +31,10 @@ where
         let local = main.row_slice(0);
         let local: &MiscInstrColumns<AB::Var> = (*local).borrow();
 
-        let cpu_opcode = local.is_sext * Opcode::SEXT.as_field::<AB::F>()
-            + local.is_ins * Opcode::INS.as_field::<AB::F>()
-            + local.is_ext * Opcode::EXT.as_field::<AB::F>()
-            + local.is_maddu * Opcode::MADDU.as_field::<AB::F>()
-            + local.is_msubu * Opcode::MSUBU.as_field::<AB::F>()
-            + local.is_madd * Opcode::MADD.as_field::<AB::F>()
-            + local.is_msub * Opcode::MSUB.as_field::<AB::F>()
-            + local.is_teq * Opcode::TEQ.as_field::<AB::F>();
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
 
         let is_real = local.is_sext
             + local.is_ins
@@ -57,47 +58,70 @@ where
         let is_rw_a =
             local.is_maddu + local.is_msubu + local.is_madd + local.is_msub + local.is_ins;
 
-        let is_check_memory = local.is_maddu + local.is_msubu + local.is_madd + local.is_msub;
+        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        let clk = clk_expr::<AB>(&local.state);
 
-        builder.receive_instruction(
-            local.shard,
-            local.clk,
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            cpu_opcode.clone(),
-            local.op_a_value,
-            local.op_b_value,
-            local.op_c_value,
-            local.prev_a_value,
-            local.is_teq,
-            is_rw_a.clone(),
-            is_check_memory.clone(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
-            is_check_memory,
-        );
+        builder.send_program(local.pc, local.instruction, is_real.clone());
 
-        builder.receive_instruction(
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            cpu_opcode,
-            local.op_a_value,
-            local.op_b_value,
-            local.op_c_value,
-            local.prev_a_value,
-            local.is_teq,
+        // MADD-family/INS are read-modify-write of `op_a` (`is_rw_a`, `prev_a_value`
+        // cross-checked against the register's real previous value via `hi_or_prev_a`); TEQ
+        // never writes `op_a` at all (`op_a_immutable = is_teq`); SEXT/EXT are fresh writes.
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            local.op_a_value.map(Into::into),
+            local.prev_a_value.map(Into::into),
             is_rw_a,
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
-            local.is_sext + local.is_teq + local.is_ext + local.is_ins,
+            local.is_teq.into(),
+            is_real.clone(),
         );
+
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            is_real.clone(),
+        );
+
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk,
+            local.pc.into(),
+            local.next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            AB::Expr::from_canonical_u32(5),
+            is_real.clone(),
+        );
+
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
+        builder
+            .when(is_real.clone())
+            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
+
+        // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
+        // can't claim the wrong misc-instruction variant while still passing the program
+        // lookup.
+        let opcode_bindings: [(AB::Var, Opcode); 8] = [
+            (local.is_sext, Opcode::SEXT),
+            (local.is_ins, Opcode::INS),
+            (local.is_ext, Opcode::EXT),
+            (local.is_maddu, Opcode::MADDU),
+            (local.is_msubu, Opcode::MSUBU),
+            (local.is_madd, Opcode::MADD),
+            (local.is_msub, Opcode::MSUB),
+            (local.is_teq, Opcode::TEQ),
+        ];
+        for (selector, op) in opcode_bindings {
+            builder.when(selector).assert_eq(local.instruction.opcode, op.as_field::<AB::F>());
+        }
 
         self.eval_ext(builder, local);
         self.eval_ins(builder, local);
@@ -252,8 +276,9 @@ impl MiscInstrsChip {
         );
 
         builder.eval_memory_access(
-            local.shard,
-            local.clk + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
+            local.state.shard,
+            clk_expr::<AB>(&local.state)
+                + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
             AB::F::from_canonical_u32(33),
             &maddsub_cols.op_hi_access,
             is_real.clone(),

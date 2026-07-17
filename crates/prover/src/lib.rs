@@ -110,11 +110,8 @@ fn recursion_max_log_row_count() -> usize {
 }
 
 /// Log2 of the stacked-PCS grouping height for a machine whose jagged PCS is configured for
-/// `max_log_row_count`. Was a fixed constant (`4`, copied from a `zkm-hypercube` unit test's
-/// throwaway value) hardcoded into the real proving/verification path -- see the detailed
-/// comment on `zkm_core_machine::utils::prove::stacking_height_for`, which this mirrors, for why
-/// that made `commit_traces` catastrophically slow. Kept in sync with that function by
-/// convention (it isn't reachable from this crate).
+/// `max_log_row_count`. Mirrors `zkm_core_machine::utils::prove::stacking_height_for`; kept in
+/// sync with it by convention (it isn't reachable from this crate).
 fn stacking_height_for(max_log_row_count: usize) -> u32 {
     (max_log_row_count as u32).saturating_sub(1)
 }

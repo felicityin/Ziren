@@ -4,7 +4,11 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
-use crate::operations::KoalaBearWordRangeChecker;
+use crate::{
+    adapter::InstructionCols,
+    adapter::{CpuState, RegisterReader},
+    operations::KoalaBearWordRangeChecker,
+};
 
 pub const NUM_BRANCH_COLS: usize = size_of::<BranchColumns<u8>>();
 
@@ -12,7 +16,16 @@ pub const NUM_BRANCH_COLS: usize = size_of::<BranchColumns<u8>>();
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct BranchColumns<T> {
+pub struct BranchColumns<T: Copy> {
+    /// The current shard and clk.
+    pub state: CpuState<T>,
+
+    /// The raw fetched instruction.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`/`c`.
+    pub reader: RegisterReader<T>,
+
     /// The current program counter.
     pub pc: T,
 

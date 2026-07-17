@@ -302,8 +302,14 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
                     > 0
             }
             SyscallShardKind::Precompile => {
+                // `cpu_events` alone is no longer a reliable proxy for "this shard retired
+                // ordinary core instructions": as more opcode chips become self-sufficient (see
+                // `zkm_core_machine::adapter`), a shard full of real (non-`Cpu`-routed)
+                // instructions can legitimately have an empty `cpu_events`. Use
+                // `contains_cpu()` (`first_instruction_pc.is_some()`, set for every retired
+                // instruction regardless of which chip handles it) instead.
                 !shard.precompile_events.is_empty()
-                    && shard.cpu_events.is_empty()
+                    && !shard.contains_cpu()
                     && shard.global_memory_initialize_events.is_empty()
                     && shard.global_memory_finalize_events.is_empty()
             }

@@ -198,7 +198,9 @@ impl PrecompileEvents {
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
+        // `Default` pre-populates a (empty) `Vec` per syscall code, so `self.events` itself is
+        // never actually empty -- check whether any syscall code has real events instead.
+        self.events.values().all(Vec::is_empty)
     }
 
     /// Get all the precompile events.

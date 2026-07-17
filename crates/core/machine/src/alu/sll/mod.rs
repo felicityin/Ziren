@@ -37,24 +37,33 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use p3_air::{Air, AirBuilder, BaseAir};
-use p3_field::{FieldAlgebra, PrimeField, PrimeField32};
+use p3_air::AirBuilder;
+use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelIterator, ParallelSlice};
+use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{AluEvent, ByteLookupEvent, ByteRecord},
-    ExecutionRecord, Opcode, Program,
+    events::{AluEvent, ByteLookupEvent, ByteRecord, MemoryRecordEnum},
+    ExecutionRecord, Opcode, Program, UNUSED_PC,
 };
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_hypercube::{air::MachineAir, word::Word};
+use zkm_hypercube::{
+    air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
+    word::Word,
+};
 use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
-    air::ZKMCoreAirBuilder,
+    adapter::InstructionCols,
+    adapter::{
+        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+    },
+    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    memory::MemoryCols,
     utils::{next_power_of_two, pad_rows_fixed},
     CoreChipError,
 };
@@ -66,6 +75,10 @@ pub const NUM_SHIFT_LEFT_COLS: usize = size_of::<ShiftLeftCols<u8>>();
 pub const BYTE_SIZE: usize = 8;
 
 /// A chip that implements bitwise operations for the opcodes SLL and SLLI.
+///
+/// As with `AddSubChip`, not every row is a real retired instruction: `misc/others`'s EXT/INS
+/// dependency checks reuse this chip's arithmetic circuit for internal SLL checks at the
+/// `UNUSED_PC` sentinel. `is_real_instruction` distinguishes the two.
 #[derive(Default)]
 pub struct ShiftLeft;
 
@@ -73,10 +86,24 @@ pub struct ShiftLeft;
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct ShiftLeftCols<T> {
+pub struct ShiftLeftCols<T: Copy> {
+    /// The current shard and clk. Only meaningful when `is_real_instruction` is set.
+    pub state: CpuState<T>,
+
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
+
+    /// The raw fetched instruction. Only meaningful when `is_real_instruction` is set.
+    pub instruction: InstructionCols<T>,
+
+    /// Register operand access for `a`/`b`/`c`. Only meaningful when `is_real_instruction` is
+    /// set.
+    pub reader: RegisterReader<T>,
+
+    /// Whether this row is a real, retired SLL instruction (as opposed to an internal
+    /// dependency check from another chip, or padding).
+    pub is_real_instruction: T,
 
     /// The output operand.
     pub a: Word<T>,
@@ -145,7 +172,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftLeft {
             let mut row = [F::ZERO; NUM_SHIFT_LEFT_COLS];
             let cols: &mut ShiftLeftCols<F> = row.as_mut_slice().borrow_mut();
             let mut blu = Vec::new();
-            self.event_to_row(event, cols, &mut blu);
+            self.event_to_row(event, cols, &mut blu, &input.program);
             rows.push(row);
         }
 
@@ -171,6 +198,10 @@ impl<F: PrimeField32> MachineAir<F> for ShiftLeft {
             cols.shift_by_n_bits[0] = F::ONE;
             cols.shift_by_n_bytes[0] = F::ONE;
             cols.bit_shift_multiplier = F::ONE;
+            // Padding row: force the register reader's b/c memory-access multiplicities to zero
+            // (see cpuchip-migration-register-reader-gotchas memory).
+            cols.instruction.imm_b = F::ONE;
+            cols.instruction.imm_c = F::ONE;
             row
         };
         debug_assert!(padded_row_template.len() == NUM_SHIFT_LEFT_COLS);
@@ -196,7 +227,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftLeft {
                 events.iter().for_each(|event| {
                     let mut row = [F::ZERO; NUM_SHIFT_LEFT_COLS];
                     let cols: &mut ShiftLeftCols<F> = row.as_mut_slice().borrow_mut();
-                    self.event_to_row(event, cols, &mut blu);
+                    self.event_to_row(event, cols, &mut blu, &input.program);
                 });
                 blu
             })
@@ -217,11 +248,12 @@ impl<F: PrimeField32> MachineAir<F> for ShiftLeft {
 
 impl ShiftLeft {
     /// Create a row from an event.
-    fn event_to_row<F: PrimeField>(
+    fn event_to_row<F: PrimeField32>(
         &self,
         event: &AluEvent,
         cols: &mut ShiftLeftCols<F>,
         blu: &mut impl ByteRecord,
+        program: &Program,
     ) {
         let a = event.a.to_le_bytes();
         let b = event.b.to_le_bytes();
@@ -232,6 +264,37 @@ impl ShiftLeft {
         cols.b = Word(b.map(F::from_canonical_u8));
         cols.c = Word(c.map(F::from_canonical_u8));
         cols.is_real = F::ONE;
+
+        // Default: not a real instruction, so the register reader's b/c memory accesses have
+        // zero multiplicity unless overwritten by a real fetched instruction's actual immediate
+        // flags just below.
+        cols.instruction.imm_b = F::ONE;
+        cols.instruction.imm_c = F::ONE;
+
+        let is_real_instruction = event.pc != UNUSED_PC;
+        cols.is_real_instruction = F::from_bool(is_real_instruction);
+        if is_real_instruction {
+            cols.state.populate(blu, event.shard, event.clk);
+
+            let instruction = program.fetch(event.pc);
+            cols.instruction.populate(&instruction);
+
+            *cols.reader.op_a_access.value_mut() = event.a.into();
+            *cols.reader.op_b_access.value_mut() = event.b.into();
+            *cols.reader.op_c_access.value_mut() = event.c.into();
+
+            if let Some(record) = event.a_record {
+                cols.reader.op_a_access.populate(record, blu);
+            }
+            if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+                cols.reader.op_b_access.populate(record, blu);
+            }
+            if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+                cols.reader.op_c_access.populate(record, blu);
+            }
+            cols.reader.populate_op_a_range_checks(blu);
+        }
+
         for i in 0..BYTE_SIZE {
             cols.c_least_sig_byte[i] = F::from_canonical_u32((event.c >> i) & 1);
         }
@@ -288,12 +351,17 @@ impl<F> BaseAir<F> for ShiftLeft {
 
 impl<AB> Air<AB> for ShiftLeft
 where
-    AB: ZKMCoreAirBuilder,
+    AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let local = main.row_slice(0);
         let local: &ShiftLeftCols<AB::Var> = (*local).borrow();
+
+        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
+            core::array::from_fn(|i| builder.public_values()[i]);
+        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
+            public_values_slice.as_slice().borrow();
 
         let zero: AB::Expr = AB::F::ZERO.into();
         let one: AB::Expr = AB::F::ONE.into();
@@ -402,8 +470,64 @@ where
         );
 
         builder.assert_bool(local.is_real);
+        builder.assert_bool(local.is_real_instruction);
+        builder.when_not(local.is_real).assert_zero(local.is_real_instruction);
 
-        // Receive the arguments.
+        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        let clk = clk_expr::<AB>(&local.state);
+
+        builder.send_program(local.pc, local.instruction, local.is_real_instruction);
+
+        eval_register_reader(
+            builder,
+            &local.reader,
+            local.state.shard,
+            clk.clone(),
+            &local.instruction,
+            // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
+            // reader.op_a_val())` fires unconditionally whenever `op_a_0` is unset, which it is
+            // by default on synthetic rows (their `instruction` column is never populated) --
+            // an ungated `op_a_value` would then have to equal `reader.op_a_val()` (always zero
+            // on synthetic rows) even when the true result is nonzero.
+            local.a.map(|x| local.is_real_instruction.into() * Into::<AB::Expr>::into(x)),
+            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
+            AB::Expr::zero(),
+            AB::Expr::zero(),
+            local.is_real_instruction.into(),
+        );
+
+        eval_cpu_state(
+            builder,
+            &local.state,
+            public_values.execution_shard,
+            clk.clone(),
+            local.is_real_instruction.into(),
+        );
+
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk,
+            local.pc.into(),
+            local.next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            AB::Expr::from_canonical_u32(5),
+            local.is_real_instruction.into(),
+        );
+
+        builder
+            .when(local.is_real_instruction)
+            .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
+        builder
+            .when(local.is_real_instruction)
+            .assert_word_eq(local.reader.op_c_val(), local.c.map(Into::into));
+        builder
+            .when(local.is_real_instruction)
+            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::SLL as u32));
+
+        // ---- Synthetic dependency path: matches whichever chip generated this internal check via
+        // `send_alu` (always at the `UNUSED_PC` sentinel, shard/clk zero). ----
         builder.receive_instruction(
             AB::Expr::zero(),
             AB::Expr::zero(),
@@ -421,7 +545,7 @@ where
             AB::Expr::zero(),
             AB::Expr::zero(),
             AB::Expr::one(),
-            local.is_real,
+            local.is_real - local.is_real_instruction,
         );
     }
 }
@@ -432,7 +556,7 @@ mod tests {
     // use crate::utils::{uni_stark_prove as prove, uni_stark_verify as verify};
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode};
+    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode, UNUSED_PC};
     use zkm_hypercube::air::MachineAir;
     // use zkm_stark::{
     //     air::MachineAir, koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig,
@@ -443,7 +567,7 @@ mod tests {
     #[test]
     fn generate_trace() {
         let mut shard = ExecutionRecord::default();
-        shard.shift_left_events = vec![AluEvent::new(0, Opcode::SLL, 16, 8, 1)];
+        shard.shift_left_events = vec![AluEvent::new(UNUSED_PC, Opcode::SLL, 16, 8, 1)];
         let chip = ShiftLeft::default();
         let trace: RowMajorMatrix<KoalaBear> =
             chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();

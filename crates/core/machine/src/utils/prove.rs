@@ -42,19 +42,11 @@ use zkm_hypercube::{
 /// jagged PCS is configured for `max_log_row_count`.
 ///
 /// This used to be a fixed constant (`4`, copied from a `zkm-hypercube` unit test's throwaway
-/// value) hardcoded into the real proving path. At that height, a real shard's ~287M-cell trace
-/// gets fragmented by `interleave_multilinears_with_fixed_rate` into hundreds of thousands of
-/// 16-row stripes instead of a handful of well-amortized ones, which is why `commit_traces`
-/// (Reed-Solomon encoding + Merkle commitment) measured 70s for a single isolated shard and
-/// 191-343s under 4-way concurrency in this session's benchmarking -- roughly 40x slower per
-/// cycle than SP1's equivalent step, which uses a stacking height close to its own
-/// `max_log_row_count` (`CORE_LOG_STACKING_HEIGHT = 21` for `CORE_MAX_LOG_ROW_COUNT = 22`,
-/// `RECURSION_LOG_STACKING_HEIGHT = 20` for `RECURSION_MAX_LOG_ROW_COUNT = 21`; see
-/// `sp1_prover::components`). Deriving this from `max_log_row_count` (one less, mirroring SP1's
-/// ratio) rather than hardcoding a fixed value also keeps it valid across Ziren's
-/// memory-scaled shard sizes (`ZKMProverOpts::get_memory_opts` picks `shard_size` anywhere from
-/// `1 << 19` to `1 << 21` depending on available RAM), where a fixed constant tuned for one tier
-/// could exceed `max_log_row_count` on a smaller one.
+/// value) hardcoded into the real proving path, fragmenting each shard's trace into far more
+/// stacked-PCS columns than necessary. Deriving it from `max_log_row_count` instead (one less,
+/// mirroring `sp1_prover::components`'s ratio) also keeps it valid across Ziren's memory-scaled
+/// shard sizes, where a fixed constant tuned for one tier could exceed `max_log_row_count` on a
+/// smaller one.
 pub(crate) fn stacking_height_for(max_log_row_count: usize) -> u32 {
     (max_log_row_count as u32).saturating_sub(1)
 }
@@ -245,19 +237,19 @@ pub fn prove_with_context(
                             // Wait for our turn to update the state.
                             record_gen_sync.wait_for_turn(index);
 
-                            // Update the public values & prover state for the shards which contain
-                            // "cpu events".
+                            // Update the public values & prover state for the shards which
+                            // retired instructions.
                             let mut state = state.lock().unwrap();
                             for record in records.iter_mut() {
                                 state.shard += 1;
                                 state.execution_shard = record.public_values.execution_shard;
-                                if let (Some(first), Some(last)) =
-                                    (record.cpu_events.first(), record.cpu_events.last())
-                                {
-                                    state.start_pc = first.pc;
-                                    state.next_pc = last.next_pc;
-                                    state.initial_timestamp = first.clk;
-                                    state.last_timestamp = last.clk + 5 + last.num_extra_cycles;
+                                state.is_execution_shard = record.contains_cpu() as u32;
+                                if let Some(first_pc) = record.first_instruction_pc {
+                                    state.start_pc = first_pc;
+                                    state.next_pc = record.last_next_pc;
+                                    state.initial_timestamp =
+                                        record.first_instruction_clk.unwrap();
+                                    state.last_timestamp = record.last_timestamp;
                                 }
                                 state.committed_value_digest =
                                     record.public_values.committed_value_digest;
@@ -296,6 +288,7 @@ pub fn prove_with_context(
                                 }
                                 for record in deferred.iter_mut() {
                                     state.shard += 1;
+                                    state.is_execution_shard = 0;
                                     state.previous_init_addr_bits =
                                         record.public_values.previous_init_addr_bits;
                                     state.last_init_addr_bits =
@@ -349,6 +342,7 @@ pub fn prove_with_context(
                                 }
                                 for record in deferred.iter_mut() {
                                     state.shard += 1;
+                                    state.is_execution_shard = 0;
                                     state.previous_init_addr_bits =
                                         record.public_values.previous_init_addr_bits;
                                     state.last_init_addr_bits =
