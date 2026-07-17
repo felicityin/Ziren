@@ -152,6 +152,20 @@ impl Program {
         let instructions: Vec<_> =
             instructions.par_iter().map(|inst| Instruction::decode_from(*inst).unwrap()).collect();
 
+        // The Program chip's row count is exactly `instructions.len()` (one preprocessed
+        // row per instruction, `crates/core/machine/src/program/mod.rs`'s
+        // `generate_preprocessed_trace`), entirely independent of shard cycles -- unlike
+        // every other chip, there's no per-shard splitting that can shrink this, so it
+        // must be checked once, here, against the same fixed ceiling `CORE_MAX_LOG_ROW_COUNT`
+        // gives every other chip (see `crates/stark/src/opts.rs`).
+        if instructions.len() > crate::MAX_PROGRAM_SIZE {
+            bail!(
+                "program has {} instructions, exceeding the maximum of {}",
+                instructions.len(),
+                crate::MAX_PROGRAM_SIZE
+            );
+        }
+
         Ok(Program {
             instructions,
             pc_start: entry,

@@ -177,6 +177,9 @@ pub fn estimate_mips_event_counts(
     // Compute the number of events in the syscall core chip.
     events_counts[MipsAirId::SyscallCore] = syscalls_sent;
 
+    // Compute the number of events in the SyscallInstrs chip.
+    events_counts[MipsAirId::SyscallInstrs] = opcode_counts[Opcode::SYSCALL];
+
     // Compute the number of events in the global chip.
     events_counts[MipsAirId::Global] = 2 * touched_addresses + syscalls_sent;
 

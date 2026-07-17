@@ -99,9 +99,11 @@ pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
 pub type ShrinkAir<F> = RecursionAir<F, SHRINK_DEGREE>;
 pub type WrapAir<F> = RecursionAir<F, WRAP_DEGREE>;
 
-/// The max log row count the core machine's jagged PCS is configured for.
+/// The max log row count the core machine's jagged PCS is configured for. Fixed independently
+/// of `ZKMCoreOpts::shard_size` (the executor's cycle-count ceiling) -- see
+/// `zkm_stark::CORE_MAX_LOG_ROW_COUNT`'s doc comment for why these two are decoupled.
 fn core_max_log_row_count() -> usize {
-    ZKMCoreOpts::default().shard_size.ilog2() as usize
+    zkm_stark::CORE_MAX_LOG_ROW_COUNT
 }
 
 /// The max log row count the recursion (compress/shrink) machines' jagged PCS is configured for.

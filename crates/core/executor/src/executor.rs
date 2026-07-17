@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zkm_curves::CurveError;
-use zkm_stark::ZKMCoreOpts;
+use zkm_stark::{ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
 
 use crate::{
     context::ZKMContext,
@@ -44,6 +44,36 @@ pub const DEFAULT_PC_INC: u32 = 4;
 /// This is used in the `InstrEvent` to indicate that the instruction is not from the CPU.
 /// A valid pc should be divisible by 4, so we use 1 to indicate that the pc is not used.
 pub const UNUSED_PC: u32 = 1;
+
+/// Hard ceiling on a shard-local `clk`: every migrated opcode chip's shared `CpuState`
+/// range-checks `clk` into a 16+8-bit limb pair with no overflow/carry bit
+/// (`crates/core/machine/src/adapter/state.rs`'s `eval_cpu_state`, via
+/// `eval_range_check_24bits`), so `clk` must never reach `1 << 24` for any real row. `clk`
+/// increments by `5` per ordinary cycle plus `num_extra_cycles` for syscalls, so this binds
+/// well before `shard_size` if `shard_size` is configured anywhere near this value.
+pub const CORE_SHARD_CLK_LIMIT: u32 = 1 << 24;
+
+/// Safety margin subtracted from `1 << CORE_MAX_LOG_ROW_COUNT` to get
+/// [`CORE_SHARD_HEIGHT_THRESHOLD`]. `pad_mips_event_counts` already pads its own
+/// worst-case-growth estimate by `shape_check_frequency`, so this only needs to cover the
+/// (small) slop between two consecutive `shape_check_frequency`-cycle checkpoints, not a full
+/// independent safety factor -- if `SHAPE_CHECK_FREQUENCY` is ever overridden much larger than
+/// its default (16), this headroom should grow to match.
+pub const CORE_SHARD_HEIGHT_HEADROOM: u64 = 1 << 16;
+
+/// Hard per-chip real-row-count ceiling: no single chip may reach this many real rows within
+/// one shard, since the jagged PCS requires every chip's committed trace to have exactly
+/// `1 << CORE_MAX_LOG_ROW_COUNT` rows after padding (`slop/crates/jagged/src/prover.rs`'s
+/// `assert_eq!(padded_mle.num_variables(), self.max_log_row_count as u32)`, mirrored by a
+/// verifier-side rejection, `slop/crates/jagged/src/verifier.rs`'s `IncorrectShape` check).
+/// Unlike `shard_size` (a cycle-count ceiling), that alone does not bound any *individual*
+/// chip's row count -- most per-opcode chips get exactly one event per matching cycle, so an
+/// opcode-dominated tight loop can otherwise drive a single chip's row count arbitrarily close
+/// to `shard_size` itself.
+pub const CORE_SHARD_HEIGHT_THRESHOLD: u64 =
+    (1 << CORE_MAX_LOG_ROW_COUNT) - CORE_SHARD_HEIGHT_HEADROOM;
+
+const _: () = assert!(CORE_SHARD_HEIGHT_THRESHOLD <= 1 << CORE_MAX_LOG_ROW_COUNT);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Whether to verify deferred proofs during execution.
@@ -2599,6 +2629,12 @@ impl<'a> Executor<'a> {
         // If there's not enough cycles left for another instruction, move to the next shard.
         let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
 
+        // `clk`'s 24-bit range check (see `CORE_SHARD_CLK_LIMIT`'s doc comment) has no
+        // overflow/carry handling, so this must be checked unconditionally every cycle
+        // (not just every `shape_check_frequency` cycles like the height/LDE checks
+        // below) -- `clk`'s growth is exactly known each step, no estimation involved.
+        let clk_exit = self.max_syscall_cycles + self.state.clk >= CORE_SHARD_CLK_LIMIT;
+
         // Every N cycles, check if the estimated LDE size is still under the safety threshold.
         //
         // If we're close to exceeding it, early stop the shard to ensure we don't OOM.
@@ -2622,9 +2658,23 @@ impl<'a> Executor<'a> {
                 );
                 shape_match_found = false;
             }
+
+            // Unlike the combined LDE-size budget above (a sum across every chip), this
+            // bounds each chip *individually* against `CORE_SHARD_HEIGHT_THRESHOLD` --
+            // see that constant's doc comment for why this is needed once `shard_size`
+            // can exceed `1 << CORE_MAX_LOG_ROW_COUNT`.
+            if let Some(max_chip_height) = padded_event_counts.iter().map(|(_, h)| *h).max() {
+                if max_chip_height >= CORE_SHARD_HEIGHT_THRESHOLD {
+                    tracing::warn!(
+                        "stopping shard early due to a chip height reaching {}",
+                        max_chip_height
+                    );
+                    shape_match_found = false;
+                }
+            }
         }
 
-        if cpu_exit || !shape_match_found {
+        if cpu_exit || clk_exit || !shape_match_found {
             if self.executor_mode == ExecutorMode::Checkpoint {
                 self.state.records_clk.push(self.state.clk);
             }
@@ -2776,11 +2826,12 @@ mod tests {
         secp256r1_double_program, simple_memory_program, simple_program, ssz_withdrawals_program,
         u256xu2048_mul_program,
     };
-    use zkm_stark::ZKMCoreOpts;
+    use enum_map::EnumMap;
+    use zkm_stark::{ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
 
-    use crate::{Instruction, Opcode, Register};
+    use crate::{estimate_mips_event_counts, pad_mips_event_counts, Instruction, Opcode, Register};
 
-    use super::{Executor, Program};
+    use super::{Executor, Program, CORE_SHARD_HEIGHT_THRESHOLD};
 
     fn _assert_send<T: Send>() {}
 
@@ -2802,6 +2853,45 @@ mod tests {
         let program = fibonacci_program();
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.run_very_fast().unwrap();
+    }
+
+    /// Exercises the exact per-chip height computation `inc_shard_if_need` performs
+    /// (`estimate_mips_event_counts` + `pad_mips_event_counts` + a max over chips), without
+    /// needing a full multi-million-cycle `Executor::run()` -- a single opcode dominating a
+    /// shard (e.g. an ADD-heavy tight loop) must drive that chip's computed height past
+    /// `CORE_SHARD_HEIGHT_THRESHOLD`, which is what triggers the new early-cut guard.
+    #[test]
+    fn height_threshold_trips_on_a_single_dominant_chip() {
+        let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
+        opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
+
+        let event_counts = estimate_mips_event_counts(0, 0, opcode_counts);
+        let padded_event_counts = pad_mips_event_counts(event_counts, 16);
+        let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
+
+        assert!(
+            max_chip_height >= CORE_SHARD_HEIGHT_THRESHOLD,
+            "a chip with {CORE_SHARD_HEIGHT_THRESHOLD} real events must trip the height guard"
+        );
+        // Every real per-chip height must still stay strictly under the hard jagged-PCS
+        // ceiling once the guard is respected (this is the property the guard exists to
+        // guarantee -- `CORE_SHARD_HEIGHT_THRESHOLD`'s headroom below `1 <<
+        // CORE_MAX_LOG_ROW_COUNT` is what makes this hold even for the *next* event
+        // counted after this check last ran).
+        assert!(max_chip_height < 1 << CORE_MAX_LOG_ROW_COUNT);
+    }
+
+    /// A shard nowhere near the threshold must not trip the guard (no false positives).
+    #[test]
+    fn height_threshold_does_not_trip_on_a_small_shard() {
+        let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
+        opcode_counts[Opcode::ADD] = 1_000;
+
+        let event_counts = estimate_mips_event_counts(0, 0, opcode_counts);
+        let padded_event_counts = pad_mips_event_counts(event_counts, 16);
+        let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
+
+        assert!(max_chip_height < CORE_SHARD_HEIGHT_THRESHOLD);
     }
 
     #[test]

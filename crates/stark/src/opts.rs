@@ -3,6 +3,19 @@ use std::env;
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
+/// The core machine's PCS/FRI row-count parameter (`ShardVerifier::from_basefold_parameters`'s
+/// `max_log_row_count`), fixed independently of `shard_size` (the executor's cycle-count
+/// ceiling, `ZKMCoreOpts::shard_size`). `shard_size` can be raised well past
+/// `1 << CORE_MAX_LOG_ROW_COUNT` (the executor's own per-chip/`clk` guards,
+/// `crates/core/executor/src/executor.rs`, keep any individual chip's real row count under this
+/// ceiling regardless); `max_log_row_count` cannot, because of KoalaBear's two-adicity: the
+/// basefold verifier (`slop/crates/basefold/src/verifier.rs`) requires `log_stacking_height +
+/// log_blowup <= KoalaBear::TWO_ADICITY (24)`, where `log_stacking_height =
+/// max_log_row_count - 1` (`stacking_height_for`) and `log_blowup = 2` (`DEFAULT_LOG_BLOWUP`) --
+/// so `(22 - 1) + 2 = 23 <= 24` holds with 1 bit of headroom; `max_log_row_count = 24` would need
+/// `25 <= 24`, a guaranteed `TwoAdicityOverflow`.
+pub const CORE_MAX_LOG_ROW_COUNT: usize = 22;
+
 // A recursion shard's compress-machine ExtAlu chip can exceed 1 << 21 real rows even for the
 // smallest guest program, once core's own shard_size scales up via `get_memory_opts`. Unlike
 // core's own shard_size, this bound isn't memory-scaled -- it's a fixed cap sized for the
@@ -21,7 +34,7 @@ const DEFAULT_TRACE_GEN_WORKERS: usize = 4;
 // `trace_gen_workers` since the two workloads have different resource profiles: trace generation
 // is lighter/more memory-bound, while shard proving (`commit_traces`'s FFT/Merkle-tree work) is
 // heavier/more CPU-bound.
-const DEFAULT_PROVE_WORKERS: usize = 2;
+const DEFAULT_PROVE_WORKERS: usize = 1;
 const DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY: usize = 128;
 const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = 1;
 
@@ -32,14 +45,14 @@ pub const MAX_DEFERRED_SPLIT_THRESHOLD: usize = 1 << 15;
 /// `zkm_core_executor::cost::estimate_mips_lde_size`) before a shard is stopped early.
 ///
 /// This is a correctness bound, not just an OOM guard: the jagged PCS rejects a proof with
-/// `AreaOutOfBounds` once a round's padded cell count (row count times column count, summed
-/// across every chip in the chosen cluster) reaches `2^30` -- see
-/// `slop_jagged::verifier::Verifier::verify_shard`'s `round_areas.iter().any(|&area| area == 0
-/// || area >= (1 << 30))` check. `estimate_mips_lde_size` folds `preprocessed_width +
-/// main_width` per chip into one combined cell count, a conservative (not maximally tight) proxy
-/// for the two independent per-round checks; at `cells * 8` bytes, the combined ceiling is 8 GiB.
-/// The threshold here is 7 GiB (12.5% margin below that ceiling).
-pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 7 * (1 << 30);
+/// `AreaOutOfBounds` once a shard's combined preprocessed-plus-main padded cell count (row count
+/// times column count, summed across every committed chip in both rounds) reaches `2^29` -- see
+/// `slop_jagged::verifier::JaggedPcsVerifier::verify_trusted_evaluations`'s `log_m >= 30` check,
+/// where `log_m` is `ceil(log2(total padded cell count))`. `estimate_mips_lde_size` folds
+/// `preprocessed_width + main_width` per chip into one combined cell count matching that same
+/// total; at `cells * 8` bytes, the ceiling is `2^32` bytes (4 GiB). The threshold here is
+/// `7 * 2^29` bytes (3.5 GiB, 12.5% margin below that ceiling).
+pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 7 * (1 << 29);
 
 /// Options to configure the Ziren prover for core and recursive proofs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,10 +86,11 @@ impl ZKMProverOpts {
             33..49 => (20, 1, 2),
             49..65 => (21, 1, 3),
             65..81 => (21, 3, 1),
-            // `shard_size` no longer has a hard architectural ceiling (the `CpuChip`-derived
-            // cap that used to force this tier down from (22, 4, 1) is gone), but this tier is
-            // left as-is pending separate performance tuning of the memory-scaled defaults.
-            81.. => (21, 4, 1),
+            // `shard_size` can reach `1 << CORE_MAX_LOG_ROW_COUNT` safely: the executor's own
+            // per-chip height ceiling and `clk`-overflow guard
+            // (`crates/core/executor/src/executor.rs`) keep every chip's real row count under
+            // that same bound regardless.
+            81.. => (22, 4, 1),
         }
     }
 

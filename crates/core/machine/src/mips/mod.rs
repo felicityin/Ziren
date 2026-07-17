@@ -1107,7 +1107,7 @@ pub mod tests {
             prover::{AirProver, ProverSemaphore, ZkmShardProver},
             ShardVerifier,
         };
-        use zkm_stark::ZKMCoreOpts;
+        use zkm_stark::CORE_MAX_LOG_ROW_COUNT;
 
         use crate::utils::stacking_height_for;
 
@@ -1118,7 +1118,7 @@ pub mod tests {
 
         let program = ssz_withdrawals_program();
         let machine = MipsAir::<KoalaBear>::hypercube_machine();
-        let max_log_row_count = ZKMCoreOpts::default().shard_size.ilog2() as usize;
+        let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             default_fri_config(),
             stacking_height_for(max_log_row_count),

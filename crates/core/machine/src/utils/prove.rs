@@ -69,7 +69,7 @@ type ZkmShardData = ShardData<ZkmGlobalContext, ZkmShardContext, ZkmInnerPcsProv
 // commented-out run_test*/run_test_machine* functions below.
 // use zkm_hypercube::air::MachineAir;
 // use zkm_stark::{Com, MachineProver, OpeningProof, PcsProverData, StarkVerifyingKey};
-use zkm_stark::{StarkGenericConfig, UniConfig, ZKMCoreOpts};
+use zkm_stark::{StarkGenericConfig, UniConfig, ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
 
 #[derive(Error, Debug)]
 pub enum ZKMCoreProverError {
@@ -95,7 +95,9 @@ pub fn prove_with_context(
     ZKMCoreProverError,
 > {
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
-    let max_log_row_count = opts.shard_size.ilog2() as usize;
+    // Fixed independently of `opts.shard_size` (the executor's cycle-count ceiling) -- see
+    // `zkm_stark::CORE_MAX_LOG_ROW_COUNT`'s doc comment.
+    let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
     let shard_verifier = ShardVerifier::from_basefold_parameters(
         default_fri_config(),
         stacking_height_for(max_log_row_count),
@@ -598,7 +600,7 @@ pub fn run_test_core(
     )?;
 
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
-    let max_log_row_count = ZKMCoreOpts::default().shard_size.ilog2() as usize;
+    let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
     let shard_verifier = ShardVerifier::from_basefold_parameters(
         default_fri_config(),
         stacking_height_for(max_log_row_count),
