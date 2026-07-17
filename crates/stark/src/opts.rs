@@ -16,27 +16,45 @@ use sysinfo::System;
 /// `25 <= 24`, a guaranteed `TwoAdicityOverflow`.
 pub const CORE_MAX_LOG_ROW_COUNT: usize = 22;
 
+/// Total system RAM in bytes.
+#[must_use]
+pub fn total_system_memory_bytes() -> u64 {
+    System::new_all().total_memory()
+}
+
 // A recursion shard's compress-machine ExtAlu chip can exceed 1 << 21 real rows even for the
 // smallest guest program, once core's own shard_size scales up via `get_memory_opts`. Unlike
 // core's own shard_size, this bound isn't memory-scaled -- it's a fixed cap sized for the
 // largest actual core shard_size in play.
 const RECURSION_MAX_SHARD_SIZE: usize = 1 << 22;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
-// `trace_gen_workers` gates both the number of concurrent phase-2 trace-gen worker threads
-// (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`) and how many
-// shards' main traces can be held in memory / proved at once (the
-// `ProverSemaphore::new(opts.trace_gen_workers.max(1))` permit pool). Kept conservative rather
-// than scaling to all cores, to leave headroom for each worker's own internal rayon parallelism
-// and limit how many shards' trace data are held concurrently.
-const DEFAULT_TRACE_GEN_WORKERS: usize = 4;
+// `trace_gen_workers` gates the number of concurrent phase-2 trace-gen worker threads
+// (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`). It no
+// longer independently bounds how many shards' main traces can be held in memory at once --
+// that's now the job of the process-wide, byte-budget-weighted semaphore in
+// `crates/core/machine/src/utils/trace_budget.rs`, admission-gated by each shard's actual
+// estimated size rather than a flat thread count. This can therefore scale higher than before
+// without risking the OOM that a purely thread-count-sized gate allowed (2 concurrent
+// full-size shards could already approach a 123GB machine's 80% memory threshold before the
+// budget semaphore existed).
+const DEFAULT_TRACE_GEN_WORKERS: usize = 8;
 // How many shards can be proved concurrently by the phase-2 prover (see
 // `crates/core/machine/src/utils/prove.rs`'s `p2_prover_handles` loop). Kept separate from
 // `trace_gen_workers` since the two workloads have different resource profiles: trace generation
 // is lighter/more memory-bound, while shard proving (`commit_traces`'s FFT/Merkle-tree work) is
-// heavier/more CPU-bound.
-const DEFAULT_PROVE_WORKERS: usize = 1;
+// heavier/more CPU-bound. Real memory admission is the same shared `trace_budget` semaphore as
+// `trace_gen_workers` above (a shard's permit is held from trace generation through the end of
+// proving), so raising this is likewise no longer gated by a fixed per-worker memory multiplier.
+const DEFAULT_PROVE_WORKERS: usize = 4;
 const DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY: usize = 128;
-const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = 1;
+// Buffer depth between phase-2 trace generation (Stage B) and shard proving (Stage C,
+// `crates/core/machine/src/utils/prove.rs`). This used to be forced to 1 (an unbuffered
+// handoff) because it was the only thing standing between a burst of trace-gen workers and an
+// unbounded pile-up of in-memory shard data; now that `trace_budget`'s byte-weighted semaphore
+// is the real memory gate (acquired *before* a shard's traces are even generated, so an
+// oversubscribed channel can't queue more resident trace data than the budget allows), this can
+// safely go up to one in-flight message per trace-gen worker without reintroducing that risk.
+const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = DEFAULT_TRACE_GEN_WORKERS;
 
 /// The threshold for splitting deferred events.
 pub const MAX_DEFERRED_SPLIT_THRESHOLD: usize = 1 << 15;
@@ -73,7 +91,7 @@ impl ZKMProverOpts {
     /// Get the default prover options.
     #[must_use]
     pub fn auto() -> Self {
-        let cpu_ram_gb = System::new_all().total_memory() / (1024 * 1024 * 1024);
+        let cpu_ram_gb = total_system_memory_bytes() / (1024 * 1024 * 1024);
         ZKMProverOpts::cpu(cpu_ram_gb as usize)
     }
 
@@ -105,10 +123,11 @@ impl ZKMProverOpts {
         opts.core_opts.shard_size = 1 << log2_shard_size;
         opts.core_opts.shard_batch_size = shard_batch_size;
 
-        opts.core_opts.records_and_traces_channel_capacity = 1;
-        // Was 1: see DEFAULT_TRACE_GEN_WORKERS's doc comment -- this explicit override was
-        // stomping the (also-1) default down to fully sequential shard proving regardless of
-        // available cores.
+        // See `DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY`'s doc comment: real memory
+        // admission is `trace_budget`'s byte-weighted semaphore, so this channel no longer
+        // needs to stay unbuffered to avoid an unbounded pile-up of resident shard data.
+        opts.core_opts.records_and_traces_channel_capacity =
+            DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY;
         opts.core_opts.trace_gen_workers = DEFAULT_TRACE_GEN_WORKERS;
         opts.core_opts.prove_workers = DEFAULT_PROVE_WORKERS;
 
@@ -186,7 +205,7 @@ pub struct ZKMCoreOpts {
 
 impl Default for ZKMCoreOpts {
     fn default() -> Self {
-        let cpu_ram_gb = System::new_all().total_memory() / (1024 * 1024 * 1024);
+        let cpu_ram_gb = total_system_memory_bytes() / (1024 * 1024 * 1024);
         let (default_log2_shard_size, default_shard_batch_size, default_log2_divisor) =
             ZKMProverOpts::get_memory_opts(cpu_ram_gb as usize);
 

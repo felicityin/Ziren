@@ -3,6 +3,7 @@ mod logger;
 mod prove;
 mod span;
 mod tracer;
+pub mod trace_budget;
 
 pub use logger::*;
 use p3_field::Field;

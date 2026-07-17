@@ -2,6 +2,7 @@ use crate::mips::MipsAir;
 // Used by the commented-out run_test_machine(_with_prover) below.
 // use p3_uni_stark::SymbolicAirBuilder;
 // use size::Size;
+use hashbrown::HashMap;
 use std::thread::ScopedJoinHandle;
 use std::{
     fs::File,
@@ -17,12 +18,17 @@ use zkm_stark::koala_bear_poseidon2::KoalaBearPoseidon2;
 use p3_field::PrimeField32;
 use p3_koala_bear::KoalaBear;
 
-use crate::{io::ZKMStdin, utils::concurrency::TurnBasedSync};
+use crate::{
+    io::ZKMStdin,
+    utils::{concurrency::TurnBasedSync, trace_budget},
+};
 use zkm_core_executor::{
+    estimate_record_trace_bytes,
     events::{format_table_line, sorted_table_lines},
+    mips_costs,
     subproof::NoOpSubproofVerifier,
-    ExecutionError, ExecutionRecord, ExecutionReport, ExecutionState, Executor, Program,
-    ZKMContext,
+    ExecutionError, ExecutionRecord, ExecutionReport, ExecutionState, Executor, MipsAirId,
+    Program, ZKMContext,
 };
 use zkm_primitives::io::ZKMPublicValues;
 
@@ -31,8 +37,8 @@ use zkm_hypercube::{
     air::PublicValues,
     config::{default_fri_config, ZkmGlobalContext, ZkmStackedPcs},
     prover::{
-        AirProver, PcsProof, ProverSemaphore, ShardData, TraceGenerator, ZkmInnerPcsProver,
-        ZkmShardProver,
+        AirProver, PcsProof, ProverPermit, ProverSemaphore, ShardData, TraceGenerator,
+        ZkmInnerPcsProver, ZkmShardProver,
     },
     record::MachineRecord,
     ShardContextImpl, ShardProof, ShardVerifier, ZkmSC,
@@ -106,6 +112,10 @@ pub fn prove_with_context(
     );
     let shard_prover = Arc::new(ZkmShardProver::<MipsAir<KoalaBear>>::new(shard_verifier));
     let prover_permits = ProverSemaphore::new(opts.trace_gen_workers.max(1));
+    // Per-chip byte costs, for estimating each record's real materialized trace size before
+    // admitting it into the process-wide trace-memory budget (`trace_budget::acquire_trace_budget`).
+    let trace_byte_costs: Arc<HashMap<MipsAirId, u64>> =
+        Arc::new(mips_costs().into_iter().map(|(k, v)| (k, v as u64)).collect());
 
     // Setup the runtime.
     let mut runtime = Executor::with_context(program.clone(), opts, context);
@@ -183,8 +193,11 @@ pub fn prove_with_context(
         let p2_record_gen_sync = Arc::new(TurnBasedSync::new());
         let p2_trace_gen_sync = Arc::new(TurnBasedSync::new());
         let checkpoints_rx = Arc::new(Mutex::new(checkpoints_rx));
-        let (p2_records_and_traces_tx, p2_records_and_traces_rx) =
-            sync_channel::<(Vec<ExecutionRecord>, Vec<ZkmShardData>)>(opts.records_and_traces_channel_capacity);
+        let (p2_records_and_traces_tx, p2_records_and_traces_rx) = sync_channel::<(
+            Vec<ExecutionRecord>,
+            Vec<ZkmShardData>,
+            Vec<ProverPermit>,
+        )>(opts.records_and_traces_channel_capacity);
         let p2_records_and_traces_tx = Arc::new(Mutex::new(p2_records_and_traces_tx));
 
         let report_aggregate = Arc::new(Mutex::new(ExecutionReport::default()));
@@ -205,6 +218,7 @@ pub fn prove_with_context(
             let machine = shard_prover.machine().clone();
             let pk = Arc::clone(&pk);
             let prover_permits = prover_permits.clone();
+            let trace_byte_costs = Arc::clone(&trace_byte_costs);
             let async_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
 
             let span = tracing::Span::current().clone();
@@ -407,6 +421,17 @@ pub fn prove_with_context(
                             // shard split off in the same checkpoint).
                             tracing::debug_span!("generate main traces", index).in_scope(|| {
                                 for record in records {
+                                    // Admission into the process-wide trace-memory budget, sized
+                                    // by this record's *exact* estimated materialized-trace
+                                    // bytes -- independent of `trace_gen_workers`'s thread-count-
+                                    // based `prover_permits` gate below, and shared by every
+                                    // concurrent caller of `prove_with_context` in this process
+                                    // (see `trace_budget`'s doc comment).
+                                    let estimated_bytes =
+                                        estimate_record_trace_bytes(&record, &trace_byte_costs);
+                                    let budget_permit = async_rt
+                                        .block_on(trace_budget::acquire_trace_budget(estimated_bytes));
+
                                     let main_trace_data =
                                         async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
                                             record.clone(),
@@ -417,7 +442,7 @@ pub fn prove_with_context(
                                     records_and_traces_tx
                                         .lock()
                                         .unwrap()
-                                        .send((vec![record], vec![shard_data]))
+                                        .send((vec![record], vec![shard_data], vec![budget_permit]))
                                         .unwrap();
                                 }
                             });
@@ -466,15 +491,22 @@ pub fn prove_with_context(
                 let _span = span.enter();
                 tracing::debug_span!("phase 2 prover").in_scope(|| loop {
                     let received = { rx.lock().unwrap().recv() };
-                    let Ok((records, shard_data)) = received else {
+                    let Ok((records, shard_data, budget_permits)) = received else {
                         break;
                     };
-                    for (record, data) in records.into_iter().zip(shard_data) {
+                    for ((record, data), budget_permit) in
+                        records.into_iter().zip(shard_data).zip(budget_permits)
+                    {
                         let shard_index = record.public_values.shard;
                         let shard_start = Instant::now();
                         let mut challenger = ZkmGlobalContext::default_challenger();
                         data.pk.vk.observe_into(&mut challenger);
                         let (proof, _permit) = shard_prover.prove_shard_with_data(data, challenger);
+                        // The trace-memory budget permit stays held through the whole
+                        // commit_traces/GKR/zerocheck/prove_evaluation_claims call above --
+                        // `data`'s padded main traces are what it was sized to admit -- and is
+                        // only released here, once this shard no longer needs them resident.
+                        drop(budget_permit);
                         tracing::info!(
                             "shard {} proved in {:?} (total elapsed {:?})",
                             shard_index,
