@@ -130,59 +130,46 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
 
         // Specify allowed shapes.
         //
-        // These bounds were re-derived 2026-07-15 (task #17, 阶段5.3) against the first real
-        // compress-stage recursion program this migration has actually compiled and measured
-        // (verifying one core shard for `test_artifacts::HELLO_WORLD_ELF`, the smallest possible
-        // guest program). The recursion verifier circuit's size is dominated by protocol-fixed
-        // jagged/basefold verification overhead tied to `core_max_log_row_count()` (currently 22
-        // -- see `crates/hypercube/src/config.rs`), not by the guest program's actual cycle
-        // count, so even this trivial program produced event counts the old hardcoded shapes
-        // (topping out around 2^20) were nowhere near large enough for: MemoryConst=1008930,
-        // MemoryVar=1221969, BaseAlu=5327, ExtAlu=2556571, Poseidon2WideDeg3=251099, Select=160,
-        // PrefixSumChecks=64464.
+        // The recursion verifier circuit's size is dominated by protocol-fixed jagged/basefold
+        // verification overhead tied to `core_max_log_row_count()` (currently 22 -- see
+        // `crates/hypercube/src/config.rs`) plus the number of distinct chips active in the core
+        // shard being verified, not by the guest program's cycle count directly. A trivial,
+        // single-chip guest program and a large, many-chip guest program stress different chips
+        // in this table: the former needs `ExtAlu` at its ceiling with little else, the latter
+        // needs far more `BaseAlu`/`Select` than the former ever exercises. Every entry here is
+        // calibrated to comfortably cover both extremes, with headroom for real per-shard
+        // variance on top of the larger of the two.
         //
-        // Critically, every entry here must also stay `<= recursion_max_log_row_count()`
-        // (currently 22, `crates/stark/src/opts.rs`'s `RECURSION_MAX_SHARD_SIZE`): a chip's
-        // actual row count at runtime is driven by the *shape* assigned here (the recursion
-        // runtime pads each chip's event count up to it), while the jagged PCS's `PaddedMle`
-        // storage is fixed to `2^recursion_max_log_row_count()` regardless of what the shape
-        // claims -- a shape entry exceeding that ceiling padded to more real rows than the PCS
-        // config could ever hold, which is exactly what the first version of this fix got wrong
-        // (it treated the shape table as independent headroom on top of the natural measurements
-        // without checking it against the machine-wide row cap). `ExtAlu`'s natural requirement
-        // (22 bits) already equals that ceiling, so it has zero slack across all three tiers.
-        // These have not yet been validated against a program with multiple shards or deferred
-        // proofs, which could plausibly need a larger `recursion_max_log_row_count()` outright
-        // (see [[stage4-1-verifier-migration]] for the broader pattern of still-provisional
+        // Every entry here must also stay `<= recursion_max_log_row_count()` (currently 22,
+        // `crates/stark/src/opts.rs`'s `RECURSION_MAX_SHARD_SIZE`): a chip's actual row count at
+        // runtime is driven by the *shape* assigned here (the recursion runtime pads each chip's
+        // event count up to it), while the jagged PCS's `PaddedMle` storage is fixed to
+        // `2^recursion_max_log_row_count()` regardless of what the shape claims -- a shape entry
+        // exceeding that ceiling pads to more real rows than the PCS config could ever hold.
+        // `ExtAlu`'s natural requirement already equals that ceiling, so it has zero slack in
+        // every tier. These have not yet been validated against deferred proofs, which could
+        // plausibly need a larger `recursion_max_log_row_count()` outright (see
+        // [[stage4-1-verifier-migration]] for the broader pattern of still-provisional
         // recursion-layer constants in this migration).
         let allowed_shapes = [
             // Fastest shape.
             [
-                (mem_var.clone(), 21),
-                (select.clone(), 9),
-                (mem_const.clone(), 20),
-                (base_alu.clone(), 13),
-                (ext_alu.clone(), 22),
-                (poseidon2_wide.clone(), 18),
-                (prefix_sum_checks.clone(), 17),
-                (public_values.clone(), PUB_VALUES_LOG_HEIGHT),
-            ],
-            // Second fastest shape.
-            [
                 (mem_var.clone(), 22),
-                (select.clone(), 10),
+                (select.clone(), 20),
                 (mem_const.clone(), 21),
-                (base_alu.clone(), 14),
+                (base_alu.clone(), 17),
                 (ext_alu.clone(), 22),
                 (poseidon2_wide.clone(), 19),
                 (prefix_sum_checks.clone(), 18),
                 (public_values.clone(), PUB_VALUES_LOG_HEIGHT),
             ],
+            // Fallback shape, with more headroom on the dimensions with the most real
+            // per-program variance (`BaseAlu`, `Select`, `Poseidon2WideDeg3`).
             [
                 (mem_var.clone(), 22),
-                (select.clone(), 11),
+                (select.clone(), 21),
                 (mem_const.clone(), 22),
-                (base_alu.clone(), 15),
+                (base_alu.clone(), 18),
                 (ext_alu.clone(), 22),
                 (poseidon2_wide.clone(), 20),
                 (prefix_sum_checks.clone(), 19),

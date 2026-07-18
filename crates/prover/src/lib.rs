@@ -1069,6 +1069,39 @@ pub mod tests {
         Ok(())
     }
 
+    /// Same measurement as [`measure_recursion_program_heights`], but against a shard at
+    /// production scale instead of the smallest possible guest program. `SHA3_CHAIN_ELF` runs
+    /// entirely in software (no precompiles), so at the default `shard_size` it fills a shard to
+    /// a total cell count representative of real production-scale core shards (hundreds of
+    /// millions of cells), unlike `HELLO_WORLD_ELF`'s single, mostly-empty shard.
+    #[test]
+    #[serial]
+    #[ignore]
+    fn measure_recursion_program_heights_production_scale() -> Result<()> {
+        let elf = test_artifacts::SHA3_CHAIN_ELF;
+        setup_logger();
+        let opts = ZKMProverOpts::default();
+        let prover = ZKMProver::<DefaultProverComponents>::new();
+        let context = ZKMContext::default();
+
+        let (_, program, vk) = prover.setup(elf);
+        let core_proof = prover.prove_core(program, &ZKMStdin::default(), opts, context)?;
+        prover.verify(&core_proof.proof, &vk)?;
+
+        let shard_proofs = &core_proof.proof.0;
+        println!("program produced {} shard(s)", shard_proofs.len());
+        let inputs = prover.get_first_layer_inputs(&vk, shard_proofs, &[], 1);
+        for (i, witness) in inputs.iter().enumerate() {
+            let input = match witness {
+                ZKMCircuitWitness::Core(input) => input,
+                _ => continue,
+            };
+            let _recursion_program = prover.recursion_program(input);
+            println!("shard {i}: recursion program compiled and fit the configured shape table");
+        }
+        Ok(())
+    }
+
     /// Tests an end-to-end workflow of proving a program across the entire proof generation
     /// pipeline.
     #[test]
