@@ -13,13 +13,13 @@ use crate::{
     chips::{
         alu_base::{BaseAluChip, NUM_BASE_ALU_ENTRIES_PER_ROW},
         alu_ext::{ExtAluChip, NUM_EXT_ALU_ENTRIES_PER_ROW},
-        ext_felt_convert::ConvertChip,
         mem::{
             constant::NUM_CONST_MEM_ENTRIES_PER_ROW, variable::NUM_VAR_MEM_ENTRIES_PER_ROW,
             MemoryConstChip, MemoryVarChip,
         },
-        poseidon2_linear_layer::Poseidon2LinearLayerChip,
-        poseidon2_sbox::Poseidon2SBoxChip,
+        poseidon2_helper::{
+            convert::ConvertChip, linear::Poseidon2LinearLayerChip, sbox::Poseidon2SBoxChip,
+        },
         poseidon2_wide::Poseidon2WideChip,
         prefix_sum_checks::PrefixSumChecksChip,
         public_values::{PublicValuesChip, PUB_VALUES_LOG_HEIGHT},
