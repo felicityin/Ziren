@@ -25,7 +25,7 @@ use zkm_hypercube::{
 pub(crate) mod mips_chips {
     pub use crate::{
         alu::{
-            AddSubChip, BitwiseChip, CloClzChip, DivRemChip, LtChip, MulChip, ShiftLeft,
+            AddSubChip, AddiChip, BitwiseChip, CloClzChip, DivRemChip, LtChip, MulChip, ShiftLeft,
             ShiftRightChip,
         },
         bytes::ByteChip,
@@ -79,6 +79,8 @@ pub enum MipsAir<F: PrimeField32> {
     Program(ProgramChip),
     /// An AIR for the MIPS Add and SUB instruction.
     Add(AddSubChip),
+    /// An AIR for the immediate-form MIPS ADDI/ADDIU instruction.
+    Addi(AddiChip),
     /// An AIR for MIPS Bitwise instructions.
     Bitwise(BitwiseChip),
     /// An AIR for MIPS Mul instruction.
@@ -256,6 +258,7 @@ impl<F: PrimeField32> MipsAir<F> {
             ByteLookup,
             Global,
             Add,
+            Addi,
             Bitwise,
             Mul,
             ShiftRight,
@@ -544,6 +547,10 @@ impl<F: PrimeField32> MipsAir<F> {
         let add_sub = Chip::new(MipsAir::Add(AddSubChip::default()));
         costs.insert(add_sub.name(), add_sub.cost());
         chips.push(add_sub);
+
+        let addi = Chip::new(MipsAir::Addi(AddiChip));
+        costs.insert(addi.name(), addi.cost());
+        chips.push(addi);
 
         let bitwise = Chip::new(MipsAir::Bitwise(BitwiseChip::default()));
         costs.insert(bitwise.name(), bitwise.cost());

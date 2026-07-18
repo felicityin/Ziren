@@ -79,6 +79,8 @@ pub enum MipsAirId {
     DivRem = 28,
     /// The add sub chip.
     AddSub = 29,
+    /// The immediate-form add chip (ADDI, ADDIU).
+    Addi = 51,
     /// The bitwise chip.
     Bitwise = 30,
     /// The mul chip.
@@ -172,6 +174,7 @@ impl MipsAirId {
             Self::Byte => "Byte",
             Self::SysLinux => "SysLinux",
             Self::MovCond => "MovCond",
+            Self::Addi => "Addi",
         }
     }
 }

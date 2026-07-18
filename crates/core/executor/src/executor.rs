@@ -209,6 +209,9 @@ pub struct LocalCounts {
     pub syscalls_sent: usize,
     /// The number of addresses touched in this shard.
     pub local_mem: usize,
+    /// The number of real, retired immediate-form ADD (ADDI/ADDIU) instructions -- a subset of
+    /// `event_counts[Opcode::ADD]`, needed to split `AddSub`'s estimate from `Addi`'s.
+    pub addi_events: u64,
 }
 
 /// Errors that the [``Executor``] can throw.
@@ -1352,6 +1355,13 @@ impl<'a> Executor<'a> {
         };
 
         match opcode {
+            // A register-form ADD/SUB (or an internal dependency-check row from another chip,
+            // which never has an immediate `c`) goes to `add_sub_events`; an immediate-form ADD
+            // (ADDI/ADDIU, identifiable here by `c` having no register read at all) goes to the
+            // narrower `addi_events` -- see `AddiChip`'s doc comment for why this split exists.
+            Opcode::ADD if record.c.is_none() => {
+                self.record.addi_events.push(event);
+            }
             Opcode::ADD | Opcode::SUB => {
                 self.record.add_sub_events.push(event);
             }
@@ -1675,6 +1685,13 @@ impl<'a> Executor<'a> {
         if !self.unconstrained {
             self.report.opcode_counts[instruction.opcode] += 1;
             self.local_counts.event_counts[instruction.opcode] += 1;
+            // Track immediate-form ADD (ADDI/ADDIU) separately from the generic per-opcode
+            // count above -- `estimate_mips_event_counts` needs this to split `AddSub` from
+            // `Addi`, since dependency-injected ADD counts below (always register-form, see
+            // `AddiChip`'s doc comment) must stay attributed to `AddSub`.
+            if instruction.opcode == Opcode::ADD && instruction.imm_c {
+                self.local_counts.addi_events += 1;
+            }
             if instruction.is_memory_load_instruction() {
                 self.local_counts.event_counts[Opcode::ADD] += 2;
             } else if instruction.is_branch_cmp_instruction() {
@@ -2644,6 +2661,7 @@ impl<'a> Executor<'a> {
             let event_counts = estimate_mips_event_counts(
                 self.local_counts.local_mem as u64,
                 self.local_counts.syscalls_sent as u64,
+                self.local_counts.addi_events,
                 *self.local_counts.event_counts,
             );
 
@@ -2865,7 +2883,7 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
 
-        let event_counts = estimate_mips_event_counts(0, 0, opcode_counts);
+        let event_counts = estimate_mips_event_counts(0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
@@ -2887,7 +2905,7 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = 1_000;
 
-        let event_counts = estimate_mips_event_counts(0, 0, opcode_counts);
+        let event_counts = estimate_mips_event_counts(0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 

@@ -17,6 +17,7 @@ const fn is_core_air(id: MipsAirId) -> bool {
         MipsAirId::Program
             | MipsAirId::DivRem
             | MipsAirId::AddSub
+            | MipsAirId::Addi
             | MipsAirId::Bitwise
             | MipsAirId::Mul
             | MipsAirId::ShiftRight
@@ -63,6 +64,7 @@ pub fn estimate_record_trace_bytes(
         cells += (count as u64).next_power_of_two() * costs_per_air[&air];
     };
     add_chip_cells(MipsAirId::AddSub, record.add_sub_events.len());
+    add_chip_cells(MipsAirId::Addi, record.addi_events.len());
     add_chip_cells(MipsAirId::Mul, record.mul_events.len());
     add_chip_cells(MipsAirId::Bitwise, record.bitwise_events.len());
     add_chip_cells(MipsAirId::ShiftLeft, record.shift_left_events.len());
@@ -123,6 +125,10 @@ pub fn estimate_mips_lde_size(
     // Compute the addsub chip contribution.
     cells += (num_events_per_air[MipsAirId::AddSub]).next_power_of_two()
         * costs_per_air[&MipsAirId::AddSub];
+
+    // Compute the addi chip contribution.
+    cells += (num_events_per_air[MipsAirId::Addi]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Addi];
 
     // Compute the mul chip contribution.
     cells +=
@@ -197,11 +203,19 @@ pub fn estimate_mips_lde_size(
 pub fn estimate_mips_event_counts(
     touched_addresses: u64,
     syscalls_sent: u64,
+    addi_events: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
     let mut events_counts: EnumMap<MipsAirId, u64> = EnumMap::default();
-    // Compute the number of events in the add sub chip.
-    events_counts[MipsAirId::AddSub] = opcode_counts[Opcode::ADD] + opcode_counts[Opcode::SUB];
+    // Compute the number of events in the add sub chip. `opcode_counts[Opcode::ADD]` mixes
+    // register-form ADD, immediate-form ADDI/ADDIU, and register-form internal dependency rows
+    // from other chips -- `addi_events` isolates the immediate-form count (see `AddiChip`'s doc
+    // comment), so it's subtracted out here and counted on its own line below.
+    events_counts[MipsAirId::AddSub] =
+        (opcode_counts[Opcode::ADD] - addi_events) + opcode_counts[Opcode::SUB];
+
+    // Compute the number of events in the addi chip.
+    events_counts[MipsAirId::Addi] = addi_events;
 
     // Compute the number of events in the mul chip.
     events_counts[MipsAirId::Mul] =
@@ -303,6 +317,10 @@ pub fn pad_mips_event_counts(
 ) -> EnumMap<MipsAirId, u64> {
     event_counts.iter_mut().for_each(|(k, v)| match k {
         MipsAirId::AddSub => *v += 5 * num_cycles,
+        // At most one real instruction retires per cycle, so a real ADDI's worst-case growth
+        // is 1 per cycle (unlike AddSub, which also absorbs dependency rows injected by other
+        // instructions -- see the multipliers above/below for those).
+        MipsAirId::Addi => *v += num_cycles,
         MipsAirId::Mul => *v += 4 * num_cycles,
         MipsAirId::Bitwise => *v += 3 * num_cycles,
         MipsAirId::ShiftLeft => *v += num_cycles,

@@ -1,6 +1,7 @@
 {
   "U256XU2048Mul": 3157,
   "Bn254Fp2MulAssign": 1485,
+  "Addi": 48,
   "CloClz": 65,
   "Bls12831Fp2AddSubAssign": 1102,
   "SyscallInstrs": 123,
