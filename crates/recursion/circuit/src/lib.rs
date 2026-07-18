@@ -758,18 +758,15 @@ mod tests {
     type F = <SC as StarkGenericConfig>::Val;
     type EF = <SC as StarkGenericConfig>::Challenge;
 
-    /// Mirrors `zkm_recursion_compiler::circuit::compiler::tests::RECURSION_LOG_STACKING_HEIGHT`.
-    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
-
     fn prove_and_verify(program: Arc<RecursionProgram<F>>, record: ExecutionRecord<F>) {
         // Proves against the actual production wrap machine (not `machine_wide_with_all_chips`),
         // since exercising the real `wrap_machine` chip wiring is the point of this test.
         let machine = RecursionAir::<F, 3>::wrap_machine();
-        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
+        let max_log_row_count = zkm_stark::RECURSION_MAX_LOG_ROW_COUNT;
         let shard_prover = ZkmShardProver::<RecursionAir<F, 3>>::new(
             ShardVerifier::from_basefold_parameters(
                 default_fri_config(),
-                RECURSION_LOG_STACKING_HEIGHT,
+                zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
                 max_log_row_count,
                 machine.clone(),
             ),
@@ -786,7 +783,7 @@ mod tests {
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             default_fri_config(),
-            RECURSION_LOG_STACKING_HEIGHT,
+            zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
             max_log_row_count,
             machine,
         );

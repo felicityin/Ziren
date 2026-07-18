@@ -11,10 +11,23 @@ use sysinfo::System;
 /// ceiling regardless); `max_log_row_count` cannot, because of KoalaBear's two-adicity: the
 /// basefold verifier (`slop/crates/basefold/src/verifier.rs`) requires `log_stacking_height +
 /// log_blowup <= KoalaBear::TWO_ADICITY (24)`, where `log_stacking_height =
-/// max_log_row_count - 1` (`stacking_height_for`) and `log_blowup = 2` (`DEFAULT_LOG_BLOWUP`) --
-/// so `(22 - 1) + 2 = 23 <= 24` holds with 1 bit of headroom; `max_log_row_count = 24` would need
-/// `25 <= 24`, a guaranteed `TwoAdicityOverflow`.
+/// max_log_row_count - 1` (`CORE_LOG_STACKING_HEIGHT`) and `log_blowup = 2`
+/// (`DEFAULT_LOG_BLOWUP`) -- so `(22 - 1) + 2 = 23 <= 24` holds with 1 bit of headroom;
+/// `max_log_row_count = 24` would need `25 <= 24`, a guaranteed `TwoAdicityOverflow`.
 pub const CORE_MAX_LOG_ROW_COUNT: usize = 22;
+
+/// The log2 of the number of rows each stacked-PCS column is grouped into for the core machine.
+/// One less than `CORE_MAX_LOG_ROW_COUNT`, per the two-adicity constraint documented above.
+pub const CORE_LOG_STACKING_HEIGHT: u32 = CORE_MAX_LOG_ROW_COUNT as u32 - 1;
+
+/// The max log row count the recursion (compress/shrink/wrap) machines' jagged PCS is configured
+/// for. Mirrors `ZKMCoreOpts::recursion().shard_size`'s log2 (`RECURSION_MAX_SHARD_SIZE` below).
+pub const RECURSION_MAX_LOG_ROW_COUNT: usize = 22;
+
+/// The log2 of the number of rows each stacked-PCS column is grouped into for the recursion
+/// (compress/shrink/wrap) machines. One less than `RECURSION_MAX_LOG_ROW_COUNT`, per the same
+/// two-adicity constraint documented on [`CORE_MAX_LOG_ROW_COUNT`].
+pub const RECURSION_LOG_STACKING_HEIGHT: u32 = RECURSION_MAX_LOG_ROW_COUNT as u32 - 1;
 
 /// Total system RAM in bytes.
 #[must_use]
@@ -26,7 +39,7 @@ pub fn total_system_memory_bytes() -> u64 {
 // smallest guest program, once core's own shard_size scales up via `get_memory_opts`. Unlike
 // core's own shard_size, this bound isn't memory-scaled -- it's a fixed cap sized for the
 // largest actual core shard_size in play.
-const RECURSION_MAX_SHARD_SIZE: usize = 1 << 22;
+const RECURSION_MAX_SHARD_SIZE: usize = 1 << RECURSION_MAX_LOG_ROW_COUNT;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
 // `trace_gen_workers` gates the number of concurrent phase-2 trace-gen worker threads
 // (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`). It no

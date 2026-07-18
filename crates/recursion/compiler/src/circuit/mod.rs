@@ -29,11 +29,6 @@ mod tests {
 
     const DEGREE: usize = 3;
 
-    /// The log2 of the number of rows each stacked-PCS column is grouped into. Mirrors
-    /// `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`, kept in sync by
-    /// convention.
-    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
-
     type SC = KoalaBearPoseidon2Inner;
     type F = <SC as StarkGenericConfig>::Val;
     type EF = <SC as StarkGenericConfig>::Challenge;
@@ -78,11 +73,11 @@ mod tests {
         runtime.run().unwrap();
 
         let machine = A::compress_machine();
-        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
+        let max_log_row_count = zkm_stark::RECURSION_MAX_LOG_ROW_COUNT;
 
         let shard_prover = ZkmShardProver::<A>::new(ShardVerifier::from_basefold_parameters(
             default_fri_config(),
-            RECURSION_LOG_STACKING_HEIGHT,
+            zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
             max_log_row_count,
             machine.clone(),
         ));
@@ -98,7 +93,7 @@ mod tests {
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             default_fri_config(),
-            RECURSION_LOG_STACKING_HEIGHT,
+            zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
             max_log_row_count,
             machine,
         );

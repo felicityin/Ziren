@@ -297,11 +297,6 @@ pub mod tests {
     type EF = <SC as StarkGenericConfig>::Challenge;
     type A = RecursionAir<F, 3>;
 
-    /// The log2 of the number of rows each stacked-PCS column is grouped into. Mirrors
-    /// `zkm_core_machine::utils::prove::ZKM_LOG_STACKING_HEIGHT` (which is crate-private to
-    /// `zkm-core-machine`), kept in sync by convention.
-    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
-
     /// Sets up, proves, and verifies a single recursion shard for `program`/`record` against
     /// `machine`. Mirrors `zkm_core_machine::utils::prove::run_test_core`, simplified since
     /// recursion programs run as a single unsharded `ExecutionRecord` (no checkpointing).
@@ -310,13 +305,13 @@ pub mod tests {
         program: RecursionProgram<F>,
         record: crate::ExecutionRecord<F>,
     ) {
-        let max_log_row_count = zkm_stark::ZKMCoreOpts::recursion().shard_size.ilog2() as usize;
+        let max_log_row_count = zkm_stark::RECURSION_MAX_LOG_ROW_COUNT;
         let program = Arc::new(program);
 
         let shard_prover = ZkmShardProver::<RecursionAir<F, DEGREE>>::new(
             ShardVerifier::from_basefold_parameters(
                 default_fri_config(),
-                RECURSION_LOG_STACKING_HEIGHT,
+                zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
                 max_log_row_count,
                 machine.clone(),
             ),
@@ -333,7 +328,7 @@ pub mod tests {
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             default_fri_config(),
-            RECURSION_LOG_STACKING_HEIGHT,
+            zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
             max_log_row_count,
             machine,
         );

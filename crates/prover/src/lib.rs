@@ -111,13 +111,6 @@ fn recursion_max_log_row_count() -> usize {
     ZKMCoreOpts::recursion().shard_size.ilog2() as usize
 }
 
-/// Log2 of the stacked-PCS grouping height for a machine whose jagged PCS is configured for
-/// `max_log_row_count`. Mirrors `zkm_core_machine::utils::prove::stacking_height_for`; kept in
-/// sync with it by convention (it isn't reachable from this crate).
-fn stacking_height_for(max_log_row_count: usize) -> u32 {
-    (max_log_row_count as u32).saturating_sub(1)
-}
-
 /// An end-to-end prover implementation for the Ziren zkVM.
 pub struct ZKMProver<C: ZKMProverComponents = DefaultProverComponents> {
     /// The machine used for proving the core step.
@@ -157,7 +150,7 @@ impl ZKMProver<DefaultProverComponents> {
         let core_prover = ZkmShardProver::<MipsAir<KoalaBear>>::new(
             ShardVerifier::from_basefold_parameters(
                 default_fri_config(),
-                stacking_height_for(core_max_log_row_count()),
+                zkm_stark::CORE_LOG_STACKING_HEIGHT,
                 core_max_log_row_count(),
                 MipsAir::<KoalaBear>::hypercube_machine(),
             ),
@@ -166,7 +159,7 @@ impl ZKMProver<DefaultProverComponents> {
         let compress_prover = ZkmShardProver::<CompressAir<KoalaBear>>::new(
             ShardVerifier::from_basefold_parameters(
                 compressed_fri_config(),
-                stacking_height_for(recursion_max_log_row_count()),
+                zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
                 recursion_max_log_row_count(),
                 CompressAir::<KoalaBear>::compress_machine(),
             ),
@@ -175,7 +168,7 @@ impl ZKMProver<DefaultProverComponents> {
         let shrink_prover = ZkmShardProver::<ShrinkAir<KoalaBear>>::new(
             ShardVerifier::from_basefold_parameters(
                 ultra_compressed_fri_config(),
-                stacking_height_for(recursion_max_log_row_count()),
+                zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
                 recursion_max_log_row_count(),
                 ShrinkAir::<KoalaBear>::shrink_machine(),
             ),
@@ -292,7 +285,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
     > {
         RecursiveShardVerifier::from_basefold_parameters(
             default_fri_config(),
-            stacking_height_for(core_max_log_row_count()),
+            zkm_stark::CORE_LOG_STACKING_HEIGHT,
             core_max_log_row_count(),
             self.core_prover.machine().clone(),
         )
@@ -310,7 +303,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
     > {
         RecursiveShardVerifier::from_basefold_parameters(
             compressed_fri_config(),
-            stacking_height_for(recursion_max_log_row_count()),
+            zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
             recursion_max_log_row_count(),
             self.compress_prover.machine().clone(),
         )

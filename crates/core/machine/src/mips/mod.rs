@@ -1107,9 +1107,7 @@ pub mod tests {
             prover::{AirProver, ProverSemaphore, ZkmShardProver},
             ShardVerifier,
         };
-        use zkm_stark::CORE_MAX_LOG_ROW_COUNT;
-
-        use crate::utils::stacking_height_for;
+        use zkm_stark::{CORE_LOG_STACKING_HEIGHT, CORE_MAX_LOG_ROW_COUNT};
 
         fn roundtrip<T: Serialize + for<'de> Deserialize<'de>>(value: &T) -> T {
             let bytes = bincode::serialize(value).unwrap();
@@ -1121,7 +1119,7 @@ pub mod tests {
         let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             default_fri_config(),
-            stacking_height_for(max_log_row_count),
+            CORE_LOG_STACKING_HEIGHT,
             max_log_row_count,
             machine,
         );

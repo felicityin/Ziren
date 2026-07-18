@@ -574,12 +574,6 @@ mod tests {
     type EF = InnerChallenge;
     type C = AsmConfig<F, EF>;
 
-    /// The log2 of the number of rows each stacked-PCS column is grouped into. Must match the
-    /// value the real shard proof below was produced with -- mirrors
-    /// `zkm_core_machine::utils::prove::ZKM_LOG_STACKING_HEIGHT` (crate-private), kept in sync by
-    /// convention.
-    const CORE_LOG_STACKING_HEIGHT: u32 = 4;
-
     /// A FRI config sized for fast correctness testing, not real security: a single query and no
     /// grinding. `verify_shard`'s basefold FRI-query verification does one round of Poseidon2
     /// Merkle-path hashing per query per commit-phase round, which is what dominates the
@@ -675,12 +669,16 @@ mod tests {
         eprintln!("DEBUG public_values = {:#?}", record.public_values);
 
         let fri_config = test_fri_config();
+        // Deliberately smaller than `CORE_MAX_LOG_ROW_COUNT` -- see the comment on `opts` above --
+        // so this can't use the fixed `CORE_LOG_STACKING_HEIGHT` constant. Must match the value
+        // the real shard proof below was produced with.
         let max_log_row_count = opts.shard_size.ilog2() as usize;
+        let log_stacking_height = (max_log_row_count as u32).saturating_sub(1);
         let native_machine = MipsAir::<KoalaBear>::hypercube_machine();
         let shard_prover =
             ZkmShardProver::<MipsAir<KoalaBear>>::new(ShardVerifier::from_basefold_parameters(
                 fri_config,
-                CORE_LOG_STACKING_HEIGHT,
+                log_stacking_height,
                 max_log_row_count,
                 native_machine,
             ));
@@ -699,7 +697,7 @@ mod tests {
         // same generic code used by both the native and circuit-side constraint folders.
         let native_shard_verifier = ShardVerifier::from_basefold_parameters(
             fri_config,
-            CORE_LOG_STACKING_HEIGHT,
+            log_stacking_height,
             max_log_row_count,
             MipsAir::<KoalaBear>::hypercube_machine(),
         );
@@ -725,7 +723,7 @@ mod tests {
 
         let machine = RecursiveShardVerifier::from_basefold_parameters(
             fri_config,
-            CORE_LOG_STACKING_HEIGHT,
+            log_stacking_height,
             max_log_row_count,
             MipsAir::<KoalaBear>::hypercube_machine(),
         );

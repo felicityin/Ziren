@@ -112,11 +112,6 @@ pub(crate) mod tests {
     type F = InnerVal;
     type EF = InnerChallenge;
 
-    /// The log2 of the number of rows each stacked-PCS column is grouped into. Mirrors
-    /// `zkm_recursion_core::machine::tests::RECURSION_LOG_STACKING_HEIGHT`, kept in sync by
-    /// convention.
-    const RECURSION_LOG_STACKING_HEIGHT: u32 = 4;
-
     /// A simplified version of some code from `recursion/core/src/machine.rs`.
     /// Takes in a program and runs it with the given witness and generates a proof with the
     /// wide Poseidon2 recursion machine.
@@ -172,11 +167,14 @@ pub(crate) mod tests {
         // Run with the poseidon2 wide chip.
         let proof_wide_span = tracing::debug_span!("Run test with wide machine").entered();
         let machine = RecursionAir::<F, 3>::compress_machine();
+        // `max_log_row_count` is caller-overridable (see the doc comment above), so this can't
+        // use the fixed `RECURSION_LOG_STACKING_HEIGHT` constant.
+        let log_stacking_height = (max_log_row_count as u32).saturating_sub(1);
 
         let shard_prover = ZkmShardProver::<RecursionAir<F, 3>>::new(
             ShardVerifier::from_basefold_parameters(
                 fri_config.clone(),
-                RECURSION_LOG_STACKING_HEIGHT,
+                log_stacking_height,
                 max_log_row_count,
                 machine.clone(),
             ),
@@ -193,7 +191,7 @@ pub(crate) mod tests {
 
         let shard_verifier = ShardVerifier::from_basefold_parameters(
             fri_config,
-            RECURSION_LOG_STACKING_HEIGHT,
+            log_stacking_height,
             max_log_row_count,
             machine,
         );

@@ -44,19 +44,6 @@ use zkm_hypercube::{
     ShardContextImpl, ShardProof, ShardVerifier, ZkmSC,
 };
 
-/// The log2 of the number of rows each stacked-PCS column is grouped into, for a machine whose
-/// jagged PCS is configured for `max_log_row_count`.
-///
-/// This used to be a fixed constant (`4`, copied from a `zkm-hypercube` unit test's throwaway
-/// value) hardcoded into the real proving path, fragmenting each shard's trace into far more
-/// stacked-PCS columns than necessary. Deriving it from `max_log_row_count` instead (one less,
-/// mirroring `sp1_prover::components`'s ratio) also keeps it valid across Ziren's memory-scaled
-/// shard sizes, where a fixed constant tuned for one tier could exceed `max_log_row_count` on a
-/// smaller one.
-pub(crate) fn stacking_height_for(max_log_row_count: usize) -> u32 {
-    (max_log_row_count as u32).saturating_sub(1)
-}
-
 /// The concrete shard-proof type produced by Ziren's own (`KoalaBear`, jagged/basefold) shard
 /// prover.
 pub type ZkmShardProof = ShardProof<
@@ -75,7 +62,9 @@ type ZkmShardData = ShardData<ZkmGlobalContext, ZkmShardContext, ZkmInnerPcsProv
 // commented-out run_test*/run_test_machine* functions below.
 // use zkm_hypercube::air::MachineAir;
 // use zkm_stark::{Com, MachineProver, OpeningProof, PcsProverData, StarkVerifyingKey};
-use zkm_stark::{StarkGenericConfig, UniConfig, ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
+use zkm_stark::{
+    StarkGenericConfig, UniConfig, ZKMCoreOpts, CORE_LOG_STACKING_HEIGHT, CORE_MAX_LOG_ROW_COUNT,
+};
 
 #[derive(Error, Debug)]
 pub enum ZKMCoreProverError {
@@ -106,7 +95,7 @@ pub fn prove_with_context(
     let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
     let shard_verifier = ShardVerifier::from_basefold_parameters(
         default_fri_config(),
-        stacking_height_for(max_log_row_count),
+        CORE_LOG_STACKING_HEIGHT,
         max_log_row_count,
         machine,
     );
@@ -635,7 +624,7 @@ pub fn run_test_core(
     let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
     let shard_verifier = ShardVerifier::from_basefold_parameters(
         default_fri_config(),
-        stacking_height_for(max_log_row_count),
+        CORE_LOG_STACKING_HEIGHT,
         max_log_row_count,
         machine,
     );
