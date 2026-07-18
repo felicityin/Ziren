@@ -20,7 +20,7 @@ pub const RATE: usize = WIDTH / 2;
 
 pub const NUM_EXTERNAL_ROUNDS: usize = 8;
 // Must match `poseidon2_init()` in zkm-primitives (KoalaBear/α=3 reference R_P = 20). Native
-// (poseidon2_skinny) and circuit chips must stay equal or the equivalence test breaks.
+// and circuit chips must stay equal or the equivalence test breaks.
 pub const NUM_INTERNAL_ROUNDS: usize = 20;
 pub const NUM_ROUNDS: usize = NUM_EXTERNAL_ROUNDS + NUM_INTERNAL_ROUNDS;
 
@@ -191,8 +191,6 @@ pub(crate) mod tests {
         // ((0..DEGREE).map(...).product()) that intentionally forces the AIR's polynomial degree
         // up to DEGREE; at DEGREE=9 that alone exceeds
         // zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE (3), independent of any particular chip's
-        // own logic. This is the same class of problem as Poseidon2SkinnyChip's degree issue
-        // (see the TODO on machine::tests::run_recursion_test_machines) and is deferred
-        // alongside it.
+        // own logic.
     }
 }

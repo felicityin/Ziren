@@ -22,8 +22,8 @@ pub const NUM_LINEAR_ENTRIES_PER_ROW: usize = 1;
 
 /// A chip evaluating one external or internal Poseidon2 linear-layer round per row, over the
 /// full `WIDTH`-sized permutation state (packed as `WIDTH / D` extension-sized blocks). Row-local
-/// (degree <= 3), unlike `Poseidon2SkinnyChip`/`Poseidon2WideChip`, which each evaluate a full
-/// permutation (all rounds) per invocation.
+/// (degree <= 3), unlike `Poseidon2WideChip`, which evaluates a full permutation (all rounds) per
+/// invocation.
 #[derive(Default)]
 pub struct Poseidon2LinearLayerChip;
 

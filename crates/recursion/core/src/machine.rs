@@ -20,7 +20,6 @@ use crate::{
         },
         poseidon2_linear_layer::Poseidon2LinearLayerChip,
         poseidon2_sbox::Poseidon2SBoxChip,
-        poseidon2_skinny::Poseidon2SkinnyChip,
         poseidon2_wide::Poseidon2WideChip,
         prefix_sum_checks::PrefixSumChecksChip,
         public_values::{PublicValuesChip, PUB_VALUES_LOG_HEIGHT},
@@ -43,7 +42,6 @@ pub enum RecursionAir<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: u
     MemoryVar(MemoryVarChip<F>),
     BaseAlu(BaseAluChip),
     ExtAlu(ExtAluChip),
-    Poseidon2Skinny(Poseidon2SkinnyChip<DEGREE>),
     Poseidon2Wide(Poseidon2WideChip<DEGREE>),
     Poseidon2LinearLayer(Poseidon2LinearLayerChip),
     Poseidon2SBox(Poseidon2SBoxChip),
@@ -101,27 +99,6 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
         Machine::new(chips, crate::air::RECURSIVE_PROOF_NUM_PV_ELTS, shape)
     }
 
-    /// Get a machine with all chips, except the dummy chip.
-    pub fn machine_skinny_with_all_chips() -> Machine<F, Self>
-    where
-        F: slop_algebra::Field,
-    {
-        let chips = [
-            RecursionAir::MemoryConst(MemoryConstChip::default()),
-            RecursionAir::MemoryVar(MemoryVarChip::default()),
-            RecursionAir::BaseAlu(BaseAluChip),
-            RecursionAir::ExtAlu(ExtAluChip),
-            RecursionAir::Poseidon2Skinny(Poseidon2SkinnyChip::<DEGREE>::default()),
-            RecursionAir::Select(SelectChip),
-            RecursionAir::PublicValues(PublicValuesChip),
-        ]
-        .map(Chip::new)
-        .into_iter()
-        .collect::<Vec<_>>();
-        let shape = MachineShape::all(&chips);
-        Machine::new(chips, crate::air::RECURSIVE_PROOF_NUM_PV_ELTS, shape)
-    }
-
     /// A machine with dyunamic chip sizes that includes the wide variant of the Poseidon2 chip.
     pub fn compress_machine() -> Machine<F, Self>
     where
@@ -158,11 +135,10 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
     ///
     /// Unlike `compress_machine`/`machine_wide_with_all_chips`, this uses the row-local
     /// `Poseidon2LinearLayerChip`/`Poseidon2SBoxChip`/`ConvertChip` (degree <= 3 by construction)
-    /// instead of a monolithic `Poseidon2Skinny`/`Poseidon2Wide` chip -- at `DEGREE = 9`, every
-    /// DEGREE-parameterized chip's dummy degree-normalization constraints alone would exceed
-    /// `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE`, independent of `Poseidon2SkinnyChip`'s own
-    /// (also degree-exceeding) internal S-box chain. See `WrapConfig::poseidon2_permute_v2` in
-    /// `crates/recursion/circuit` for the DSL-level gadget that emits these chips' instructions.
+    /// instead of a monolithic, DEGREE-parameterized `Poseidon2Wide` chip -- at `DEGREE = 9`,
+    /// every DEGREE-parameterized chip's dummy degree-normalization constraints alone would
+    /// exceed `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE`. See `WrapConfig::poseidon2_permute_v2`
+    /// in `crates/recursion/circuit` for the DSL-level gadget that emits these chips' instructions.
     pub fn wrap_machine() -> Machine<F, Self>
     where
         F: slop_algebra::Field,
@@ -370,26 +346,13 @@ pub mod tests {
 
     /// Runs the given program on the machine that uses the wide Poseidon2 chip.
     ///
-    /// TODO(zkm-hypercube): also run `B::machine_skinny_with_all_chips()` (DEGREE=9). Two
-    /// distinct, stacked problems block this, both constraint-degree (not row-adjacency, which
-    /// is already fixed below) issues:
-    /// 1. Every DEGREE-parameterized recursion chip's `Air::eval` (Poseidon2Wide,
-    ///    Poseidon2Skinny) has a "dummy constraints to
-    ///    normalize to DEGREE" step (`(0..DEGREE).map(...).product()`) that intentionally forces
-    ///    the AIR's polynomial degree up to DEGREE. At DEGREE=9 this alone exceeds
-    ///    `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE` (3), independent of any chip's own logic
-    ///    -- confirmed live via `chips::poseidon2_wide::tests::test_poseidon2`'s DEGREE=9 half
-    ///    (also dropped, for the same reason).
-    /// 2. `Poseidon2SkinnyChip` additionally has its own, chip-specific degree issue: its
-    ///    13-round internal sbox chain, once gated by `is_internal_row`, exceeds the same cap on
-    ///    its own merits.
-    /// SP1's own recursion machine (architecturally ahead of this port) doesn't patch either: it
-    /// deletes the row-per-round "skinny" design entirely and replaces it with row-local
-    /// `Poseidon2SBoxChip`/`Poseidon2LinearLayerChip`/`ConvertChip` (one sbox/linear-layer op per
-    /// row, degree <=3 by construction with no DEGREE-normalization trick needed at all, chained
-    /// across rounds via ordinary virtual-memory addresses emitted by the compiler -- see
-    /// `sp1/crates/recursion/machine/src/chips/poseidon2_helper/`). Porting that requires new
-    /// instruction types and `recursion/compiler` changes (阶段3.3 scope), not just this crate.
+    /// Every DEGREE-parameterized recursion chip's `Air::eval` (`Poseidon2Wide`) has a "dummy
+    /// constraints to normalize to DEGREE" step (`(0..DEGREE).map(...).product()`) that
+    /// intentionally forces the AIR's polynomial degree up to DEGREE; at `DEGREE = 9` this alone
+    /// exceeds `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE` (3) independent of any chip's own
+    /// logic, which is why `wrap_machine` uses the row-local
+    /// `Poseidon2SBoxChip`/`Poseidon2LinearLayerChip`/`ConvertChip` instead (degree <= 3 by
+    /// construction, no DEGREE-normalization needed) rather than this wide-chip machine.
     pub fn run_recursion_test_machines(program: RecursionProgram<F>) {
         let program = Arc::new(program);
         let mut runtime = Runtime::<F, EF, Poseidon2InternalLayerKoalaBear<16>>::new(

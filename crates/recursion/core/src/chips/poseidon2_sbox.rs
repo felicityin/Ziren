@@ -17,8 +17,8 @@ use crate::{builder::ZKMRecursionAirBuilder, *};
 pub const NUM_SBOX_ENTRIES_PER_ROW: usize = 1;
 
 /// A chip evaluating one Poseidon2 S-box application (`x -> x^3`) per row, over a single
-/// extension-sized block. Row-local (degree <= 3), unlike `Poseidon2SkinnyChip`/
-/// `Poseidon2WideChip`, which each evaluate a full permutation (all rounds) per invocation.
+/// extension-sized block. Row-local (degree <= 3), unlike `Poseidon2WideChip`, which evaluates a
+/// full permutation (all rounds) per invocation.
 #[derive(Default)]
 pub struct Poseidon2SBoxChip;
 

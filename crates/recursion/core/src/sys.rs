@@ -3,13 +3,12 @@ use crate::{
     chips::{
         alu_base::{BaseAluAccessCols, BaseAluValueCols},
         alu_ext::{ExtAluAccessCols, ExtAluValueCols},
-        poseidon2_skinny::columns::{preprocessed::Poseidon2PreprocessedColsSkinny, Poseidon2},
         poseidon2_wide::columns::preprocessed::Poseidon2PreprocessedColsWide,
         public_values::{PublicValuesCols, PublicValuesPreprocessedCols},
         select::{SelectCols, SelectPreprocessedCols},
     },
     BaseAluInstr, BaseAluIo, CommitPublicValuesEvent, CommitPublicValuesInstr, ExtAluInstr,
-    ExtAluIo, Poseidon2Event, Poseidon2Instr, SelectEvent, SelectInstr,
+    ExtAluIo, Poseidon2Instr, SelectEvent, SelectInstr,
 };
 use p3_koala_bear::KoalaBear;
 
@@ -51,16 +50,6 @@ extern "C-unwind" {
     pub fn select_instr_to_row_koalabear(
         instr: &SelectInstr<KoalaBear>,
         cols: &mut SelectPreprocessedCols<KoalaBear>,
-    );
-
-    pub fn poseidon2_skinny_event_to_row_koalabear(
-        io: &Poseidon2Event<KoalaBear>,
-        cols: *mut Poseidon2<KoalaBear>,
-    );
-    pub fn poseidon2_skinny_instr_to_row_koalabear(
-        instr: &Poseidon2Instr<KoalaBear>,
-        i: usize,
-        cols: &mut Poseidon2PreprocessedColsSkinny<KoalaBear>,
     );
 
     pub fn poseidon2_wide_event_to_row_koalabear(

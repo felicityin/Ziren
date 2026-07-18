@@ -1,4 +1,4 @@
-use chips::poseidon2_skinny::WIDTH;
+use chips::poseidon2_wide::WIDTH;
 use core::fmt::Debug;
 use instruction::{
     FieldEltType, HintAddCurveInstr, HintBitsInstr, HintExt2FeltsInstr, HintInstr, PrintInstr,

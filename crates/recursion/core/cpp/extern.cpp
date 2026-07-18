@@ -105,21 +105,6 @@ extern void select_instr_to_row_koalabear(
       *reinterpret_cast<SelectPreprocessedCols<kb31_t>*>(cols));
 }
 
-extern void poseidon2_skinny_event_to_row_koalabear(
-    const Poseidon2Event<KoalaBearP3>* event,
-    Poseidon2<KoalaBearP3> cols[OUTPUT_ROUND_IDX + 1]) {
-  poseidon2_skinny::event_to_row<kb31_t>(
-      *reinterpret_cast<const Poseidon2Event<kb31_t>*>(event),
-      reinterpret_cast<Poseidon2<kb31_t>*>(cols));
-}
-extern void poseidon2_skinny_instr_to_row_koalabear(
-    const Poseidon2Instr<KoalaBearP3>* instr, size_t i,
-    Poseidon2PreprocessedColsSkinny<KoalaBearP3>* cols) {
-  poseidon2_skinny::instr_to_row<kb31_t>(
-      *reinterpret_cast<const Poseidon2Instr<kb31_t>*>(instr), i,
-      *reinterpret_cast<Poseidon2PreprocessedColsSkinny<kb31_t>*>(cols));
-}
-
 extern "C" void poseidon2_wide_event_to_row_koalabear(const KoalaBearP3* input,
                                                      KoalaBearP3* input_row,
                                                      bool sbox_state) {
