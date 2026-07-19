@@ -172,13 +172,6 @@ impl AddiChip {
         let instruction = program.fetch(event.pc);
         cols.instruction.populate(&instruction);
 
-        // Seed the read/write values directly from the event first (mirrors `AddSubChip`'s
-        // trace-gen): a write/read to register 0 elides its `MemoryRecordEnum` entirely, so
-        // relying only on the conditional `.populate()` calls below would leave those columns
-        // at their zeroed default instead of the correct (zero) value in that case.
-        *cols.op_a_access.value_mut() = event.a.into();
-        *cols.op_b_access.value_mut() = event.b.into();
-
         if let Some(record) = event.a_record {
             cols.op_a_access.populate(record, blu);
         }

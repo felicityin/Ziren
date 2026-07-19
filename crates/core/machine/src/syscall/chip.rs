@@ -138,6 +138,11 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
         output: &mut ExecutionRecord,
     ) -> Result<(), Self::Error> {
         let is_receive = self.shard_kind == SyscallShardKind::Precompile;
+        // `included()` can be false even when `precompile_events` is non-empty -- e.g. an
+        // execution shard whose precompile calls are resolved by their own AIR, where this
+        // chip's `SyscallShardKind::Precompile` instance deliberately emits no local rows.
+        // Guards the U16Range registrations below (see the comment at their call site).
+        let has_local_rows = <SyscallChip as MachineAir<F>>::included(self, input);
 
         let event_triples: Vec<(&SyscallEvent, u32, u32)> = match self.shard_kind {
             SyscallShardKind::Core => input
@@ -189,11 +194,17 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
                 kind: LookupKind::SyscallResult as u8,
             });
 
-            // U16Range checks for half-word columns (gated by is_real in the AIR).
-            output.add_u16_range_check(a1_lo as u16);
-            output.add_u16_range_check(a1_hi as u16);
-            output.add_u16_range_check(a2_lo as u16);
-            output.add_u16_range_check(a2_hi as u16);
+            // U16Range checks for half-word columns, gated by `is_real` in the AIR -- so they
+            // must only be registered when this chip actually has local rows in this shard.
+            // Otherwise `eval()`'s corresponding `send_byte` calls can never fire (`is_real` is
+            // 0 on every row, since `generate_trace` emits none), and this receive-side demand
+            // is left permanently unmatched.
+            if has_local_rows {
+                output.add_u16_range_check(a1_lo as u16);
+                output.add_u16_range_check(a1_hi as u16);
+                output.add_u16_range_check(a2_lo as u16);
+                output.add_u16_range_check(a2_hi as u16);
+            }
         }
 
         Ok(())

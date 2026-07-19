@@ -1233,7 +1233,16 @@ impl<'a> Executor<'a> {
         }
 
         if instruction.is_alu_instruction() {
-            self.emit_alu_event(clk, instruction.opcode, hi_or_prev_a, a, b, c, record);
+            self.emit_alu_event(
+                clk,
+                instruction.opcode,
+                instruction.imm_b,
+                hi_or_prev_a,
+                a,
+                b,
+                c,
+                record,
+            );
         } else if instruction.is_memory_load_instruction()
             || instruction.is_memory_store_instruction()
         {
@@ -1311,6 +1320,7 @@ impl<'a> Executor<'a> {
         &mut self,
         clk: u32,
         opcode: Opcode,
+        imm_b: bool,
         hi_or_prev_a: Option<u32>,
         a: u32,
         b: u32,
@@ -1357,9 +1367,15 @@ impl<'a> Executor<'a> {
         match opcode {
             // A register-form ADD/SUB (or an internal dependency-check row from another chip,
             // which never has an immediate `c`) goes to `add_sub_events`; an immediate-form ADD
-            // (ADDI/ADDIU, identifiable here by `c` having no register read at all) goes to the
-            // narrower `addi_events` -- see `AddiChip`'s doc comment for why this split exists.
-            Opcode::ADD if record.c.is_none() => {
+            // (ADDI/ADDIU: `b` a real register, `c` the encoded immediate, identifiable here by
+            // `c` having no register read at all) goes to the narrower `addi_events` -- see
+            // `AddiChip`'s doc comment for why this split exists. `!imm_b` is required too: a
+            // fully-immediate ADD (both operands encoded, e.g. an `add $zero, $zero, 0`-shaped
+            // NOP) also has `record.c.is_none()` but never reads `b` from a register either, which
+            // `AddiChip`'s AIR doesn't expect (it asserts `imm_b` is always false) -- that shape
+            // must stay on `AddSubChip`, whose shared `RegisterReader` handles any combination of
+            // `imm_b`/`imm_c` correctly.
+            Opcode::ADD if record.c.is_none() && !imm_b => {
                 self.record.addi_events.push(event);
             }
             Opcode::ADD | Opcode::SUB => {
@@ -1688,8 +1704,11 @@ impl<'a> Executor<'a> {
             // Track immediate-form ADD (ADDI/ADDIU) separately from the generic per-opcode
             // count above -- `estimate_mips_event_counts` needs this to split `AddSub` from
             // `Addi`, since dependency-injected ADD counts below (always register-form, see
-            // `AddiChip`'s doc comment) must stay attributed to `AddSub`.
-            if instruction.opcode == Opcode::ADD && instruction.imm_c {
+            // `AddiChip`'s doc comment) must stay attributed to `AddSub`. Must match
+            // `emit_alu_event`'s actual routing condition exactly: `imm_c` alone also matches a
+            // fully-immediate ADD (`imm_b` too, e.g. an `add $zero, $zero, 0`-shaped NOP), which
+            // stays on `AddSub` since `AddiChip`'s AIR requires `imm_b` false.
+            if instruction.opcode == Opcode::ADD && instruction.imm_c && !instruction.imm_b {
                 self.local_counts.addi_events += 1;
             }
             if instruction.is_memory_load_instruction() {
