@@ -17,7 +17,16 @@ const TRACE_BUDGET_UNIT_BYTES: u64 = 64 * 1024 * 1024;
 /// trace-gen worker can race ahead and hold a permit well before any prove worker finishes and
 /// frees one; too generous a fraction here lets that gap alone push total memory usage far past
 /// what the budget's own share would suggest.
-const DEFAULT_TRACE_BUDGET_RAM_FRACTION: u64 = 6;
+///
+/// Must stay large enough that a shard sized right at `ZKMCoreOpts::lde_size_threshold` can
+/// actually be admitted rather than always being clamped to the semaphore's entire capacity:
+/// `estimate_record_trace_bytes` (`zkm_core_executor::cost`) requests permits for such a shard
+/// using the *same* cell count `estimate_mips_lde_size` compares against
+/// `lde_size_threshold`, scaled by that function's own peak-memory safety multiplier. A fraction
+/// too small relative to that multiplier silently forces full serialization of shard
+/// proving regardless of `trace_gen_workers`/`prove_workers`, since every shard ends up
+/// requesting more permits than the budget could ever hold.
+const DEFAULT_TRACE_BUDGET_RAM_FRACTION: u64 = 3;
 
 struct TraceMemoryBudget {
     semaphore: ProverSemaphore,
