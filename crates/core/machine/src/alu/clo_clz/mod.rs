@@ -49,7 +49,7 @@ pub const NUM_CLOCLZ_COLS: usize = size_of::<CloClzCols<u8>>();
 
 /// A chip that implements addition for the opcodes CLO/CLZ.
 ///
-/// As with `AddSubChip`, not every row is a real retired instruction -- though as of this
+/// As with `AddChip`, not every row is a real retired instruction -- though as of this
 /// writing no other chip emits a synthetic dependency row into `cloclz_events`, the
 /// `is_real_instruction` flag is kept for consistency with the other opcode-family chips. Note
 /// this chip is itself a synthetic-dependency *producer* for `ShiftRightChip` (the `send_alu`

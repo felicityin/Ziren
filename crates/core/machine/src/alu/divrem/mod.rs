@@ -109,7 +109,7 @@ const LONG_WORD_SIZE: usize = 2 * WORD_SIZE;
 
 /// A chip that implements addition for the opcodes DIV/REM.
 ///
-/// Unlike `AddSubChip`/`MulChip`, no other chip ever emits a synthetic dependency row into
+/// Unlike `AddChip`/`MulChip`, no other chip ever emits a synthetic dependency row into
 /// `divrem_events` (DivRem's own internal checks are the other direction: it sends synthetic
 /// ADD/MULT/MULTU/SLTU rows to those chips, see the `send_alu`/`send_alu_with_hi` calls below).
 /// Every row here is therefore a real, retired instruction -- no `is_real_instruction` split is
@@ -757,7 +757,7 @@ where
             .assert_eq(one.clone(), local.is_divu + local.is_div + local.is_mod + local.is_modu);
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        // No `AddSubChip`/`MulChip`-style synthetic-row split is needed here: nothing ever
+        // No `AddChip`/`MulChip`-style synthetic-row split is needed here: nothing ever
         // produces a synthetic `divrem_events` row (see this chip's doc comment), so `is_real`
         // already means "real instruction".
         let clk = clk_expr::<AB>(&local.state);

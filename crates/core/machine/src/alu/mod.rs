@@ -1,5 +1,4 @@
 pub mod add_sub;
-pub mod addi;
 pub mod bitwise;
 mod clo_clz;
 pub mod divrem;
@@ -9,7 +8,6 @@ pub mod sll;
 pub mod sr;
 
 pub use add_sub::*;
-pub use addi::*;
 pub use bitwise::*;
 pub use clo_clz::*;
 pub use divrem::*;

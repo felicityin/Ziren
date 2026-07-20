@@ -77,10 +77,12 @@ pub enum MipsAirId {
     SyscallPrecompile = 27,
     /// The div rem chip.
     DivRem = 28,
-    /// The add sub chip.
-    AddSub = 29,
+    /// The register-form add chip (ADD, ADDU).
+    Add = 29,
     /// The immediate-form add chip (ADDI, ADDIU).
     Addi = 51,
+    /// The sub chip (SUB, SUBU).
+    Sub = 52,
     /// The bitwise chip.
     Bitwise = 30,
     /// The mul chip.
@@ -155,7 +157,8 @@ impl MipsAirId {
             Self::SyscallCore => "SyscallCore",
             Self::SyscallPrecompile => "SyscallPrecompile",
             Self::DivRem => "DivRem",
-            Self::AddSub => "AddSub",
+            Self::Add => "Add",
+            Self::Sub => "Sub",
             Self::Bitwise => "Bitwise",
             Self::Mul => "Mul",
             Self::ShiftRight => "ShiftRight",

@@ -40,7 +40,7 @@ pub const NUM_BITWISE_COLS: usize = size_of::<BitwiseCols<u8>>();
 
 /// A chip that implements bitwise operations for the opcodes XOR, OR, AND, and NOR.
 ///
-/// As with `AddSubChip`, not every row is a real retired instruction -- though as of this
+/// As with `AddChip`, not every row is a real retired instruction -- though as of this
 /// writing no other chip emits a synthetic dependency row into `bitwise_events`, the
 /// `is_real_X` split is kept for consistency with the other opcode-family chips and to stay
 /// sound if a future dependency producer is added.

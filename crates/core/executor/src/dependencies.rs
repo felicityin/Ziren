@@ -22,7 +22,7 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
     }
 
     if c_neg == 1 {
-        executor.record.add_sub_events.push(AluEvent {
+        executor.record.add_events.push(AluEvent {
             shard: 0,
             clk: 0,
             pc: UNUSED_PC,
@@ -38,7 +38,7 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
         });
     }
     if rem_neg == 1 {
-        executor.record.add_sub_events.push(AluEvent {
+        executor.record.add_events.push(AluEvent {
             shard: 0,
             clk: 0,
             pc: UNUSED_PC,
@@ -171,7 +171,7 @@ pub fn emit_memory_dependencies(
         b_record: None,
         c_record: None,
     };
-    executor.record.add_sub_events.push(add_event);
+    executor.record.add_events.push(add_event);
     let addr_offset = (memory_addr % 4_u32) as u8;
     let mem_value = memory_record.value;
 
@@ -210,7 +210,7 @@ pub fn emit_memory_dependencies(
                 b_record: None,
                 c_record: None,
             };
-            executor.record.add_sub_events.push(sub_event);
+            executor.record.sub_events.push(sub_event);
         }
     }
 }
@@ -275,7 +275,7 @@ pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
             b_record: None,
             c_record: None,
         };
-        executor.record.add_sub_events.push(add_event);
+        executor.record.add_events.push(add_event);
     }
 }
 
@@ -298,7 +298,7 @@ pub fn emit_jump_dependencies(executor: &mut Executor, event: JumpEvent) {
                 b_record: None,
                 c_record: None,
             };
-            executor.record.add_sub_events.push(add_event);
+            executor.record.add_events.push(add_event);
         }
         Opcode::Jump | Opcode::Jumpi => {}
         _ => unreachable!(),
@@ -476,7 +476,7 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
             b_record: None,
             c_record: None,
         };
-        executor.record.add_sub_events.push(add_event);
+        executor.record.add_events.push(add_event);
 
         let ror_event2 = AluEvent {
             shard: 0,

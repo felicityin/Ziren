@@ -40,7 +40,7 @@ pub const NUM_LT_COLS: usize = size_of::<LtCols<u8>>();
 
 /// A chip that implements bitwise operations for the opcodes SLT and SLTU.
 ///
-/// As with `AddSubChip`, not every row is a real retired instruction: `Branch`/`DivRem`
+/// As with `AddChip`, not every row is a real retired instruction: `Branch`/`DivRem`
 /// dependency checks reuse this chip's comparison circuit for internal SLT/SLTU checks at the
 /// `UNUSED_PC` sentinel. `is_real_slt`/`is_real_sltu` distinguish real instructions from
 /// synthetic dependency rows.

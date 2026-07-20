@@ -83,7 +83,7 @@ pub const BYTE_MASK: u8 = 0xff;
 
 /// A chip that implements multiplication for the opcode MUL, MULT and MULTU.
 ///
-/// As with `AddSubChip`, not every row is a real retired instruction: `DivRem`'s
+/// As with `AddChip`, not every row is a real retired instruction: `DivRem`'s
 /// `c * quotient` check and `misc/others`'s MADD/MADDU/MSUB/MSUBU dependency checks reuse this
 /// chip's arithmetic circuit for internal MULT/MULTU checks at the `UNUSED_PC` sentinel. `MUL`
 /// itself is never synthetic (no chip depends on it). `is_real_instruction` distinguishes real

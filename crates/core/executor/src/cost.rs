@@ -15,8 +15,9 @@ const fn is_core_air(id: MipsAirId) -> bool {
         id,
         MipsAirId::Program
             | MipsAirId::DivRem
-            | MipsAirId::AddSub
+            | MipsAirId::Add
             | MipsAirId::Addi
+            | MipsAirId::Sub
             | MipsAirId::Bitwise
             | MipsAirId::Mul
             | MipsAirId::ShiftRight
@@ -67,8 +68,9 @@ pub fn estimate_record_trace_bytes(
     let mut add_chip_cells = |air: MipsAirId, count: usize| {
         cells += (count as u64).next_power_of_two() * costs_per_air[&air];
     };
-    add_chip_cells(MipsAirId::AddSub, record.add_sub_events.len());
+    add_chip_cells(MipsAirId::Add, record.add_events.len());
     add_chip_cells(MipsAirId::Addi, record.addi_events.len());
+    add_chip_cells(MipsAirId::Sub, record.sub_events.len());
     add_chip_cells(MipsAirId::Mul, record.mul_events.len());
     add_chip_cells(MipsAirId::Bitwise, record.bitwise_events.len());
     add_chip_cells(MipsAirId::ShiftLeft, record.shift_left_events.len());
@@ -131,13 +133,17 @@ pub fn estimate_mips_lde_size(
     // Compute the program chip contribution.
     cells += program_size * costs_per_air[&MipsAirId::Program];
 
-    // Compute the addsub chip contribution.
-    cells += (num_events_per_air[MipsAirId::AddSub]).next_power_of_two()
-        * costs_per_air[&MipsAirId::AddSub];
+    // Compute the add chip contribution.
+    cells += (num_events_per_air[MipsAirId::Add]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Add];
 
     // Compute the addi chip contribution.
     cells += (num_events_per_air[MipsAirId::Addi]).next_power_of_two()
         * costs_per_air[&MipsAirId::Addi];
+
+    // Compute the sub chip contribution.
+    cells += (num_events_per_air[MipsAirId::Sub]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Sub];
 
     // Compute the mul chip contribution.
     cells +=
@@ -216,15 +222,18 @@ pub fn estimate_mips_event_counts(
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
     let mut events_counts: EnumMap<MipsAirId, u64> = EnumMap::default();
-    // Compute the number of events in the add sub chip. `opcode_counts[Opcode::ADD]` mixes
+    // Compute the number of events in the add chip. `opcode_counts[Opcode::ADD]` mixes
     // register-form ADD, immediate-form ADDI/ADDIU, and register-form internal dependency rows
     // from other chips -- `addi_events` isolates the immediate-form count (see `AddiChip`'s doc
     // comment), so it's subtracted out here and counted on its own line below.
-    events_counts[MipsAirId::AddSub] =
-        (opcode_counts[Opcode::ADD] - addi_events) + opcode_counts[Opcode::SUB];
+    events_counts[MipsAirId::Add] = opcode_counts[Opcode::ADD] - addi_events;
 
     // Compute the number of events in the addi chip.
     events_counts[MipsAirId::Addi] = addi_events;
+
+    // Compute the number of events in the sub chip. MIPS has no SUBI, so every SUB opcode
+    // occurrence (real or a dependency row from another chip) belongs here.
+    events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB];
 
     // Compute the number of events in the mul chip.
     events_counts[MipsAirId::Mul] =
@@ -311,7 +320,7 @@ pub fn estimate_mips_event_counts(
     events_counts[MipsAirId::Mul] += events_counts[MipsAirId::DivRem];
     events_counts[MipsAirId::Lt] += events_counts[MipsAirId::DivRem];
 
-    // Note: we ignore the additional dependencies for addsub, since they are accounted for in
+    // Note: we ignore the additional dependencies for add/sub, since they are accounted for in
     // the maximal shapes.
 
     events_counts
@@ -325,11 +334,21 @@ pub fn pad_mips_event_counts(
     num_cycles: u64,
 ) -> EnumMap<MipsAirId, u64> {
     event_counts.iter_mut().for_each(|(k, v)| match k {
-        MipsAirId::AddSub => *v += 5 * num_cycles,
+        // At most one instruction retires per cycle, so only one of the mutually-exclusive
+        // dependency-row producers below can fire per cycle. Add's worst case is a DIVREM
+        // retiring with both its `c`/remainder sign-correction checks active (2 ADD dependency
+        // rows, `emit_divrem_dependencies`); Branch/Jump/`EXT`-flavored MiscInstrs each emit at
+        // most 1 ADD dependency row, and a real retired ADD is also just 1 -- all below the
+        // DIVREM worst case. `+1` margin over the derived worst case of 2.
+        MipsAirId::Add => *v += 3 * num_cycles,
         // At most one real instruction retires per cycle, so a real ADDI's worst-case growth
-        // is 1 per cycle (unlike AddSub, which also absorbs dependency rows injected by other
+        // is 1 per cycle (unlike Add/Sub, which also absorb dependency rows injected by other
         // instructions -- see the multipliers above/below for those).
         MipsAirId::Addi => *v += num_cycles,
+        // MIPS has no SUBI, so Sub's only dependency-row producer is `emit_memory_dependencies`'
+        // LB/LH sign-extension check (at most 1 per retiring memory instruction), same order as
+        // a real retired SUB. `+1` margin over the derived worst case of 1.
+        MipsAirId::Sub => *v += 2 * num_cycles,
         MipsAirId::Mul => *v += 4 * num_cycles,
         MipsAirId::Bitwise => *v += 3 * num_cycles,
         MipsAirId::ShiftLeft => *v += num_cycles,

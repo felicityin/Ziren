@@ -25,8 +25,8 @@ use zkm_hypercube::{
 pub(crate) mod mips_chips {
     pub use crate::{
         alu::{
-            AddSubChip, AddiChip, BitwiseChip, CloClzChip, DivRemChip, LtChip, MulChip, ShiftLeft,
-            ShiftRightChip,
+            AddChip, AddiChip, BitwiseChip, CloClzChip, DivRemChip, LtChip, MulChip, ShiftLeft,
+            ShiftRightChip, SubChip,
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
@@ -77,10 +77,12 @@ pub const MAX_NUMBER_OF_SHARDS: usize = 1 << MAX_LOG_NUMBER_OF_SHARDS;
 pub enum MipsAir<F: PrimeField32> {
     /// An AIR that contains a preprocessed program table and a lookup for the instructions.
     Program(ProgramChip),
-    /// An AIR for the MIPS Add and SUB instruction.
-    Add(AddSubChip),
+    /// An AIR for the register-form MIPS ADD instruction.
+    Add(AddChip),
     /// An AIR for the immediate-form MIPS ADDI/ADDIU instruction.
     Addi(AddiChip),
+    /// An AIR for the MIPS SUB instruction.
+    Sub(SubChip),
     /// An AIR for MIPS Bitwise instructions.
     Bitwise(BitwiseChip),
     /// An AIR for MIPS Mul instruction.
@@ -259,6 +261,7 @@ impl<F: PrimeField32> MipsAir<F> {
             Global,
             Add,
             Addi,
+            Sub,
             Bitwise,
             Mul,
             ShiftRight,
@@ -544,13 +547,17 @@ impl<F: PrimeField32> MipsAir<F> {
         costs.insert(div_rem.name(), div_rem.cost());
         chips.push(div_rem);
 
-        let add_sub = Chip::new(MipsAir::Add(AddSubChip::default()));
-        costs.insert(add_sub.name(), add_sub.cost());
-        chips.push(add_sub);
+        let add = Chip::new(MipsAir::Add(AddChip::default()));
+        costs.insert(add.name(), add.cost());
+        chips.push(add);
 
         let addi = Chip::new(MipsAir::Addi(AddiChip));
         costs.insert(addi.name(), addi.cost());
         chips.push(addi);
+
+        let sub = Chip::new(MipsAir::Sub(SubChip::default()));
+        costs.insert(sub.name(), sub.cost());
+        chips.push(sub);
 
         let bitwise = Chip::new(MipsAir::Bitwise(BitwiseChip::default()));
         costs.insert(bitwise.name(), bitwise.cost());

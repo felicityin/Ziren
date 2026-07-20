@@ -1365,21 +1365,25 @@ impl<'a> Executor<'a> {
         };
 
         match opcode {
-            // A register-form ADD/SUB (or an internal dependency-check row from another chip,
-            // which never has an immediate `c`) goes to `add_sub_events`; an immediate-form ADD
+            // A register-form ADD (or an internal dependency-check row from another chip, which
+            // never has an immediate `c`) goes to `add_events`; an immediate-form ADD
             // (ADDI/ADDIU: `b` a real register, `c` the encoded immediate, identifiable here by
             // `c` having no register read at all) goes to the narrower `addi_events` -- see
             // `AddiChip`'s doc comment for why this split exists. `!imm_b` is required too: a
             // fully-immediate ADD (both operands encoded, e.g. an `add $zero, $zero, 0`-shaped
             // NOP) also has `record.c.is_none()` but never reads `b` from a register either, which
             // `AddiChip`'s AIR doesn't expect (it asserts `imm_b` is always false) -- that shape
-            // must stay on `AddSubChip`, whose shared `RegisterReader` handles any combination of
-            // `imm_b`/`imm_c` correctly.
+            // must stay on `AddChip`, whose shared `RegisterReader` handles any combination of
+            // `imm_b`/`imm_c` correctly. MIPS has no SUBI, so every SUB (real or a dependency row)
+            // goes to `sub_events` unconditionally.
             Opcode::ADD if record.c.is_none() && !imm_b => {
                 self.record.addi_events.push(event);
             }
-            Opcode::ADD | Opcode::SUB => {
-                self.record.add_sub_events.push(event);
+            Opcode::ADD => {
+                self.record.add_events.push(event);
+            }
+            Opcode::SUB => {
+                self.record.sub_events.push(event);
             }
             Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR => {
                 self.record.bitwise_events.push(event);

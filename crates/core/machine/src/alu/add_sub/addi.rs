@@ -35,12 +35,12 @@ pub const NUM_ADDI_COLS: usize = size_of::<AddiCols<u8>>();
 /// A chip that implements addition for the immediate-form opcodes ADDI and ADDIU: register `b`
 /// plus the instruction's own encoded immediate `c`.
 ///
-/// Unlike `AddSubChip`, `c` never comes from a register here -- it's read directly off
+/// Unlike `AddChip`/`SubChip`, `c` never comes from a register here -- it's read directly off
 /// `InstructionCols::op_c` (already populated for the `send_program` lookup), so this chip pays
-/// no `MemoryReadCols`/interaction for it, and every real row is `a = b + c` with no add/sub
-/// role mux. The synthetic internal-dependency-check rows other chips emit via
-/// `send_alu`/`send_alu_with_hi` are always register-shaped (see `AddSubChip`'s doc comment) and
-/// stay on `AddSubChip`; every row here is a real, retired instruction.
+/// no `MemoryReadCols`/interaction for it, and every real row is `a = b + c` with no role mux.
+/// The synthetic internal-dependency-check rows other chips emit via
+/// `send_alu`/`send_alu_with_hi` are always register-shaped (see `AddChip`'s doc comment) and
+/// stay on `AddChip`/`SubChip`; every row here is a real, retired instruction.
 #[derive(Default)]
 pub struct AddiChip;
 
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn generate_trace() {
-        // Unlike `AddSubChip`, every real `AddiChip` row is a genuine retired instruction (no
+        // Unlike `AddChip`/`SubChip`, every real `AddiChip` row is a genuine retired instruction (no
         // synthetic-dependency-row shortcut), so `event_to_row` always fetches from `program` --
         // this needs a real single-instruction program to fetch, matching the event's pc.
         let program = Program {
