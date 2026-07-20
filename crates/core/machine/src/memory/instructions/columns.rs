@@ -50,9 +50,6 @@ pub struct MemoryInstructionsColumns<T: Copy> {
     /// Whether this is a load half unsigned instruction.
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_lhu: T,
-    /// Whether this is a load word instruction.
-    #[cfg_attr(feature = "picus", picus(selector))]
-    pub is_lw: T,
     /// Whether this is a lwl instruction.
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_lwl: T,
@@ -68,9 +65,6 @@ pub struct MemoryInstructionsColumns<T: Copy> {
     /// Whether this is a store half instruction.
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_sh: T,
-    /// Whether this is a store word instruction.
-    #[cfg_attr(feature = "picus", picus(selector))]
-    pub is_sw: T,
     /// Whether this is a swl instruction.
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_swl: T,

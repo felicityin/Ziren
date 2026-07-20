@@ -1,5 +1,6 @@
 {
   "U256XU2048Mul": 3157,
+  "StoreWord": 70,
   "Bn254Fp2MulAssign": 1485,
   "Addi": 48,
   "CloClz": 65,
@@ -28,7 +29,7 @@
   "MemoryGlobalFinalize": 148,
   "Byte": 22,
   "EdDecompress": 1566,
-  "MemoryGlobalInit": 148,
+  "LoadWord": 70,
   "SyscallPrecompile": 11,
   "Secp256r1AddAssign": 2049,
   "Bn254DoubleAssign": 2280,
@@ -44,11 +45,12 @@
   "ShaCompressControl": 69,
   "Bn254Fp2AddSubAssign": 734,
   "Branch": 109,
-  "SysLinux": 103,
+  "MemoryGlobalInit": 148,
   "Bls12381FpOpAssign": 556,
   "ShaCompress": 20880,
   "MiscInstrs": 117,
-  "MemoryInstrs": 124,
-  "MovCond": 79,
-  "Secp256k1DoubleAssign": 2280
+  "MemoryInstrs": 122,
+  "SysLinux": 103,
+  "Secp256k1DoubleAssign": 2280,
+  "MovCond": 79
 }

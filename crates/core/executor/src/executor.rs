@@ -1441,7 +1441,11 @@ impl<'a> Executor<'a> {
             c_record: record.c,
         };
 
-        self.record.memory_instr_events.push(event);
+        match opcode {
+            Opcode::LW => self.record.load_word_events.push(event),
+            Opcode::SW => self.record.store_word_events.push(event),
+            _ => self.record.memory_instr_events.push(event),
+        }
         emit_memory_dependencies(
             self,
             event,

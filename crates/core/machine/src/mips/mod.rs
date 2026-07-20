@@ -30,7 +30,7 @@ pub(crate) mod mips_chips {
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
-        memory::{MemoryGlobalChip, MemoryInstructionsChip},
+        memory::{LoadWordChip, MemoryGlobalChip, MemoryInstructionsChip, StoreWordChip},
         misc::{MiscInstrsChip, MovCondChip},
         program::ProgramChip,
         syscall::{
@@ -103,8 +103,12 @@ pub enum MipsAir<F: PrimeField32> {
     Branch(BranchChip),
     /// An AIR for MIPS Jump instructions.
     Jump(JumpChip),
-    /// An AIR for MIPS memory instructions.
+    /// An AIR for the rare MIPS memory instructions (everything except LW/SW).
     MemoryInstrs(MemoryInstructionsChip),
+    /// An AIR for the word-aligned MIPS load instruction (LW).
+    LoadWord(LoadWordChip),
+    /// An AIR for the word-aligned MIPS store instruction (SW).
+    StoreWord(StoreWordChip),
     /// An AIR for MIPS mov condition instructions.
     MovCond(MovCondChip),
     /// An AIR for MIPS misc instructions.
@@ -274,6 +278,8 @@ impl<F: PrimeField32> MipsAir<F> {
             MiscInstrs,
             MovCond,
             MemoryInstrs,
+            LoadWord,
+            StoreWord,
             SyscallCore,
             SyscallInstrs,
             MemoryLocal,
@@ -599,6 +605,14 @@ impl<F: PrimeField32> MipsAir<F> {
             Chip::new(MipsAir::MemoryInstrs(MemoryInstructionsChip::default()));
         costs.insert(memory_instructions.name(), memory_instructions.cost());
         chips.push(memory_instructions);
+
+        let load_word = Chip::new(MipsAir::LoadWord(LoadWordChip::default()));
+        costs.insert(load_word.name(), load_word.cost());
+        chips.push(load_word);
+
+        let store_word = Chip::new(MipsAir::StoreWord(StoreWordChip::default()));
+        costs.insert(store_word.name(), store_word.cost());
+        chips.push(store_word);
 
         let misc_instrs = Chip::new(MipsAir::MiscInstrs(MiscInstrsChip::default()));
         costs.insert(misc_instrs.name(), misc_instrs.cost());

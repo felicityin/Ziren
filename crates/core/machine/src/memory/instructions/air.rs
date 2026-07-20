@@ -43,13 +43,11 @@ where
             + local.is_lbu
             + local.is_lh
             + local.is_lhu
-            + local.is_lw
             + local.is_lwl
             + local.is_lwr
             + local.is_ll
             + local.is_sb
             + local.is_sh
-            + local.is_sw
             + local.is_swl
             + local.is_swr
             + local.is_sc;
@@ -58,13 +56,11 @@ where
         builder.assert_bool(local.is_lbu);
         builder.assert_bool(local.is_lh);
         builder.assert_bool(local.is_lhu);
-        builder.assert_bool(local.is_lw);
         builder.assert_bool(local.is_lwl);
         builder.assert_bool(local.is_lwr);
         builder.assert_bool(local.is_ll);
         builder.assert_bool(local.is_sb);
         builder.assert_bool(local.is_sh);
-        builder.assert_bool(local.is_sw);
         builder.assert_bool(local.is_swl);
         builder.assert_bool(local.is_swr);
         builder.assert_bool(local.is_sc);
@@ -83,8 +79,7 @@ where
         // instruction is a read-modify-write of `op_a` (`is_rw_a = 1`), with `prev_a_val` -- used
         // extensively above by LWL/LWR/SC -- cross-checked against the register's real previous
         // value via `hi_or_prev_a`.
-        let op_a_immutable =
-            local.is_sb + local.is_sh + local.is_sw + local.is_swl + local.is_swr;
+        let op_a_immutable = local.is_sb + local.is_sh + local.is_swl + local.is_swr;
         eval_register_reader(
             builder,
             &local.reader,
@@ -128,18 +123,16 @@ where
         // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
         // can't claim the wrong memory-instruction variant while still passing the program
         // lookup.
-        let opcode_bindings: [(AB::Var, Opcode); 14] = [
+        let opcode_bindings: [(AB::Var, Opcode); 12] = [
             (local.is_lb, Opcode::LB),
             (local.is_lbu, Opcode::LBU),
             (local.is_lh, Opcode::LH),
             (local.is_lhu, Opcode::LHU),
-            (local.is_lw, Opcode::LW),
             (local.is_lwl, Opcode::LWL),
             (local.is_lwr, Opcode::LWR),
             (local.is_ll, Opcode::LL),
             (local.is_sb, Opcode::SB),
             (local.is_sh, Opcode::SH),
-            (local.is_sw, Opcode::SW),
             (local.is_swl, Opcode::SWL),
             (local.is_swr, Opcode::SWR),
             (local.is_sc, Opcode::SC),
@@ -249,7 +242,6 @@ impl MemoryInstructionsChip {
                     + local.is_lbu
                     + local.is_lh
                     + local.is_lhu
-                    + local.is_lw
                     + local.is_lwl
                     + local.is_lwr
                     + local.is_ll,
@@ -308,7 +300,6 @@ impl MemoryInstructionsChip {
         let mem_value_is_pos = (local.is_lb + local.is_lh - local.mem_value_is_neg)
             + local.is_lbu
             + local.is_lhu
-            + local.is_lw
             + local.is_ll
             + local.is_lwl
             + local.is_lwr;
@@ -350,9 +341,6 @@ impl MemoryInstructionsChip {
         // When the instruction is SH, make sure both offset one and three are off.
         builder.when(local.is_sh).assert_zero(local.ls_bits_is_one + local.ls_bits_is_three);
 
-        // When the instruction is SW, ensure that the offset is 0.
-        builder.when(local.is_sw).assert_one(offset_is_zero.clone());
-
         // Compute the expected stored value for a SH instruction.
         let a_is_lower_half = offset_is_zero.clone();
         let a_is_upper_half = local.ls_bits_is_two;
@@ -366,11 +354,6 @@ impl MemoryInstructionsChip {
         builder
             .when(local.is_sh)
             .assert_word_eq(mem_val.map(|x| x.into()), sh_expected_stored_value);
-
-        // When the instruction is SW, just use the word without masking.
-        builder
-            .when(local.is_sw)
-            .assert_word_eq(mem_val.map(|x| x.into()), a_val.map(|x| x.into()));
 
         // When the instruction is SWL: compute the expected stored value
         let swl_expected_stored_value = Word([
@@ -462,9 +445,6 @@ impl MemoryInstructionsChip {
             .when(local.is_lh + local.is_lhu)
             .assert_zero(local.ls_bits_is_one + local.ls_bits_is_three);
 
-        // When the instruction is LW, ensure that the offset is zero.
-        builder.when(local.is_lw).assert_one(offset_is_zero.clone());
-
         let use_lower_half = offset_is_zero.clone();
         let use_upper_half = local.ls_bits_is_two;
         let half_value = Word([
@@ -476,9 +456,6 @@ impl MemoryInstructionsChip {
         builder
             .when(local.is_lh + local.is_lhu)
             .assert_word_eq(half_value, local.unsigned_mem_val.map(|x| x.into()));
-
-        // When the instruction is LW, just use the word.
-        builder.when(local.is_lw).assert_word_eq(mem_val, local.unsigned_mem_val);
 
         let one = AB::Expr::one();
         let prev_a_val = local.prev_a_val;

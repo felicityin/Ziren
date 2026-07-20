@@ -170,13 +170,7 @@ impl MemoryInstructionsChip {
         let mem_value = event.mem_access.value();
         if matches!(
             event.opcode,
-            Opcode::LB
-                | Opcode::LBU
-                | Opcode::LH
-                | Opcode::LHU
-                | Opcode::LW
-                | Opcode::LWL
-                | Opcode::LWR
+            Opcode::LB | Opcode::LBU | Opcode::LH | Opcode::LHU | Opcode::LWL | Opcode::LWR
                 | Opcode::LL
         ) {
             match event.opcode {
@@ -194,9 +188,6 @@ impl MemoryInstructionsChip {
                         _ => unreachable!(),
                     };
                     cols.unsigned_mem_val = value.into();
-                }
-                Opcode::LW => {
-                    cols.unsigned_mem_val = mem_value.into();
                 }
                 Opcode::LWL => {
                     // LWL:
@@ -252,13 +243,11 @@ impl MemoryInstructionsChip {
         cols.is_lbu = F::from_bool(matches!(event.opcode, Opcode::LBU));
         cols.is_lh = F::from_bool(matches!(event.opcode, Opcode::LH));
         cols.is_lhu = F::from_bool(matches!(event.opcode, Opcode::LHU));
-        cols.is_lw = F::from_bool(matches!(event.opcode, Opcode::LW));
         cols.is_lwl = F::from_bool(matches!(event.opcode, Opcode::LWL));
         cols.is_lwr = F::from_bool(matches!(event.opcode, Opcode::LWR));
         cols.is_ll = F::from_bool(matches!(event.opcode, Opcode::LL));
         cols.is_sb = F::from_bool(matches!(event.opcode, Opcode::SB));
         cols.is_sh = F::from_bool(matches!(event.opcode, Opcode::SH));
-        cols.is_sw = F::from_bool(matches!(event.opcode, Opcode::SW));
         cols.is_swl = F::from_bool(matches!(event.opcode, Opcode::SWL));
         cols.is_swr = F::from_bool(matches!(event.opcode, Opcode::SWR));
         cols.is_sc = F::from_bool(matches!(event.opcode, Opcode::SC));

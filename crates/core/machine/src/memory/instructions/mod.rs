@@ -3,7 +3,12 @@ use p3_air::BaseAir;
 
 pub mod air;
 pub mod columns;
+pub mod load_word;
+pub mod store_word;
 pub mod trace;
+
+pub use load_word::LoadWordChip;
+pub use store_word::StoreWordChip;
 
 #[derive(Default)]
 pub struct MemoryInstructionsChip;

@@ -103,6 +103,10 @@ pub enum MipsAirId {
     SyscallInstrs = 38,
     /// The MemoryInstructionChip.
     MemoryInstrs = 39,
+    /// The word-aligned load chip (LW).
+    LoadWord = 53,
+    /// The word-aligned store chip (SW).
+    StoreWord = 54,
     /// The MiscInstrsChip.
     MiscInstrs = 40,
     /// The memory global init chip.
@@ -169,6 +173,8 @@ impl MipsAirId {
             Self::Jump => "Jump",
             Self::SyscallInstrs => "SyscallInstrs",
             Self::MemoryInstrs => "MemoryInstrs",
+            Self::LoadWord => "LoadWord",
+            Self::StoreWord => "StoreWord",
             Self::MiscInstrs => "MiscInstrs",
             Self::MemoryGlobalInit => "MemoryGlobalInit",
             Self::MemoryGlobalFinalize => "MemoryGlobalFinalize",
