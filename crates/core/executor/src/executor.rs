@@ -2687,7 +2687,11 @@ impl<'a> Executor<'a> {
             // Check if the LDE size is too large.
             let padded_event_counts =
                 pad_mips_event_counts(event_counts, self.shape_check_frequency);
-            let padded_lde_size = estimate_mips_lde_size(padded_event_counts, &self.costs);
+            let padded_lde_size = estimate_mips_lde_size(
+                padded_event_counts,
+                &self.costs,
+                (self.program.instructions.len() as u64).next_power_of_two(),
+            );
             if padded_lde_size > self.lde_size_threshold {
                 tracing::warn!(
                     "stopping shard early due to lde size: {:.2} GiB",

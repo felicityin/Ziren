@@ -7,7 +7,6 @@ use crate::{
 };
 
 const BYTE_NUM_ROWS: u64 = 1 << 16;
-const MAX_PROGRAM_SIZE: u64 = 1 << 22;
 
 /// Returns `true` for the `MipsAirId` variants covered exactly (not just conservatively) by
 /// [`estimate_record_trace_bytes`]'s per-chip event counting.
@@ -58,7 +57,12 @@ pub fn estimate_record_trace_bytes(
     costs_per_air: &HashMap<MipsAirId, u64>,
 ) -> u64 {
     let mut cells = BYTE_NUM_ROWS * costs_per_air[&MipsAirId::Byte];
-    cells += MAX_PROGRAM_SIZE * costs_per_air[&MipsAirId::Program];
+    // The Program chip's preprocessed trace is padded to the program's real instruction count
+    // (see `ProgramChip::generate_preprocessed_trace`), not some worst-case ceiling -- and
+    // unlike the event-count estimators below, this function already has the real program in
+    // hand via `record.program`, so there's no need to guess.
+    cells += (record.program.instructions.len() as u64).next_power_of_two()
+        * costs_per_air[&MipsAirId::Program];
 
     let mut add_chip_cells = |air: MipsAirId, count: usize| {
         cells += (count as u64).next_power_of_two() * costs_per_air[&air];
@@ -111,16 +115,21 @@ pub fn estimate_record_trace_bytes(
 }
 
 /// Estimates the LDE area.
+///
+/// `program_size` is the calling program's real, padded (next-power-of-two) instruction count --
+/// see [`estimate_record_trace_bytes`]'s doc comment on the Program chip contribution for why
+/// this must be the real size rather than a worst-case ceiling.
 #[must_use]
 pub fn estimate_mips_lde_size(
     num_events_per_air: EnumMap<MipsAirId, u64>,
     costs_per_air: &HashMap<MipsAirId, u64>,
+    program_size: u64,
 ) -> u64 {
     // Compute the byte chip contribution.
     let mut cells = BYTE_NUM_ROWS * costs_per_air[&MipsAirId::Byte];
 
     // Compute the program chip contribution.
-    cells += MAX_PROGRAM_SIZE * costs_per_air[&MipsAirId::Program];
+    cells += program_size * costs_per_air[&MipsAirId::Program];
 
     // Compute the addsub chip contribution.
     cells += (num_events_per_air[MipsAirId::AddSub]).next_power_of_two()
