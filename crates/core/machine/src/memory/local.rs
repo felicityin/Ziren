@@ -12,7 +12,7 @@ use p3_maybe_rayon::prelude::{
     IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
 use zkm_core_executor::events::{ByteLookupEvent, ByteRecord, GlobalLookupEvent, MemoryLocalEvent};
-use zkm_core_executor::{ExecutionRecord, Program};
+use zkm_core_executor::{ByteOpcode, ExecutionRecord, Program};
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::{
     air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
@@ -53,15 +53,19 @@ pub struct SingleMemoryLocal<T: Copy> {
     /// The 16-bit limb of `final_shard`, used for its 16-bit range check.
     pub final_shard_16bit_limb: T,
 
-    /// The 16-bit limb of `initial_clk`, used for its 24-bit range check.
+    /// The 16-bit limb of `initial_clk`, used for its 28-bit range check.
     pub initial_clk_16bit_limb: T,
-    /// The 8-bit limb of `initial_clk`, used for its 24-bit range check.
+    /// The 8-bit limb of `initial_clk`, used for its 28-bit range check.
     pub initial_clk_8bit_limb: T,
+    /// The 4-bit limb of `initial_clk`, used for its 28-bit range check.
+    pub initial_clk_4bit_limb: T,
 
-    /// The 16-bit limb of `final_clk`, used for its 24-bit range check.
+    /// The 16-bit limb of `final_clk`, used for its 28-bit range check.
     pub final_clk_16bit_limb: T,
-    /// The 8-bit limb of `final_clk`, used for its 24-bit range check.
+    /// The 8-bit limb of `final_clk`, used for its 28-bit range check.
     pub final_clk_8bit_limb: T,
+    /// The 4-bit limb of `final_clk`, used for its 28-bit range check.
+    pub final_clk_4bit_limb: T,
 
     /// The initial value of the memory access.
     pub initial_value: Word<T>,
@@ -159,12 +163,21 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
                 blu.add_u16_range_check(value as u16);
             }
 
-            // 24-bit range checks (16-bit + 8-bit limbs) for the clk fields.
+            // 28-bit range checks (16-bit + 8-bit + 4-bit limbs) for the clk fields.
             for value in
                 [mem_event.initial_mem_access.timestamp, mem_event.final_mem_access.timestamp]
             {
                 blu.add_u16_range_check((value & 0xffff) as u16);
                 blu.add_u8_range_check(0, ((value >> 16) & 0xff) as u8);
+                let limb_4 = ((value >> 24) & 0xf) as u8;
+                blu.add_u8_range_check(0, limb_4);
+                blu.add_byte_lookup_event(ByteLookupEvent {
+                    opcode: ByteOpcode::LTU,
+                    a1: 1,
+                    a2: 0,
+                    b: limb_4,
+                    c: 16,
+                });
             }
         });
 
@@ -221,20 +234,23 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
                         cols.final_clk = F::from_canonical_u32(final_clk);
 
                         // Populate the limbs backing the defense-in-depth range checks.
-                        for (value, limb_16, limb_8) in [
+                        for (value, limb_16, limb_8, limb_4) in [
                             (
                                 initial_clk,
                                 &mut cols.initial_clk_16bit_limb,
                                 &mut cols.initial_clk_8bit_limb,
+                                &mut cols.initial_clk_4bit_limb,
                             ),
                             (
                                 final_clk,
                                 &mut cols.final_clk_16bit_limb,
                                 &mut cols.final_clk_8bit_limb,
+                                &mut cols.final_clk_4bit_limb,
                             ),
                         ] {
                             *limb_16 = F::from_canonical_u32(value & 0xffff);
                             *limb_8 = F::from_canonical_u32((value >> 16) & 0xff);
+                            *limb_4 = F::from_canonical_u32((value >> 24) & 0xf);
                         }
                         cols.initial_shard_16bit_limb = F::from_canonical_u32(initial_shard);
                         cols.final_shard_16bit_limb = F::from_canonical_u32(final_shard);
@@ -276,7 +292,7 @@ where
             builder.slice_range_check_u8(&local.initial_value.0, local.is_real);
             builder.slice_range_check_u8(&local.final_value.0, local.is_real);
 
-            // Defense-in-depth: range check shards to 16 bits and clocks to 24 bits.
+            // Defense-in-depth: range check shards to 16 bits and clocks to 28 bits.
             builder
                 .when(local.is_real)
                 .assert_eq(local.initial_shard, local.initial_shard_16bit_limb);
@@ -285,16 +301,18 @@ where
                 &[local.initial_shard_16bit_limb, local.final_shard_16bit_limb],
                 local.is_real,
             );
-            builder.eval_range_check_24bits(
+            builder.eval_range_check_28bits(
                 local.initial_clk,
                 local.initial_clk_16bit_limb,
                 local.initial_clk_8bit_limb,
+                local.initial_clk_4bit_limb,
                 local.is_real,
             );
-            builder.eval_range_check_24bits(
+            builder.eval_range_check_28bits(
                 local.final_clk,
                 local.final_clk_16bit_limb,
                 local.final_clk_8bit_limb,
+                local.final_clk_4bit_limb,
                 local.is_real,
             );
 

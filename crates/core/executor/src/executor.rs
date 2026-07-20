@@ -46,12 +46,16 @@ pub const DEFAULT_PC_INC: u32 = 4;
 pub const UNUSED_PC: u32 = 1;
 
 /// Hard ceiling on a shard-local `clk`: every migrated opcode chip's shared `CpuState`
-/// range-checks `clk` into a 16+8-bit limb pair with no overflow/carry bit
+/// range-checks `clk` into a 16+8+4-bit limb triple with no overflow/carry bit
 /// (`crates/core/machine/src/adapter/state.rs`'s `eval_cpu_state`, via
-/// `eval_range_check_24bits`), so `clk` must never reach `1 << 24` for any real row. `clk`
-/// increments by `5` per ordinary cycle plus `num_extra_cycles` for syscalls, so this binds
-/// well before `shard_size` if `shard_size` is configured anywhere near this value.
-pub const CORE_SHARD_CLK_LIMIT: u32 = 1 << 24;
+/// `eval_range_check_28bits`), so `clk` must never reach `1 << 28` for any real row. This width
+/// is chosen, not arbitrary: the same three limbs also back the memory/register ordering check
+/// (`eval_memory_access_timestamp`), whose underflow-trick soundness needs `2 * 2^K` to stay
+/// under KoalaBear's field modulus (`2^31 - 2^24 + 1`) -- `2 * 2^28 = 2^29` clears that with a
+/// comfortable margin, while `2 * 2^32` (a naive 16+16 limb pair) would not. `clk` increments by
+/// `5` per ordinary cycle plus `num_extra_cycles` for syscalls, so this binds well before
+/// `shard_size` if `shard_size` is configured anywhere near this value.
+pub const CORE_SHARD_CLK_LIMIT: u32 = 1 << 28;
 
 /// Safety margin subtracted from `1 << CORE_MAX_LOG_ROW_COUNT` to get
 /// [`CORE_SHARD_HEIGHT_THRESHOLD`]. `pad_mips_event_counts` already pads its own
@@ -2673,7 +2677,7 @@ impl<'a> Executor<'a> {
         // If there's not enough cycles left for another instruction, move to the next shard.
         let cpu_exit = self.max_syscall_cycles + self.state.clk >= self.shard_size;
 
-        // `clk`'s 24-bit range check (see `CORE_SHARD_CLK_LIMIT`'s doc comment) has no
+        // `clk`'s 28-bit range check (see `CORE_SHARD_CLK_LIMIT`'s doc comment) has no
         // overflow/carry handling, so this must be checked unconditionally every cycle
         // (not just every `shape_check_frequency` cycles like the height/LDE checks
         // below) -- `clk`'s growth is exactly known each step, no estimation involved.

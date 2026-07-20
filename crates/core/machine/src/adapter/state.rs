@@ -9,7 +9,7 @@ use zkm_hypercube::air::ZKMAirBuilder;
 
 use crate::air::MemoryAirBuilder;
 
-/// Shard number and clk (as 16+8-bit limbs), the bookkeeping every chip that executes a MIPS
+/// Shard number and clk (as 16+8+4-bit limbs), the bookkeeping every chip that executes a MIPS
 /// instruction needs: range-checked, and (for `shard`) cross-checked against the shard's own
 /// public value. Lifted out of `CpuChip` so any chip can embed it.
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
@@ -18,6 +18,7 @@ pub struct CpuState<T: Copy> {
     pub shard: T,
     pub clk_16bit_limb: T,
     pub clk_8bit_limb: T,
+    pub clk_4bit_limb: T,
 }
 
 impl<F: PrimeField> CpuState<F> {
@@ -26,8 +27,10 @@ impl<F: PrimeField> CpuState<F> {
 
         let clk_16bit_limb = (clk & 0xffff) as u16;
         let clk_8bit_limb = ((clk >> 16) & 0xff) as u8;
+        let clk_4bit_limb = ((clk >> 24) & 0xf) as u8;
         self.clk_16bit_limb = F::from_canonical_u16(clk_16bit_limb);
         self.clk_8bit_limb = F::from_canonical_u8(clk_8bit_limb);
+        self.clk_4bit_limb = F::from_canonical_u8(clk_4bit_limb);
 
         blu.add_byte_lookup_event(ByteLookupEvent::new(ByteOpcode::U16Range, shard as u16, 0, 0, 0));
         blu.add_byte_lookup_event(ByteLookupEvent::new(
@@ -44,12 +47,28 @@ impl<F: PrimeField> CpuState<F> {
             0,
             clk_8bit_limb as u8,
         ));
+        blu.add_byte_lookup_event(ByteLookupEvent::new(
+            ByteOpcode::U8Range,
+            0,
+            0,
+            0,
+            clk_4bit_limb,
+        ));
+        blu.add_byte_lookup_event(ByteLookupEvent::new(
+            ByteOpcode::LTU,
+            1,
+            0,
+            clk_4bit_limb,
+            16,
+        ));
     }
 }
 
-/// Reassembles the full clk value from its two limbs.
+/// Reassembles the full clk value from its three limbs.
 pub fn clk_expr<AB: ZKMAirBuilder>(state: &CpuState<AB::Var>) -> AB::Expr {
-    AB::Expr::from_canonical_u32(1u32 << 16) * state.clk_8bit_limb + state.clk_16bit_limb
+    AB::Expr::from_canonical_u32(1u32 << 16) * state.clk_8bit_limb
+        + AB::Expr::from_canonical_u32(1u32 << 24) * state.clk_4bit_limb
+        + state.clk_16bit_limb
 }
 
 /// Range-checks `shard`/`clk` and cross-checks `shard` against the shard's own public value.
@@ -71,7 +90,13 @@ pub fn eval_cpu_state<AB: ZKMAirBuilder>(
         is_real.clone(),
     );
 
-    builder.eval_range_check_24bits(clk, state.clk_16bit_limb, state.clk_8bit_limb, is_real);
+    builder.eval_range_check_28bits(
+        clk,
+        state.clk_16bit_limb,
+        state.clk_8bit_limb,
+        state.clk_4bit_limb,
+        is_real,
+    );
 }
 
 /// Chains `(clk, pc) -> (next_clk, next_pc)` state across the whole machine via a

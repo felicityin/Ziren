@@ -116,6 +116,7 @@ pub trait MemoryAirBuilder: BaseAirBuilder {
         let clk: Self::Expr = clk.into();
         let diff_16bit_limb: Self::Expr = mem_access.diff_16bit_limb.clone().into();
         let diff_8bit_limb: Self::Expr = mem_access.diff_8bit_limb.clone().into();
+        let diff_4bit_limb: Self::Expr = mem_access.diff_4bit_limb.clone().into();
 
         if self.try_emit_memory_timestamp_summary(
             do_check.clone(),
@@ -126,6 +127,7 @@ pub trait MemoryAirBuilder: BaseAirBuilder {
             compare_clk.clone(),
             diff_16bit_limb.clone(),
             diff_8bit_limb.clone(),
+            diff_4bit_limb.clone(),
         ) {
             return;
         }
@@ -141,39 +143,47 @@ pub trait MemoryAirBuilder: BaseAirBuilder {
         let current_comp_val = self.if_else(compare_clk.clone(), clk, shard.clone());
 
         // Assert `current_comp_val > prev_comp_val`. We check this by asserting that
-        // `0 <= current_comp_val-prev_comp_val-1 < 2^24`.
+        // `0 <= current_comp_val-prev_comp_val-1 < 2^28`.
         //
         // The equivalence of these statements comes from the fact that if
         // `current_comp_val <= prev_comp_val`, then `current_comp_val-prev_comp_val-1 < 0` and will
-        // underflow in the prime field, resulting in a value that is `>= 2^24` as long as both
-        // `current_comp_val, prev_comp_val` are range-checked to be `<2^24` and as long as we're
-        // working in a field larger than `2 * 2^24` (which is true of the KoalaBear and Mersenne31
-        // prime).
+        // underflow in the prime field, resulting in a value that is `>= 2^28` as long as both
+        // `current_comp_val, prev_comp_val` are range-checked to be `<2^28` and as long as we're
+        // working in a field larger than `2 * 2^28` (true of the KoalaBear prime, `2^31 - 2^24 + 1`:
+        // `2 * 2^28 = 2^29`, comfortably under it).
         let diff_minus_one = current_comp_val - prev_comp_value - Self::Expr::one();
 
         // Verify that mem_access.ts_diff = mem_access.ts_diff_16bit_limb
-        // + mem_access.ts_diff_8bit_limb * 2^16.
-        self.eval_range_check_24bits(diff_minus_one, diff_16bit_limb, diff_8bit_limb, do_check);
+        // + mem_access.ts_diff_8bit_limb * 2^16 + mem_access.ts_diff_4bit_limb * 2^24.
+        self.eval_range_check_28bits(
+            diff_minus_one,
+            diff_16bit_limb,
+            diff_8bit_limb,
+            diff_4bit_limb,
+            do_check,
+        );
     }
 
-    /// Verifies the inputted value is within 24 bits.
+    /// Verifies the inputted value is within 28 bits.
     ///
-    /// This method verifies that the inputted is less than 2^24 by doing a 16 bit and 8 bit range
-    /// check on it's limbs.  It will also verify that the limbs are correct.  This method is needed
-    /// since the memory access timestamp check (see [Self::eval_memory_access_timestamp]) needs to assume
-    /// the clk is within 24 bits.
-    fn eval_range_check_24bits(
+    /// This method verifies that the input is less than 2^28 by doing a 16 bit, 8 bit, and 4 bit
+    /// range check on its limbs.  It will also verify that the limbs are correct.  This method is
+    /// needed since the memory access timestamp check (see [Self::eval_memory_access_timestamp])
+    /// needs to assume the clk is within 28 bits.
+    fn eval_range_check_28bits(
         &mut self,
         value: impl Into<Self::Expr>,
         limb_16: impl Into<Self::Expr> + Clone,
         limb_8: impl Into<Self::Expr> + Clone,
+        limb_4: impl Into<Self::Expr> + Clone,
         do_check: impl Into<Self::Expr> + Clone,
     ) {
-        // Verify that value = limb_16 + limb_8 * 2^16.
+        // Verify that value = limb_16 + limb_8 * 2^16 + limb_4 * 2^24.
         self.when(do_check.clone()).assert_eq(
             value,
             limb_16.clone().into()
-                + limb_8.clone().into() * Self::Expr::from_canonical_u32(1 << 16),
+                + limb_8.clone().into() * Self::Expr::from_canonical_u32(1 << 16)
+                + limb_4.clone().into() * Self::Expr::from_canonical_u32(1 << 24),
         );
 
         // Send the range checks for the limbs.
@@ -190,6 +200,22 @@ pub trait MemoryAirBuilder: BaseAirBuilder {
             Self::Expr::zero(),
             Self::Expr::zero(),
             limb_8,
+            do_check.clone(),
+        );
+
+        // `limb_4` must additionally be < 16 (a real 4-bit value), not just a valid byte.
+        self.send_byte(
+            Self::Expr::from_canonical_u8(ByteOpcode::U8Range as u8),
+            Self::Expr::zero(),
+            Self::Expr::zero(),
+            limb_4.clone(),
+            do_check.clone(),
+        );
+        self.send_byte(
+            Self::Expr::from_canonical_u8(ByteOpcode::LTU as u8),
+            Self::Expr::one(),
+            limb_4,
+            Self::Expr::from_canonical_u8(16),
             do_check,
         )
     }

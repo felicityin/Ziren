@@ -218,6 +218,7 @@ pub trait OperationSummaryAirBuilder: AirBuilder {
         _compare_clk: Self::Expr,
         _diff_16bit_limb: Self::Expr,
         _diff_8bit_limb: Self::Expr,
+        _diff_4bit_limb: Self::Expr,
     ) -> bool {
         false
     }

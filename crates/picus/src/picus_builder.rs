@@ -1530,6 +1530,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
         compare_clk: Self::Expr,
         diff_16bit_limb: Self::Expr,
         diff_8bit_limb: Self::Expr,
+        diff_4bit_limb: Self::Expr,
     ) -> bool {
         if self.is_selector_module_builder() {
             return false;
@@ -1539,7 +1540,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
             // Picus currently requires every helper module to expose at least
             // one output. This checker is semantically output-free, so we add a
             // single dummy result and constrain it to the constant 0.
-            let mut timestamp_module = PicusModule::build_empty(module_name.clone(), 8, 1);
+            let mut timestamp_module = PicusModule::build_empty(module_name.clone(), 9, 1);
             let do_check = timestamp_module.inputs[0].clone();
             let shard = timestamp_module.inputs[1].clone();
             let clk = timestamp_module.inputs[2].clone();
@@ -1548,6 +1549,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
             let compare_clk = timestamp_module.inputs[5].clone();
             let diff_16bit_limb = timestamp_module.inputs[6].clone();
             let diff_8bit_limb = timestamp_module.inputs[7].clone();
+            let diff_4bit_limb = timestamp_module.inputs[8].clone();
             let dummy_output = timestamp_module.outputs[0].clone();
 
             // Keep the synthetic output fixed so the helper remains a pure
@@ -1561,7 +1563,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
             // - compare_clk is a guarded bit
             // - if compare_clk = 1, we compare clks within the same shard
             // - otherwise we compare shard indices
-            // - diff limbs form a guarded 24-bit decomposition of
+            // - diff limbs form a guarded 28-bit decomposition of
             //   current_comp - prev_comp - 1
             Self::push_constraint_into(
                 &mut timestamp_module,
@@ -1583,7 +1585,9 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
                 &mut timestamp_module,
                 PicusConstraint::new_equality(
                     diff_minus_one,
-                    diff_16bit_limb.clone() + diff_8bit_limb.clone() * PicusExpr::Const(1 << 16),
+                    diff_16bit_limb.clone()
+                        + diff_8bit_limb.clone() * PicusExpr::Const(1 << 16)
+                        + diff_4bit_limb.clone() * PicusExpr::Const(1 << 24),
                 )
                 .apply_multiplier(do_check.clone()),
             );
@@ -1595,6 +1599,11 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
             Self::push_constraint_into(
                 &mut timestamp_module,
                 PicusConstraint::new_leq(diff_8bit_limb, PicusExpr::Const(255))
+                    .apply_multiplier(do_check.clone()),
+            );
+            Self::push_constraint_into(
+                &mut timestamp_module,
+                PicusConstraint::new_leq(diff_4bit_limb, PicusExpr::Const(15))
                     .apply_multiplier(do_check.clone()),
             );
 
@@ -1614,6 +1623,7 @@ impl<'chips, A: MachineAir<Felt>> OperationSummaryAirBuilder for PicusBuilder<'c
                 compare_clk,
                 diff_16bit_limb,
                 diff_8bit_limb,
+                diff_4bit_limb,
             ],
         ));
         true

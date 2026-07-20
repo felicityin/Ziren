@@ -120,8 +120,14 @@ impl ZKMProverOpts {
             // `shard_size` can reach `1 << CORE_MAX_LOG_ROW_COUNT` safely: the executor's own
             // per-chip height ceiling and `clk`-overflow guard
             // (`crates/core/executor/src/executor.rs`) keep every chip's real row count under
-            // that same bound regardless.
-            81.. => (22, 4, 1),
+            // that same bound regardless. Raised from 22 to 23 once `clk`'s range check was
+            // widened to 28 bits -- below that width change, `clk_exit` clamped every shard to
+            // ~3.36M real cycles regardless of this value (see `CORE_SHARD_CLK_LIMIT`'s doc
+            // comment). Raising further (24) makes no measured difference: `lde_size_threshold`
+            // (see its own doc comment -- a thin safety margin below jagged PCS's real
+            // `AreaOutOfBounds` ceiling, not a memory-tunable cap) becomes the sole binding
+            // constraint at 23 already.
+            81.. => (23, 4, 1),
         }
     }
 

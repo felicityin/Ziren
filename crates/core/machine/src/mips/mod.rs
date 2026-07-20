@@ -718,6 +718,102 @@ pub mod tests {
         assert_eq!(costs, machine_costs);
     }
 
+    /// Confirms the widened (28-bit) `clk` range check is correct by driving a real `Executor`
+    /// far enough that a single shard's `clk` actually crosses the *old* `1 << 24` boundary, then
+    /// netting every chip's send/receive lookup multiplicities. A flat run of `ADD`-immediate
+    /// (`ADDI`) instructions is used instead of a branch-based loop to sidestep any risk of
+    /// miscomputing a branch offset by hand; a store-then-reload of a scratch register at the very
+    /// start/end (with ~3.6M untouched instructions in between) additionally exercises
+    /// `eval_memory_access_timestamp`'s diff check with a genuinely large (~18M) diff, not just
+    /// `CpuState`'s own range check.
+    #[test]
+    fn test_clk_widen_local_interactions_balance() {
+        use p3_koala_bear::KoalaBear;
+        use slop_air::BaseAir;
+        use slop_multilinear::{Mle, PaddedMle};
+        use std::sync::Arc;
+        use zkm_core_executor::Executor;
+        use zkm_hypercube::{
+            air::LookupScope,
+            lookup::{debug_interactions_with_all_chips, LookupKind},
+            prover::Traces,
+            record::MachineRecord,
+        };
+        use zkm_stark::ZKMCoreOpts;
+
+        setup_logger();
+
+        const NUM_INCREMENTS: usize = 3_600_000;
+        let mut instructions = Vec::with_capacity(NUM_INCREMENTS + 3);
+        // $t1 (reg 9) := 42, touched once up front.
+        instructions.push(Instruction::new(Opcode::ADD, 9, 0, 42, false, true));
+        // $t0 (reg 8) := 0, then incremented NUM_INCREMENTS times -- pushes `clk` well past the
+        // old 1 << 24 = 16,777,216 ceiling (each ADDI costs 5 clk units) within one shard.
+        instructions.push(Instruction::new(Opcode::ADD, 8, 0, 0, false, true));
+        for _ in 0..NUM_INCREMENTS {
+            instructions.push(Instruction::new(Opcode::ADD, 8, 8, 1, false, true));
+        }
+        // $t1 touched again, ~3.6M instructions (~18M clk) after its only prior access.
+        instructions.push(Instruction::new(Opcode::ADD, 9, 9, 1, false, true));
+        let program = Program::new(instructions, 0, 0);
+
+        let opts = ZKMCoreOpts { shard_size: 1 << 23, ..Default::default() };
+        let mut runtime = Executor::new(program.clone(), opts);
+        runtime.run().unwrap();
+
+        let mut records = runtime.records;
+        assert_eq!(records.len(), 1, "expected this run to fit in a single shard/checkpoint");
+        let mut record = records.remove(0);
+        // See `keccak_sponge::sponge_tests::keccak_program_records`'s identical comment:
+        // `Executor::run`/`execute` never back-fills these, unlike `start_pc`/`next_pc`.
+        record.public_values.initial_timestamp = record.first_instruction_clk.unwrap();
+        record.public_values.last_timestamp = record.last_timestamp;
+        assert!(
+            record.last_timestamp > 1u32 << 24,
+            "test didn't actually cross the old clk ceiling: last_timestamp={}",
+            record.last_timestamp
+        );
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        machine.generate_dependencies(std::iter::once(&mut record), None).unwrap();
+        let chips = machine.chips().to_vec();
+
+        let max_log_row_count = 22u32;
+        let mut preprocessed_named = std::collections::BTreeMap::new();
+        let mut main_named = std::collections::BTreeMap::new();
+        for chip in &chips {
+            let name = MachineAir::<KoalaBear>::name(chip);
+            let pre_mle = match chip.generate_preprocessed_trace(&program) {
+                Some(t) => PaddedMle::padded_with_zeros(Arc::new(Mle::from(t)), max_log_row_count),
+                None => PaddedMle::zeros(0, max_log_row_count),
+            };
+            preprocessed_named.insert(name.clone(), pre_mle);
+
+            let main_mle = if chip.included(&record) {
+                let trace = chip.generate_trace(&record, &mut Default::default()).unwrap();
+                PaddedMle::padded_with_zeros(Arc::new(Mle::from(trace)), max_log_row_count)
+            } else {
+                PaddedMle::zeros(chip.width(), max_log_row_count)
+            };
+            main_named.insert(name, main_mle);
+        }
+        let preprocessed_traces = Traces { named_traces: preprocessed_named };
+        let traces = Traces { named_traces: main_named };
+        let public_values = record.public_values::<KoalaBear>();
+
+        assert!(
+            debug_interactions_with_all_chips(
+                &chips,
+                &preprocessed_traces,
+                &traces,
+                public_values,
+                LookupKind::all_kinds(),
+                LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance after widening clk to 28 bits"
+        );
+    }
+
     #[test]
     fn write_core_air_costs() {
         let costs = MipsAir::<KoalaBear>::costs();

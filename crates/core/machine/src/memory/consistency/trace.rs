@@ -1,7 +1,9 @@
 use p3_field::PrimeField32;
 use zkm_core_executor::events::{
-    ByteRecord, MemoryReadRecord, MemoryRecord, MemoryRecordEnum, MemoryWriteRecord,
+    ByteLookupEvent, ByteRecord, MemoryReadRecord, MemoryRecord, MemoryRecordEnum,
+    MemoryWriteRecord,
 };
+use zkm_core_executor::ByteOpcode;
 
 use super::{MemoryAccessCols, MemoryReadCols, MemoryReadWriteCols, MemoryWriteCols};
 
@@ -96,11 +98,23 @@ impl<F: PrimeField32> MemoryAccessCols<F> {
         self.diff_16bit_limb = F::from_canonical_u16(diff_16bit_limb);
         let diff_8bit_limb = (diff_minus_one >> 16) & 0xff;
         self.diff_8bit_limb = F::from_canonical_u32(diff_8bit_limb);
+        let diff_4bit_limb = (diff_minus_one >> 24) & 0xf;
+        self.diff_4bit_limb = F::from_canonical_u32(diff_4bit_limb);
 
         // Add a byte table lookup with the 16Range op.
         output.add_u16_range_check(diff_16bit_limb);
 
         // Add a byte table lookup with the U8Range op.
         output.add_u8_range_check(0, diff_8bit_limb as u8);
+
+        // Add byte table lookups constraining `diff_4bit_limb` to a valid, sub-16 nibble.
+        output.add_u8_range_check(0, diff_4bit_limb as u8);
+        output.add_byte_lookup_event(ByteLookupEvent {
+            opcode: ByteOpcode::LTU,
+            a1: 1,
+            a2: 0,
+            b: diff_4bit_limb as u8,
+            c: 16,
+        });
     }
 }

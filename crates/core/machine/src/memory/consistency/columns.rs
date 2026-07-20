@@ -45,9 +45,13 @@ pub struct MemoryAccessCols<T> {
     /// timestamp.
     pub diff_16bit_limb: T,
 
-    /// This column is the most significant 8 bit limb of current access timestamp - prev access
+    /// This column is the middle 8 bit limb of current access timestamp - prev access
     /// timestamp.
     pub diff_8bit_limb: T,
+
+    /// This column is the most significant 4 bit limb of current access timestamp - prev access
+    /// timestamp.
+    pub diff_4bit_limb: T,
 }
 
 /// The common columns for all memory access types.
