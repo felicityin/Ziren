@@ -420,6 +420,9 @@ pub fn run_test_core(
         ZKMCoreOpts::default(),
         ZKMContext::default(),
     )?;
+    // A successful run always retires at least one shard; zero shards means the producer
+    // pipeline silently never executed anything (verified nothing below), not a real pass.
+    assert!(!shard_proofs.is_empty(), "prove_with_context produced zero shards");
 
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
     let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;

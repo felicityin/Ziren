@@ -34,6 +34,13 @@ pub struct MinimalRunner {
     /// -- this bounds peak memory of the buffered value stream, not shard size (`ZKMCoreOpts`'s
     /// `minimal_trace_chunk_threshold`).
     chunk_threshold: u64,
+    /// Whether [`Self::try_next_chunk`] has produced a chunk yet. `HaltSyscall::execute`
+    /// unconditionally sets `next_pc` to `0` as the "the program is done" marker (checked
+    /// regardless of exit code, unlike `CoreVM::exited`, which is only set for a zero exit code)
+    /// -- but `0` is also a perfectly legitimate starting `pc` (every synthetic, non-ELF test
+    /// program in this crate uses one). Gating the `pc == 0` check on having already produced at
+    /// least one chunk disambiguates "just halted" from "hasn't run yet".
+    started: bool,
 }
 
 impl MinimalRunner {
@@ -41,7 +48,7 @@ impl MinimalRunner {
     pub fn new(program: Arc<Program>, chunk_threshold: u64) -> Self {
         let mut core = CoreVM::new(program, Live::new());
         core.load_image();
-        Self { core, chunk_threshold }
+        Self { core, chunk_threshold, started: false }
     }
 
     /// Add an item to the input stream (`stdin`).
@@ -70,9 +77,10 @@ impl MinimalRunner {
     /// # Errors
     /// Returns an error if execution fails (invalid instruction, out-of-bounds access, etc).
     pub fn try_next_chunk(&mut self) -> Result<Option<Chunk>, ExecutionError> {
-        if self.core.exited || self.core.pc == 0 {
+        if self.core.exited || (self.started && self.core.pc == 0) {
             return Ok(None);
         }
+        self.started = true;
 
         let pc_start = self.core.pc;
         let next_pc_start = self.core.next_pc;
