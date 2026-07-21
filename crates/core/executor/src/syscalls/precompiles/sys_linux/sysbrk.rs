@@ -1,7 +1,7 @@
 use crate::{
     events::{LinuxEvent, PrecompileEvent},
     program::MAX_MEMORY,
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError, Register,
 };
 
@@ -32,21 +32,21 @@ fn resolve_brk(
     Ok(v0)
 }
 
-impl Syscall for SysBrkSyscall {
+impl<R: SyscallRuntime> Syscall<R> for SysBrkSyscall {
     fn num_extra_cycles(&self) -> u32 {
         0
     }
 
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         a0: u32,
         a1: u32,
     ) -> Result<Option<u32>, ExecutionError> {
         let start_clk = rt.clk;
         let (record, brk) = rt.rr_traced(Register::BRK);
-        let initial_brk = rt.rt.program.image.get(&(Register::BRK as u32)).copied().unwrap_or(brk);
+        let initial_brk = rt.rt.program().image.get(&(Register::BRK as u32)).copied().unwrap_or(brk);
         let v0 = resolve_brk(initial_brk, brk, a0)?;
         let a3_record = rt.rw_traced(Register::A3, 0);
         let shard = rt.current_shard();

@@ -59,7 +59,11 @@ const DEFAULT_TRACE_GEN_WORKERS: usize = 8;
 // `trace_gen_workers` above (a shard's permit is held from trace generation through the end of
 // proving), so raising this is likewise no longer gated by a fixed per-worker memory multiplier.
 const DEFAULT_PROVE_WORKERS: usize = 4;
-const DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY: usize = 128;
+// Bounds how many oracle values `MinimalRunner` (phase 1 of `generate_records`) buffers before
+// yielding a `Chunk` -- independent of shard size, this just caps peak memory of the buffered
+// value stream. Sized generously relative to a typical shard's memory-access count so a shard
+// only rarely spans more than one chunk.
+const DEFAULT_MINIMAL_TRACE_CHUNK_THRESHOLD: u64 = 1 << 24;
 // Buffer depth between phase-2 trace generation (Stage B) and shard proving (Stage C,
 // `crates/core/machine/src/utils/prove.rs`). This used to be forced to 1 (an unbuffered
 // handoff) because it was the only thing standing between a burst of trace-gen workers and an
@@ -202,7 +206,10 @@ impl ZKMProverOpts {
 pub struct ZKMCoreOpts {
     /// The size of a shard in terms of cycles.
     pub shard_size: usize,
-    /// The size of a batch of shards in terms of cycles.
+    /// The size of a batch of shards in terms of cycles. Only consumed by `Executor`'s own
+    /// standalone `execute()` loop (`run()`/`run_fast()`/etc, used by tests and the recursion
+    /// prover) -- `generate_records`'s pipeline (`crates/core/machine/src/utils/prove.rs`'s
+    /// `prove_with_context`) doesn't batch shards this way, since it's fully sequential.
     pub shard_batch_size: usize,
     /// Options for splitting deferred events.
     pub split_opts: SplitOpts,
@@ -212,14 +219,16 @@ pub struct ZKMCoreOpts {
     pub trace_gen_workers: usize,
     /// The number of shards that can be proved concurrently by the phase-2 prover.
     pub prove_workers: usize,
-    /// The capacity of the channel for checkpoints.
-    pub checkpoints_channel_capacity: usize,
     /// The capacity of the channel for records and traces.
     pub records_and_traces_channel_capacity: usize,
     /// The frequency for shape checks.
     pub shape_check_frequency: u64,
     /// The maximum estimated LDE size (in bytes) before a shard is stopped early to avoid OOM.
     pub lde_size_threshold: u64,
+    /// Phase 1's (`MinimalRunner`) chunk-size bound, in oracle values buffered before yielding a
+    /// `Chunk`. Independent of shard economics (a chunk isn't a shard) -- this only bounds peak
+    /// memory of the buffered value stream. Mirrors SP1's `minimal_trace_chunk_threshold`.
+    pub minimal_trace_chunk_threshold: u64,
 }
 
 impl Default for ZKMCoreOpts {
@@ -246,10 +255,6 @@ impl Default for ZKMCoreOpts {
                 |_| DEFAULT_PROVE_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_PROVE_WORKERS),
             ),
-            checkpoints_channel_capacity: env::var("CHECKPOINTS_CHANNEL_CAPACITY").map_or_else(
-                |_| DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY,
-                |s| s.parse::<usize>().unwrap_or(DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY),
-            ),
             records_and_traces_channel_capacity: env::var("RECORDS_AND_TRACES_CHANNEL_CAPACITY")
                 .map_or_else(
                     |_| DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY,
@@ -260,6 +265,10 @@ impl Default for ZKMCoreOpts {
             lde_size_threshold: env::var("LDE_SIZE_THRESHOLD").map_or_else(
                 |_| DEFAULT_LDE_SIZE_THRESHOLD,
                 |s| s.parse::<u64>().unwrap_or(DEFAULT_LDE_SIZE_THRESHOLD),
+            ),
+            minimal_trace_chunk_threshold: env::var("MINIMAL_TRACE_CHUNK_THRESHOLD").map_or_else(
+                |_| DEFAULT_MINIMAL_TRACE_CHUNK_THRESHOLD,
+                |s| s.parse::<u64>().unwrap_or(DEFAULT_MINIMAL_TRACE_CHUNK_THRESHOLD),
             ),
             reconstruct_commitments: true,
         };
@@ -320,10 +329,6 @@ impl ZKMCoreOpts {
                 |_| DEFAULT_PROVE_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_PROVE_WORKERS),
             ),
-            checkpoints_channel_capacity: env::var("CHECKPOINTS_CHANNEL_CAPACITY").map_or_else(
-                |_| DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY,
-                |s| s.parse::<usize>().unwrap_or(DEFAULT_CHECKPOINTS_CHANNEL_CAPACITY),
-            ),
             records_and_traces_channel_capacity: env::var("RECORDS_AND_TRACES_CHANNEL_CAPACITY")
                 .map_or_else(
                     |_| DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY,
@@ -334,6 +339,10 @@ impl ZKMCoreOpts {
             lde_size_threshold: env::var("LDE_SIZE_THRESHOLD").map_or_else(
                 |_| DEFAULT_LDE_SIZE_THRESHOLD,
                 |s| s.parse::<u64>().unwrap_or(DEFAULT_LDE_SIZE_THRESHOLD),
+            ),
+            minimal_trace_chunk_threshold: env::var("MINIMAL_TRACE_CHUNK_THRESHOLD").map_or_else(
+                |_| DEFAULT_MINIMAL_TRACE_CHUNK_THRESHOLD,
+                |s| s.parse::<u64>().unwrap_or(DEFAULT_MINIMAL_TRACE_CHUNK_THRESHOLD),
             ),
             reconstruct_commitments: true,
         }

@@ -1,50 +1,41 @@
-use super::{Syscall, SyscallCode, SyscallContext};
-use crate::memory::Entry;
+use super::{Syscall, SyscallCode, SyscallContext, SyscallRuntime};
 use crate::ExecutionError;
 
 pub(crate) struct HintLenSyscall;
 
-impl Syscall for HintLenSyscall {
+impl<R: SyscallRuntime> Syscall<R> for HintLenSyscall {
     fn execute(
         &self,
-        ctx: &mut SyscallContext,
+        ctx: &mut SyscallContext<R>,
         _: SyscallCode,
         _arg1: u32,
         _arg2: u32,
     ) -> Result<Option<u32>, ExecutionError> {
-        if ctx.rt.state.input_stream_ptr >= ctx.rt.state.input_stream.len() {
-            log::error!(
-                "failed reading stdin due to insufficient input data: input_stream_ptr={}, input_stream_len={}",
-                ctx.rt.state.input_stream_ptr,
-                ctx.rt.state.input_stream.len()
-            );
-            return Err(ExecutionError::InvalidSyscallArgs());
+        match ctx.rt.peek_input() {
+            Some(item) => Ok(Some(item.len() as u32)),
+            None => {
+                log::error!("failed reading stdin due to insufficient input data");
+                Err(ExecutionError::InvalidSyscallArgs())
+            }
         }
-        Ok(Some(ctx.rt.state.input_stream[ctx.rt.state.input_stream_ptr].len() as u32))
     }
 }
 
 pub(crate) struct HintReadSyscall;
 
-impl Syscall for HintReadSyscall {
+impl<R: SyscallRuntime> Syscall<R> for HintReadSyscall {
     fn execute(
         &self,
-        ctx: &mut SyscallContext,
+        ctx: &mut SyscallContext<R>,
         _: SyscallCode,
         ptr: u32,
         len: u32,
     ) -> Result<Option<u32>, ExecutionError> {
-        if ctx.rt.state.input_stream_ptr >= ctx.rt.state.input_stream.len() {
-            log::error!(
-                "failed reading stdin due to insufficient input data: input_stream_ptr={}, input_stream_len={}",
-                ctx.rt.state.input_stream_ptr,
-                ctx.rt.state.input_stream.len()
-            );
+        let Some(vec) = ctx.rt.consume_input() else {
+            log::error!("failed reading stdin due to insufficient input data");
             return Err(ExecutionError::InvalidSyscallArgs());
-        }
-        let vec = &ctx.rt.state.input_stream[ctx.rt.state.input_stream_ptr];
-        ctx.rt.state.input_stream_ptr += 1;
-        if ctx.rt.unconstrained {
+        };
+        if ctx.rt.is_unconstrained() {
             log::error!("hint read should not be used in a unconstrained block");
             return Err(ExecutionError::ExceptionOrTrap());
         }
@@ -72,16 +63,7 @@ impl Syscall for HintReadSyscall {
 
             // Save the data into runtime state so the runtime will use the desired data instead of
             // 0 when first reading/writing from this address.
-            ctx.rt.uninitialized_memory_checkpoint.entry(ptr + i).or_insert_with(|| false);
-            match ctx.rt.state.uninitialized_memory.entry(ptr + i) {
-                Entry::Occupied(_entry) => {
-                    log::error!("hint read address is initialized already");
-                    return Err(ExecutionError::InvalidSyscallArgs());
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(word);
-                }
-            }
+            ctx.rt.seed_uninitialized(ptr + i, word)?;
         }
         Ok(None)
     }

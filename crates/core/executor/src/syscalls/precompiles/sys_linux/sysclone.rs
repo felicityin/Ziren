@@ -1,19 +1,19 @@
 use crate::{
     events::{LinuxEvent, PrecompileEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError, Register,
 };
 
 pub(crate) struct SysCloneSyscall;
 
-impl Syscall for SysCloneSyscall {
+impl<R: SyscallRuntime> Syscall<R> for SysCloneSyscall {
     fn num_extra_cycles(&self) -> u32 {
         0
     }
 
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         a0: u32,
         a1: u32,

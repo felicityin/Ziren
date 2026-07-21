@@ -9,7 +9,7 @@ use zkm_curves::{
 
 use crate::{
     events::{Fp2MulEvent, PrecompileEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
 };
 
@@ -23,10 +23,10 @@ impl<P> Fp2MulSyscall<P> {
     }
 }
 
-impl<P: FpOpField> Syscall for Fp2MulSyscall<P> {
+impl<P: FpOpField, R: SyscallRuntime> Syscall<R> for Fp2MulSyscall<P> {
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

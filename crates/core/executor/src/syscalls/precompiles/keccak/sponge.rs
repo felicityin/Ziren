@@ -1,4 +1,4 @@
-use crate::syscalls::{Syscall, SyscallCode, SyscallContext};
+use crate::syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime};
 
 use crate::events::{KeccakSpongeEvent, PrecompileEvent};
 use crate::ExecutionError;
@@ -11,14 +11,14 @@ pub(crate) const KECCAK_GENERAL_OUTPUT_U64S: usize = 8;
 
 pub(crate) struct KeccakSpongeSyscall;
 
-impl Syscall for KeccakSpongeSyscall {
+impl<R: SyscallRuntime> Syscall<R> for KeccakSpongeSyscall {
     fn num_extra_cycles(&self) -> u32 {
         1
     }
 
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

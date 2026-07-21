@@ -1,12 +1,12 @@
-use super::{context::SyscallContext, Syscall, SyscallCode};
+use super::{context::SyscallContext, Syscall, SyscallCode, SyscallRuntime};
 use crate::ExecutionError;
 
 pub(crate) struct HaltSyscall;
 
-impl Syscall for HaltSyscall {
+impl<R: SyscallRuntime> Syscall<R> for HaltSyscall {
     fn execute(
         &self,
-        ctx: &mut SyscallContext,
+        ctx: &mut SyscallContext<R>,
         _: SyscallCode,
         exit_code: u32,
         _: u32,

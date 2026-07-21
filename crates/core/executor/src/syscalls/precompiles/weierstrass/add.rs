@@ -4,7 +4,7 @@ use zkm_curves::{CurveType, EllipticCurve};
 
 use crate::{
     events::{create_ec_add_event, PrecompileEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
 };
 
@@ -19,15 +19,15 @@ impl<E: EllipticCurve> WeierstrassAddAssignSyscall<E> {
     }
 }
 
-impl<E: EllipticCurve> Syscall for WeierstrassAddAssignSyscall<E> {
+impl<E: EllipticCurve, R: SyscallRuntime> Syscall<R> for WeierstrassAddAssignSyscall<E> {
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,
     ) -> Result<Option<u32>, ExecutionError> {
-        let event = create_ec_add_event::<E>(rt, arg1, arg2);
+        let event = create_ec_add_event::<E, R>(rt, arg1, arg2);
         let syscall_event =
             rt.rt.syscall_event(event.clk, None, rt.next_pc, syscall_code.syscall_id(), arg1, arg2);
         match E::CURVE_TYPE {

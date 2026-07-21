@@ -8,6 +8,7 @@ pub mod hook;
 mod instruction;
 mod io;
 pub mod memory;
+pub mod minimal;
 mod opcode;
 mod program;
 #[cfg(test)]
@@ -16,9 +17,12 @@ mod record;
 mod register;
 pub mod report;
 mod state;
+pub mod splicing;
 pub mod subproof;
 pub mod syscalls;
+pub mod tracing_chunk;
 mod utils;
+pub mod vm;
 
 pub use air::*;
 pub use context::*;

@@ -5,16 +5,16 @@ use zkm_primitives::consts::{bytes_to_words_le, words_to_bytes_le_vec, WORD_SIZE
 
 use crate::{
     events::{PrecompileEvent, Uint256MulEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
 };
 
 pub(crate) struct Uint256MulSyscall;
 
-impl Syscall for Uint256MulSyscall {
+impl<R: SyscallRuntime> Syscall<R> for Uint256MulSyscall {
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

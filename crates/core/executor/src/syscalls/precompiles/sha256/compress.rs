@@ -1,6 +1,6 @@
 use crate::{
     events::{PrecompileEvent, ShaCompressEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
 };
 
@@ -17,7 +17,7 @@ pub const SHA_COMPRESS_K: [u32; 64] = [
 
 pub(crate) struct Sha256CompressSyscall;
 
-impl Syscall for Sha256CompressSyscall {
+impl<R: SyscallRuntime> Syscall<R> for Sha256CompressSyscall {
     fn num_extra_cycles(&self) -> u32 {
         1
     }
@@ -26,7 +26,7 @@ impl Syscall for Sha256CompressSyscall {
     #[allow(clippy::many_single_char_names)]
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

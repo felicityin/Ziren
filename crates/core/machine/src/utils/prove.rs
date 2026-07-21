@@ -5,30 +5,19 @@ use crate::mips::MipsAir;
 use hashbrown::HashMap;
 use std::thread::ScopedJoinHandle;
 use std::{
-    fs::File,
-    io::{
-        Seek, {self},
-    },
+    io::{self},
     sync::{mpsc::sync_channel, Arc, Mutex},
 };
 use thiserror::Error;
 use web_time::Instant;
-use zkm_stark::koala_bear_poseidon2::KoalaBearPoseidon2;
 
-use p3_field::PrimeField32;
 use p3_koala_bear::KoalaBear;
 
-use crate::{
-    io::ZKMStdin,
-    utils::{concurrency::TurnBasedSync, trace_budget},
-};
+use crate::{io::ZKMStdin, utils::trace_budget};
 use zkm_core_executor::{
-    estimate_record_trace_bytes,
-    events::{format_table_line, sorted_table_lines},
-    mips_costs,
-    subproof::NoOpSubproofVerifier,
-    ExecutionError, ExecutionRecord, ExecutionReport, ExecutionState, Executor, MipsAirId,
-    Program, ZKMContext,
+    estimate_record_trace_bytes, mips_costs, minimal::MinimalRunner, splicing::SplicingVM,
+    tracing_chunk::TracingVM, ExecutionError, ExecutionRecord, Executor, MipsAirId, Program,
+    ZKMContext,
 };
 use zkm_primitives::io::ZKMPublicValues;
 
@@ -106,23 +95,23 @@ pub fn prove_with_context(
     let trace_byte_costs: Arc<HashMap<MipsAirId, u64>> =
         Arc::new(mips_costs().into_iter().map(|(k, v)| (k, v as u64)).collect());
 
-    // Setup the runtime.
-    let mut runtime = Executor::with_context(program.clone(), opts, context);
-
-    runtime.write_vecs(&stdin.buffer);
-    for proof in stdin.proofs.iter() {
-        let (proof, vk) = proof.clone();
-        runtime.write_proof(proof, vk);
-    }
-
     let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
     let program_arc = Arc::new(program.clone());
     let (preprocessed, vk) =
-        setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
+        setup_rt.block_on(shard_prover.setup(program_arc.clone(), ProverSemaphore::new(1)));
     let pk = preprocessed.pk;
 
-    #[cfg(feature = "debug")]
-    let (all_records_tx, all_records_rx) = std::sync::mpsc::channel::<Vec<ExecutionRecord>>();
+    // Phase 1 setup (`generate_records`'s `MinimalRunner`). `stdin.proofs` (deferred-proof
+    // witnesses for `VERIFY_ZKM_PROOF`/`SYSVERIFY`) is not yet wired into `MinimalRunner` -- a
+    // known, flagged limitation of this pipeline; see `SyscallRuntime::verify_deferred_proof`'s
+    // doc comment.
+    let mut minimal_runner =
+        MinimalRunner::new(program_arc.clone(), opts.minimal_trace_chunk_threshold);
+    for buf in &stdin.buffer {
+        minimal_runner.with_input(buf);
+    }
+    let context = context;
+    let _ = context; // `ZKMContext`'s subproof verifier is likewise not yet threaded through.
 
     // Record the start of the process.
     let proving_start = Instant::now();
@@ -130,321 +119,159 @@ pub fn prove_with_context(
     std::thread::scope(move |s| {
         let _span = span.enter();
 
-        // Spawn the checkpoint generator thread.
-        let checkpoint_generator_span = tracing::Span::current().clone();
-        let (checkpoints_tx, checkpoints_rx) =
-            sync_channel::<(usize, File, bool, u64)>(opts.checkpoints_channel_capacity);
-        let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> =
-            s.spawn(move || {
-                let _span = checkpoint_generator_span.enter();
-                tracing::debug_span!("checkpoint generator").in_scope(|| {
-                    let mut index = 0;
-                    loop {
-                        // Enter the span.
-                        let span = tracing::debug_span!("batch");
-                        let _span = span.enter();
-
-                        // Execute the runtime until we reach a checkpoint.
-                        let (checkpoint, done) = runtime
-                            .execute_state(false)
-                            .map_err(ZKMCoreProverError::ExecutionError)?;
-
-                        // Save the checkpoint to a temp file.
-                        let mut checkpoint_file =
-                            tempfile::tempfile().map_err(ZKMCoreProverError::IoError)?;
-                        checkpoint
-                            .save(&mut checkpoint_file)
-                            .map_err(ZKMCoreProverError::IoError)?;
-
-                        // Send the checkpoint.
-                        checkpoints_tx
-                            .send((index, checkpoint_file, done, runtime.state.global_clk))
-                            .unwrap();
-                        tracing::info!(
-                            "checkpoint {} generated at {:?} (clk={})",
-                            index,
-                            proving_start.elapsed(),
-                            runtime.state.global_clk,
-                        );
-
-                        // If we've reached the final checkpoint, break out of the loop.
-                        if done {
-                            break Ok(runtime.state.public_values_stream);
-                        }
-
-                        // Update the index.
-                        index += 1;
-                    }
-                })
-            });
-
-        // Spawn the phase 2 record generator thread.
-        let p2_record_gen_sync = Arc::new(TurnBasedSync::new());
-        let checkpoints_rx = Arc::new(Mutex::new(checkpoints_rx));
+        // Phase 1 -> 2 -> 3 producer: a single sequential pass (matching SP1's own
+        // `generate_records`, which its doc comment calls out as intentionally sequential) --
+        // no worker threads for record generation, per the `generate_records` port plan. Runs on
+        // its own thread only so it can pipeline concurrently with the (unmodified) phase-2
+        // prover workers below via the channel.
         let (p2_records_and_traces_tx, p2_records_and_traces_rx) = sync_channel::<(
             Vec<ExecutionRecord>,
             Vec<ZkmShardData>,
             Vec<ProverPermit>,
         )>(opts.records_and_traces_channel_capacity);
-        let p2_records_and_traces_tx = Arc::new(Mutex::new(p2_records_and_traces_tx));
 
-        let report_aggregate = Arc::new(Mutex::new(ExecutionReport::default()));
-        let state = Arc::new(Mutex::new(PublicValues::<u32, u32>::default().reset()));
-        let deferred = Arc::new(Mutex::new(ExecutionRecord::new(program.clone().into())));
-        let mut p2_record_and_trace_gen_handles = Vec::new();
-        for _ in 0..opts.trace_gen_workers {
-            let record_gen_sync = Arc::clone(&p2_record_gen_sync);
-            let records_and_traces_tx = Arc::clone(&p2_records_and_traces_tx);
-            let checkpoints_rx = Arc::clone(&checkpoints_rx);
+        let producer_span = tracing::Span::current().clone();
+        let producer_program = program_arc.clone();
+        let producer_machine = shard_prover.machine().clone();
+        let producer_shard_prover = Arc::clone(&shard_prover);
+        let producer_pk = Arc::clone(&pk);
+        let producer_prover_permits = prover_permits.clone();
+        let producer_trace_byte_costs = Arc::clone(&trace_byte_costs);
+        let producer_handle: ScopedJoinHandle<Result<(Vec<u8>, u64), ZKMCoreProverError>> =
+            s.spawn(move || {
+                let _span = producer_span.enter();
+                tracing::debug_span!("generate_records").in_scope(|| {
+                    let async_rt =
+                        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
 
-            let report_aggregate = Arc::clone(&report_aggregate);
-            let state = Arc::clone(&state);
-            let deferred = Arc::clone(&deferred);
-            let program = program.clone();
-            let shard_prover = Arc::clone(&shard_prover);
-            let machine = shard_prover.machine().clone();
-            let pk = Arc::clone(&pk);
-            let prover_permits = prover_permits.clone();
-            let trace_byte_costs = Arc::clone(&trace_byte_costs);
-            let async_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+                    let max_syscall_cycles = 0; // see `ZKMCoreOpts::minimal_trace_chunk_threshold`'s doc comment
+                    let mut splicing = SplicingVM::new(
+                        producer_program.clone(),
+                        max_syscall_cycles,
+                        (opts.shard_size as u32) * 4,
+                        opts.shape_check_frequency,
+                        opts.lde_size_threshold,
+                        (*producer_trace_byte_costs).clone(),
+                    );
+                    let mut tracing_tags = HashMap::new();
+                    let mut deferred = ExecutionRecord::new(producer_program.clone());
+                    let mut state = PublicValues::<u32, u32>::default().reset();
+                    let mut cycles = 0u64;
 
-            let span = tracing::Span::current().clone();
+                    loop {
+                        let Some(chunk) = minimal_runner
+                            .try_next_chunk()
+                            .map_err(ZKMCoreProverError::ExecutionError)?
+                        else {
+                            break;
+                        };
+                        let chunk_done = chunk.done;
 
-            #[cfg(feature = "debug")]
-            let all_records_tx = all_records_tx.clone();
+                        let spliced_pieces = splicing
+                            .splice_chunk(chunk)
+                            .map_err(ZKMCoreProverError::ExecutionError)?;
 
-            let handle = s.spawn(move || {
-                let _span = span.enter();
-                tracing::debug_span!("phase 2 trace generation").in_scope(|| {
-                    let _: () = loop {
-                        // Receive the latest checkpoint.
-                        let received = { checkpoints_rx.lock().unwrap().recv() };
-                        if let Ok((index, mut checkpoint, done, num_cycles)) = received {
-                            // Trace the checkpoint and reconstruct the execution records.
-                            let mut reader = io::BufReader::new(&checkpoint);
-                            let execution_state: ExecutionState =
-                                bincode::deserialize_from(&mut reader)
-                                    .expect("failed to deserialize state");
-                            let (mut records, report) = tracing::debug_span!("trace checkpoint")
-                                .in_scope(|| {
-                                    trace_checkpoint::<KoalaBearPoseidon2>(
-                                        program.clone(),
-                                        execution_state,
-                                        opts,
-                                    )
-                                });
-                            log::debug!("generated {} records", records.len());
-                            *report_aggregate.lock().unwrap() += report;
-                            reset_seek(&mut checkpoint);
+                        for spliced in spliced_pieces {
+                            let execution_shard = spliced.shard;
+                            let tracer =
+                                TracingVM::new(producer_program.clone(), spliced, std::mem::take(&mut tracing_tags));
+                            let traced = tracer.trace().map_err(ZKMCoreProverError::ExecutionError)?;
+                            tracing_tags = traced.tags;
+                            let mut record = traced.record;
+                            let done = traced.done;
 
-                            // Wait for our turn to update the state.
-                            record_gen_sync.wait_for_turn(index);
-
-                            // Update the public values & prover state for the shards which
-                            // retired instructions.
-                            let mut state = state.lock().unwrap();
-                            for record in records.iter_mut() {
-                                state.shard += 1;
-                                state.execution_shard = record.public_values.execution_shard;
-                                state.is_execution_shard = record.contains_cpu() as u32;
-                                if let Some(first_pc) = record.first_instruction_pc {
-                                    state.start_pc = first_pc;
-                                    state.next_pc = record.last_next_pc;
-                                    state.initial_timestamp =
-                                        record.first_instruction_clk.unwrap();
-                                    state.last_timestamp = record.last_timestamp;
-                                }
-                                state.committed_value_digest =
-                                    record.public_values.committed_value_digest;
-                                state.deferred_proofs_digest =
-                                    record.public_values.deferred_proofs_digest;
-                                record.public_values = *state;
+                            if done {
+                                minimal_runner.emit_globals(&mut record);
                             }
+
+                            // Update the public values & prover state for this (execution)
+                            // shard, then propagate to the record -- sequential, so (unlike the
+                            // old multi-worker design) no turn-based synchronization is needed.
+                            state.shard += 1;
+                            state.execution_shard = execution_shard;
+                            state.is_execution_shard = record.contains_cpu() as u32;
+                            if let Some(first_pc) = record.first_instruction_pc {
+                                state.start_pc = first_pc;
+                                state.next_pc = record.last_next_pc;
+                                state.initial_timestamp = record.first_instruction_clk.unwrap();
+                                state.last_timestamp = record.last_timestamp;
+                            }
+                            state.committed_value_digest = record.public_values.committed_value_digest;
+                            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+                            record.public_values = state;
 
                             // Defer events that are too expensive to include in every shard.
-                            let mut deferred = deferred.lock().unwrap();
-                            for record in records.iter_mut() {
-                                deferred.append(&mut record.defer());
+                            deferred.append(&mut record.defer());
+
+                            let mut records = vec![record];
+                            let mut split_records =
+                                deferred.split(done, records.last_mut(), opts.split_opts);
+
+                            // Update the public values & prover state for the shards which do
+                            // not contain "cpu events" before committing to them.
+                            if !done {
+                                state.execution_shard += 1;
                             }
-
-                            // We combine the memory init/finalize events if they are "small"
-                            // and would affect performance.
-                            let mut shape_fixed_records = if done
-                                && num_cycles < 1 << 21
-                                && deferred.global_memory_initialize_events.len()
-                                    < opts.split_opts.combine_memory_threshold
-                                && deferred.global_memory_finalize_events.len()
-                                    < opts.split_opts.combine_memory_threshold
-                            {
-                                let mut records_clone = records.clone();
-                                let last_record = records_clone.last_mut();
-                                // See if any deferred shards are ready to be committed to.
-                                let mut deferred =
-                                    deferred.split(done, last_record, opts.split_opts);
-                                tracing::debug!("deferred {} records", deferred.len());
-
-                                // Update the public values & prover state for the shards which do
-                                // not contain "cpu events" before
-                                // committing to them.
-                                if !done {
-                                    state.execution_shard += 1;
-                                }
-                                for record in deferred.iter_mut() {
-                                    state.shard += 1;
-                                    state.is_execution_shard = 0;
-                                    state.previous_init_addr_bits =
-                                        record.public_values.previous_init_addr_bits;
-                                    state.last_init_addr_bits =
-                                        record.public_values.last_init_addr_bits;
-                                    state.previous_finalize_addr_bits =
-                                        record.public_values.previous_finalize_addr_bits;
-                                    state.last_finalize_addr_bits =
-                                        record.public_values.last_finalize_addr_bits;
-                                    state.start_pc = state.next_pc;
-                                    state.initial_timestamp = state.last_timestamp;
-                                    record.public_values = *state;
-                                }
-                                records_clone.append(&mut deferred);
-
-                                // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
-                                    || -> Result<(), ZKMCoreProverError> {
-                                        match machine.generate_dependencies(
-                                            records_clone.iter_mut(),
-                                            None,
-                                        ) {
-                                            Ok(()) => Ok(()),
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    "Error generating dependencies: {:?}",
-                                                    e
-                                                );
-                                                Err(ZKMCoreProverError::DependenciesGenerationError)
-                                            }
-                                        }
-                                    },
-                                )?;
-
-                                // Let another worker update the state.
-                                record_gen_sync.advance_turn();
-
-                                Some(records_clone)
-                            } else {
-                                None
-                            };
-
-                            if shape_fixed_records.is_none() {
-                                // See if any deferred shards are ready to be committed to.
-                                let mut deferred = deferred.split(done, None, opts.split_opts);
-                                log::debug!("deferred {} records", deferred.len());
-
-                                // Update the public values & prover state for the shards which do not
-                                // contain "cpu events" before committing to them.
-                                if !done {
-                                    state.execution_shard += 1;
-                                }
-                                for record in deferred.iter_mut() {
-                                    state.shard += 1;
-                                    state.is_execution_shard = 0;
-                                    state.previous_init_addr_bits =
-                                        record.public_values.previous_init_addr_bits;
-                                    state.last_init_addr_bits =
-                                        record.public_values.last_init_addr_bits;
-                                    state.previous_finalize_addr_bits =
-                                        record.public_values.previous_finalize_addr_bits;
-                                    state.last_finalize_addr_bits =
-                                        record.public_values.last_finalize_addr_bits;
-                                    state.start_pc = state.next_pc;
-                                    state.initial_timestamp = state.last_timestamp;
-                                    record.public_values = *state;
-                                }
-                                records.append(&mut deferred);
-
-                                // Generate the dependencies.
-                                tracing::debug_span!("generate dependencies", index).in_scope(
-                                    || -> Result<(), ZKMCoreProverError> {
-                                        match machine.generate_dependencies(
-                                            records.iter_mut(),
-                                            None,
-                                        ) {
-                                            Ok(()) => Ok(()),
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    "Error generating dependencies: {:?}",
-                                                    e
-                                                );
-                                                Err(ZKMCoreProverError::DependenciesGenerationError)
-                                            }
-                                        }
-                                    },
-                                )?;
-
-                                // Let another worker update the state.
-                                record_gen_sync.advance_turn();
-
-                                shape_fixed_records = Some(records);
+                            for split_record in &mut split_records {
+                                state.shard += 1;
+                                state.is_execution_shard = 0;
+                                state.previous_init_addr_bits =
+                                    split_record.public_values.previous_init_addr_bits;
+                                state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
+                                state.previous_finalize_addr_bits =
+                                    split_record.public_values.previous_finalize_addr_bits;
+                                state.last_finalize_addr_bits =
+                                    split_record.public_values.last_finalize_addr_bits;
+                                state.start_pc = state.next_pc;
+                                state.initial_timestamp = state.last_timestamp;
+                                split_record.public_values = state;
                             }
+                            records.append(&mut split_records);
 
-                            let records = shape_fixed_records.unwrap();
-
-                            #[cfg(feature = "debug")]
-                            all_records_tx.send(records.clone()).unwrap();
+                            producer_machine.generate_dependencies(records.iter_mut(), None).map_err(
+                                |e| {
+                                    tracing::error!("Error generating dependencies: {:?}", e);
+                                    ZKMCoreProverError::DependenciesGenerationError
+                                },
+                            )?;
 
                             // Generate each record's traces and send it to the phase 2 prover
-                            // immediately, one record at a time, rather than generating the
-                            // whole checkpoint's traces up front and sending them as chunked
-                            // batches afterwards. `prover_permits` (`ProverSemaphore::new(opts
-                            // .trace_gen_workers.max(1))`) is shared by every trace-gen worker
-                            // across every checkpoint concurrently; `generate_main_traces` holds
-                            // one permit for as long as its returned `MainTraceData` is alive,
-                            // i.e. until the `ZkmShardData` wrapping it is proved downstream and
-                            // dropped. Generating a later record's traces (and so acquiring its
-                            // permit) while an earlier record's permit in the same checkpoint is
-                            // still held -- because it hasn't been sent yet, as a
-                            // collect-then-chunk-then-send structure would do -- can deadlock a
-                            // checkpoint against its own unsent records whenever it yields more
-                            // records than there are permits (e.g. a shard's own CPU execution
-                            // plus a deferred precompile shard split off in the same checkpoint).
-                            tracing::debug_span!("generate main traces", index).in_scope(|| {
-                                for record in records {
-                                    // Admission into the process-wide trace-memory budget, sized
-                                    // by this record's *exact* estimated materialized-trace
-                                    // bytes -- independent of `trace_gen_workers`'s thread-count-
-                                    // based `prover_permits` gate below, and shared by every
-                                    // concurrent caller of `prove_with_context` in this process
-                                    // (see `trace_budget`'s doc comment).
-                                    let estimated_bytes =
-                                        estimate_record_trace_bytes(&record, &trace_byte_costs);
-                                    let budget_permit = async_rt
-                                        .block_on(trace_budget::acquire_trace_budget(estimated_bytes));
+                            // immediately, one record at a time -- see the long-form comment on
+                            // this same pattern further down (unchanged from before this port).
+                            for record in records {
+                                let estimated_bytes =
+                                    estimate_record_trace_bytes(&record, &producer_trace_byte_costs);
+                                let budget_permit =
+                                    async_rt.block_on(trace_budget::acquire_trace_budget(estimated_bytes));
+                                let main_trace_data =
+                                    async_rt.block_on(producer_shard_prover.trace_generator().generate_main_traces(
+                                        record.clone(),
+                                        producer_shard_prover.max_log_row_count(),
+                                        producer_prover_permits.clone(),
+                                    ));
+                                let shard_data =
+                                    ZkmShardData { pk: Arc::clone(&producer_pk), main_trace_data };
+                                p2_records_and_traces_tx
+                                    .send((vec![record], vec![shard_data], vec![budget_permit]))
+                                    .unwrap();
+                            }
+                        }
 
-                                    let main_trace_data =
-                                        async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
-                                            record.clone(),
-                                            shard_prover.max_log_row_count(),
-                                            prover_permits.clone(),
-                                        ));
-                                    let shard_data = ZkmShardData { pk: Arc::clone(&pk), main_trace_data };
-                                    records_and_traces_tx
-                                        .lock()
-                                        .unwrap()
-                                        .send((vec![record], vec![shard_data], vec![budget_permit]))
-                                        .unwrap();
-                                }
-                            });
-                        } else {
+                        if chunk_done {
+                            cycles = minimal_runner.global_clk();
                             break;
                         }
-                    };
-                    Ok(())
+                    }
+
+                    tracing::info!(
+                        "generate_records finished at {:?} (cycles={})",
+                        proving_start.elapsed(),
+                        cycles,
+                    );
+
+                    Ok((minimal_runner.public_values_stream().to_vec(), cycles))
                 })
             });
-            p2_record_and_trace_gen_handles.push(handle);
-        }
-        drop(p2_records_and_traces_tx);
-        #[cfg(feature = "debug")]
-        drop(all_records_tx);
-
         // Spawn phase 2 prover worker threads, sized by `prove_workers` -- a separate knob
         // from `trace_gen_workers` (see `ZKMCoreOpts::prove_workers`'s doc comment), since
         // trace generation and shard proving are different workloads with different scaling
@@ -510,13 +337,8 @@ pub fn prove_with_context(
             p2_prover_handles.push(handle);
         }
 
-        // Wait until the checkpoint generator handle has fully finished.
-        let public_values_stream = checkpoint_generator_handle.join().unwrap()?;
-
-        // Wait until the records and traces have been fully generated for phase 2.
-        for handle in p2_record_and_trace_gen_handles {
-            handle.join().unwrap()?;
-        }
+        // Wait until the sequential producer (phases 1-3) has fully finished.
+        let (public_values_stream, cycles) = producer_handle.join().unwrap()?;
 
         // Wait until all phase 2 prover workers have finished, then restore shard order.
         for handle in p2_prover_handles {
@@ -530,38 +352,11 @@ pub fn prove_with_context(
         let all_shard_proofs: Vec<_> =
             all_shard_proofs_unordered.into_iter().map(|(_, proof)| proof).collect();
 
-        // Log some of the `ExecutionReport` information.
-        let report_aggregate = report_aggregate.lock().unwrap();
-        tracing::info!(
-            "execution report (totals): total_cycles={}, total_syscall_cycles={}, touched_memory_addresses={}",
-            report_aggregate.total_instruction_count(),
-            report_aggregate.total_syscall_count(),
-            report_aggregate.touched_memory_addresses,
-        );
-
-        // Print the opcode and syscall count tables like `du`: sorted by count (descending) and
-        // with the count in the first column.
-        tracing::info!("execution report (opcode counts):");
-        let (width, lines) = sorted_table_lines(report_aggregate.opcode_counts.as_ref());
-        for (label, count) in lines {
-            if *count > 0 {
-                tracing::info!("  {}", format_table_line(&width, &label, count));
-            } else {
-                tracing::debug!("  {}", format_table_line(&width, &label, count));
-            }
-        }
-
-        tracing::info!("execution report (syscall counts):");
-        let (width, lines) = sorted_table_lines(report_aggregate.syscall_counts.as_ref());
-        for (label, count) in lines {
-            if *count > 0 {
-                tracing::info!("  {}", format_table_line(&width, &label, count));
-            } else {
-                tracing::debug!("  {}", format_table_line(&width, &label, count));
-            }
-        }
-
-        let cycles = report_aggregate.total_instruction_count();
+        // NOTE: the old, per-opcode/per-syscall `ExecutionReport` breakdown printed here relied
+        // on bookkeeping (`Executor::report`) this pipeline doesn't duplicate across
+        // `MinimalRunner`/`SplicingVM`/`TracingVM` -- a deliberately scoped-out diagnostic-only
+        // limitation (see the `generate_records` port plan). Cycle count alone is still exact,
+        // from `MinimalRunner::global_clk()`.
 
         // Print the summary.
         let proving_time = proving_start.elapsed().as_secs_f64();
@@ -633,31 +428,6 @@ pub fn run_test_core(
     Ok(shard_proofs)
 }
 
-pub fn trace_checkpoint<SC: StarkGenericConfig>(
-    program: Program,
-    state: ExecutionState,
-    opts: ZKMCoreOpts,
-) -> (Vec<ExecutionRecord>, ExecutionReport)
-where
-    <SC as StarkGenericConfig>::Val: PrimeField32,
-{
-    let noop = NoOpSubproofVerifier;
-
-    let mut runtime = Executor::recover(program, state, opts);
-
-    // We already passed the deferred proof verifier when creating checkpoints, so the proofs were
-    // already verified. So here we use a noop verifier to not print any warnings.
-    runtime.subproof_verifier = Some(&noop);
-
-    // Execute from the checkpoint.
-    let (records, _) = runtime.execute_record(true).unwrap();
-
-    (records, runtime.report)
-}
-
-fn reset_seek(file: &mut File) {
-    file.seek(std::io::SeekFrom::Start(0)).expect("failed to seek to start of tempfile");
-}
 
 #[cfg(debug_assertions)]
 #[cfg(not(doctest))]
@@ -778,4 +548,5 @@ mod tests {
         let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
         run_test(program).unwrap();
     }
+
 }

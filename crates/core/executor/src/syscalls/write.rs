@@ -1,45 +1,42 @@
-use zkm_primitives::consts::num_to_comma_separated;
+use crate::{ExecutionError, Register};
 
-use crate::{ExecutionError, Executor, Register};
-
-use super::{Syscall, SyscallCode, SyscallContext};
+use super::{Syscall, SyscallCode, SyscallContext, SyscallRuntime};
 
 pub use zkm_primitives::consts::fd::*;
 
 pub(crate) struct WriteSyscall;
 
-impl Syscall for WriteSyscall {
+impl<R: SyscallRuntime> Syscall<R> for WriteSyscall {
     fn execute(
         &self,
-        ctx: &mut SyscallContext,
+        ctx: &mut SyscallContext<R>,
         _: SyscallCode,
         arg1: u32,
         arg2: u32,
     ) -> Result<Option<u32>, ExecutionError> {
-        let a2 = Register::A2;
-        let rt = &mut ctx.rt;
         let fd = arg1;
         let write_buf = arg2;
-        let nbytes = rt.register(a2);
+        let nbytes = ctx.register_unsafe(Register::A2);
         // Read nbytes from memory starting at write_buf.
-        let bytes = (0..nbytes).map(|i| rt.byte(write_buf + i)).collect::<Vec<u8>>();
+        let bytes = (0..nbytes).map(|i| ctx.byte_unsafe(write_buf + i)).collect::<Vec<u8>>();
         let slice = bytes.as_slice();
         write_fd(ctx, fd, slice)?;
         Ok(None)
     }
 }
 
-pub fn write_fd(ctx: &mut SyscallContext, fd: u32, slice: &[u8]) -> Result<(), ExecutionError> {
-    let rt = &mut ctx.rt;
+pub fn write_fd<R: SyscallRuntime>(
+    ctx: &mut SyscallContext<R>,
+    fd: u32,
+    slice: &[u8],
+) -> Result<(), ExecutionError> {
     if fd == FD_STDOUT {
         if let Ok(s) = core::str::from_utf8(slice) {
             match parse_cycle_tracker_command(s) {
-                Some(command) => handle_cycle_tracker_command(rt, command),
+                Some(command) => handle_cycle_tracker_command(ctx.rt, command),
                 None => {
-                    let flush_s = update_io_buf(ctx, fd, s);
-                    if !flush_s.is_empty() {
-                        flush_s.into_iter().for_each(|line| println!("stdout: {line}"));
-                    }
+                    let flush_s = ctx.rt.io_buf_push(fd, s);
+                    flush_s.into_iter().for_each(|line| ctx.rt.stdout_line(&line));
                 }
             }
         } else {
@@ -47,24 +44,26 @@ pub fn write_fd(ctx: &mut SyscallContext, fd: u32, slice: &[u8]) -> Result<(), E
         }
     } else if fd == FD_STDERR {
         if let Ok(s) = core::str::from_utf8(slice) {
-            let flush_s = update_io_buf(ctx, fd, s);
-            if !flush_s.is_empty() {
-                flush_s.into_iter().for_each(|line| println!("stderr: {line}"));
-            }
+            let flush_s = ctx.rt.io_buf_push(fd, s);
+            flush_s.into_iter().for_each(|line| ctx.rt.stderr_line(&line));
         } else {
             eprintln!("Warning: Stderr Received invalid UTF-8 data in slice: {slice:?}");
         }
     } else if fd == FD_PUBLIC_VALUES {
-        rt.state.public_values_stream.extend_from_slice(slice);
+        ctx.rt.write_public_values(slice);
     } else if fd == FD_HINT {
-        rt.state.input_stream.push(slice.to_vec());
-    } else if let Some(mut hook) = rt.hook_registry.get(fd) {
-        let res = hook.invoke_hook(rt.hook_env(), slice)?;
-        // Add result vectors to the beginning of the stream.
-        let ptr = rt.state.input_stream_ptr;
-        rt.state.input_stream.splice(ptr..ptr, res);
+        ctx.rt.push_hint_input(slice.to_vec());
     } else {
-        tracing::warn!("tried to write to unknown file descriptor {fd}");
+        match ctx.rt.invoke_hook(fd, slice)? {
+            Some(res) => {
+                // Add result vectors to the beginning of the stream, preserving their relative
+                // order, matching `Executor::state.input_stream.splice(ptr..ptr, res)`.
+                for bytes in res.into_iter().rev() {
+                    ctx.rt.push_hint_input(bytes);
+                }
+            }
+            None => tracing::warn!("tried to write to unknown file descriptor {fd}"),
+        }
     }
     Ok(())
 }
@@ -94,62 +93,20 @@ fn parse_cycle_tracker_command(s: &str) -> Option<CycleTrackerCommand> {
 }
 
 /// Handle a cycle tracker command.
-fn handle_cycle_tracker_command(rt: &mut Executor, command: CycleTrackerCommand) {
+fn handle_cycle_tracker_command<R: SyscallRuntime>(rt: &mut R, command: CycleTrackerCommand) {
     match command {
         CycleTrackerCommand::Start(name) | CycleTrackerCommand::ReportStart(name) => {
-            start_cycle_tracker(rt, &name);
+            rt.cycle_tracker_start(&name);
         }
         CycleTrackerCommand::End(name) => {
-            end_cycle_tracker(rt, &name);
+            rt.cycle_tracker_end(&name);
         }
         CycleTrackerCommand::ReportEnd(name) => {
             // Attempt to end the cycle tracker and accumulate the total cycles in the fn_name's
             // entry in the ExecutionReport.
-            if let Some(total_cycles) = end_cycle_tracker(rt, &name) {
-                rt.report
-                    .cycle_tracker
-                    .entry(name.to_string())
-                    .and_modify(|cycles| *cycles += total_cycles)
-                    .or_insert(total_cycles);
+            if let Some(total_cycles) = rt.cycle_tracker_end(&name) {
+                rt.cycle_tracker_report(&name, total_cycles);
             }
         }
-    }
-}
-
-/// Start tracking cycles for the given name at the specific depth and print out the log.
-fn start_cycle_tracker(rt: &mut Executor, name: &str) {
-    let depth = rt.cycle_tracker.len() as u32;
-    rt.cycle_tracker.insert(name.to_string(), (rt.state.global_clk, depth));
-    let padding = "│ ".repeat(depth as usize);
-    log::info!("{padding}┌╴{name}");
-}
-
-/// End tracking cycles for the given name, print out the log, and return the total number of cycles
-/// in the span. If the name is not found in the cycle tracker cache, returns None.
-fn end_cycle_tracker(rt: &mut Executor, name: &str) -> Option<u64> {
-    if let Some((start, depth)) = rt.cycle_tracker.remove(name) {
-        let padding = "│ ".repeat(depth as usize);
-        let total_cycles = rt.state.global_clk - start;
-        log::info!("{}└╴{} cycles", padding, num_to_comma_separated(total_cycles));
-        return Some(total_cycles);
-    }
-    None
-}
-
-/// Update the io buffer for the given file descriptor with the given string.
-#[allow(clippy::mut_mut)]
-fn update_io_buf(ctx: &mut SyscallContext, fd: u32, s: &str) -> Vec<String> {
-    let rt = &mut ctx.rt;
-    let entry = rt.io_buf.entry(fd).or_default();
-    entry.push_str(s);
-    if entry.contains('\n') {
-        // Return lines except for the last from buf.
-        let prev_buf = std::mem::take(entry);
-        let mut lines = prev_buf.split('\n').collect::<Vec<&str>>();
-        let last = lines.pop().unwrap_or("");
-        *entry = last.to_string();
-        lines.into_iter().map(std::string::ToString::to_string).collect::<Vec<String>>()
-    } else {
-        vec![]
     }
 }

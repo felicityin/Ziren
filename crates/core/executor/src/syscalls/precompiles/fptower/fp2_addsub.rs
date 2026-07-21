@@ -8,7 +8,7 @@ use zkm_curves::{
 
 use crate::{
     events::{FieldOperation, Fp2AddSubEvent, PrecompileEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
 };
 
@@ -23,10 +23,10 @@ impl<P> Fp2AddSubSyscall<P> {
     }
 }
 
-impl<P: FpOpField> Syscall for Fp2AddSubSyscall<P> {
+impl<P: FpOpField, R: SyscallRuntime> Syscall<R> for Fp2AddSubSyscall<P> {
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

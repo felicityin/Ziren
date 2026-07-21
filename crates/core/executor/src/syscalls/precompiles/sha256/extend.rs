@@ -1,19 +1,19 @@
 use crate::{
     events::{PrecompileEvent, ShaExtendEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
 };
 
 pub(crate) struct Sha256ExtendSyscall;
 
-impl Syscall for Sha256ExtendSyscall {
+impl<R: SyscallRuntime> Syscall<R> for Sha256ExtendSyscall {
     fn num_extra_cycles(&self) -> u32 {
         48
     }
 
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

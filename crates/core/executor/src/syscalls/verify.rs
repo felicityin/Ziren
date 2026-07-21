@@ -1,26 +1,20 @@
 use crate::program::MAX_MEMORY;
 
-use crate::{DeferredProofVerification, ExecutionError};
+use crate::ExecutionError;
 
-use super::{Syscall, SyscallCode, SyscallContext};
+use super::{Syscall, SyscallCode, SyscallContext, SyscallRuntime};
 
 pub(crate) struct VerifySyscall;
 
-impl Syscall for VerifySyscall {
+impl<R: SyscallRuntime> Syscall<R> for VerifySyscall {
     #[allow(clippy::mut_mut)]
     fn execute(
         &self,
-        ctx: &mut SyscallContext,
+        ctx: &mut SyscallContext<R>,
         _: SyscallCode,
         vkey_ptr: u32,
         pv_digest_ptr: u32,
     ) -> Result<Option<u32>, ExecutionError> {
-        let rt = &mut ctx.rt;
-
-        if rt.deferred_proof_verification == DeferredProofVerification::Disabled {
-            return Ok(None);
-        }
-
         // vkey_ptr is a pointer to [u32; 8] which contains the verification key.
         // pv_digest_ptr is a pointer to [u32; 8] which contains the public values digest.
 
@@ -32,34 +26,14 @@ impl Syscall for VerifySyscall {
             return Err(ExecutionError::InvalidSyscallArgs());
         }
 
-        let vkey = (0..8).map(|i| rt.word(vkey_ptr + i * 4)).collect::<Vec<u32>>();
+        let vkey = (0..8).map(|i| ctx.word_unsafe(vkey_ptr + i * 4)).collect::<Vec<u32>>();
 
-        let pv_digest = (0..8).map(|i| rt.word(pv_digest_ptr + i * 4)).collect::<Vec<u32>>();
-
-        let proof_index = rt.state.proof_stream_ptr;
-        if proof_index >= rt.state.proof_stream.len() {
-            panic!("Not enough proofs were written to the runtime.");
-        }
-        let (proof, proof_vk) = &rt.state.proof_stream[proof_index];
-        rt.state.proof_stream_ptr += 1;
+        let pv_digest = (0..8).map(|i| ctx.word_unsafe(pv_digest_ptr + i * 4)).collect::<Vec<u32>>();
 
         let vkey_bytes: [u32; 8] = vkey.try_into().unwrap();
         let pv_digest_bytes: [u32; 8] = pv_digest.try_into().unwrap();
 
-        if let Some(verifier) = rt.subproof_verifier {
-            if let Err(e) =
-                verifier.verify_deferred_proof(proof, proof_vk, vkey_bytes, pv_digest_bytes)
-            {
-                log::error!(
-                    "Failed to verify proof {proof_index} with digest {}: {}",
-                    hex::encode(bytemuck::cast_slice(&pv_digest_bytes)),
-                    e
-                );
-                return Err(ExecutionError::ExceptionOrTrap());
-            }
-        } else if rt.state.proof_stream_ptr == 1 {
-            tracing::info!("Not verifying sub proof during runtime");
-        };
+        ctx.rt.verify_deferred_proof(vkey_bytes, pv_digest_bytes)?;
 
         Ok(None)
     }

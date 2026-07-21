@@ -57,8 +57,10 @@ use crate::{events::FieldOperation, ExecutionError};
 
 /// A system call in the Ziren zkVM.
 ///
-/// This trait implements methods needed to execute a system call inside the [`crate::Executor`].
-pub trait Syscall: Send + Sync {
+/// This trait implements methods needed to execute a system call against any [`SyscallRuntime`]
+/// -- [`crate::Executor`], or the `CoreVM`-based engines that back `generate_records`'s
+/// `MinimalRunner`/`SplicingVM`/`TracingVM`.
+pub trait Syscall<R: SyscallRuntime>: Send + Sync {
     /// Executes the syscall.
     ///
     /// Returns the resulting value of register a0. `arg1` and `arg2` are the values in registers
@@ -67,7 +69,7 @@ pub trait Syscall: Send + Sync {
     /// denote the addresses of the input data, and write the result to the memory at `arg1`.
     fn execute(
         &self,
-        ctx: &mut SyscallContext,
+        ctx: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,
@@ -84,8 +86,8 @@ pub trait Syscall: Send + Sync {
 /// Creates the default syscall map.
 #[must_use]
 #[allow(clippy::too_many_lines)]
-pub fn default_syscall_map() -> HashMap<SyscallCode, Arc<dyn Syscall>> {
-    let mut syscall_map = HashMap::<SyscallCode, Arc<dyn Syscall>>::default();
+pub fn default_syscall_map<R: SyscallRuntime>() -> HashMap<SyscallCode, Arc<dyn Syscall<R>>> {
+    let mut syscall_map = HashMap::<SyscallCode, Arc<dyn Syscall<R>>>::default();
 
     syscall_map.insert(SyscallCode::SHA_EXTEND, Arc::new(Sha256ExtendSyscall));
 

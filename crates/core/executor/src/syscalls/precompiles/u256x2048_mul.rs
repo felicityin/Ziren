@@ -4,7 +4,7 @@ use zkm_primitives::consts::{bytes_to_words_le, words_to_bytes_le_vec};
 
 use crate::{
     events::{PrecompileEvent, U256xU2048MulEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
     Register::{A2, A3},
 };
@@ -16,10 +16,10 @@ const U2048_NUM_BYTES: usize = U2048_NUM_WORDS * 4;
 
 pub(crate) struct U256xU2048MulSyscall;
 
-impl Syscall for U256xU2048MulSyscall {
+impl<R: SyscallRuntime> Syscall<R> for U256xU2048MulSyscall {
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

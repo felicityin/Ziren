@@ -9,7 +9,7 @@ use zkm_primitives::consts::{bytes_to_words_le, words_to_bytes_le};
 
 use crate::{
     events::{EdDecompressEvent, MemoryReadRecord, MemoryWriteRecord, PrecompileEvent},
-    syscalls::{Syscall, SyscallCode, SyscallContext},
+    syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     ExecutionError,
 };
 
@@ -24,10 +24,10 @@ impl<E: EdwardsParameters> EdwardsDecompressSyscall<E> {
     }
 }
 
-impl<E: EdwardsParameters> Syscall for EdwardsDecompressSyscall<E> {
+impl<E: EdwardsParameters, R: SyscallRuntime> Syscall<R> for EdwardsDecompressSyscall<E> {
     fn execute(
         &self,
-        rt: &mut SyscallContext,
+        rt: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         sign: u32,

@@ -1,5 +1,5 @@
 use crate::events::{Poseidon2PermuteEvent, PrecompileEvent};
-use crate::syscalls::{Syscall, SyscallCode, SyscallContext};
+use crate::syscalls::{Syscall, SyscallCode, SyscallContext, SyscallRuntime};
 use crate::ExecutionError;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_koala_bear::KoalaBear;
@@ -10,10 +10,10 @@ pub(crate) const STATE_SIZE: usize = 16;
 
 pub(crate) struct Poseidon2PermuteSyscall;
 
-impl Syscall for Poseidon2PermuteSyscall {
+impl<R: SyscallRuntime> Syscall<R> for Poseidon2PermuteSyscall {
     fn execute(
         &self,
-        ctx: &mut SyscallContext,
+        ctx: &mut SyscallContext<R>,
         syscall_code: SyscallCode,
         arg1: u32,
         arg2: u32,

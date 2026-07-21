@@ -1,8 +1,3 @@
-use std::{
-    fs::File,
-    io::{Seek, Write},
-};
-
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use zkm_hypercube::{config::ZkmGlobalContext, verifier::ZkmPcsProofInner, MachineVerifyingKey};
@@ -45,10 +40,6 @@ pub struct ExecutionState {
     /// executed in this shard.
     pub clk: u32,
 
-    /// Max clocks for each record.
-    pub records_clk: Vec<u32>,
-    pub records_clk_index: u32,
-
     /// Uninitialized memory addresses that have a specific value they should be initialized with.
     /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
     pub uninitialized_memory: Memory<u32>,
@@ -85,8 +76,6 @@ impl ExecutionState {
             // Start at shard 1 since shard 0 is reserved for memory initialization.
             current_shard: 1,
             clk: 0,
-            records_clk: vec![],
-            records_clk_index: 0,
             pc: pc_start,
             next_pc,
             exited: false,
@@ -122,15 +111,4 @@ pub struct ForkState {
     pub record: ExecutionRecord,
     // /// Whether `emit_events` was enabled at the fork point.
     pub executor_mode: ExecutorMode,
-}
-
-impl ExecutionState {
-    /// Save the execution state to a file.
-    pub fn save(&self, file: &mut File) -> std::io::Result<()> {
-        let mut writer = std::io::BufWriter::new(file);
-        bincode::serialize_into(&mut writer, self).unwrap();
-        writer.flush()?;
-        writer.seek(std::io::SeekFrom::Start(0))?;
-        Ok(())
-    }
 }
