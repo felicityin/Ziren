@@ -68,7 +68,11 @@ pub mod sponge_tests {
         let initial_clk = cpu_record.first_instruction_clk.unwrap();
         cpu_record.public_values.clk_high = (initial_clk >> 28) as u32;
         cpu_record.public_values.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
-        cpu_record.public_values.last_timestamp = (cpu_record.last_timestamp & 0xfff_ffff) as u32;
+        // Relative to this shard's own `clk_high` window, not masked to it -- see
+        // `prove_with_context`'s identical `state.last_timestamp` computation for why.
+        cpu_record.public_values.last_timestamp = (cpu_record.last_timestamp
+            - (u64::from(cpu_record.public_values.clk_high) << 28))
+            as u32;
         let mut deferred = cpu_record.defer();
         assert!(cpu_record.contains_cpu());
         assert!(cpu_record.precompile_events.is_empty());

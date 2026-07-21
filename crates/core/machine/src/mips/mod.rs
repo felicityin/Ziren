@@ -769,7 +769,11 @@ pub mod tests {
         let initial_clk = record.first_instruction_clk.unwrap();
         record.public_values.clk_high = (initial_clk >> 28) as u32;
         record.public_values.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
-        record.public_values.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
+        // Relative to this shard's own `clk_high` window, not masked to it -- see
+        // `prove_with_context`'s identical `state.last_timestamp` computation for why.
+        record.public_values.last_timestamp = (record.last_timestamp
+            - (u64::from(record.public_values.clk_high) << 28))
+            as u32;
         assert!(
             record.last_timestamp > 1u64 << 24,
             "test didn't actually cross the old clk ceiling: last_timestamp={}",
@@ -845,7 +849,9 @@ pub mod tests {
             let initial_clk = record.first_instruction_clk.unwrap();
             record.public_values.clk_high = (initial_clk >> 28) as u32;
             record.public_values.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
-            record.public_values.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
+            record.public_values.last_timestamp = (record.last_timestamp
+                - (u64::from(record.public_values.clk_high) << 28))
+                as u32;
 
             // Mirrors `prove_with_context`'s handling of global memory init/finalize events --
             // `previous_init_addr_bits`/`last_init_addr_bits`/etc. are only populated by
@@ -904,17 +910,16 @@ pub mod tests {
         }
     }
 
-    /// Unlike `debug_real_elf_local_interactions_balance` above (which uses
-    /// `test_artifacts::FIBONACCI_ELF`, a guest that hardcodes `n = 10` and never reads stdin),
-    /// this loads the real `examples/fibonacci/guest` ELF and feeds it a real `n = 1000` via
-    /// stdin, exactly like `examples/fibonacci/host` -- exercising the real `HINT_LEN`/
-    /// `HINT_READ`/`COMMIT` syscall path with real data, which the other test never touches.
-    /// Requires the guest to already be built (`cargo run --release` under
-    /// `examples/fibonacci/host` with the zkVM toolchain sourced); `#[ignore]`d since this repo's
-    /// default `ZKM_SKIP_PROGRAM_BUILD` test path never builds it.
-    #[test]
-    #[ignore = "needs examples/fibonacci/guest built via the real zkVM toolchain"]
-    fn debug_real_fibonacci_guest_with_stdin_interactions_balance() {
+    /// Loads a real guest ELF from disk, runs it with real stdin data, then checks that every
+    /// chip's local-scope send/receive interactions balance across every record the run produces
+    /// (the main execution record plus any deferred-memory-event records it splits into --
+    /// mirrors `prove_with_context`'s public-values threading exactly, crates/core/machine/src/
+    /// utils/prove.rs, since a real guest's global memory init/finalize events can split off into
+    /// their own non-execution record(s) that need their own public values). Returns `true` iff
+    /// everything balanced. Panics if `elf_path` doesn't exist -- build it first (real zkVM
+    /// toolchain required; these ELFs aren't part of the repo's default `ZKM_SKIP_PROGRAM_BUILD`
+    /// test path).
+    fn debug_local_interactions_balance_for_elf(elf_path: &str, stdin_bufs: Vec<Vec<u8>>) -> bool {
         use p3_koala_bear::KoalaBear;
         use slop_air::BaseAir;
         use slop_multilinear::{Mle, PaddedMle};
@@ -930,65 +935,75 @@ pub mod tests {
 
         setup_logger();
 
-        let elf_bytes = std::fs::read(
-            "../../../examples/target/elf-compilation/mipsel-zkm-zkvm-elf/release/fibonacci",
-        )
-        .expect("run `cargo run --release` under examples/fibonacci/host first");
+        let elf_bytes = std::fs::read(elf_path)
+            .unwrap_or_else(|e| panic!("failed to read {elf_path}: {e} -- build it first"));
         let program = std::sync::Arc::new(Program::from(&elf_bytes).unwrap());
         let mut runtime = Executor::new(Program::clone(&program), ZKMCoreOpts::default());
-        let mut stdin_buf = Vec::new();
-        bincode::serialize_into(&mut stdin_buf, &1000u32).unwrap();
-        runtime.write_vecs(&[stdin_buf]);
+        runtime.write_vecs(&stdin_bufs);
         runtime.run().unwrap();
-        assert_eq!(runtime.records.len(), 1, "expected a single shard");
-        let mut record = runtime.records.remove(0);
+        println!("{} execution shard(s)", runtime.records.len());
 
-        // Mirrors `prove_with_context`'s public-values threading exactly (crates/core/machine/
-        // src/utils/prove.rs), since a real guest's global memory init/finalize events can split
-        // off into their own non-execution record(s) that need their own public values.
+        // Mirrors `prove_with_context`'s public-values threading and shared `deferred`
+        // accumulator exactly (crates/core/machine/src/utils/prove.rs), across every execution
+        // shard `Executor::run()` produced -- not just one, since a real guest can genuinely
+        // span many shards.
         let mut state = zkm_hypercube::air::PublicValues::<u32, u32>::default().reset();
-        state.shard += 1;
-        state.execution_shard = 1;
-        state.is_execution_shard = record.contains_cpu() as u32;
-        if let Some(first_pc) = record.first_instruction_pc {
-            state.start_pc = first_pc;
-            state.next_pc = record.last_next_pc;
-            let initial_clk = record.first_instruction_clk.unwrap();
-            state.clk_high = (initial_clk >> 28) as u32;
-            state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
-            state.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
-        }
-        state.committed_value_digest = record.public_values.committed_value_digest;
-        state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
-        record.public_values = state;
+        let mut deferred = ExecutionRecord::new(program.clone());
+        let mut all_records = Vec::new();
+        let num_execution_shards = runtime.records.len();
+        for (execution_shard, mut record) in runtime.records.into_iter().enumerate() {
+            let execution_shard = execution_shard as u32 + 1;
+            let done = execution_shard as usize == num_execution_shards;
 
-        let mut deferred = ExecutionRecord::new(record.program.clone());
-        deferred.append(&mut record.defer());
-        let mut records = vec![record];
-        let mut split_records =
-            deferred.split(true, records.last_mut(), ZKMCoreOpts::default().split_opts);
-        for split_record in &mut split_records {
             state.shard += 1;
-            state.is_execution_shard = 0;
-            state.previous_init_addr_bits = split_record.public_values.previous_init_addr_bits;
-            state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
-            state.previous_finalize_addr_bits =
-                split_record.public_values.previous_finalize_addr_bits;
-            state.last_finalize_addr_bits = split_record.public_values.last_finalize_addr_bits;
-            state.start_pc = state.next_pc;
-            state.initial_timestamp = state.last_timestamp;
-            split_record.public_values = state;
+            state.execution_shard = execution_shard;
+            state.is_execution_shard = record.contains_cpu() as u32;
+            if let Some(first_pc) = record.first_instruction_pc {
+                state.start_pc = first_pc;
+                state.next_pc = record.last_next_pc;
+                let initial_clk = record.first_instruction_clk.unwrap();
+                state.clk_high = (initial_clk >> 28) as u32;
+                state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+                state.last_timestamp =
+                    (record.last_timestamp - (u64::from(state.clk_high) << 28)) as u32;
+            }
+            state.committed_value_digest = record.public_values.committed_value_digest;
+            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+            record.public_values = state;
+
+            deferred.append(&mut record.defer());
+            let mut records = vec![record];
+            let mut split_records =
+                deferred.split(done, records.last_mut(), ZKMCoreOpts::default().split_opts);
+
+            if !done {
+                state.execution_shard += 1;
+            }
+            for split_record in &mut split_records {
+                state.shard += 1;
+                state.is_execution_shard = 0;
+                state.previous_init_addr_bits =
+                    split_record.public_values.previous_init_addr_bits;
+                state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
+                state.previous_finalize_addr_bits =
+                    split_record.public_values.previous_finalize_addr_bits;
+                state.last_finalize_addr_bits = split_record.public_values.last_finalize_addr_bits;
+                state.start_pc = state.next_pc;
+                state.initial_timestamp = state.last_timestamp;
+                split_record.public_values = state;
+            }
+            records.append(&mut split_records);
+            all_records.append(&mut records);
         }
-        records.append(&mut split_records);
-        println!("produced {} record(s)", records.len());
+        println!("produced {} record(s)", all_records.len());
 
         let machine = MipsAir::<KoalaBear>::hypercube_machine();
-        machine.generate_dependencies(records.iter_mut(), None).unwrap();
+        machine.generate_dependencies(all_records.iter_mut(), None).unwrap();
         let chips = machine.chips().to_vec();
         let max_log_row_count = 22u32;
 
         let mut all_balanced = true;
-        for (i, record) in records.into_iter().enumerate() {
+        for (i, record) in all_records.into_iter().enumerate() {
             let mut preprocessed_named = std::collections::BTreeMap::new();
             let mut main_named = std::collections::BTreeMap::new();
             for chip in &chips {
@@ -1023,8 +1038,56 @@ pub mod tests {
                 LookupScope::Local,
             );
             all_balanced &= balanced;
+            if !balanced {
+                println!("record {i} is imbalanced -- stopping early instead of checking the rest");
+                break;
+            }
         }
-        assert!(all_balanced, "local-scope send/receive interactions don't balance");
+        all_balanced
+    }
+
+    /// Unlike `debug_real_elf_local_interactions_balance` above (which uses
+    /// `test_artifacts::FIBONACCI_ELF`, a guest that hardcodes `n = 10` and never reads stdin),
+    /// this loads the real `examples/fibonacci/guest` ELF and feeds it a real `n = 1000` via
+    /// stdin, exactly like `examples/fibonacci/host` -- exercising the real `HINT_LEN`/
+    /// `HINT_READ`/`COMMIT` syscall path with real data, which the other test never touches.
+    /// Requires the guest to already be built (`cargo run --release` under
+    /// `examples/fibonacci/host` with the zkVM toolchain sourced); `#[ignore]`d since this repo's
+    /// default `ZKM_SKIP_PROGRAM_BUILD` test path never builds it.
+    #[test]
+    #[ignore = "needs examples/fibonacci/guest built via the real zkVM toolchain"]
+    fn debug_real_fibonacci_guest_with_stdin_interactions_balance() {
+        let mut stdin_buf = Vec::new();
+        bincode::serialize_into(&mut stdin_buf, &1000u32).unwrap();
+        assert!(
+            debug_local_interactions_balance_for_elf(
+                "../../../examples/target/elf-compilation/mipsel-zkm-zkvm-elf/release/fibonacci",
+                vec![stdin_buf],
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    /// Loads the real `examples/tendermint/guest` ELF and feeds it the same two real, CBOR-
+    /// encoded light-block fixtures `examples/tendermint/host` uses (dumped to disk via
+    /// `examples/tendermint/host/bin/dump_stdin.rs`), exercising ed25519/secp256k1 signature
+    /// verification and sha256 hashing with real data -- a much heavier, more varied precompile
+    /// mix than the fibonacci guest above. Requires both the guest ELF and the two `.bin` stdin
+    /// dumps to already exist; `#[ignore]`d for the same reason as the fibonacci variant.
+    #[test]
+    #[ignore = "needs examples/tendermint/guest built via the real zkVM toolchain, plus dumped stdin fixtures"]
+    fn debug_real_tendermint_guest_with_stdin_interactions_balance() {
+        let stdin_1 = std::fs::read("../../../examples/target/tendermint_stdin_1.bin")
+            .expect("run `cargo run --release --bin dump_stdin` under examples/tendermint/host first");
+        let stdin_2 = std::fs::read("../../../examples/target/tendermint_stdin_2.bin")
+            .expect("run `cargo run --release --bin dump_stdin` under examples/tendermint/host first");
+        assert!(
+            debug_local_interactions_balance_for_elf(
+                "../../../examples/target/elf-compilation/mipsel-zkm-zkvm-elf/release/tendermint",
+                vec![stdin_1, stdin_2],
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
     }
 
     #[test]

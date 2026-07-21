@@ -60,16 +60,22 @@ pub struct PublicValues<W, T> {
     /// The bits of the largest address that is witnessed for finalization in the current shard.
     pub last_finalize_addr_bits: [T; 32],
 
-    /// The clk of the shard's first real CPU row. Anchors the `LookupKind::State` local
-    /// interaction chain at the shard's start, mirroring `start_pc`.
+    /// The clk of the shard's first real CPU row, relative to `clk_high`'s window (i.e. its low
+    /// 28 bits). Anchors the `LookupKind::State` local interaction chain at the shard's start,
+    /// mirroring `start_pc`.
     pub initial_timestamp: T,
 
-    /// The expected clk of the next shard's first real CPU row. Anchors the `LookupKind::State`
-    /// local interaction chain at the shard's end, mirroring `next_pc`.
+    /// The expected clk of the next shard's first real CPU row, relative to *this* shard's own
+    /// `clk_high` window. Anchors the `LookupKind::State` local interaction chain at the shard's
+    /// end, mirroring `next_pc`. Usually within the low 28 bits like `initial_timestamp`, but not
+    /// masked to them: it must match the shard's last row's own unreduced `send_state` expression
+    /// (`clk_low + clk_increment`) bit-for-bit, which the window-boundary shard-cut rule
+    /// deliberately allows to spill up to one instruction's `clk_increment` past `1 << 28` exactly
+    /// when it triggers the cut.
     pub last_timestamp: T,
 
-    /// The clk's high limb (bits above the low 28-bit window that `initial_timestamp`/
-    /// `last_timestamp` represent). Constant across every row of this shard -- see
+    /// The clk's high limb (bits above the low 28-bit window that `initial_timestamp` and
+    /// (usually) `last_timestamp` represent). Constant across every row of this shard -- see
     /// `zkm_core_machine::adapter::state::CpuState`'s doc comment for why the shard-cut rule
     /// guarantees this -- so unlike `initial_timestamp`/`last_timestamp` there's only one value,
     /// not a pair.

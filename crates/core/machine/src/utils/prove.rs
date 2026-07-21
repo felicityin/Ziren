@@ -212,7 +212,19 @@ pub fn prove_with_context(
                                 // shard's first row's high limb is this shard's only value.
                                 state.clk_high = (initial_clk >> 28) as u32;
                                 state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
-                                state.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
+                                // Unlike `initial_timestamp`, deliberately relative to this shard's
+                                // own `clk_high` window rather than masked to it: the AIR's
+                                // `send_state` for the shard's last row predicts its successor's
+                                // incoming clk as the unreduced expression `clk_low + clk_increment`
+                                // (see `eval_state_chain`'s doc comment), which the window-boundary
+                                // shard-cut rule allows to spill past `1 << 28` by up to one
+                                // instruction's `clk_increment` exactly when it triggers the cut.
+                                // `eval_public_values`'s closing `receive_state` must match that
+                                // same unreduced value bit-for-bit -- masking to 28 bits would wrap
+                                // it back into the shard's own window and never match.
+                                state.last_timestamp =
+                                    (record.last_timestamp - (u64::from(state.clk_high) << 28))
+                                        as u32;
                             }
                             state.committed_value_digest = record.public_values.committed_value_digest;
                             state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;

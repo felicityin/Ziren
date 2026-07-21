@@ -14,3 +14,7 @@ serde_cbor = "0.11.2"
 
 [build-dependencies]
 zkm-build = { workspace = true }
+
+[[bin]]
+name = "dump_stdin"
+path = "bin/dump_stdin.rs"
