@@ -10,7 +10,7 @@
 //! this crate via `tracing::debug_span!`/`tracing::info!`.
 
 use hashbrown::HashMap;
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use crate::{
     dependencies::{
@@ -40,11 +40,19 @@ pub struct TracedShard {
     /// Carried into the next `TracingVM` (see [`crate::vm::Oracle`]'s doc comment on why tags
     /// must be threaded through, separately from `SplicingVM`'s own tags map).
     pub tags: HashMap<u32, (u32, u32)>,
+    /// Carried into the next `TracingVM`, for the same reason as `tags`: `HINT_LEN`/`HINT_READ`
+    /// replay against this stream and must stay positioned exactly where phase 1 left off.
+    pub input_stream: VecDeque<Vec<u8>>,
 }
 
 impl TracingVM {
     #[must_use]
-    pub fn new(program: Arc<Program>, chunk: SplicedChunk, tags: HashMap<u32, (u32, u32)>) -> Self {
+    pub fn new(
+        program: Arc<Program>,
+        chunk: SplicedChunk,
+        tags: HashMap<u32, (u32, u32)>,
+        input_stream: VecDeque<Vec<u8>>,
+    ) -> Self {
         let mut core = CoreVM::new(program, Oracle::new(chunk.oracle, tags));
         core.pc = chunk.pc_start;
         core.next_pc = chunk.next_pc_start;
@@ -52,6 +60,7 @@ impl TracingVM {
         core.global_clk = chunk.global_clk_start;
         core.current_shard = chunk.shard;
         core.record.public_values.shard = chunk.shard;
+        core.input_stream = input_stream;
         Self { core }
     }
 
@@ -71,7 +80,12 @@ impl TracingVM {
                 for (_, event) in self.core.local_memory_access.drain() {
                     self.core.record.cpu_local_memory_access.push(event);
                 }
-                return Ok(TracedShard { record: self.core.record, done, tags: self.core.mem.into_tags() });
+                return Ok(TracedShard {
+                    record: self.core.record,
+                    done,
+                    tags: self.core.mem.into_tags(),
+                    input_stream: self.core.input_stream,
+                });
             }
         }
     }

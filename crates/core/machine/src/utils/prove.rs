@@ -153,7 +153,17 @@ pub fn prove_with_context(
                         opts.lde_size_threshold,
                         (*producer_trace_byte_costs).clone(),
                     );
+                    // `SplicingVM`/`TracingVM` replay `HINT_LEN`/`HINT_READ` syscalls against
+                    // this same stream (see `SyscallRuntime::seed_uninitialized`'s doc comment:
+                    // only the *values* are oracle-carried, not the syscall's own bookkeeping),
+                    // so they need the same stdin, consumed in the same order `minimal_runner`
+                    // already consumed it in above.
+                    for buf in &stdin.buffer {
+                        splicing.with_input(buf);
+                    }
                     let mut tracing_tags = HashMap::new();
+                    let mut tracing_input_stream: std::collections::VecDeque<Vec<u8>> =
+                        stdin.buffer.iter().cloned().collect();
                     let mut deferred = ExecutionRecord::new(producer_program.clone());
                     let mut state = PublicValues::<u32, u32>::default().reset();
                     let mut cycles = 0u64;
@@ -173,10 +183,15 @@ pub fn prove_with_context(
 
                         for spliced in spliced_pieces {
                             let execution_shard = spliced.shard;
-                            let tracer =
-                                TracingVM::new(producer_program.clone(), spliced, std::mem::take(&mut tracing_tags));
+                            let tracer = TracingVM::new(
+                                producer_program.clone(),
+                                spliced,
+                                std::mem::take(&mut tracing_tags),
+                                std::mem::take(&mut tracing_input_stream),
+                            );
                             let traced = tracer.trace().map_err(ZKMCoreProverError::ExecutionError)?;
                             tracing_tags = traced.tags;
+                            tracing_input_stream = traced.input_stream;
                             let mut record = traced.record;
                             let done = traced.done;
 

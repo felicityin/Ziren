@@ -79,6 +79,13 @@ impl SplicingVM {
         }
     }
 
+    /// Add an item to the input stream (`stdin`) -- must mirror `MinimalRunner::with_input`
+    /// exactly (same items, same order), since `HINT_LEN`/`HINT_READ` replay through this same
+    /// stream during splicing and must see what phase 1 saw.
+    pub fn with_input(&mut self, input: &[u8]) {
+        self.core.input_stream.push_back(input.to_vec());
+    }
+
     fn should_cut_shard(&mut self) -> bool {
         let cpu_exit = self.max_syscall_cycles + self.core.clk >= self.shard_size;
         let clk_exit = self.max_syscall_cycles + self.core.clk >= CORE_SHARD_CLK_LIMIT;
