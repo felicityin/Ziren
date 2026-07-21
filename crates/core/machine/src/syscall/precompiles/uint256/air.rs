@@ -69,6 +69,11 @@ pub struct Uint256MulCols<T> {
     /// The clock cycle of the syscall.
     pub clk: T,
 
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access_slice` calls below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
+
     /// The pointer to the first input.
     pub x_ptr: T,
 
@@ -143,7 +148,8 @@ impl<F: PrimeField32> MachineAir<F> for Uint256MulChip {
                         // Assign basic values to the columns.
                         cols.is_real = F::ONE;
                         cols.shard = F::from_canonical_u32(event.shard);
-                        cols.clk = F::from_canonical_u32(event.clk);
+                        cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+                        cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
                         cols.x_ptr = F::from_canonical_u32(event.x_ptr);
                         cols.y_ptr = F::from_canonical_u32(event.y_ptr);
 
@@ -303,7 +309,7 @@ where
 
         // Read and write x.
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into() + AB::Expr::one(),
             local.x_ptr,
             &local.x_memory,
@@ -313,7 +319,7 @@ where
         // Evaluate the y_ptr memory access. We concatenate y and modulus into a single array since
         // we read it contiguously from the y_ptr memory location.
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.y_ptr,
             &[local.y_memory, local.modulus_memory].concat(),

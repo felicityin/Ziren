@@ -21,7 +21,7 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
+    adapter::{clk_high_expr, clk_low_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::{MemoryCols, MemoryReadCols, MemoryReadWriteCols},
     operations::AddOperation,
@@ -238,12 +238,12 @@ where
             local.is_real.into(),
         );
 
-        let clk = clk_expr::<AB>(&local.state);
+        let clk = clk_low_expr::<AB>(&local.state);
 
         builder.send_program(local.pc, local.instruction, local.is_real);
 
         builder.eval_memory_access(
-            local.state.shard,
+            local.state.clk_high,
             clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::B as u32),
             local.instruction.op_b[0],
             &local.op_b_access,
@@ -258,7 +258,7 @@ where
             .assert_word_eq(local.add_operation.value, *local.op_a_access.value());
 
         builder.eval_memory_access(
-            local.state.shard,
+            local.state.clk_high,
             clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::A as u32),
             local.instruction.op_a,
             &local.op_a_access,
@@ -278,6 +278,7 @@ where
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
+            clk_high_expr::<AB>(&local.state),
             clk,
             local.pc.into(),
             local.next_pc.into(),

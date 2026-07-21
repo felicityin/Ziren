@@ -16,6 +16,10 @@ pub(crate) struct Poseidon2MemCols<T: Copy> {
 
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for
+    /// `eval_memory_access_slice` -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
     pub state_addr: T,
 
     /// Memory columns for the state

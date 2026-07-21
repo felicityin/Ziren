@@ -90,12 +90,12 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
         memory_events.sort_by_key(|event| event.addr);
 
         let events = memory_events.into_iter().map(|event| {
-            let lookup_shard = if is_receive { event.shard } else { 0 };
-            let lookup_clk = if is_receive { event.timestamp } else { 0 };
+            let lookup_clk_high = if is_receive { (event.timestamp >> 28) as u32 } else { 0 };
+            let lookup_clk_low = if is_receive { (event.timestamp & 0xfff_ffff) as u32 } else { 0 };
             GlobalLookupEvent {
                 message: [
-                    lookup_shard,
-                    lookup_clk,
+                    lookup_clk_high,
+                    lookup_clk_low,
                     event.addr,
                     (event.value & 255) as u32,
                     ((event.value >> 8) & 255) as u32,
@@ -144,15 +144,16 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
         let mut rows: Vec<[F; NUM_MEMORY_INIT_COLS]> = memory_events
             .par_iter()
             .map(|event| {
-                let MemoryInitializeFinalizeEvent { addr, value, shard, timestamp } =
-                    event.to_owned();
+                let MemoryInitializeFinalizeEvent { addr, value, timestamp } = event.to_owned();
+                let clk_high = (timestamp >> 28) as u32;
+                let clk_low = (timestamp & 0xfff_ffff) as u32;
 
                 let mut row = [F::ZERO; NUM_MEMORY_INIT_COLS];
                 let cols: &mut MemoryInitCols<F> = row.as_mut_slice().borrow_mut();
                 cols.addr = F::from_canonical_u32(addr);
                 cols.addr_bits.populate(addr);
-                cols.shard = F::from_canonical_u32(shard);
-                cols.timestamp = F::from_canonical_u32(timestamp);
+                cols.clk_high = F::from_canonical_u32(clk_high);
+                cols.timestamp = F::from_canonical_u32(clk_low);
                 cols.value = array::from_fn(|i| F::from_canonical_u32((value >> i) & 1));
                 cols.is_real = F::one();
 
@@ -217,11 +218,12 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct MemoryInitCols<T: Copy> {
-    /// The shard number of the memory access.
+    /// The clk's high limb (bits above the low 28-bit window) of the memory access. See
+    /// `zkm_core_machine::adapter::state::CpuState`'s doc comment.
     #[cfg_attr(feature = "picus", picus(input, transition_input))]
-    pub shard: T,
+    pub clk_high: T,
 
-    /// The timestamp of the memory access.
+    /// The clk (low 28 bits) of the memory access.
     #[cfg_attr(feature = "picus", picus(input, transition_input))]
     pub timestamp: T,
 
@@ -292,7 +294,7 @@ where
         }
         // Canonicalize padded rows to the default zero trace shape so witness columns cannot
         // drift in extraction modules.
-        builder.when_not(local.is_real).assert_zero(local.shard);
+        builder.when_not(local.is_real).assert_zero(local.clk_high);
         builder.when_not(local.is_real).assert_zero(local.timestamp);
         builder.when_not(local.is_real).assert_zero(local.addr);
         for i in 0..32 {
@@ -357,7 +359,7 @@ where
             builder.send(
                 AirLookup::new(
                     vec![
-                        local.shard.into(),
+                        local.clk_high.into(),
                         local.timestamp.into(),
                         local.addr.into(),
                         value[0].clone(),
@@ -474,10 +476,12 @@ where
         // If `is_comp`, `prev_addr < addr` must hold.
         local.lt_cols.eval(builder, &local.prev_addr_bits, &local.addr_bits.bits, local.is_comp);
 
-        // Make assertions for specific types of memory chips.
+        // Make assertions for specific types of memory chips. The genesis sentinel timestamp is
+        // 1 (see `MemoryInitializeFinalizeEvent::initialize`), which is entirely within the low
+        // 28-bit window.
         if self.kind == MemoryChipType::Initialize {
             builder.when(local.is_real).assert_eq(local.timestamp, AB::F::ONE);
-            builder.when(local.is_real).assert_eq(local.shard, AB::F::ONE);
+            builder.when(local.is_real).assert_eq(local.clk_high, AB::F::ZERO);
         }
 
         // Constraints related to register %x0.

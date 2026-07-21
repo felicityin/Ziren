@@ -39,7 +39,7 @@ pub struct TracedShard {
     pub done: bool,
     /// Carried into the next `TracingVM` (see [`crate::vm::Oracle`]'s doc comment on why tags
     /// must be threaded through, separately from `SplicingVM`'s own tags map).
-    pub tags: HashMap<u32, (u32, u32)>,
+    pub tags: HashMap<u32, u64>,
     /// Carried into the next `TracingVM`, for the same reason as `tags`: `HINT_LEN`/`HINT_READ`
     /// replay against this stream and must stay positioned exactly where the previous shard left
     /// off.
@@ -51,13 +51,14 @@ impl TracingVM {
     pub fn new(
         program: Arc<Program>,
         chunk: SplicedChunk,
-        tags: HashMap<u32, (u32, u32)>,
+        tags: HashMap<u32, u64>,
         input_stream: VecDeque<Vec<u8>>,
     ) -> Self {
         let mut core = CoreVM::new(program, Oracle::new(chunk.oracle, tags));
         core.pc = chunk.pc_start;
         core.next_pc = chunk.next_pc_start;
-        core.clk = 0;
+        core.clk = chunk.initial_timestamp;
+        core.initial_timestamp = chunk.initial_timestamp;
         core.global_clk = chunk.global_clk_start;
         core.current_shard = chunk.shard;
         core.record.public_values.shard = chunk.shard;
@@ -123,7 +124,7 @@ impl TracingVM {
         self.core.record.first_instruction_clk.get_or_insert(clk);
         self.core.record.last_next_pc = next_pc;
         self.core.record.last_exit_code = exit_code;
-        self.core.record.last_timestamp = clk + 5 + num_extra_cycles;
+        self.core.record.last_timestamp = clk + 5 + u64::from(num_extra_cycles);
 
         // Opcodes whose chip has been migrated off of `CpuChip` no longer need a `CpuEvent`:
         // their own chip does its own program lookup, state chaining, and register access.
@@ -222,7 +223,7 @@ impl TracingVM {
     #[allow(clippy::too_many_arguments)]
     fn emit_cpu(
         &mut self,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         next_next_pc: u32,
@@ -256,7 +257,7 @@ impl TracingVM {
     #[allow(clippy::too_many_arguments)]
     fn emit_alu_event(
         &mut self,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,
@@ -344,7 +345,7 @@ impl TracingVM {
     #[allow(clippy::too_many_arguments)]
     fn emit_mem_instr_event(
         &mut self,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,
@@ -385,7 +386,7 @@ impl TracingVM {
     #[allow(clippy::too_many_arguments)]
     fn emit_branch_event(
         &mut self,
-        clk: u32,
+        clk: u64,
         pc: u32,
         opcode: Opcode,
         a: u32,
@@ -416,7 +417,7 @@ impl TracingVM {
     #[allow(clippy::too_many_arguments)]
     fn emit_jump_event(
         &mut self,
-        clk: u32,
+        clk: u64,
         pc: u32,
         opcode: Opcode,
         a: u32,
@@ -438,7 +439,7 @@ impl TracingVM {
     #[allow(clippy::too_many_arguments)]
     fn emit_misc_event(
         &mut self,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,
@@ -483,7 +484,7 @@ impl TracingVM {
 
     fn emit_syscall_event(
         &mut self,
-        clk: u32,
+        clk: u64,
         pc: u32,
         record: MemoryAccessRecord,
         syscall_id: u32,

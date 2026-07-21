@@ -71,7 +71,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
                 let mut row = [F::ZERO; NUM_SHA_EXTEND_CONTROL_COLS];
                 let cols: &mut ShaExtendControlCols<F> = row.as_mut_slice().borrow_mut();
                 cols.shard = F::from_canonical_u32(event.shard);
-                cols.clk = F::from_canonical_u32(event.clk);
+                cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
                 cols.w_ptr = F::from_canonical_u32(event.w_ptr);
                 cols.is_real = F::ONE;
                 row

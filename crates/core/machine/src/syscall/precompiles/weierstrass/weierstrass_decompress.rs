@@ -59,6 +59,10 @@ pub struct WeierstrassDecompressCols<T, P: FieldParameters + NumWords> {
     pub is_real: T,
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access` calls below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
     pub ptr: T,
     pub sign_bit: T,
     pub x_access: GenericArray<MemoryReadCols<T>, P::WordsFieldElement>,
@@ -203,7 +207,8 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
 
             cols.is_real = F::from_bool(true);
             cols.shard = F::from_canonical_u32(event.shard);
-            cols.clk = F::from_canonical_u32(event.clk);
+            cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+            cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
             cols.ptr = F::from_canonical_u32(event.ptr);
             cols.sign_bit = F::from_bool(event.sign_bit);
 
@@ -492,7 +497,7 @@ where
 
         for i in 0..num_words_field_element {
             builder.eval_memory_access(
-                local.shard,
+                local.clk_high,
                 local.clk,
                 local.ptr.into() + AB::F::from_canonical_u32((i as u32) * 4 + num_limbs as u32),
                 &local.x_access[i],
@@ -501,7 +506,7 @@ where
         }
         for i in 0..num_words_field_element {
             builder.eval_memory_access(
-                local.shard,
+                local.clk_high,
                 local.clk,
                 local.ptr.into() + AB::F::from_canonical_u32((i as u32) * 4),
                 &local.y_access[i],

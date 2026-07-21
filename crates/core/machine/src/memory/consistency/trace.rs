@@ -9,13 +9,9 @@ use super::{MemoryAccessCols, MemoryReadCols, MemoryReadWriteCols, MemoryWriteCo
 
 impl<F: PrimeField32> MemoryWriteCols<F> {
     pub fn populate(&mut self, record: MemoryWriteRecord, output: &mut impl ByteRecord) {
-        let current_record =
-            MemoryRecord { value: record.value, shard: record.shard, timestamp: record.timestamp };
-        let prev_record = MemoryRecord {
-            value: record.prev_value,
-            shard: record.prev_shard,
-            timestamp: record.prev_timestamp,
-        };
+        let current_record = MemoryRecord { value: record.value, timestamp: record.timestamp };
+        let prev_record =
+            MemoryRecord { value: record.prev_value, timestamp: record.prev_timestamp };
         self.prev_value = prev_record.value.into();
         self.access.populate_access(current_record, prev_record, output);
     }
@@ -23,13 +19,8 @@ impl<F: PrimeField32> MemoryWriteCols<F> {
 
 impl<F: PrimeField32> MemoryReadCols<F> {
     pub fn populate(&mut self, record: MemoryReadRecord, output: &mut impl ByteRecord) {
-        let current_record =
-            MemoryRecord { value: record.value, shard: record.shard, timestamp: record.timestamp };
-        let prev_record = MemoryRecord {
-            value: record.value,
-            shard: record.prev_shard,
-            timestamp: record.prev_timestamp,
-        };
+        let current_record = MemoryRecord { value: record.value, timestamp: record.timestamp };
+        let prev_record = MemoryRecord { value: record.value, timestamp: record.prev_timestamp };
         self.access.populate_access(current_record, prev_record, output);
     }
 }
@@ -43,25 +34,16 @@ impl<F: PrimeField32> MemoryReadWriteCols<F> {
     }
 
     pub fn populate_write(&mut self, record: MemoryWriteRecord, output: &mut impl ByteRecord) {
-        let current_record =
-            MemoryRecord { value: record.value, shard: record.shard, timestamp: record.timestamp };
-        let prev_record = MemoryRecord {
-            value: record.prev_value,
-            shard: record.prev_shard,
-            timestamp: record.prev_timestamp,
-        };
+        let current_record = MemoryRecord { value: record.value, timestamp: record.timestamp };
+        let prev_record =
+            MemoryRecord { value: record.prev_value, timestamp: record.prev_timestamp };
         self.prev_value = prev_record.value.into();
         self.access.populate_access(current_record, prev_record, output);
     }
 
     pub fn populate_read(&mut self, record: MemoryReadRecord, output: &mut impl ByteRecord) {
-        let current_record =
-            MemoryRecord { value: record.value, shard: record.shard, timestamp: record.timestamp };
-        let prev_record = MemoryRecord {
-            value: record.value,
-            shard: record.prev_shard,
-            timestamp: record.prev_timestamp,
-        };
+        let current_record = MemoryRecord { value: record.value, timestamp: record.timestamp };
+        let prev_record = MemoryRecord { value: record.value, timestamp: record.prev_timestamp };
         self.prev_value = prev_record.value.into();
         self.access.populate_access(current_record, prev_record, output);
     }
@@ -81,17 +63,20 @@ impl<F: PrimeField32> MemoryAccessCols<F> {
         output.add_u8_range_checks(&prev_record.value.to_le_bytes());
         output.add_u8_range_checks(&current_record.value.to_le_bytes());
 
-        self.prev_shard = F::from_canonical_u32(prev_record.shard);
-        self.prev_clk = F::from_canonical_u32(prev_record.timestamp);
+        let prev_high = (prev_record.timestamp >> 28) as u32;
+        let prev_low = (prev_record.timestamp & 0xfff_ffff) as u32;
+        let current_high = (current_record.timestamp >> 28) as u32;
+        let current_low = (current_record.timestamp & 0xfff_ffff) as u32;
+
+        self.prev_high = F::from_canonical_u32(prev_high);
+        self.prev_clk = F::from_canonical_u32(prev_low);
 
         // Fill columns used for verifying current memory access time value is greater than
         // previous's.
-        let use_clk_comparison = prev_record.shard == current_record.shard;
-        self.compare_clk = F::from_bool(use_clk_comparison);
-        let prev_time_value =
-            if use_clk_comparison { prev_record.timestamp } else { prev_record.shard };
-        let current_time_value =
-            if use_clk_comparison { current_record.timestamp } else { current_record.shard };
+        let use_low_comparison = prev_high == current_high;
+        self.compare_high = F::from_bool(use_low_comparison);
+        let prev_time_value = if use_low_comparison { prev_low } else { prev_high };
+        let current_time_value = if use_low_comparison { current_low } else { current_high };
 
         let diff_minus_one = (current_time_value - prev_time_value).wrapping_sub(1);
         let diff_16bit_limb = (diff_minus_one & 0xffff) as u16;

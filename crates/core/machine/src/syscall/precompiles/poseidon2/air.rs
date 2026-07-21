@@ -115,7 +115,7 @@ where
 
         // Read and write the state memory.
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.state_addr,
             &local.state_mem,

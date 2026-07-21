@@ -50,6 +50,10 @@ pub struct EdAddAssignCols<T> {
     pub is_real: T,
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access_slice` calls below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
     pub p_ptr: T,
     pub q_ptr: T,
     pub p_access: [MemoryWriteCols<T>; WORDS_CURVE_POINT],
@@ -228,7 +232,8 @@ impl<E: EllipticCurve + EdwardsParameters> EdAddAssignChip<E> {
         // Populate basic columns.
         cols.is_real = F::ONE;
         cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
+        cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+        cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
         cols.p_ptr = F::from_canonical_u32(event.p_ptr);
         cols.q_ptr = F::from_canonical_u32(event.q_ptr);
 
@@ -307,7 +312,7 @@ where
             .assert_all_eq(local.y3_ins.result, p_access_vec[NUM_LIMBS..NUM_LIMBS * 2].to_vec());
 
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.q_ptr,
             &local.q_access,
@@ -315,7 +320,7 @@ where
         );
 
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk + AB::F::from_canonical_u32(1),
             local.p_ptr,
             &local.p_access,

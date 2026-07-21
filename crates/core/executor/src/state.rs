@@ -37,8 +37,17 @@ pub struct ExecutionState {
     pub global_clk: u64,
 
     /// The clock increments by 5 (possibly more in syscalls) for each instruction that has been
-    /// executed in this shard.
-    pub clk: u32,
+    /// executed. Monotonically increasing across the *whole* program execution -- unlike
+    /// `current_shard`, this never resets at a shard boundary, since it doubles as every memory
+    /// access's ordering identity (`MemoryRecord::timestamp`, matching SP1's design).
+    pub clk: u64,
+
+    /// The value `clk` had when the current shard started. Two roles: (1) `clk - initial_timestamp`
+    /// is "cycles consumed so far this shard," used by the `shard_size`/`CORE_SHARD_CLK_LIMIT`
+    /// shard-cut checks now that `clk` itself no longer resets; (2) `mr`/`mw`/`rr_traced`/
+    /// `rw_cpu_traced` detect "was this address last touched before my shard started" via
+    /// `record.timestamp < initial_timestamp`, replacing the old shard-number comparison.
+    pub initial_timestamp: u64,
 
     /// Uninitialized memory addresses that have a specific value they should be initialized with.
     /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
@@ -76,6 +85,12 @@ impl ExecutionState {
             // Start at shard 1 since shard 0 is reserved for memory initialization.
             current_shard: 1,
             clk: 0,
+            // 1, not 0: `0` is the "never touched" sentinel `MemoryRecord::timestamp` (see the
+            // vacant-entry branches in `mr`/`mw`/`rr`/`rw`), so `initial_timestamp` must start
+            // above it for the first shard's `record.timestamp < initial_timestamp` check to
+            // correctly treat every address as freshly touched (and for the first real access's
+            // globalized timestamp -- `initial_timestamp + clk` -- to land above the sentinel).
+            initial_timestamp: 1,
             pc: pc_start,
             next_pc,
             exited: false,
@@ -100,7 +115,7 @@ pub struct ForkState {
     /// The `global_clk` value at the fork point.
     pub global_clk: u64,
     /// The original `clk` value at the fork point.
-    pub clk: u32,
+    pub clk: u64,
     /// The original `pc` value at the fork point.
     pub pc: u32,
     /// All memory changes since the fork point.

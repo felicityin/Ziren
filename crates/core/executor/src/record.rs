@@ -42,14 +42,15 @@ pub struct ExecutionRecord {
     pub first_instruction_pc: Option<u32>,
     /// The `clk` of this record's first retired instruction, if any. Set alongside
     /// [`Self::first_instruction_pc`].
-    pub first_instruction_clk: Option<u32>,
+    pub first_instruction_clk: Option<u64>,
     /// The `next_pc` of this record's most recently retired instruction.
     pub last_next_pc: u32,
     /// The `exit_code` of this record's most recently retired instruction.
     pub last_exit_code: u32,
     /// The expected `clk` of the instruction following this record's most recently retired one
-    /// (`clk + 5 + num_extra_cycles`), mirroring [`zkm_hypercube::air::PublicValues::last_timestamp`].
-    pub last_timestamp: u32,
+    /// (`clk + 5 + num_extra_cycles`), mirroring [`zkm_hypercube::air::PublicValues::last_timestamp`]
+    /// (the low 28 bits of this value, once split -- see `PublicValues::clk_high`).
+    pub last_timestamp: u64,
     /// A trace of the register-form ADD and ADDU events (plus internal dependency-check rows
     /// from other chips reusing this arithmetic circuit).
     pub add_events: Vec<AluEvent>,
@@ -460,12 +461,14 @@ impl MachineRecord for ExecutionRecord {
         // last_timestamp` to self-cancel.
         let pc_inc = AB::Expr::from_canonical_u32(DEFAULT_PC_INC);
         builder.send_state(
+            public_values.clk_high,
             public_values.initial_timestamp,
             public_values.start_pc,
             public_values.start_pc.into() + pc_inc.clone(),
             public_values.is_execution_shard.into(),
         );
         builder.receive_state(
+            public_values.clk_high,
             public_values.last_timestamp,
             public_values.next_pc,
             public_values.next_pc.into() + pc_inc,

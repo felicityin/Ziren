@@ -766,10 +766,12 @@ pub mod tests {
         let mut record = records.remove(0);
         // See `keccak_sponge::sponge_tests::keccak_program_records`'s identical comment:
         // `Executor::run`/`execute` never back-fills these, unlike `start_pc`/`next_pc`.
-        record.public_values.initial_timestamp = record.first_instruction_clk.unwrap();
-        record.public_values.last_timestamp = record.last_timestamp;
+        let initial_clk = record.first_instruction_clk.unwrap();
+        record.public_values.clk_high = (initial_clk >> 28) as u32;
+        record.public_values.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+        record.public_values.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
         assert!(
-            record.last_timestamp > 1u32 << 24,
+            record.last_timestamp > 1u64 << 24,
             "test didn't actually cross the old clk ceiling: last_timestamp={}",
             record.last_timestamp
         );
@@ -812,6 +814,94 @@ pub mod tests {
             ),
             "local-scope send/receive interactions don't balance after widening clk to 28 bits"
         );
+    }
+
+    #[test]
+    fn debug_real_elf_local_interactions_balance() {
+        use p3_koala_bear::KoalaBear;
+        use slop_air::BaseAir;
+        use slop_multilinear::{Mle, PaddedMle};
+        use std::sync::Arc;
+        use zkm_core_executor::{Executor, ExecutionRecord};
+        use zkm_hypercube::{
+            air::LookupScope,
+            lookup::{debug_interactions_with_all_chips, LookupKind},
+            prover::Traces,
+            record::MachineRecord,
+        };
+        use zkm_stark::ZKMCoreOpts;
+
+        setup_logger();
+
+        for (name, program) in [
+            ("hello_world", crate::programs::tests::hello_world_program()),
+            ("fibonacci", Program::from(test_artifacts::FIBONACCI_ELF).unwrap()),
+        ] {
+            let program = std::sync::Arc::new(program);
+            let mut runtime = Executor::new(Program::clone(&program), ZKMCoreOpts::default());
+            runtime.run().unwrap();
+            assert_eq!(runtime.records.len(), 1, "{name}: expected a single shard");
+            let mut record = runtime.records.remove(0);
+            let initial_clk = record.first_instruction_clk.unwrap();
+            record.public_values.clk_high = (initial_clk >> 28) as u32;
+            record.public_values.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+            record.public_values.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
+
+            // Mirrors `prove_with_context`'s handling of global memory init/finalize events --
+            // `previous_init_addr_bits`/`last_init_addr_bits`/etc. are only populated by
+            // `defer()`+`split()`, not by `Executor::run()` itself.
+            let mut deferred = ExecutionRecord::new(record.program.clone());
+            deferred.append(&mut record.defer());
+            let mut records = vec![record];
+            let split_records =
+                deferred.split(true, records.last_mut(), ZKMCoreOpts::default().split_opts);
+            assert!(
+                split_records.is_empty(),
+                "{name}: expected deferred memory events to pack into the single record"
+            );
+            let mut record = records.remove(0);
+
+            let machine = MipsAir::<KoalaBear>::hypercube_machine();
+            machine.generate_dependencies(std::iter::once(&mut record), None).unwrap();
+            let chips = machine.chips().to_vec();
+
+            let max_log_row_count = 22u32;
+            let mut preprocessed_named = std::collections::BTreeMap::new();
+            let mut main_named = std::collections::BTreeMap::new();
+            for chip in &chips {
+                let chip_name = MachineAir::<KoalaBear>::name(chip);
+                let pre_mle = match chip.generate_preprocessed_trace(&program) {
+                    Some(t) => {
+                        PaddedMle::padded_with_zeros(Arc::new(Mle::from(t)), max_log_row_count)
+                    }
+                    None => PaddedMle::zeros(0, max_log_row_count),
+                };
+                preprocessed_named.insert(chip_name.clone(), pre_mle);
+
+                let main_mle = if chip.included(&record) {
+                    let trace = chip.generate_trace(&record, &mut Default::default()).unwrap();
+                    PaddedMle::padded_with_zeros(Arc::new(Mle::from(trace)), max_log_row_count)
+                } else {
+                    PaddedMle::zeros(chip.width(), max_log_row_count)
+                };
+                main_named.insert(chip_name, main_mle);
+            }
+            let preprocessed_traces = Traces { named_traces: preprocessed_named };
+            let traces = Traces { named_traces: main_named };
+            let public_values = record.public_values::<KoalaBear>();
+
+            assert!(
+                debug_interactions_with_all_chips(
+                    &chips,
+                    &preprocessed_traces,
+                    &traces,
+                    public_values,
+                    LookupKind::all_kinds(),
+                    LookupScope::Local,
+                ),
+                "{name}: local-scope send/receive interactions don't balance"
+            );
+        }
     }
 
     #[test]

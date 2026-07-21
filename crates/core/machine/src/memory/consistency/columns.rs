@@ -30,16 +30,18 @@ pub struct MemoryAccessCols<T> {
     /// The value of the memory access.
     pub value: Word<T>,
 
-    /// The previous shard and timestamp that this memory access is being read from.
-    pub prev_shard: T,
+    /// The previous access's clk, split into its high limb (above the low 28-bit window) and low
+    /// (28-bit) value -- see `zkm_core_machine::adapter::state::CpuState`'s doc comment.
+    pub prev_high: T,
     pub prev_clk: T,
 
-    /// This will be true if the current shard == prev_access's shard, else false.
-    pub compare_clk: T,
+    /// This will be true if the current access's `clk_high` == prev access's `clk_high`, else
+    /// false.
+    pub compare_high: T,
 
     /// The following columns are decomposed limbs for the difference between the current access's
     /// timestamp and the previous access's timestamp.  Note the actual value of the timestamp
-    /// is either the accesses' shard or clk depending on the value of compare_clk.
+    /// is either the accesses' `clk_high` or `clk_low` depending on the value of `compare_high`.
 
     /// This column is the least significant 16 bit limb of current access timestamp - prev access
     /// timestamp.

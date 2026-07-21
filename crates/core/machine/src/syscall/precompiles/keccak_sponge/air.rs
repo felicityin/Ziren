@@ -200,7 +200,7 @@ impl KeccakSpongeChip {
     ) {
         // if this is the first row, populate reading input length
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk,
             local.output_address + AB::Expr::from_canonical_u32(64),
             &local.input_length_mem,
@@ -219,7 +219,7 @@ impl KeccakSpongeChip {
         // Read the input block
         for i in 0..KECCAK_GENERAL_RATE_U32S as u32 {
             builder.eval_memory_access(
-                local.shard,
+                local.clk_high,
                 local.clk,
                 local.input_address + AB::Expr::from_canonical_u32(i * 4),
                 &local.block_mem[i as usize],
@@ -236,7 +236,7 @@ impl KeccakSpongeChip {
         // If this is the final round of the final block, write the output
         for i in 0..KECCAK_GENERAL_OUTPUT_U32S as u32 {
             builder.eval_memory_access(
-                local.shard,
+                local.clk_high,
                 local.clk + AB::Expr::one(),
                 local.output_address + AB::Expr::from_canonical_u32(i * 4),
                 &local.output_mem[i as usize],

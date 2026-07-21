@@ -47,6 +47,10 @@ pub struct Fp2AddSubAssignCols<T, P: FpOpField> {
     pub is_real: T,
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access_slice` calls below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
     pub is_add: T,
     pub x_ptr: T,
     pub y_ptr: T,
@@ -140,7 +144,8 @@ impl<F: PrimeField32, P: FpOpField> MachineAir<F> for Fp2AddSubAssignChip<P> {
             cols.is_real = F::ONE;
             cols.is_add = F::from_bool(event.op == FieldOperation::Add);
             cols.shard = F::from_canonical_u32(event.shard);
-            cols.clk = F::from_canonical_u32(event.clk);
+            cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+            cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
             cols.x_ptr = F::from_canonical_u32(event.x_ptr);
             cols.y_ptr = F::from_canonical_u32(event.y_ptr);
 
@@ -284,14 +289,14 @@ where
             value_as_limbs(&local.x_access[num_words_field_element..]),
         );
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.y_ptr,
             &local.y_access,
             local.is_real,
         );
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk + AB::F::from_canonical_u32(1), /* We read p at +1 since p, q could be the
                                                        * same. */
             local.x_ptr,

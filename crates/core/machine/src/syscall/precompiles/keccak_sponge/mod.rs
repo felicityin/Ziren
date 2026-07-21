@@ -65,8 +65,10 @@ pub mod sponge_tests {
         // Uses the migration-safe `first_instruction_clk`/`last_timestamp` bookkeeping (tracked
         // independent of which chip retires an instruction) rather than `cpu_events`, since
         // `cpu_events` is permanently empty once every opcode has migrated off `CpuChip`.
-        cpu_record.public_values.initial_timestamp = cpu_record.first_instruction_clk.unwrap();
-        cpu_record.public_values.last_timestamp = cpu_record.last_timestamp;
+        let initial_clk = cpu_record.first_instruction_clk.unwrap();
+        cpu_record.public_values.clk_high = (initial_clk >> 28) as u32;
+        cpu_record.public_values.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+        cpu_record.public_values.last_timestamp = (cpu_record.last_timestamp & 0xfff_ffff) as u32;
         let mut deferred = cpu_record.defer();
         assert!(cpu_record.contains_cpu());
         assert!(cpu_record.precompile_events.is_empty());

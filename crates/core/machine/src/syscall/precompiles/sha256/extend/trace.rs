@@ -106,7 +106,8 @@ impl ShaExtendChip {
             cols.is_real = F::ONE;
             cols.i = F::from_canonical_usize(16 + j);
             cols.shard = F::from_canonical_u32(event.shard);
-            cols.clk = F::from_canonical_u32(event.clk);
+            cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+            cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
             cols.w_ptr = F::from_canonical_u32(event.w_ptr);
 
             // Matches the AIR's `send_byte(LTU, 1, i - 16, 48, is_real)` bound check.

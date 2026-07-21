@@ -13,7 +13,7 @@ pub struct AluEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     pub pc: u32,
     pub next_pc: u32,
     /// The opcode.
@@ -89,7 +89,7 @@ pub struct CompAluEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
 
     pub pc: u32,
     pub next_pc: u32,
@@ -170,7 +170,7 @@ pub struct MemInstrEvent {
     /// The shard.
     pub shard: u32,
     /// The clk.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     pub next_pc: u32,
@@ -202,7 +202,7 @@ impl MemInstrEvent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,
@@ -239,7 +239,7 @@ pub struct BranchEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     /// The next program counter.
@@ -270,7 +270,7 @@ impl BranchEvent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         next_next_pc: u32,
@@ -305,7 +305,7 @@ pub struct JumpEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     /// The next program counter.
@@ -336,7 +336,7 @@ impl JumpEvent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         next_next_pc: u32,
@@ -371,7 +371,7 @@ pub struct MiscEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     pub next_pc: u32,
@@ -402,7 +402,7 @@ impl MiscEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        clk: u32,
+        clk: u64,
         shard: u32,
         pc: u32,
         next_pc: u32,
@@ -440,7 +440,7 @@ pub struct MovCondEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     pub next_pc: u32,
@@ -470,7 +470,7 @@ impl MovCondEvent {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,

@@ -63,6 +63,12 @@ pub struct U256x2048MulCols<T> {
     /// The clock cycle of the syscall.
     pub clk: T,
 
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access`/`eval_memory_access_slice` calls below -- `shard`/`clk` (the low 28
+    /// bits) stay as-is for `receive_syscall`, matching `SyscallChip`'s own (unwidened)
+    /// within-shard interaction key.
+    pub clk_high: T,
+
     /// The pointer to the first input.
     pub a_ptr: T,
 
@@ -137,7 +143,8 @@ impl<F: PrimeField32> MachineAir<F> for U256x2048MulChip {
                         // Assign basic values to the columns.
                         cols.is_real = F::ONE;
                         cols.shard = F::from_canonical_u32(event.shard);
-                        cols.clk = F::from_canonical_u32(event.clk);
+                        cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+                        cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
                         cols.a_ptr = F::from_canonical_u32(event.a_ptr);
                         cols.b_ptr = F::from_canonical_u32(event.b_ptr);
                         cols.lo_ptr = F::from_canonical_u32(event.lo_ptr);
@@ -291,7 +298,7 @@ where
 
         // Evaluate that the lo_ptr and hi_ptr are read from the correct memory locations.
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             AB::Expr::from_canonical_u32(LO_REGISTER),
             &local.lo_ptr_memory,
@@ -299,7 +306,7 @@ where
         );
 
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             AB::Expr::from_canonical_u32(HI_REGISTER),
             &local.hi_ptr_memory,
@@ -308,7 +315,7 @@ where
 
         // Evaluate the memory accesses for a_memory and b_memory.
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.a_ptr,
             &local.a_memory,
@@ -316,7 +323,7 @@ where
         );
 
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.b_ptr,
             &local.b_memory,
@@ -325,7 +332,7 @@ where
 
         // Evaluate the memory accesses for lo_memory and hi_memory.
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into() + AB::Expr::one(),
             local.lo_ptr,
             &local.lo_memory,
@@ -333,7 +340,7 @@ where
         );
 
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into() + AB::Expr::one(),
             local.hi_ptr,
             &local.hi_memory,

@@ -68,6 +68,13 @@ pub struct PublicValues<W, T> {
     /// local interaction chain at the shard's end, mirroring `next_pc`.
     pub last_timestamp: T,
 
+    /// The clk's high limb (bits above the low 28-bit window that `initial_timestamp`/
+    /// `last_timestamp` represent). Constant across every row of this shard -- see
+    /// `zkm_core_machine::adapter::state::CpuState`'s doc comment for why the shard-cut rule
+    /// guarantees this -- so unlike `initial_timestamp`/`last_timestamp` there's only one value,
+    /// not a pair.
+    pub clk_high: T,
+
     /// The number of memory-initialize events in this shard. The upper bound of the shard's own
     /// `LookupKind::MemoryGlobalInitControl` chain (indices `0..global_init_count`).
     pub global_init_count: T,
@@ -117,6 +124,7 @@ impl PublicValues<u32, u32> {
         copy.next_pc = 0;
         copy.initial_timestamp = 0;
         copy.last_timestamp = 0;
+        copy.clk_high = 0;
         copy.previous_init_addr_bits = [0; 32];
         copy.last_init_addr_bits = [0; 32];
         copy.previous_finalize_addr_bits = [0; 32];
@@ -173,6 +181,7 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_finalize_addr_bits,
             initial_timestamp,
             last_timestamp,
+            clk_high,
             global_init_count,
             global_finalize_count,
             global_count,
@@ -199,6 +208,7 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let last_finalize_addr_bits = last_finalize_addr_bits.map(F::from_canonical_u32);
         let initial_timestamp = F::from_canonical_u32(initial_timestamp);
         let last_timestamp = F::from_canonical_u32(last_timestamp);
+        let clk_high = F::from_canonical_u32(clk_high);
         let global_init_count = F::from_canonical_u32(global_init_count);
         let global_finalize_count = F::from_canonical_u32(global_finalize_count);
         let global_count = F::from_canonical_u32(global_count);
@@ -220,6 +230,7 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_finalize_addr_bits,
             initial_timestamp,
             last_timestamp,
+            clk_high,
             global_init_count,
             global_finalize_count,
             global_count,

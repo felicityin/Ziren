@@ -18,6 +18,10 @@ pub struct ShaExtendCols<T> {
     /// Inputs.
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for
+    /// `eval_memory_access` -- `shard`/`clk` (the low 28 bits) stay as-is for this chip's own
+    /// `LookupKind::ShaExtend` chain, matching its unwidened key.
+    pub clk_high: T,
     pub w_ptr: T,
 
     /// This iteration's index, `16 <= i < 64`. Anchors the `LookupKind::ShaExtend` chain by

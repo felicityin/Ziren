@@ -24,6 +24,9 @@ pub struct SplicedChunk {
     pub pc_start: u32,
     pub next_pc_start: u32,
     pub global_clk_start: u64,
+    /// The global, never-resetting memory-access timestamp value this shard's local `clk == 0`
+    /// corresponds to. See `ExecutionState::initial_timestamp`'s doc comment.
+    pub initial_timestamp: u64,
     pub shard: u32,
     /// True if the program halted at the end of this piece.
     pub done: bool,
@@ -38,6 +41,7 @@ pub struct SplicingVM {
     pending_pc_start: u32,
     pending_next_pc_start: u32,
     pending_global_clk_start: u64,
+    pending_initial_timestamp: u64,
 
     max_syscall_cycles: u32,
     shard_size: u32,
@@ -67,6 +71,9 @@ impl SplicingVM {
             pending_pc_start: pc_start,
             pending_next_pc_start: next_pc_start,
             pending_global_clk_start: 0,
+            // 1, not 0: matches `ExecutionState::new`'s convention (`0` is the "never touched"
+            // `MemoryRecord::timestamp` sentinel).
+            pending_initial_timestamp: 1,
             max_syscall_cycles,
             shard_size,
             shape_check_frequency,
@@ -84,8 +91,18 @@ impl SplicingVM {
     }
 
     fn should_cut_shard(&mut self) -> bool {
-        let cpu_exit = self.max_syscall_cycles + self.core.clk >= self.shard_size;
-        let clk_exit = self.max_syscall_cycles + self.core.clk >= CORE_SHARD_CLK_LIMIT;
+        // Cycles consumed so far within the shard currently being built -- `clk` itself no
+        // longer resets per shard (see `ExecutionState::clk`'s doc comment).
+        let cycles_this_shard = self.core.clk - self.core.initial_timestamp;
+        let cpu_exit =
+            u64::from(self.max_syscall_cycles) + cycles_this_shard >= u64::from(self.shard_size);
+        let clk_exit = u64::from(self.max_syscall_cycles) + cycles_this_shard
+            >= u64::from(CORE_SHARD_CLK_LIMIT);
+
+        // Never let a shard's clk range cross a `clk_high` (top bits above the 28-bit low
+        // window) boundary -- keeps `clk_high` constant within a shard's own trace, so the AIR
+        // never needs to reason about it changing mid-shard.
+        let window_exit = (self.core.clk >> 28) != (self.core.initial_timestamp >> 28);
 
         let mut shape_match_found = true;
         if self.core.global_clk.is_multiple_of(self.shape_check_frequency) {
@@ -109,7 +126,7 @@ impl SplicingVM {
             }
         }
 
-        cpu_exit || clk_exit || !shape_match_found
+        cpu_exit || clk_exit || window_exit || !shape_match_found
     }
 
     /// Splice a `Chunk` into shard-sized `SplicedChunk` pieces. May return zero pieces (if the
@@ -148,6 +165,7 @@ impl SplicingVM {
                     pc_start: self.pending_pc_start,
                     next_pc_start: self.pending_next_pc_start,
                     global_clk_start: self.pending_global_clk_start,
+                    initial_timestamp: self.pending_initial_timestamp,
                     shard: self.core.current_shard,
                     done: true,
                 });
@@ -163,17 +181,19 @@ impl SplicingVM {
                     pc_start: self.pending_pc_start,
                     next_pc_start: self.pending_next_pc_start,
                     global_clk_start: self.pending_global_clk_start,
+                    initial_timestamp: self.pending_initial_timestamp,
                     shard: self.core.current_shard,
                     done: false,
                 });
                 consumed_before = consumed_now;
 
                 self.core.current_shard += 1;
-                self.core.clk = 0;
+                self.core.initial_timestamp = self.core.clk;
                 self.core.local_counts = crate::executor::LocalCounts::default();
                 self.pending_pc_start = self.core.pc;
                 self.pending_next_pc_start = self.core.next_pc;
                 self.pending_global_clk_start = self.core.global_clk;
+                self.pending_initial_timestamp = self.core.initial_timestamp;
             }
 
             if self.core.mem.remaining() == 0 {

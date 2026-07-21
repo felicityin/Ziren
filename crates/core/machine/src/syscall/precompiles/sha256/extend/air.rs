@@ -73,7 +73,7 @@ where
 
         // Read w[i-15].
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(15)) * nb_bytes_in_word,
             &local.w_i_minus_15,
@@ -82,7 +82,7 @@ where
 
         // Read w[i-2].
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(2)) * nb_bytes_in_word,
             &local.w_i_minus_2,
@@ -91,7 +91,7 @@ where
 
         // Read w[i-16].
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(16)) * nb_bytes_in_word,
             &local.w_i_minus_16,
@@ -100,7 +100,7 @@ where
 
         // Read w[i-7].
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(7)) * nb_bytes_in_word,
             &local.w_i_minus_7,
@@ -204,7 +204,7 @@ where
 
         // Write `s2` to `w[i]`.
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk + (local.i - i_start),
             local.w_ptr + local.i * nb_bytes_in_word,
             &local.w_i,

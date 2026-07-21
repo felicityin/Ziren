@@ -206,8 +206,13 @@ pub fn prove_with_context(
                             if let Some(first_pc) = record.first_instruction_pc {
                                 state.start_pc = first_pc;
                                 state.next_pc = record.last_next_pc;
-                                state.initial_timestamp = record.first_instruction_clk.unwrap();
-                                state.last_timestamp = record.last_timestamp;
+                                let initial_clk = record.first_instruction_clk.unwrap();
+                                // `clk_high` is constant across a shard (see
+                                // `SplicingVM::should_cut_shard`'s window-boundary rule), so the
+                                // shard's first row's high limb is this shard's only value.
+                                state.clk_high = (initial_clk >> 28) as u32;
+                                state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+                                state.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
                             }
                             state.committed_value_digest = record.public_values.committed_value_digest;
                             state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
@@ -553,5 +558,41 @@ mod tests {
     fn run_test_fibonacci_real_elf() {
         let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
         run_test(program).unwrap();
+    }
+
+    /// Forces many small shards (a tiny `shard_size` against thousands of repeated `ADD`s, each
+    /// touching the same register), then proves and verifies all of them for real -- exercising
+    /// the cross-shard memory-consistency argument (`MemoryLocalChip`/`MemoryGlobalChip`) far more
+    /// densely than the other smoke tests here, which mostly stay within one shard. See
+    /// `register-refresh-rolled-back` project memory: a structurally similar cross-shard change
+    /// previously passed every local `debug_interactions` check yet failed real GKR verification,
+    /// so this exercises `prove_with_context`'s real challenge-based protocol end to end rather
+    /// than stopping at trace generation.
+    #[test]
+    fn run_test_many_small_shards() {
+        use crate::programs::tests::many_adds_program;
+        use zkm_core_executor::ZKMContext;
+        use zkm_stark::ZKMCoreOpts;
+
+        let program = many_adds_program(4096);
+        let opts = ZKMCoreOpts { shard_size: 1 << 8, ..Default::default() };
+        let (shard_proofs, _public_values_stream, _cycles, vk) =
+            prove_with_context(program, &ZKMStdin::new(), opts, ZKMContext::default()).unwrap();
+
+        assert!(shard_proofs.len() > 1, "expected more than one shard, got {}", shard_proofs.len());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        for proof in &shard_proofs {
+            let mut challenger = ZkmGlobalContext::default_challenger();
+            vk.observe_into(&mut challenger);
+            shard_verifier.verify_shard(&vk, proof, &mut challenger).unwrap();
+        }
     }
 }

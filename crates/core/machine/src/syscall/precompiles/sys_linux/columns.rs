@@ -20,6 +20,11 @@ pub struct SysLinuxCols<T> {
     // ── Common inputs (15 cols) ────────────────────────────────────────
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access` calls below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`/`receive_syscall_result`, matching `SyscallChip`'s own (unwidened)
+    /// within-shard interaction key.
+    pub clk_high: T,
     pub syscall_id: T,
     pub a0: Word<T>,
     pub a1: Word<T>,

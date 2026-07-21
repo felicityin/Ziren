@@ -29,6 +29,11 @@ pub(crate) struct KeccakSpongeCols<T> {
     pub shard: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for `eval_memory_access`
+    /// -- `shard`/`clk` (the low 28 bits) stay as-is for `receive_syscall` and this chip's own
+    /// internal round/sponge-chain interactions, matching their unwidened keys.
+    #[cfg_attr(feature = "picus", picus(transition_input))]
+    pub clk_high: T,
     pub is_real: T,
     pub read_block: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]

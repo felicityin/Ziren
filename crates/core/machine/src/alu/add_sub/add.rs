@@ -27,7 +27,7 @@ use zkm_hypercube::{
 use crate::{
     adapter::InstructionCols,
     adapter::{
-        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+        clk_high_expr, clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     operations::AddOperation,
@@ -286,14 +286,14 @@ where
         let op_c_role = local.operand_2;
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        let clk = clk_expr::<AB>(&local.state);
+        let clk = clk_low_expr::<AB>(&local.state);
 
         builder.send_program(local.pc, local.instruction, local.is_retired.into());
 
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
+            local.state.clk_high,
             clk.clone(),
             &local.instruction,
             op_a_value,
@@ -314,6 +314,7 @@ where
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
+            clk_high_expr::<AB>(&local.state),
             clk,
             local.pc.into(),
             local.next_pc.into(),

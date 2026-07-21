@@ -21,7 +21,7 @@ pub struct Chunk {
     pub oracle: Vec<u32>,
     pub pc_start: u32,
     pub next_pc_start: u32,
-    pub clk_start: u32,
+    pub clk_start: u64,
     pub global_clk_start: u64,
     /// True if the program halted during this chunk (it is therefore the last one).
     pub done: bool,
@@ -106,7 +106,7 @@ impl MinimalRunner {
 
         let addr_0_final_record = match memory.get(0) {
             Some(record) => *record,
-            None => MemoryRecord { value: 0, shard: 0, timestamp: 1 },
+            None => MemoryRecord { value: 0, timestamp: 1 },
         };
         record
             .global_memory_finalize_events

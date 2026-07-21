@@ -10,7 +10,7 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    adapter::{clk_high_expr, clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
@@ -71,7 +71,7 @@ where
         self.eval_memory_store::<AB>(builder, local);
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        let clk = clk_expr::<AB>(&local.state);
+        let clk = clk_low_expr::<AB>(&local.state);
 
         builder.send_program(local.pc, local.instruction, is_real.clone());
 
@@ -83,7 +83,7 @@ where
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
+            local.state.clk_high,
             clk.clone(),
             &local.instruction,
             local.op_a_value.map(Into::into),
@@ -104,6 +104,7 @@ where
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
+            clk_high_expr::<AB>(&local.state),
             clk,
             local.pc.into(),
             local.next_pc.into(),
@@ -227,8 +228,8 @@ impl MemoryInstructionsChip {
         // For operations that require reading from memory (not registers), we need to read the
         // value into the memory columns.
         builder.eval_memory_access(
-            local.state.shard,
-            clk_expr::<AB>(&local.state)
+            local.state.clk_high,
+            clk_low_expr::<AB>(&local.state)
                 + AB::F::from_canonical_u32(MemoryAccessPosition::Memory as u32),
             local.addr_aligned,
             &local.memory_access,

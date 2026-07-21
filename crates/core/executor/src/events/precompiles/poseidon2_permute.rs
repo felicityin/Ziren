@@ -12,7 +12,7 @@ pub struct Poseidon2PermuteEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The pre_state as a list of u32 words.
     pub pre_state: [u32; STATE_SIZE],
     /// The post_state as a list of u32 words.

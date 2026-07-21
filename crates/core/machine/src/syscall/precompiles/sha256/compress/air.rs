@@ -147,7 +147,7 @@ impl ShaCompressChip {
     /// Constrains that memory address is correct and that memory is correctly written/read.
     fn eval_memory<AB: ZKMAirBuilder>(&self, builder: &mut AB, local: &ShaCompressCols<AB::Var>) {
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk + local.is_finalize,
             local.mem_addr,
             &local.mem,

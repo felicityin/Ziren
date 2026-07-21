@@ -53,6 +53,10 @@ pub struct WeierstrassAddAssignCols<T, P: FieldParameters + NumWords> {
     pub is_real: T,
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access_slice` calls below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
     pub p_ptr: T,
     pub q_ptr: T,
     pub p_access: GenericArray<MemoryWriteCols<T>, P::WordsCurvePoint>,
@@ -360,14 +364,14 @@ where
         }
 
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.q_ptr,
             &local.q_access,
             local.is_real,
         );
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk + AB::F::from_canonical_u32(1), /* We read p at +1 since p, q could be the
                                                        * same. */
             local.p_ptr,
@@ -419,7 +423,8 @@ impl<E: EllipticCurve> WeierstrassAddAssignChip<E> {
         // Populate basic columns.
         cols.is_real = F::ONE;
         cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
+        cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+        cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
         cols.p_ptr = F::from_canonical_u32(event.p_ptr);
         cols.q_ptr = F::from_canonical_u32(event.q_ptr);
 

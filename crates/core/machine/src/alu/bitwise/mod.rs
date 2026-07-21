@@ -27,7 +27,7 @@ use zkm_hypercube::{
 use crate::{
     adapter::InstructionCols,
     adapter::{
-        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+        clk_high_expr, clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
@@ -323,14 +323,14 @@ where
             local.is_real_xor + local.is_real_or + local.is_real_and + local.is_real_nor;
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        let clk = clk_expr::<AB>(&local.state);
+        let clk = clk_low_expr::<AB>(&local.state);
 
         builder.send_program(local.pc, local.instruction, is_real_instruction.clone());
 
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
+            local.state.clk_high,
             clk.clone(),
             &local.instruction,
             // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
@@ -356,6 +356,7 @@ where
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
+            clk_high_expr::<AB>(&local.state),
             clk,
             local.pc.into(),
             local.next_pc.into(),

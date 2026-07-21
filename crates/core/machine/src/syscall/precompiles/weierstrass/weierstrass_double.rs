@@ -52,6 +52,10 @@ pub struct WeierstrassDoubleAssignCols<T, P: FieldParameters + NumWords> {
     pub is_real: T,
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access_slice` call below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
     pub p_ptr: T,
     pub p_access: GenericArray<MemoryWriteCols<T>, P::WordsCurvePoint>,
     pub(crate) slope_denominator: FieldOpCols<T, P>,
@@ -232,14 +236,8 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
         let mut dummy_row = zeroed_f_vec(num_cols);
         let cols: &mut WeierstrassDoubleAssignCols<F, E::BaseField> =
             dummy_row.as_mut_slice().borrow_mut();
-        let dummy_memory_record = MemoryWriteRecord {
-            value: 1,
-            shard: 0,
-            timestamp: 1,
-            prev_value: 1,
-            prev_shard: 0,
-            prev_timestamp: 0,
-        };
+        let dummy_memory_record =
+            MemoryWriteRecord { value: 1, timestamp: 1, prev_value: 1, prev_timestamp: 0 };
         let zero = BigUint::ZERO;
         let one = BigUint::one();
         cols.p_access[num_words_field_element].populate(dummy_memory_record, &mut vec![]);
@@ -305,7 +303,8 @@ impl<E: EllipticCurve + WeierstrassParameters> WeierstrassDoubleAssignChip<E> {
         // Populate basic columns.
         cols.is_real = F::ONE;
         cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
+        cols.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+        cols.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
         cols.p_ptr = F::from_canonical_u32(event.p_ptr);
 
         Self::populate_field_ops(new_byte_lookup_events, cols, p_x, p_y);
@@ -429,7 +428,7 @@ where
         }
 
         builder.eval_memory_access_slice(
-            local.shard,
+            local.clk_high,
             local.clk.into(),
             local.p_ptr,
             &local.p_access,

@@ -115,7 +115,7 @@ impl MemSource for Live {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let value = self.uninitialized_memory.get(addr).copied().unwrap_or(0);
-                entry.insert(MemoryRecord { value, shard: 0, timestamp: 0 })
+                entry.insert(MemoryRecord { value, timestamp: 0 })
             }
         };
         let prev_record = *record;
@@ -163,25 +163,25 @@ impl MemSource for Live {
 
 /// A replay of an already-recorded value stream -- used by `SplicingVM`/`TracingVM`.
 ///
-/// Each access pops the next value and pairs it with a `(shard, timestamp)` tag looked up (and
-/// then updated) in `tags`. `tags` is owned by this `Oracle`, but a shard can span more than one
+/// Each access pops the next value and pairs it with a `timestamp` tag looked up (and then
+/// updated) in `tags`. `tags` is owned by this `Oracle`, but a shard can span more than one
 /// `Chunk`, so `SplicingVM`/`TracingVM` swap a continuing `CoreVM<Oracle>`'s `mem` field for a
 /// fresh `Oracle` (new chunk's values, but the *same* `tags` map carried over via
 /// [`Oracle::into_tags`]/[`Oracle::new`]) rather than reconstructing the whole `CoreVM` -- that's
-/// what keeps `tags` accumulating the true shard/timestamp history exactly as if it were a real
-/// memory: correct as long as its owner processes every shard exactly once, in true program
-/// order, without ever rewinding, which is how both `SplicingVM` (discovering shard cuts) and
+/// what keeps `tags` accumulating the true timestamp history exactly as if it were a real memory:
+/// correct as long as its owner processes every shard exactly once, in true program order,
+/// without ever rewinding, which is how both `SplicingVM` (discovering shard cuts) and
 /// `TracingVM` (replaying already-decided shards) actually work. `SplicingVM` and `TracingVM`
 /// must NOT share one `tags` map with each other (splicing runs a whole chunk ahead of tracing
 /// and would corrupt tracing's view) -- each owns its own, independently threaded across chunks.
 pub struct Oracle {
     values: std::vec::IntoIter<u32>,
-    tags: HashMap<u32, (u32, u32)>,
+    tags: HashMap<u32, u64>,
 }
 
 impl Oracle {
     #[must_use]
-    pub fn new(values: Vec<u32>, tags: HashMap<u32, (u32, u32)>) -> Self {
+    pub fn new(values: Vec<u32>, tags: HashMap<u32, u64>) -> Self {
         Self { values: values.into_iter(), tags }
     }
 
@@ -192,10 +192,10 @@ impl Oracle {
         self.values.len()
     }
 
-    /// Take back the accumulated shard/timestamp tags, to carry into the next chunk's `Oracle`
-    /// when a shard spans a chunk boundary.
+    /// Take back the accumulated timestamp tags, to carry into the next chunk's `Oracle` when a
+    /// shard spans a chunk boundary.
     #[must_use]
-    pub fn into_tags(self) -> HashMap<u32, (u32, u32)> {
+    pub fn into_tags(self) -> HashMap<u32, u64> {
         self.tags
     }
 }
@@ -206,12 +206,12 @@ impl MemSource for Oracle {
     fn access(&mut self, addr: u32) -> MemoryRecord {
         let value =
             self.values.next().unwrap_or_else(|| panic!("oracle exhausted while accessing address {addr}"));
-        let &(shard, timestamp) = self.tags.get(&addr).unwrap_or(&(0, 0));
-        MemoryRecord { value, shard, timestamp }
+        let &timestamp = self.tags.get(&addr).unwrap_or(&0);
+        MemoryRecord { value, timestamp }
     }
 
     fn commit(&mut self, addr: u32, record: MemoryRecord) {
-        self.tags.insert(addr, (record.shard, record.timestamp));
+        self.tags.insert(addr, record.timestamp);
     }
 
     fn seed_uninitialized(&mut self, _addr: u32, _value: u32) -> Result<(), ExecutionError> {
@@ -223,7 +223,7 @@ impl MemSource for Oracle {
 #[derive(Debug, Clone, Copy)]
 struct UnconstrainedCtx {
     pc: u32,
-    clk: u32,
+    clk: u64,
     global_clk: u64,
 }
 
@@ -233,7 +233,7 @@ struct UnconstrainedCtx {
 /// takes today.
 pub struct StepOutcome {
     pub instruction: Instruction,
-    pub clk: u32,
+    pub clk: u64,
     pub pc: u32,
     pub next_pc: u32,
     pub next_next_pc: u32,
@@ -256,9 +256,12 @@ pub struct CoreVM<M: MemSource> {
 
     pub pc: u32,
     pub next_pc: u32,
-    pub clk: u32,
+    pub clk: u64,
     pub global_clk: u64,
     pub current_shard: u32,
+    /// The value `clk` had when the current shard started. See `ExecutionState::initial_timestamp`'s
+    /// doc comment (`Executor`'s equivalent) -- same role here.
+    pub initial_timestamp: u64,
     pub next_is_delayslot: bool,
     pub exited: bool,
 
@@ -315,6 +318,9 @@ impl<M: MemSource> CoreVM<M> {
             clk: 0,
             global_clk: 0,
             current_shard: 1,
+            // 1, not 0: `0` is the "never touched" sentinel `MemoryRecord::timestamp` (mirrors
+            // `ExecutionState::new`).
+            initial_timestamp: 1,
             next_is_delayslot: false,
             exited: false,
             unconstrained: false,
@@ -338,7 +344,7 @@ impl<M: MemSource> CoreVM<M> {
     /// oracle log.
     pub fn load_image(&mut self) {
         for (&addr, value) in &self.program.image.clone() {
-            self.mem.commit(addr, MemoryRecord { value: *value, shard: 0, timestamp: 0 });
+            self.mem.commit(addr, MemoryRecord { value: *value, timestamp: 0 });
         }
     }
 
@@ -347,9 +353,11 @@ impl<M: MemSource> CoreVM<M> {
         self.current_shard
     }
 
+    /// The current memory-access timestamp for a given access position. See `Executor::timestamp`'s
+    /// doc comment -- same role here.
     #[must_use]
-    pub const fn timestamp(&self, position: &MemoryAccessPosition) -> u32 {
-        self.clk + *position as u32
+    pub const fn timestamp(&self, position: &MemoryAccessPosition) -> u64 {
+        self.clk + *position as u64
     }
 
     fn fetch(&self) -> Instruction {
@@ -362,15 +370,17 @@ impl<M: MemSource> CoreVM<M> {
     pub fn mr(
         &mut self,
         addr: u32,
-        shard: u32,
-        timestamp: u32,
+        external: bool,
+        timestamp: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
         let prev_record = self.mem.access(addr);
-        if !self.unconstrained && (prev_record.shard != shard || local_memory_access.is_some()) {
+        if !self.unconstrained
+            && (prev_record.timestamp < self.initial_timestamp || external)
+        {
             self.local_counts.local_mem += 1;
         }
-        let record = MemoryRecord { value: prev_record.value, shard, timestamp };
+        let record = MemoryRecord { value: prev_record.value, timestamp };
         self.mem.commit(addr, record);
         if !self.unconstrained {
             let local_memory_access =
@@ -380,13 +390,7 @@ impl<M: MemSource> CoreVM<M> {
                 .and_modify(|e| e.final_mem_access = record)
                 .or_insert(MemoryLocalEvent { addr, initial_mem_access: prev_record, final_mem_access: record });
         }
-        MemoryReadRecord::new(
-            record.value,
-            record.shard,
-            record.timestamp,
-            prev_record.shard,
-            prev_record.timestamp,
-        )
+        MemoryReadRecord::new(record.value, record.timestamp, prev_record.timestamp)
     }
 
     /// Write a word to memory and create an access record, tracking it into `local_memory_access`.
@@ -394,15 +398,17 @@ impl<M: MemSource> CoreVM<M> {
         &mut self,
         addr: u32,
         value: u32,
-        shard: u32,
-        timestamp: u32,
+        external: bool,
+        timestamp: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
         let prev_record = self.mem.access(addr);
-        if !self.unconstrained && (prev_record.shard != shard || local_memory_access.is_some()) {
+        if !self.unconstrained
+            && (prev_record.timestamp < self.initial_timestamp || external)
+        {
             self.local_counts.local_mem += 1;
         }
-        let record = MemoryRecord { value, shard, timestamp };
+        let record = MemoryRecord { value, timestamp };
         self.mem.commit(addr, record);
         if !self.unconstrained {
             let local_memory_access =
@@ -412,14 +418,7 @@ impl<M: MemSource> CoreVM<M> {
                 .and_modify(|e| e.final_mem_access = record)
                 .or_insert(MemoryLocalEvent { addr, initial_mem_access: prev_record, final_mem_access: record });
         }
-        MemoryWriteRecord::new(
-            record.value,
-            record.shard,
-            record.timestamp,
-            prev_record.value,
-            prev_record.shard,
-            prev_record.timestamp,
-        )
+        MemoryWriteRecord::new(record.value, record.timestamp, prev_record.value, prev_record.timestamp)
     }
 
     /// Read a register and create an access record (same shape as `mr`, registers are just
@@ -427,11 +426,11 @@ impl<M: MemSource> CoreVM<M> {
     pub fn rr_traced(
         &mut self,
         register: Register,
-        shard: u32,
-        timestamp: u32,
+        external: bool,
+        timestamp: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        self.mr(register as u32, shard, timestamp, local_memory_access)
+        self.mr(register as u32, external, timestamp, local_memory_access)
     }
 
     /// Write a register and create an access record.
@@ -439,12 +438,12 @@ impl<M: MemSource> CoreVM<M> {
         &mut self,
         register: Register,
         value: u32,
-        shard: u32,
-        timestamp: u32,
+        external: bool,
+        timestamp: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
         let value = if register == Register::ZERO { 0 } else { value };
-        self.mw(register as u32, value, shard, timestamp, local_memory_access)
+        self.mw(register as u32, value, external, timestamp, local_memory_access)
     }
 
     /// Get the current value of a register, without creating an access record. Still consumes an
@@ -466,13 +465,13 @@ impl<M: MemSource> CoreVM<M> {
     }
 
     fn mr_cpu(&mut self, addr: u32) -> u32 {
-        let record = self.mr(addr, self.current_shard, self.timestamp(&MemoryAccessPosition::Memory), None);
+        let record = self.mr(addr, false, self.timestamp(&MemoryAccessPosition::Memory), None);
         self.memory_accesses.memory = Some(record.into());
         record.value
     }
 
     fn rr_cpu(&mut self, register: Register, position: MemoryAccessPosition) -> u32 {
-        let record = self.rr_traced(register, self.current_shard, self.timestamp(&position), None);
+        let record = self.rr_traced(register, false, self.timestamp(&position), None);
         match position {
             MemoryAccessPosition::A => self.memory_accesses.a = Some(record.into()),
             MemoryAccessPosition::B => self.memory_accesses.b = Some(record.into()),
@@ -483,13 +482,13 @@ impl<M: MemSource> CoreVM<M> {
     }
 
     fn mw_cpu(&mut self, addr: u32, value: u32) {
-        let record = self.mw(addr, value, self.current_shard, self.timestamp(&MemoryAccessPosition::Memory), None);
+        let record = self.mw(addr, value, false, self.timestamp(&MemoryAccessPosition::Memory), None);
         self.memory_accesses.memory = Some(record.into());
     }
 
     fn rw_cpu(&mut self, register: Register, value: u32, position: MemoryAccessPosition) {
         let value = if register == Register::ZERO { 0 } else { value };
-        let record = self.rw_traced(register, value, self.current_shard, self.timestamp(&position), None);
+        let record = self.rw_traced(register, value, false, self.timestamp(&position), None);
         match position {
             MemoryAccessPosition::A => self.memory_accesses.a = Some(record.into()),
             MemoryAccessPosition::HI => self.memory_accesses.hi = Some(record.into()),
@@ -1088,7 +1087,7 @@ impl<M: MemSource> CoreVM<M> {
             self.rw_cpu(Register::V0, a, MemoryAccessPosition::A);
             next_pc = precompile_next_pc;
             next_next_pc = precompile_next_pc + 4;
-            self.clk += precompile_cycles;
+            self.clk += u64::from(precompile_cycles);
             num_extra_cycles = precompile_cycles;
             exit_code = returned_exit_code;
             hi_or_prev_a = Some(prev_a);
@@ -1138,7 +1137,11 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
         self.current_shard
     }
 
-    fn clk(&self) -> u32 {
+    fn clk(&self) -> u64 {
+        self.clk
+    }
+
+    fn timestamp(&self) -> u64 {
         self.clk
     }
 
@@ -1161,43 +1164,41 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
     fn mr(
         &mut self,
         addr: u32,
-        shard: u32,
-        clk: u32,
+        external: bool,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        CoreVM::mr(self, addr, shard, clk, local_memory_access)
+        CoreVM::mr(self, addr, external, clk, local_memory_access)
     }
 
     fn mw(
         &mut self,
         addr: u32,
         value: u32,
-        shard: u32,
-        clk: u32,
+        external: bool,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
-        CoreVM::mw(self, addr, value, shard, clk, local_memory_access)
+        CoreVM::mw(self, addr, value, external, clk, local_memory_access)
     }
 
     fn rr_traced(
         &mut self,
         register: Register,
-        shard: u32,
-        clk: u32,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        CoreVM::rr_traced(self, register, shard, clk, local_memory_access)
+        CoreVM::rr_traced(self, register, true, clk, local_memory_access)
     }
 
     fn rw_traced(
         &mut self,
         register: Register,
         value: u32,
-        shard: u32,
-        clk: u32,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
-        CoreVM::rw_traced(self, register, value, shard, clk, local_memory_access)
+        CoreVM::rw_traced(self, register, value, true, clk, local_memory_access)
     }
 
     fn register(&mut self, register: Register) -> u32 {
@@ -1226,7 +1227,7 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
 
     fn syscall_event(
         &self,
-        clk: u32,
+        clk: u64,
         a_record: Option<crate::events::MemoryRecordEnum>,
         next_pc: u32,
         syscall_id: u32,

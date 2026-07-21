@@ -13,7 +13,7 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    adapter::{clk_high_expr, clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
     air::{ProgramAirBuilder, WordAirBuilder},
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
 };
@@ -44,7 +44,7 @@ where
         // Verify that local.is_halt is correct.
         self.eval_is_halt_syscall(builder, local);
 
-        let clk = clk_expr::<AB>(&local.state);
+        let clk = clk_low_expr::<AB>(&local.state);
 
         builder.send_program(local.pc, local.instruction, is_real.clone());
 
@@ -53,7 +53,7 @@ where
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
+            local.state.clk_high,
             clk.clone(),
             &local.instruction,
             local.op_a_value.map(Into::into),
@@ -89,6 +89,7 @@ where
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
+            clk_high_expr::<AB>(&local.state),
             clk,
             local.pc.into(),
             local.state_chain_next_pc.into(),
@@ -232,7 +233,7 @@ impl SyscallInstrsChip {
 
         builder.send_syscall(
             local.state.shard,
-            clk_expr::<AB>(&local.state),
+            clk_low_expr::<AB>(&local.state),
             syscall_id.clone(),
             local.op_b_value.reduce::<AB>(),
             local.op_c_value.reduce::<AB>(),
@@ -244,7 +245,7 @@ impl SyscallInstrsChip {
         // with SysLinuxChip via SyscallChip bridge.
         builder.send_syscall_result(
             local.state.shard,
-            clk_expr::<AB>(&local.state),
+            clk_low_expr::<AB>(&local.state),
             local.op_a_value,
             local.op_b_value,
             local.op_c_value,

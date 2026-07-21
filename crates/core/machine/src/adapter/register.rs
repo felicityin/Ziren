@@ -70,7 +70,7 @@ impl<F: PrimeField32> RegisterReader<F> {
 pub fn eval_register_reader<AB: ZKMAirBuilder>(
     builder: &mut AB,
     reader: &RegisterReader<AB::Var>,
-    shard: AB::Var,
+    clk_high: AB::Var,
     clk: AB::Expr,
     instruction: &InstructionCols<AB::Var>,
     op_a_value: Word<AB::Expr>,
@@ -85,14 +85,14 @@ pub fn eval_register_reader<AB: ZKMAirBuilder>(
 
     // If they are not immediates, read `b` and `c` from memory.
     builder.eval_memory_access(
-        shard,
+        clk_high,
         clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::B as u32),
         instruction.op_b[0],
         &reader.op_b_access,
         AB::Expr::one() - instruction.imm_b,
     );
     builder.eval_memory_access(
-        shard,
+        clk_high,
         clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::C as u32),
         instruction.op_c[0],
         &reader.op_c_access,
@@ -119,7 +119,7 @@ pub fn eval_register_reader<AB: ZKMAirBuilder>(
     // Write the `a` or the result to the first register described in the instruction unless
     // we are performing a branch or a store.
     builder.eval_memory_access(
-        shard,
+        clk_high,
         clk + AB::F::from_canonical_u32(MemoryAccessPosition::A as u32),
         instruction.op_a,
         &reader.op_a_access,

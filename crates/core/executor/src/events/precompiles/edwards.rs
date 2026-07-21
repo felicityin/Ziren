@@ -14,7 +14,7 @@ pub struct EdDecompressEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The pointer to the point.
     pub ptr: u32,
     /// The sign bit of the point.

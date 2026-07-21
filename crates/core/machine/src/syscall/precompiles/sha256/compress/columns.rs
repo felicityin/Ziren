@@ -31,6 +31,11 @@ pub struct ShaCompressCols<T> {
     pub shard: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for
+    /// `eval_memory_access` -- `shard`/`clk` (the low 28 bits) stay as-is for this chip's own
+    /// `LookupKind::ShaCompress` chain, matching its unwidened key.
+    #[cfg_attr(feature = "picus", picus(transition_input))]
+    pub clk_high: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]
     pub w_ptr: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]

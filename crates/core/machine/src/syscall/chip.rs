@@ -72,9 +72,16 @@ pub struct SyscallCols<T: Copy> {
     #[cfg_attr(feature = "picus", picus(input))]
     pub shard: T,
 
-    /// The clk of the syscall.
+    /// The clk (low 28 bits) of the syscall.
     #[cfg_attr(feature = "picus", picus(input))]
     pub clk: T,
+
+    /// The clk's high limb (bits above the low 28-bit window). Only used by this chip's own
+    /// `LookupKind::Global` cross-shard linkage (matching a syscall's Core-shard-side row
+    /// against its Precompile-shard-side row) -- unlike `shard`/`clk`, not used by the
+    /// within-shard `send_syscall`/`receive_syscall` match against `SyscallInstrsChip`.
+    #[cfg_attr(feature = "picus", picus(input))]
+    pub clk_high: T,
 
     /// The syscall_id of the syscall.
     #[cfg_attr(feature = "picus", picus(input))]
@@ -179,17 +186,19 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
         for &(event, rlo, rhi) in &event_triples {
             let (a1_lo, a1_hi) = Self::pack_result_halves(event.arg1);
             let (a2_lo, a2_hi) = Self::pack_result_halves(event.arg2);
+            let clk_high = (event.clk >> 28) as u32;
+            let clk_low = (event.clk & 0xfff_ffff) as u32;
 
             // Cross-shard argument linkage using collision-resistant half-word packing.
             output.global_lookup_events.push(GlobalLookupEvent {
-                message: [event.shard, event.clk, event.syscall_id, a1_lo, a1_hi, a2_lo, a2_hi],
+                message: [clk_high, clk_low, event.syscall_id, a1_lo, a1_hi, a2_lo, a2_hi],
                 is_receive,
                 kind: LookupKind::Syscall as u8,
             });
 
             // Cross-shard result linkage to ensure both shards agree on the return value.
             output.global_lookup_events.push(GlobalLookupEvent {
-                message: [event.shard, event.clk, event.syscall_id, rlo, rhi, 0, 0],
+                message: [clk_high, clk_low, event.syscall_id, rlo, rhi, 0, 0],
                 is_receive,
                 kind: LookupKind::SyscallResult as u8,
             });
@@ -239,7 +248,8 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
             let cols: &mut SyscallCols<F> = row.as_mut_slice().borrow_mut();
 
             cols.shard = F::from_canonical_u32(syscall_event.shard);
-            cols.clk = F::from_canonical_u32(syscall_event.clk);
+            cols.clk = F::from_canonical_u32((syscall_event.clk & 0xfff_ffff) as u32);
+            cols.clk_high = F::from_canonical_u32((syscall_event.clk >> 28) as u32);
             cols.syscall_id = F::from_canonical_u32(syscall_event.syscall_id);
             let a1b = syscall_event.arg1.to_le_bytes();
             cols.arg1_lo = F::from_canonical_u32(a1b[0] as u32 + (a1b[1] as u32) * 256);
@@ -418,7 +428,7 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
+                            local.clk_high.into(),
                             local.clk.into(),
                             local.syscall_id.into(),
                             local.arg1_lo.into(),
@@ -440,7 +450,7 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
+                            local.clk_high.into(),
                             local.clk.into(),
                             local.syscall_id.into(),
                             local.result_lo.into(),
@@ -486,7 +496,7 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
+                            local.clk_high.into(),
                             local.clk.into(),
                             local.syscall_id.into(),
                             local.arg1_lo.into(),
@@ -507,7 +517,7 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
+                            local.clk_high.into(),
                             local.clk.into(),
                             local.syscall_id.into(),
                             local.result_lo.into(),

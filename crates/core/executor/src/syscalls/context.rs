@@ -20,7 +20,11 @@ pub trait SyscallRuntime {
     /// The current shard.
     fn shard(&self) -> u32;
     /// The current clock cycle.
-    fn clk(&self) -> u32;
+    fn clk(&self) -> u64;
+    /// The current, globalized memory-access timestamp (`initial_timestamp + clk`, no position
+    /// offset -- every access within one syscall shares this same value, unlike CPU-level
+    /// accesses which use `MemoryAccessPosition` to space out same-instruction sub-accesses).
+    fn timestamp(&self) -> u64;
     /// The current program counter.
     fn pc(&self) -> u32;
     /// Whether we're inside an unconstrained block.
@@ -30,12 +34,15 @@ pub trait SyscallRuntime {
     /// The global clock (used for cycle-tracker timing).
     fn global_clk(&self) -> u64;
 
-    /// Read a word from memory and create an access record.
+    /// Read a word from memory and create an access record. `external` marks an access whose
+    /// real shard isn't known yet (deferred precompile events) -- see
+    /// `ExecutionState::initial_timestamp`'s doc comment for what replaces the old shard-equality
+    /// check.
     fn mr(
         &mut self,
         addr: u32,
-        shard: u32,
-        clk: u32,
+        external: bool,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord;
     /// Write a word to memory and create an access record.
@@ -43,16 +50,15 @@ pub trait SyscallRuntime {
         &mut self,
         addr: u32,
         value: u32,
-        shard: u32,
-        clk: u32,
+        external: bool,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord;
     /// Read a register and create an access record.
     fn rr_traced(
         &mut self,
         register: Register,
-        shard: u32,
-        clk: u32,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord;
     /// Write a register and create an access record.
@@ -60,8 +66,7 @@ pub trait SyscallRuntime {
         &mut self,
         register: Register,
         value: u32,
-        shard: u32,
-        clk: u32,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord;
 
@@ -102,7 +107,7 @@ pub trait SyscallRuntime {
     /// Build a [`SyscallEvent`] for the current instruction.
     fn syscall_event(
         &self,
-        clk: u32,
+        clk: u64,
         a_record: Option<MemoryRecordEnum>,
         next_pc: u32,
         syscall_id: u32,
@@ -162,7 +167,11 @@ impl SyscallRuntime for Executor<'_> {
         Executor::shard(self)
     }
 
-    fn clk(&self) -> u32 {
+    fn clk(&self) -> u64 {
+        self.state.clk
+    }
+
+    fn timestamp(&self) -> u64 {
         self.state.clk
     }
 
@@ -185,43 +194,41 @@ impl SyscallRuntime for Executor<'_> {
     fn mr(
         &mut self,
         addr: u32,
-        shard: u32,
-        clk: u32,
+        external: bool,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        Executor::mr(self, addr, shard, clk, local_memory_access)
+        Executor::mr(self, addr, external, clk, local_memory_access)
     }
 
     fn mw(
         &mut self,
         addr: u32,
         value: u32,
-        shard: u32,
-        clk: u32,
+        external: bool,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
-        Executor::mw(self, addr, value, shard, clk, local_memory_access)
+        Executor::mw(self, addr, value, external, clk, local_memory_access)
     }
 
     fn rr_traced(
         &mut self,
         register: Register,
-        shard: u32,
-        clk: u32,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        Executor::rr_traced(self, register, shard, clk, local_memory_access)
+        Executor::rr_traced(self, register, clk, local_memory_access)
     }
 
     fn rw_traced(
         &mut self,
         register: Register,
         value: u32,
-        shard: u32,
-        clk: u32,
+        clk: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
-        Executor::rw_traced(self, register, value, shard, clk, local_memory_access)
+        Executor::rw_traced(self, register, value, clk, local_memory_access)
     }
 
     fn register(&mut self, register: Register) -> u32 {
@@ -250,7 +257,7 @@ impl SyscallRuntime for Executor<'_> {
 
     fn syscall_event(
         &self,
-        clk: u32,
+        clk: u64,
         a_record: Option<MemoryRecordEnum>,
         next_pc: u32,
         syscall_id: u32,
@@ -425,7 +432,11 @@ pub struct SyscallContext<'a, R: SyscallRuntime> {
     /// The current shard.
     pub current_shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
+    /// The globalized memory-access timestamp (`initial_timestamp + clk`) every `mr`/`mw`/
+    /// `rr_traced`/`rw_traced` call made through this context uses -- captured once at
+    /// construction, same as `clk`, since every access within one syscall shares it.
+    pub mem_timestamp: u64,
     /// The next program counter.
     pub next_pc: u32,
     /// The exit code.
@@ -441,10 +452,12 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
     pub fn new(runtime: &'a mut R) -> Self {
         let current_shard = runtime.shard();
         let clk = runtime.clk();
+        let mem_timestamp = runtime.timestamp();
         let next_pc = runtime.pc().wrapping_add(4);
         Self {
             current_shard,
             clk,
+            mem_timestamp,
             next_pc,
             exit_code: 0,
             rt: runtime,
@@ -477,7 +490,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
     /// Read a word from memory.
     pub fn mr(&mut self, addr: u32) -> (MemoryReadRecord, u32) {
         let record =
-            self.rt.mr(addr, self.current_shard, self.clk, Some(&mut self.local_memory_access));
+            self.rt.mr(addr, true, self.mem_timestamp, Some(&mut self.local_memory_access));
         (record, record.value)
     }
 
@@ -495,7 +508,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
 
     /// Write a word to memory.
     pub fn mw(&mut self, addr: u32, value: u32) -> MemoryWriteRecord {
-        self.rt.mw(addr, value, self.current_shard, self.clk, Some(&mut self.local_memory_access))
+        self.rt.mw(addr, value, true, self.mem_timestamp, Some(&mut self.local_memory_access))
     }
 
     /// Write a slice of words to memory.
@@ -513,8 +526,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
     pub fn rr_traced(&mut self, register: Register) -> (MemoryReadRecord, u32) {
         let record = self.rt.rr_traced(
             register,
-            self.current_shard,
-            self.clk,
+            self.mem_timestamp,
             Some(&mut self.local_memory_access),
         );
         (record, record.value)
@@ -525,8 +537,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
         self.rt.rw_traced(
             register,
             value,
-            self.current_shard,
-            self.clk,
+            self.mem_timestamp,
             Some(&mut self.local_memory_access),
         )
     }

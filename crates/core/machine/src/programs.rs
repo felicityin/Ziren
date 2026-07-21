@@ -34,6 +34,20 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A straight-line program of `num_adds` repeated `ADD`s accumulating into one register, with
+    /// no control flow -- used to force many small shards (via a small `ZKMCoreOpts::shard_size`)
+    /// while keeping every shard's contents (and register-access pattern) as simple as possible.
+    ///
+    /// Starts at pc `4`, not `0`: `MinimalRunner::try_next_chunk` treats `pc == 0` as "already
+    /// halted" (matching `Executor::execute`'s own `done` check), so a program starting at pc `0`
+    /// never executes a single instruction under `prove_with_context`'s producer pipeline.
+    #[must_use]
+    pub fn many_adds_program(num_adds: usize) -> Program {
+        let instructions =
+            vec![Instruction::new(Opcode::ADD, 29, 29, 1, false, true); num_adds];
+        Program::new(instructions, 4, 4)
+    }
+
     /// Get the fibonacci program.
     ///
     /// # Panics

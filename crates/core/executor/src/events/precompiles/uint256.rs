@@ -13,7 +13,7 @@ pub struct Uint256MulEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The pointer to the x value.
     pub x_ptr: u32,
     /// The x value as a list of words.

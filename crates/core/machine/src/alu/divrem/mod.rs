@@ -90,7 +90,7 @@ use zkm_primitives::consts::WORD_SIZE;
 use crate::{
     adapter::InstructionCols,
     adapter::{
-        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+        clk_high_expr, clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
@@ -760,7 +760,7 @@ where
         // No `AddChip`/`MulChip`-style synthetic-row split is needed here: nothing ever
         // produces a synthetic `divrem_events` row (see this chip's doc comment), so `is_real`
         // already means "real instruction".
-        let clk = clk_expr::<AB>(&local.state);
+        let clk = clk_low_expr::<AB>(&local.state);
 
         builder.send_program(local.pc, local.instruction, is_real.clone());
 
@@ -777,7 +777,7 @@ where
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
+            local.state.clk_high,
             clk.clone(),
             &local.instruction,
             op_a_value,
@@ -798,6 +798,7 @@ where
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
+            clk_high_expr::<AB>(&local.state),
             clk.clone(),
             local.pc.into(),
             local.next_pc.into(),
@@ -831,7 +832,7 @@ where
 
         // Write the HI register, the register can only be Register::HI（33）.
         builder.eval_memory_access(
-            local.state.shard,
+            local.state.clk_high,
             clk + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
             AB::F::from_canonical_u32(33),
             &local.op_hi_access,

@@ -51,6 +51,10 @@ pub struct EdDecompressCols<T> {
     pub is_real: T,
     pub shard: T,
     pub clk: T,
+    /// The clk's high limb (bits above the low 28-bit window), used only for the
+    /// `eval_memory_access_slice` calls below -- `shard`/`clk` (the low 28 bits) stay as-is for
+    /// `receive_syscall`, matching `SyscallChip`'s own (unwidened) within-shard interaction key.
+    pub clk_high: T,
     pub ptr: T,
     pub sign: T,
     pub x_access: GenericArray<MemoryWriteCols<T>, WordsFieldElement>,
@@ -74,7 +78,8 @@ impl<F: PrimeField32> EdDecompressCols<F> {
         let mut new_byte_lookup_events = Vec::new();
         self.is_real = F::from_bool(true);
         self.shard = F::from_canonical_u32(event.shard);
-        self.clk = F::from_canonical_u32(event.clk);
+        self.clk = F::from_canonical_u32((event.clk & 0xfff_ffff) as u32);
+        self.clk_high = F::from_canonical_u32((event.clk >> 28) as u32);
         self.ptr = F::from_canonical_u32(event.ptr);
         self.sign = F::from_bool(event.sign);
         for i in 0..8 {
@@ -159,14 +164,14 @@ impl<V: Copy> EdDecompressCols<V> {
         );
 
         builder.eval_memory_access_slice(
-            self.shard,
+            self.clk_high,
             self.clk,
             self.ptr,
             &self.x_access,
             self.is_real,
         );
         builder.eval_memory_access_slice(
-            self.shard,
+            self.clk_high,
             self.clk,
             self.ptr.into() + AB::F::from_canonical_u32(32),
             &self.y_access,

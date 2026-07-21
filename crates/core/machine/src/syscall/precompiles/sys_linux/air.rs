@@ -172,7 +172,7 @@ where
 
         // ── A3 output ──────────────────────────────────────────────────
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk,
             AB::Expr::from_canonical_u32(Register::A3 as u32),
             &local.output,
@@ -209,7 +209,7 @@ impl SysLinuxChip {
         is_brk: AB::Var,
     ) {
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk,
             AB::Expr::from_canonical_u32(Register::BRK as u32),
             &local.inorout,
@@ -353,7 +353,7 @@ impl SysLinuxChip {
             .assert_word_eq(*local.inorout.value(), local.heap_add.value);
 
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk,
             AB::Expr::from_canonical_u32(Register::HEAP as u32),
             &local.inorout,
@@ -455,7 +455,7 @@ impl SysLinuxChip {
         is_write: AB::Var,
     ) {
         builder.eval_memory_access(
-            local.shard,
+            local.clk_high,
             local.clk,
             AB::Expr::from_canonical_u32(Register::A2 as u32),
             &local.inorout,
