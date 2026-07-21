@@ -904,6 +904,129 @@ pub mod tests {
         }
     }
 
+    /// Unlike `debug_real_elf_local_interactions_balance` above (which uses
+    /// `test_artifacts::FIBONACCI_ELF`, a guest that hardcodes `n = 10` and never reads stdin),
+    /// this loads the real `examples/fibonacci/guest` ELF and feeds it a real `n = 1000` via
+    /// stdin, exactly like `examples/fibonacci/host` -- exercising the real `HINT_LEN`/
+    /// `HINT_READ`/`COMMIT` syscall path with real data, which the other test never touches.
+    /// Requires the guest to already be built (`cargo run --release` under
+    /// `examples/fibonacci/host` with the zkVM toolchain sourced); `#[ignore]`d since this repo's
+    /// default `ZKM_SKIP_PROGRAM_BUILD` test path never builds it.
+    #[test]
+    #[ignore = "needs examples/fibonacci/guest built via the real zkVM toolchain"]
+    fn debug_real_fibonacci_guest_with_stdin_interactions_balance() {
+        use p3_koala_bear::KoalaBear;
+        use slop_air::BaseAir;
+        use slop_multilinear::{Mle, PaddedMle};
+        use std::sync::Arc;
+        use zkm_core_executor::{Executor, ExecutionRecord};
+        use zkm_hypercube::{
+            air::LookupScope,
+            lookup::{debug_interactions_with_all_chips, LookupKind},
+            prover::Traces,
+            record::MachineRecord,
+        };
+        use zkm_stark::ZKMCoreOpts;
+
+        setup_logger();
+
+        let elf_bytes = std::fs::read(
+            "../../../examples/target/elf-compilation/mipsel-zkm-zkvm-elf/release/fibonacci",
+        )
+        .expect("run `cargo run --release` under examples/fibonacci/host first");
+        let program = std::sync::Arc::new(Program::from(&elf_bytes).unwrap());
+        let mut runtime = Executor::new(Program::clone(&program), ZKMCoreOpts::default());
+        let mut stdin_buf = Vec::new();
+        bincode::serialize_into(&mut stdin_buf, &1000u32).unwrap();
+        runtime.write_vecs(&[stdin_buf]);
+        runtime.run().unwrap();
+        assert_eq!(runtime.records.len(), 1, "expected a single shard");
+        let mut record = runtime.records.remove(0);
+
+        // Mirrors `prove_with_context`'s public-values threading exactly (crates/core/machine/
+        // src/utils/prove.rs), since a real guest's global memory init/finalize events can split
+        // off into their own non-execution record(s) that need their own public values.
+        let mut state = zkm_hypercube::air::PublicValues::<u32, u32>::default().reset();
+        state.shard += 1;
+        state.execution_shard = 1;
+        state.is_execution_shard = record.contains_cpu() as u32;
+        if let Some(first_pc) = record.first_instruction_pc {
+            state.start_pc = first_pc;
+            state.next_pc = record.last_next_pc;
+            let initial_clk = record.first_instruction_clk.unwrap();
+            state.clk_high = (initial_clk >> 28) as u32;
+            state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+            state.last_timestamp = (record.last_timestamp & 0xfff_ffff) as u32;
+        }
+        state.committed_value_digest = record.public_values.committed_value_digest;
+        state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+        record.public_values = state;
+
+        let mut deferred = ExecutionRecord::new(record.program.clone());
+        deferred.append(&mut record.defer());
+        let mut records = vec![record];
+        let mut split_records =
+            deferred.split(true, records.last_mut(), ZKMCoreOpts::default().split_opts);
+        for split_record in &mut split_records {
+            state.shard += 1;
+            state.is_execution_shard = 0;
+            state.previous_init_addr_bits = split_record.public_values.previous_init_addr_bits;
+            state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
+            state.previous_finalize_addr_bits =
+                split_record.public_values.previous_finalize_addr_bits;
+            state.last_finalize_addr_bits = split_record.public_values.last_finalize_addr_bits;
+            state.start_pc = state.next_pc;
+            state.initial_timestamp = state.last_timestamp;
+            split_record.public_values = state;
+        }
+        records.append(&mut split_records);
+        println!("produced {} record(s)", records.len());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        machine.generate_dependencies(records.iter_mut(), None).unwrap();
+        let chips = machine.chips().to_vec();
+        let max_log_row_count = 22u32;
+
+        let mut all_balanced = true;
+        for (i, record) in records.into_iter().enumerate() {
+            let mut preprocessed_named = std::collections::BTreeMap::new();
+            let mut main_named = std::collections::BTreeMap::new();
+            for chip in &chips {
+                let chip_name = MachineAir::<KoalaBear>::name(chip);
+                let pre_mle = match chip.generate_preprocessed_trace(&program) {
+                    Some(t) => {
+                        PaddedMle::padded_with_zeros(Arc::new(Mle::from(t)), max_log_row_count)
+                    }
+                    None => PaddedMle::zeros(0, max_log_row_count),
+                };
+                preprocessed_named.insert(chip_name.clone(), pre_mle);
+
+                let main_mle = if chip.included(&record) {
+                    let trace = chip.generate_trace(&record, &mut Default::default()).unwrap();
+                    PaddedMle::padded_with_zeros(Arc::new(Mle::from(trace)), max_log_row_count)
+                } else {
+                    PaddedMle::zeros(chip.width(), max_log_row_count)
+                };
+                main_named.insert(chip_name, main_mle);
+            }
+            let preprocessed_traces = Traces { named_traces: preprocessed_named };
+            let traces = Traces { named_traces: main_named };
+            let public_values = record.public_values::<KoalaBear>();
+
+            println!("== record {i} ==");
+            let balanced = debug_interactions_with_all_chips(
+                &chips,
+                &preprocessed_traces,
+                &traces,
+                public_values,
+                LookupKind::all_kinds(),
+                LookupScope::Local,
+            );
+            all_balanced &= balanced;
+        }
+        assert!(all_balanced, "local-scope send/receive interactions don't balance");
+    }
+
     #[test]
     fn write_core_air_costs() {
         let costs = MipsAir::<KoalaBear>::costs();

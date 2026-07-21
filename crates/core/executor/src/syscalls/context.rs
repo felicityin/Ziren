@@ -431,12 +431,13 @@ impl SyscallRuntime for Executor<'_> {
 pub struct SyscallContext<'a, R: SyscallRuntime> {
     /// The current shard.
     pub current_shard: u32,
-    /// The clock cycle.
+    /// The clock cycle every `mr`/`mw`/`rr_traced`/`rw_traced` call made through this context
+    /// uses. Starts at the runtime's own current clk and is otherwise left to the syscall
+    /// implementation to manage -- most precompiles never touch it, so every access within the
+    /// syscall shares one timestamp, but a few (see e.g. `Sha256CompressSyscall`) bump it
+    /// mid-syscall to give a later phase's accesses a distinct, later timestamp, matching their
+    /// own AIR's `clk + <phase offset>` expectation.
     pub clk: u64,
-    /// The globalized memory-access timestamp (`initial_timestamp + clk`) every `mr`/`mw`/
-    /// `rr_traced`/`rw_traced` call made through this context uses -- captured once at
-    /// construction, same as `clk`, since every access within one syscall shares it.
-    pub mem_timestamp: u64,
     /// The next program counter.
     pub next_pc: u32,
     /// The exit code.
@@ -452,12 +453,10 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
     pub fn new(runtime: &'a mut R) -> Self {
         let current_shard = runtime.shard();
         let clk = runtime.clk();
-        let mem_timestamp = runtime.timestamp();
         let next_pc = runtime.pc().wrapping_add(4);
         Self {
             current_shard,
             clk,
-            mem_timestamp,
             next_pc,
             exit_code: 0,
             rt: runtime,
@@ -490,7 +489,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
     /// Read a word from memory.
     pub fn mr(&mut self, addr: u32) -> (MemoryReadRecord, u32) {
         let record =
-            self.rt.mr(addr, true, self.mem_timestamp, Some(&mut self.local_memory_access));
+            self.rt.mr(addr, true, self.clk, Some(&mut self.local_memory_access));
         (record, record.value)
     }
 
@@ -508,7 +507,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
 
     /// Write a word to memory.
     pub fn mw(&mut self, addr: u32, value: u32) -> MemoryWriteRecord {
-        self.rt.mw(addr, value, true, self.mem_timestamp, Some(&mut self.local_memory_access))
+        self.rt.mw(addr, value, true, self.clk, Some(&mut self.local_memory_access))
     }
 
     /// Write a slice of words to memory.
@@ -526,7 +525,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
     pub fn rr_traced(&mut self, register: Register) -> (MemoryReadRecord, u32) {
         let record = self.rt.rr_traced(
             register,
-            self.mem_timestamp,
+            self.clk,
             Some(&mut self.local_memory_access),
         );
         (record, record.value)
@@ -537,7 +536,7 @@ impl<'a, R: SyscallRuntime> SyscallContext<'a, R> {
         self.rt.rw_traced(
             register,
             value,
-            self.mem_timestamp,
+            self.clk,
             Some(&mut self.local_memory_access),
         )
     }

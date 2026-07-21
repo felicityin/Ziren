@@ -563,6 +563,18 @@ mod tests {
         run_test(program).unwrap();
     }
 
+    /// Mirrors `examples/fibonacci/host/src/main.rs` exactly (real `n = 1000` written to stdin,
+    /// read back by the guest via `zkm_zkvm::io::read`/`HINT_READ`), unlike
+    /// `run_test_fibonacci_real_elf` above, which runs with empty stdin -- `HINT_READ` against an
+    /// empty stream returns `0`, so that test's guest loop never actually executes.
+    #[test]
+    fn run_test_fibonacci_real_stdin() {
+        let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
+        let mut stdin = ZKMStdin::new();
+        stdin.write(&1000u32);
+        run_test_io(program, stdin).unwrap();
+    }
+
     /// Forces many small shards (a tiny `shard_size` against thousands of repeated `ADD`s, each
     /// touching the same register), then proves and verifies all of them for real -- exercising
     /// the cross-shard memory-consistency argument (`MemoryLocalChip`/`MemoryGlobalChip`) far more
