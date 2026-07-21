@@ -41,36 +41,30 @@ pub fn total_system_memory_bytes() -> u64 {
 // largest actual core shard_size in play.
 const RECURSION_MAX_SHARD_SIZE: usize = 1 << RECURSION_MAX_LOG_ROW_COUNT;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
-// `trace_gen_workers` gates the number of concurrent phase-2 trace-gen worker threads
-// (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`). It no
-// longer independently bounds how many shards' main traces can be held in memory at once --
-// that's now the job of the process-wide, byte-budget-weighted semaphore in
-// `crates/core/machine/src/utils/trace_budget.rs`, admission-gated by each shard's actual
-// estimated size rather than a flat thread count. This can therefore scale higher than before
-// without risking the OOM that a purely thread-count-sized gate allowed (2 concurrent
-// full-size shards could already approach a 123GB machine's 80% memory threshold before the
-// budget semaphore existed).
+// `trace_gen_workers` gates the number of concurrent trace-gen worker threads
+// (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`). It does not
+// bound how many shards' main traces can be held in memory at once -- that's the job of the
+// process-wide, byte-budget-weighted semaphore in `crates/core/machine/src/utils/trace_budget.rs`,
+// admission-gated by each shard's actual estimated size rather than a flat thread count.
 const DEFAULT_TRACE_GEN_WORKERS: usize = 8;
-// How many shards can be proved concurrently by the phase-2 prover (see
-// `crates/core/machine/src/utils/prove.rs`'s `p2_prover_handles` loop). Kept separate from
+// How many shards can be proved concurrently by the shard-proving workers (see
+// `crates/core/machine/src/utils/prove.rs`'s prover-worker loop). Kept separate from
 // `trace_gen_workers` since the two workloads have different resource profiles: trace generation
 // is lighter/more memory-bound, while shard proving (`commit_traces`'s FFT/Merkle-tree work) is
 // heavier/more CPU-bound. Real memory admission is the same shared `trace_budget` semaphore as
 // `trace_gen_workers` above (a shard's permit is held from trace generation through the end of
-// proving), so raising this is likewise no longer gated by a fixed per-worker memory multiplier.
+// proving), so this isn't gated by a fixed per-worker memory multiplier.
 const DEFAULT_PROVE_WORKERS: usize = 4;
-// Bounds how many oracle values `MinimalRunner` (phase 1 of `generate_records`) buffers before
-// yielding a `Chunk` -- independent of shard size, this just caps peak memory of the buffered
-// value stream. Sized generously relative to a typical shard's memory-access count so a shard
-// only rarely spans more than one chunk.
+// Bounds how many oracle values `MinimalRunner` buffers before yielding a `Chunk` --
+// independent of shard size, this just caps peak memory of the buffered value stream. Sized
+// generously relative to a typical shard's memory-access count so a shard only rarely spans more
+// than one chunk.
 const DEFAULT_MINIMAL_TRACE_CHUNK_THRESHOLD: u64 = 1 << 24;
-// Buffer depth between phase-2 trace generation (Stage B) and shard proving (Stage C,
-// `crates/core/machine/src/utils/prove.rs`). This used to be forced to 1 (an unbuffered
-// handoff) because it was the only thing standing between a burst of trace-gen workers and an
-// unbounded pile-up of in-memory shard data; now that `trace_budget`'s byte-weighted semaphore
-// is the real memory gate (acquired *before* a shard's traces are even generated, so an
-// oversubscribed channel can't queue more resident trace data than the budget allows), this can
-// safely go up to one in-flight message per trace-gen worker without reintroducing that risk.
+// Buffer depth between trace generation and shard proving
+// (`crates/core/machine/src/utils/prove.rs`). Bounded by `trace_budget`'s byte-weighted
+// semaphore, acquired *before* a shard's traces are even generated, so an oversubscribed channel
+// can't queue more resident trace data than the budget allows; this can safely be one in-flight
+// message per trace-gen worker.
 const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = DEFAULT_TRACE_GEN_WORKERS;
 
 /// The threshold for splitting deferred events.
@@ -217,7 +211,7 @@ pub struct ZKMCoreOpts {
     pub reconstruct_commitments: bool,
     /// The number of workers to use for generating traces.
     pub trace_gen_workers: usize,
-    /// The number of shards that can be proved concurrently by the phase-2 prover.
+    /// The number of shards that can be proved concurrently by the shard-proving workers.
     pub prove_workers: usize,
     /// The capacity of the channel for records and traces.
     pub records_and_traces_channel_capacity: usize,
@@ -225,9 +219,9 @@ pub struct ZKMCoreOpts {
     pub shape_check_frequency: u64,
     /// The maximum estimated LDE size (in bytes) before a shard is stopped early to avoid OOM.
     pub lde_size_threshold: u64,
-    /// Phase 1's (`MinimalRunner`) chunk-size bound, in oracle values buffered before yielding a
-    /// `Chunk`. Independent of shard economics (a chunk isn't a shard) -- this only bounds peak
-    /// memory of the buffered value stream. Mirrors SP1's `minimal_trace_chunk_threshold`.
+    /// `MinimalRunner`'s chunk-size bound, in oracle values buffered before yielding a `Chunk`.
+    /// Independent of shard economics (a chunk isn't a shard) -- this only bounds peak memory of
+    /// the buffered value stream.
     pub minimal_trace_chunk_threshold: u64,
 }
 

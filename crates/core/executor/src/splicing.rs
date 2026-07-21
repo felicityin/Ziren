@@ -1,14 +1,11 @@
-//! Phase 2 of `generate_records`: the real shard-cut decision.
-//!
 //! `SplicingVM` owns the *real*, cost-model-based shard-cut decision -- deliberately kept out of
-//! phase 1 (`MinimalRunner`) so phase 1's contract stays minimal enough for a future JIT engine
-//! to replace wholesale; see the port plan's "Why shard-cut logic lives in `SplicingVM`" section.
-//! It walks a [`Chunk`]'s value stream forward through `CoreVM<Oracle>` (reusing the exact
-//! cost-model `Executor::inc_shard_if_need` uses today: `cpu_exit`/`clk_exit`/shape-check against
+//! `MinimalRunner` so that module's contract stays minimal enough for a different execution
+//! engine to implement in its place later. It walks a [`Chunk`]'s value stream forward through
+//! `CoreVM<Oracle>` (reusing the same cost model `Executor::inc_shard_if_need` uses:
+//! `cpu_exit`/`clk_exit`/shape-check against
 //! `estimate_mips_event_counts`/`estimate_mips_lde_size`), and cuts it into shard-sized
 //! [`SplicedChunk`] pieces, carrying a piece across chunk boundaries when a shard doesn't close
-//! within one chunk (mirrors SP1's `last_splice`/`splice_to_emit` carry-over in
-//! `splice_chunk_sequential`).
+//! within one chunk.
 
 use hashbrown::HashMap;
 
@@ -32,7 +29,7 @@ pub struct SplicedChunk {
     pub done: bool,
 }
 
-/// Phase 2: decides real shard cuts and slices `Chunk`s into `SplicedChunk`s.
+/// Decides real shard cuts and slices `Chunk`s into `SplicedChunk`s.
 pub struct SplicingVM {
     core: CoreVM<Oracle>,
     /// Oracle values belonging to the shard currently being accumulated, spanning however many
@@ -81,7 +78,7 @@ impl SplicingVM {
 
     /// Add an item to the input stream (`stdin`) -- must mirror `MinimalRunner::with_input`
     /// exactly (same items, same order), since `HINT_LEN`/`HINT_READ` replay through this same
-    /// stream during splicing and must see what phase 1 saw.
+    /// stream during splicing and must see what `MinimalRunner` saw.
     pub fn with_input(&mut self, input: &[u8]) {
         self.core.input_stream.push_back(input.to_vec());
     }

@@ -1,10 +1,10 @@
-//! Phase 3 of `generate_records`: typed-event construction.
+//! `generate_records`'s typed-event construction.
 //!
 //! `TracingVM` wraps a `CoreVM<Oracle>` (already-decided shard: one `TracingVM` per
-//! `crate::splicing::SplicedChunk`) and ports `Executor::emit_events` and its per-opcode-family
-//! `emit_*` helpers verbatim, writing into the wrapped `CoreVM`'s own `record: ExecutionRecord`
-//! instead of `Executor`'s. `Executor`'s own event-construction code is untouched -- this is a
-//! separate copy for the `generate_records` pipeline, per the port plan.
+//! `crate::splicing::SplicedChunk`) and mirrors `Executor::emit_events` and its per-opcode-family
+//! `emit_*` helpers, writing into the wrapped `CoreVM`'s own `record: ExecutionRecord` instead of
+//! `Executor`'s. `Executor`'s own event-construction code is untouched -- this is a separate copy
+//! for the `generate_records` pipeline.
 //!
 //! Not named `tracing.rs` to avoid shadowing the `tracing` crate, used pervasively elsewhere in
 //! this crate via `tracing::debug_span!`/`tracing::info!`.
@@ -28,7 +28,7 @@ use crate::{
     ExecutionError, Opcode, Program,
 };
 
-/// Phase 3: replays one already-decided shard (a [`SplicedChunk`]) and emits its typed events.
+/// Replays one already-decided shard (a [`SplicedChunk`]) and emits its typed events.
 pub struct TracingVM {
     core: CoreVM<Oracle>,
 }
@@ -41,7 +41,8 @@ pub struct TracedShard {
     /// must be threaded through, separately from `SplicingVM`'s own tags map).
     pub tags: HashMap<u32, (u32, u32)>,
     /// Carried into the next `TracingVM`, for the same reason as `tags`: `HINT_LEN`/`HINT_READ`
-    /// replay against this stream and must stay positioned exactly where phase 1 left off.
+    /// replay against this stream and must stay positioned exactly where the previous shard left
+    /// off.
     pub input_stream: VecDeque<Vec<u8>>,
 }
 
@@ -61,6 +62,7 @@ impl TracingVM {
         core.current_shard = chunk.shard;
         core.record.public_values.shard = chunk.shard;
         core.input_stream = input_stream;
+        core.is_tracing = true;
         Self { core }
     }
 

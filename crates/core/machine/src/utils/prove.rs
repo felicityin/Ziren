@@ -101,10 +101,9 @@ pub fn prove_with_context(
         setup_rt.block_on(shard_prover.setup(program_arc.clone(), ProverSemaphore::new(1)));
     let pk = preprocessed.pk;
 
-    // Phase 1 setup (`generate_records`'s `MinimalRunner`). `stdin.proofs` (deferred-proof
-    // witnesses for `VERIFY_ZKM_PROOF`/`SYSVERIFY`) is not yet wired into `MinimalRunner` -- a
-    // known, flagged limitation of this pipeline; see `SyscallRuntime::verify_deferred_proof`'s
-    // doc comment.
+    // `generate_records`'s `MinimalRunner` setup. `stdin.proofs` (deferred-proof witnesses for
+    // `VERIFY_ZKM_PROOF`/`SYSVERIFY`) is not yet wired into `MinimalRunner`; see
+    // `SyscallRuntime::verify_deferred_proof`'s doc comment.
     let mut minimal_runner =
         MinimalRunner::new(program_arc.clone(), opts.minimal_trace_chunk_threshold);
     for buf in &stdin.buffer {
@@ -119,11 +118,10 @@ pub fn prove_with_context(
     std::thread::scope(move |s| {
         let _span = span.enter();
 
-        // Phase 1 -> 2 -> 3 producer: a single sequential pass (matching SP1's own
-        // `generate_records`, which its doc comment calls out as intentionally sequential) --
-        // no worker threads for record generation, per the `generate_records` port plan. Runs on
-        // its own thread only so it can pipeline concurrently with the (unmodified) phase-2
-        // prover workers below via the channel.
+        // `generate_records` producer: a single sequential pass through `MinimalRunner` ->
+        // `SplicingVM` -> `TracingVM`, with no worker threads for record generation. Runs on its
+        // own thread only so it can pipeline concurrently with the prover workers below via the
+        // channel.
         let (p2_records_and_traces_tx, p2_records_and_traces_rx) = sync_channel::<(
             Vec<ExecutionRecord>,
             Vec<ZkmShardData>,
@@ -250,9 +248,9 @@ pub fn prove_with_context(
                                 },
                             )?;
 
-                            // Generate each record's traces and send it to the phase 2 prover
-                            // immediately, one record at a time -- see the long-form comment on
-                            // this same pattern further down (unchanged from before this port).
+                            // Generate each record's traces and send it to the shard-proving
+                            // workers immediately, one record at a time -- see the long-form
+                            // comment on this same pattern further down.
                             for record in records {
                                 let estimated_bytes =
                                     estimate_record_trace_bytes(&record, &producer_trace_byte_costs);
@@ -287,23 +285,18 @@ pub fn prove_with_context(
                     Ok((minimal_runner.public_values_stream().to_vec(), cycles))
                 })
             });
-        // Spawn phase 2 prover worker threads, sized by `prove_workers` -- a separate knob
-        // from `trace_gen_workers` (see `ZKMCoreOpts::prove_workers`'s doc comment), since
-        // trace generation and shard proving are different workloads with different scaling
+        // Spawn shard-proving worker threads, sized by `prove_workers` -- a separate knob from
+        // `trace_gen_workers` (see `ZKMCoreOpts::prove_workers`'s doc comment), since trace
+        // generation and shard proving are different workloads with different scaling
         // characteristics (trace generation is lighter/more memory-bound; shard proving's
-        // `commit_traces` step is heavier/more CPU-bound). Previously this was a single
-        // thread draining `p2_records_and_traces_rx` one item at a time -- since each
-        // channel message holds exactly one shard's data (the trace-gen workers send
-        // immediately, one record at a time; see the comment above on why), that meant
-        // shards were proven strictly sequentially no matter how many trace-gen workers fed
-        // the channel. Mirror the same "wrap the receiver in Arc<Mutex<_>>, spawn N workers
-        // that lock only for the brief recv()" pattern already used for `checkpoints_rx`
-        // above, so multiple shards' `prove_shard_with_data` calls (each itself already
-        // using rayon internally) can run concurrently, sharing rayon's global thread pool
-        // rather than competing with each other for whole worker threads. Proofs finish out
-        // of order across workers, so tag each with its `ExecutionRecord`'s `shard` index
-        // and sort by it afterward -- downstream verification requires proofs in strictly
-        // increasing shard order.
+        // `commit_traces` step is heavier/more CPU-bound). The receiver is wrapped in
+        // `Arc<Mutex<_>>` and shared across `prove_workers` threads that each lock only for the
+        // brief `recv()`, so multiple shards' `prove_shard_with_data` calls (each itself already
+        // using rayon internally) can run concurrently, sharing rayon's global thread pool rather
+        // than competing with each other for whole worker threads. Proofs finish out of order
+        // across workers, so tag each with its `ExecutionRecord`'s `shard` index and sort by it
+        // afterward -- downstream verification requires proofs in strictly increasing shard
+        // order.
         let p2_prover_span = tracing::Span::current().clone();
         let p2_records_and_traces_rx = Arc::new(Mutex::new(p2_records_and_traces_rx));
         let all_shard_proofs_unordered = Arc::new(Mutex::new(Vec::new()));
@@ -315,7 +308,7 @@ pub fn prove_with_context(
             let all_shard_proofs_unordered = Arc::clone(&all_shard_proofs_unordered);
             let handle = s.spawn(move || {
                 let _span = span.enter();
-                tracing::debug_span!("phase 2 prover").in_scope(|| loop {
+                tracing::debug_span!("shard prover").in_scope(|| loop {
                     let received = { rx.lock().unwrap().recv() };
                     let Ok((records, shard_data, budget_permits)) = received else {
                         break;
@@ -352,10 +345,10 @@ pub fn prove_with_context(
             p2_prover_handles.push(handle);
         }
 
-        // Wait until the sequential producer (phases 1-3) has fully finished.
+        // Wait until the sequential producer has fully finished.
         let (public_values_stream, cycles) = producer_handle.join().unwrap()?;
 
-        // Wait until all phase 2 prover workers have finished, then restore shard order.
+        // Wait until all shard-proving workers have finished, then restore shard order.
         for handle in p2_prover_handles {
             handle.join().unwrap();
         }
@@ -367,11 +360,9 @@ pub fn prove_with_context(
         let all_shard_proofs: Vec<_> =
             all_shard_proofs_unordered.into_iter().map(|(_, proof)| proof).collect();
 
-        // NOTE: the old, per-opcode/per-syscall `ExecutionReport` breakdown printed here relied
-        // on bookkeeping (`Executor::report`) this pipeline doesn't duplicate across
-        // `MinimalRunner`/`SplicingVM`/`TracingVM` -- a deliberately scoped-out diagnostic-only
-        // limitation (see the `generate_records` port plan). Cycle count alone is still exact,
-        // from `MinimalRunner::global_clk()`.
+        // NOTE: a per-opcode/per-syscall `ExecutionReport` breakdown is not produced here, since
+        // `MinimalRunner`/`SplicingVM`/`TracingVM` don't duplicate `Executor::report`'s
+        // bookkeeping. Cycle count alone is still exact, from `MinimalRunner::global_clk()`.
 
         // Print the summary.
         let proving_time = proving_start.elapsed().as_secs_f64();
@@ -563,5 +554,4 @@ mod tests {
         let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
         run_test(program).unwrap();
     }
-
 }

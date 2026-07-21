@@ -11,13 +11,11 @@ use super::SyscallCode;
 /// Everything a [`Syscall`](super::Syscall) implementation needs from whatever engine is running
 /// it. Implemented by [`Executor`] (unchanged, real behavior) and by `CoreVM<M>` (used by
 /// `MinimalRunner`/`SplicingVM`/`TracingVM`), so every existing precompile keeps working
-/// unchanged across all of them -- see the "Reusing the existing precompile/syscall
-/// implementations" section of the `generate_records` port plan.
+/// unchanged across all of them.
 ///
 /// Host-visible side effects (`stdout_line`/`stderr_line`/`invoke_hook`/cycle-tracker reporting)
-/// are real only for `Executor` and `CoreVM<Live>` (phase 1); `CoreVM<Oracle>` (phases 2/3, which
-/// replay the same instruction stream) implement them as no-ops, since those effects must happen
-/// exactly once.
+/// are real only for `Executor` and `CoreVM<Live>`; `CoreVM<Oracle>` (which replays the same
+/// instruction stream) implements them as no-ops, since those effects must happen exactly once.
 pub trait SyscallRuntime {
     /// The current shard.
     fn shard(&self) -> u32;
@@ -119,7 +117,7 @@ pub trait SyscallRuntime {
 
     /// Seed the value an address should read as, the first time it's touched (used by
     /// `SYSHINTREAD`). No-op for oracle-sourced runtimes -- the oracle already encodes the
-    /// correct first-touch value, captured during phase 1.
+    /// correct first-touch value.
     fn seed_uninitialized(&mut self, addr: u32, value: u32) -> Result<(), ExecutionError>;
     /// Peek at the next input-stream item without consuming it (`SYSHINTLEN`).
     fn peek_input(&self) -> Option<&Vec<u8>>;
@@ -129,7 +127,8 @@ pub trait SyscallRuntime {
     fn push_hint_input(&mut self, bytes: Vec<u8>);
 
     /// Verify the next deferred proof against `(vkey, pv_digest)` (`VERIFY_ZKM_PROOF`/`SYSVERIFY`).
-    /// No-op for oracle-sourced runtimes: verification only needs to happen once, during phase 1.
+    /// No-op for oracle-sourced runtimes: verification only needs to happen once, against the real
+    /// memory source.
     fn verify_deferred_proof(&mut self, vkey: [u32; 8], pv_digest: [u32; 8]) -> Result<(), ExecutionError> {
         let _ = (vkey, pv_digest);
         Ok(())

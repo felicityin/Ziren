@@ -1,17 +1,15 @@
-//! `CoreVM`: the shared instruction-semantics core used by `generate_records`'s three phases
+//! `CoreVM`: the shared instruction-semantics core underlying `generate_records`
 //! (`MinimalRunner`, `SplicingVM`, `TracingVM`; see `minimal.rs`/`splicing.rs`/`tracing_chunk.rs`).
 //!
-//! `CoreVM<M: MemSource>` ports the pure instruction semantics of `Executor::execute_operation`
-//! and its per-instruction-family helpers, generalized over where memory reads/writes come from:
-//! a real, persistent [`Memory<MemoryRecord>`] (`Live`, used by `MinimalRunner`), or a linear
-//! cursor over an already-recorded oracle log (`Oracle`, used by `SplicingVM`/`TracingVM`). It
-//! does not construct typed chip events itself -- callers get a [`StepOutcome`] back from
-//! [`CoreVM::step`] and decide what to do with it (cost accounting only, or full event
-//! construction).
+//! `CoreVM<M: MemSource>` implements per-instruction semantics, generalized over where memory
+//! reads/writes come from: a real, persistent [`Memory<MemoryRecord>`] (`Live`, used by
+//! `MinimalRunner`), or a linear cursor over an already-recorded oracle log (`Oracle`, used by
+//! `SplicingVM`/`TracingVM`). It does not construct typed chip events itself -- callers get a
+//! [`StepOutcome`] back from [`CoreVM::step`] and decide what to do with it (cost accounting
+//! only, or full event construction).
 //!
-//! `Executor` itself is untouched and does not use `CoreVM` -- it keeps its own independent
-//! instruction-dispatch implementation for `run()`/`run_fast()`/other non-`generate_records`
-//! callers, per the `generate_records` port plan.
+//! `Executor` keeps its own independent instruction-dispatch implementation for
+//! `run()`/`run_fast()`/other non-`generate_records` callers and does not use `CoreVM`.
 
 use std::sync::Arc;
 
@@ -33,20 +31,19 @@ use crate::{
 /// Where a [`CoreVM`]'s memory/register reads and writes come from.
 ///
 /// `access` returns the record as it was *immediately before* this access -- the same
-/// `prev_record` every existing `Executor` accessor already captures (see the port plan's "Why
-/// `prev_record` already is the oracle entry" section) -- and `commit` is where the *new* record
-/// (post-access) gets persisted, if this source has anywhere to persist it.
+/// `prev_record` every existing `Executor` accessor already captures -- and `commit` is where the
+/// *new* record (post-access) gets persisted, if this source has anywhere to persist it.
 pub trait MemSource {
-    /// Whether this source is a real, persistent memory (`Live`, phase 1) as opposed to a replay
-    /// of an already-recorded oracle log (`Oracle`, phases 2/3). Gates host-visible side effects
-    /// (stdout/stderr printing) that must only happen once.
+    /// Whether this source is a real, persistent memory (`Live`) as opposed to a replay of an
+    /// already-recorded oracle log (`Oracle`). Gates host-visible side effects (stdout/stderr
+    /// printing) that must only happen once.
     const IS_LIVE: bool;
 
     /// The record at `addr` immediately before this access.
     fn access(&mut self, addr: u32) -> MemoryRecord;
     /// Persist the new record at `addr` after this access. No-op for [`Oracle`] -- there is
-    /// nothing to persist during a replay pass, since every future access at this address (within
-    /// the same `generate_records` call) already has its own oracle entry recorded from phase 1.
+    /// nothing to persist during a replay pass, since every future access at this address already
+    /// has its own oracle entry recorded by `MinimalRunner`.
     fn commit(&mut self, addr: u32, record: MemoryRecord);
 
     /// Seed the value `addr` should read as the first time it's touched (`SYSHINTREAD`). No-op
@@ -62,17 +59,17 @@ pub trait MemSource {
     fn exit_unconstrained(&mut self) {}
 }
 
-/// A real, persistent memory -- used by `MinimalRunner` (phase 1). Every access appends its
-/// *value* to `oracle_out`; that value stream is exactly the oracle log `SplicingVM`/`TracingVM`
-/// replay from later.
+/// A real, persistent memory -- used by `MinimalRunner`. Every access appends its *value* to
+/// `oracle_out`; that value stream is exactly the oracle log `SplicingVM`/`TracingVM` replay from
+/// later.
 ///
-/// Deliberately **not** carried in the oracle: `shard`/`timestamp`. Phase 1 doesn't decide real
-/// shard cuts (see the port plan), so any shard/timestamp it tagged records with here would be
-/// placeholders -- carrying them into the oracle would hand `SplicingVM`/`TracingVM` *wrong*
-/// tags. Instead each of those passes reconstructs correct shard/timestamp tags itself, from its
-/// own persistent `addr -> (shard, timestamp)` map (see [`Oracle`]) built up as it processes
-/// shards in true program order -- exactly the information a real, continuously-updated memory
-/// would carry, just without the values (which come from this stream instead).
+/// Deliberately **not** carried in the oracle: `shard`/`timestamp`. `MinimalRunner` doesn't decide
+/// real shard cuts, so any shard/timestamp it tagged records with here would be placeholders --
+/// carrying them into the oracle would hand `SplicingVM`/`TracingVM` *wrong* tags. Instead each of
+/// those passes reconstructs correct shard/timestamp tags itself, from its own persistent
+/// `addr -> (shard, timestamp)` map (see [`Oracle`]) built up as it processes shards in true
+/// program order -- exactly the information a real, continuously-updated memory would carry, just
+/// without the values (which come from this stream instead).
 pub struct Live {
     pub memory: Memory<MemoryRecord>,
     pub uninitialized_memory: Memory<u32>,
@@ -164,7 +161,7 @@ impl MemSource for Live {
     }
 }
 
-/// A replay of an already-recorded value stream -- used by `SplicingVM`/`TracingVM` (phases 2/3).
+/// A replay of an already-recorded value stream -- used by `SplicingVM`/`TracingVM`.
 ///
 /// Each access pops the next value and pairs it with a `(shard, timestamp)` tag looked up (and
 /// then updated) in `tags`. `tags` is owned by this `Oracle`, but a shard can span more than one
@@ -268,6 +265,15 @@ pub struct CoreVM<M: MemSource> {
     pub unconstrained: bool,
     unconstrained_ctx: Option<UnconstrainedCtx>,
 
+    /// Whether this `CoreVM` is being driven by `TracingVM` (building a real `ExecutionRecord`
+    /// that ends up in the proof) as opposed to `MinimalRunner`/`SplicingVM` (which only need
+    /// `record` as scratch space for syscalls like `COMMIT`). Gates
+    /// `SyscallRuntime::is_recording_events` -- `SyscallContext::postprocess`'s outer/inner
+    /// local-memory-access chain split (see its doc comment) must run for `TracingVM`, since
+    /// skipping it merges a syscall's own memory touches into the surrounding chain instead of
+    /// closing it at the syscall boundary.
+    pub is_tracing: bool,
+
     /// Local-memory-access bookkeeping for the shard currently being stepped through. Consumed by
     /// `TracingVM`; ignored (but harmlessly maintained) by `MinimalRunner`/`SplicingVM`.
     pub local_memory_access: HashMap<u32, MemoryLocalEvent>,
@@ -313,6 +319,7 @@ impl<M: MemSource> CoreVM<M> {
             exited: false,
             unconstrained: false,
             unconstrained_ctx: None,
+            is_tracing: false,
             local_memory_access: HashMap::new(),
             local_counts: LocalCounts::default(),
             record,
@@ -1210,11 +1217,7 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
     }
 
     fn is_recording_events(&self) -> bool {
-        // Overridden per-consumer: `TracingVM` wraps a `CoreVM` and always wants real events, but
-        // `CoreVM` itself (used directly as a `SyscallRuntime` by `MinimalRunner`/`SplicingVM`)
-        // never records typed precompile events -- neither phase constructs an `ExecutionRecord`
-        // that ends up in the proof.
-        false
+        self.is_tracing
     }
 
     fn outer_local_memory_access(&mut self) -> &mut HashMap<u32, MemoryLocalEvent> {
@@ -1314,9 +1317,8 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
     }
 
     fn invoke_hook(&mut self, _fd: u32, _buf: &[u8]) -> Result<Option<Vec<Vec<u8>>>, ExecutionError> {
-        // `generate_records`'s pipeline does not support custom host hooks (a narrow,
-        // debugging-oriented feature; see the port plan's known limitations). Any `WRITE` to a
-        // hook-registered fd falls through to the "unknown file descriptor" warning.
+        // Custom host hooks are not supported here. Any `WRITE` to a hook-registered fd falls
+        // through to the "unknown file descriptor" warning.
         Ok(None)
     }
 

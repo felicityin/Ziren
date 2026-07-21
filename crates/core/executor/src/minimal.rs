@@ -1,12 +1,8 @@
-//! Phase 1 of `generate_records`: a bounded, cost-agnostic value-stream producer.
-//!
 //! `MinimalRunner` wraps `CoreVM<Live>` and does nothing but run the program for real (loads,
 //! branches, syscalls all need real values and real control flow) and buffer the resulting value
-//! stream into bounded [`Chunk`]s. It makes no shard-cut decisions and does no cost accounting --
-//! see the `generate_records` port plan's "Why shard-cut logic lives in `SplicingVM`" section for
-//! why that's a deliberate choice, not an oversight: it keeps this module's contract minimal and
-//! JIT-shaped, so a real JIT engine can replace it wholesale later without touching
-//! `splicing.rs`/`tracing_chunk.rs`/`vm.rs`.
+//! stream into bounded [`Chunk`]s. It makes no shard-cut decisions and does no cost accounting,
+//! which keeps its contract minimal enough for a different execution engine to implement in its
+//! place later without touching `splicing.rs`/`tracing_chunk.rs`/`vm.rs`.
 
 use std::sync::Arc;
 
@@ -31,7 +27,7 @@ pub struct Chunk {
     pub done: bool,
 }
 
-/// Phase 1: produces a stream of [`Chunk`]s from a program + inputs.
+/// Produces a stream of [`Chunk`]s from a program + inputs.
 pub struct MinimalRunner {
     pub core: CoreVM<Live>,
     /// Number of oracle values to buffer before yielding a chunk. Independent of shard economics
