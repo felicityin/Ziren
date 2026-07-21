@@ -180,7 +180,6 @@ pub fn prove_with_context(
 
         // Spawn the phase 2 record generator thread.
         let p2_record_gen_sync = Arc::new(TurnBasedSync::new());
-        let p2_trace_gen_sync = Arc::new(TurnBasedSync::new());
         let checkpoints_rx = Arc::new(Mutex::new(checkpoints_rx));
         let (p2_records_and_traces_tx, p2_records_and_traces_rx) = sync_channel::<(
             Vec<ExecutionRecord>,
@@ -195,7 +194,6 @@ pub fn prove_with_context(
         let mut p2_record_and_trace_gen_handles = Vec::new();
         for _ in 0..opts.trace_gen_workers {
             let record_gen_sync = Arc::clone(&p2_record_gen_sync);
-            let trace_gen_sync = Arc::clone(&p2_trace_gen_sync);
             let records_and_traces_tx = Arc::clone(&p2_records_and_traces_tx);
             let checkpoints_rx = Arc::clone(&checkpoints_rx);
 
@@ -392,22 +390,21 @@ pub fn prove_with_context(
                             #[cfg(feature = "debug")]
                             all_records_tx.send(records.clone()).unwrap();
 
-                            trace_gen_sync.wait_for_turn(index);
-
                             // Generate each record's traces and send it to the phase 2 prover
                             // immediately, one record at a time, rather than generating the
                             // whole checkpoint's traces up front and sending them as chunked
-                            // batches afterwards. `ProverSemaphore::new(opts.trace_gen_workers
-                            // .max(1))` gives this worker exactly one permit; `generate_main_traces`
-                            // holds a permit for as long as its returned `MainTraceData` is alive,
-                            // i.e. until the `ZkmShardData` wrapping it is sent downstream and
+                            // batches afterwards. `prover_permits` (`ProverSemaphore::new(opts
+                            // .trace_gen_workers.max(1))`) is shared by every trace-gen worker
+                            // across every checkpoint concurrently; `generate_main_traces` holds
+                            // one permit for as long as its returned `MainTraceData` is alive,
+                            // i.e. until the `ZkmShardData` wrapping it is proved downstream and
                             // dropped. Generating a later record's traces (and so acquiring its
                             // permit) while an earlier record's permit in the same checkpoint is
-                            // still held -- because it hasn't been sent yet, as the old
-                            // collect-then-chunk-then-send structure did -- deadlocks against that
-                            // single-permit capacity whenever a checkpoint yields more than one
-                            // record (e.g. a shard's own CPU execution plus a deferred precompile
-                            // shard split off in the same checkpoint).
+                            // still held -- because it hasn't been sent yet, as a
+                            // collect-then-chunk-then-send structure would do -- can deadlock a
+                            // checkpoint against its own unsent records whenever it yields more
+                            // records than there are permits (e.g. a shard's own CPU execution
+                            // plus a deferred precompile shard split off in the same checkpoint).
                             tracing::debug_span!("generate main traces", index).in_scope(|| {
                                 for record in records {
                                     // Admission into the process-wide trace-memory budget, sized
@@ -435,8 +432,6 @@ pub fn prove_with_context(
                                         .unwrap();
                                 }
                             });
-
-                            trace_gen_sync.advance_turn();
                         } else {
                             break;
                         }
