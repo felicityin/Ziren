@@ -4,7 +4,11 @@ use std::mem::size_of;
 use p3_air::{Air, BaseAir};
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
-use zkm_core_executor::{events::PrecompileEvent, syscalls::SyscallCode, ExecutionRecord, Program};
+use zkm_core_executor::{
+    events::{ByteLookupEvent, ByteRecord, PrecompileEvent},
+    syscalls::SyscallCode,
+    ByteOpcode, ExecutionRecord, Program,
+};
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::{
     air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
@@ -94,9 +98,28 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
 
     fn generate_dependencies(
         &self,
-        _input: &Self::Record,
-        _output: &mut Self::Record,
+        input: &Self::Record,
+        output: &mut Self::Record,
     ) -> Result<(), Self::Error> {
+        // `generate_trace`'s own byte-lookup registration (via `cols.state.populate(output,
+        // ..)`) is a no-op in production: the trace-generation pass is always called with a
+        // throwaway `output` (see `crates/hypercube/src/prover/trace.rs`), so this chip's
+        // `eval_cpu_state`-driven `clk_low` range check (2 byte lookups per real row) must be
+        // registered here instead, mirroring every other migrated opcode chip.
+        let events = input.get_precompile_events(SyscallCode::SHA_EXTEND);
+        let mut blu: Vec<ByteLookupEvent> = Vec::new();
+        for (_, event) in events {
+            let event = if let PrecompileEvent::ShaExtend(event) = event {
+                event
+            } else {
+                unreachable!()
+            };
+            let clk_16bit_limb = (event.clk & 0xffff) as u16;
+            let clk_8bit_limb = ((event.clk >> 16) & 0xff) as u8;
+            blu.push(ByteLookupEvent::new(ByteOpcode::U16Range, clk_16bit_limb, 0, 0, 0));
+            blu.push(ByteLookupEvent::new(ByteOpcode::U8Range, 0, 0, 0, clk_8bit_limb));
+        }
+        output.add_byte_lookup_events(blu);
         Ok(())
     }
 
