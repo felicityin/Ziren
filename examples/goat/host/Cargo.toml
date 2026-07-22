@@ -1,0 +1,12 @@
+[package]
+name = "goat-host"
+version = { workspace = true }
+edition = { workspace = true }
+publish = false
+
+[dependencies]
+zkm-sdk = { workspace = true }
+bincode = "1.3.3"
+
+[features]
+default = []

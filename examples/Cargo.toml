@@ -12,6 +12,7 @@ members = [
   "fibonacci/host",
   "fibonacci_c_lib/guest",
   "fibonacci_c_lib/host",
+  "goat/host",
   "groth16/guest",
   "groth16/host",
   "bitcoin/host",
