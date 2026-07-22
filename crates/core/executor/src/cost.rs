@@ -2,129 +2,13 @@ use enum_map::EnumMap;
 use hashbrown::HashMap;
 use p3_koala_bear::KoalaBear;
 
-use crate::{
-    events::NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC, ExecutionRecord, MipsAirId, Opcode,
-};
+use crate::{events::NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC, MipsAirId, Opcode};
 
 const BYTE_NUM_ROWS: u64 = 1 << 16;
 
-/// Returns `true` for the `MipsAirId` variants covered exactly (not just conservatively) by
-/// [`estimate_record_trace_bytes`]'s per-chip event counting.
-const fn is_core_air(id: MipsAirId) -> bool {
-    matches!(
-        id,
-        MipsAirId::Program
-            | MipsAirId::DivRem
-            | MipsAirId::Add
-            | MipsAirId::Addi
-            | MipsAirId::Sub
-            | MipsAirId::Bitwise
-            | MipsAirId::Mul
-            | MipsAirId::ShiftRight
-            | MipsAirId::ShiftLeft
-            | MipsAirId::Lt
-            | MipsAirId::CloClz
-            | MipsAirId::Branch
-            | MipsAirId::Jump
-            | MipsAirId::SyscallInstrs
-            | MipsAirId::SyscallCore
-            | MipsAirId::MemoryInstrs
-            | MipsAirId::LoadWord
-            | MipsAirId::StoreWord
-            | MipsAirId::MiscInstrs
-            | MipsAirId::MemoryGlobalInit
-            | MipsAirId::MemoryGlobalFinalize
-            | MipsAirId::MemoryLocal
-            | MipsAirId::Global
-            | MipsAirId::Byte
-            | MipsAirId::MovCond
-    )
-}
-
-/// Estimates a shard's real, materialized main-trace commitment size in bytes, from a
-/// completed [`ExecutionRecord`]'s exact per-chip event counts -- unlike
-/// [`estimate_mips_event_counts`]/[`pad_mips_event_counts`], which project a worst case
-/// *before* a shard has finished executing, this sums real `Vec::len()`s after the fact, so it
-/// carries no shape-check-frequency slack for the core chips.
-///
-/// Precompile chips (SHA/Keccak/EC/BN254/BLS12381/...) are not covered by an exact
-/// per-syscall row mapping -- Ziren has no `SyscallCode -> MipsAirId` table to reuse for that --
-/// so they're covered by one conservative term instead: total precompile event count times the
-/// single most expensive precompile chip's per-row cost, then a flat safety margin over the
-/// whole total. This keeps the estimate from ever *undercounting* real committed size (the
-/// property an admission-control budget needs), at the cost of being loose for precompile-heavy
-/// shards.
-#[must_use]
-pub fn estimate_record_trace_bytes(
-    record: &ExecutionRecord,
-    costs_per_air: &HashMap<MipsAirId, u64>,
-) -> u64 {
-    let mut cells = BYTE_NUM_ROWS * costs_per_air[&MipsAirId::Byte];
-    // The Program chip's preprocessed trace is padded to the program's real instruction count
-    // (see `ProgramChip::generate_preprocessed_trace`), not some worst-case ceiling -- and
-    // unlike the event-count estimators below, this function already has the real program in
-    // hand via `record.program`, so there's no need to guess.
-    cells += (record.program.instructions.len() as u64).next_power_of_two()
-        * costs_per_air[&MipsAirId::Program];
-
-    let mut add_chip_cells = |air: MipsAirId, count: usize| {
-        cells += (count as u64).next_power_of_two() * costs_per_air[&air];
-    };
-    add_chip_cells(MipsAirId::Add, record.add_events.len());
-    add_chip_cells(MipsAirId::Addi, record.addi_events.len());
-    add_chip_cells(MipsAirId::Sub, record.sub_events.len());
-    add_chip_cells(MipsAirId::Mul, record.mul_events.len());
-    add_chip_cells(MipsAirId::Bitwise, record.bitwise_events.len());
-    add_chip_cells(MipsAirId::ShiftLeft, record.shift_left_events.len());
-    add_chip_cells(MipsAirId::ShiftRight, record.shift_right_events.len());
-    add_chip_cells(MipsAirId::DivRem, record.divrem_events.len());
-    add_chip_cells(MipsAirId::Lt, record.lt_events.len());
-    add_chip_cells(MipsAirId::CloClz, record.cloclz_events.len());
-    add_chip_cells(MipsAirId::MemoryInstrs, record.memory_instr_events.len());
-    add_chip_cells(MipsAirId::LoadWord, record.load_word_events.len());
-    add_chip_cells(MipsAirId::StoreWord, record.store_word_events.len());
-    add_chip_cells(MipsAirId::Branch, record.branch_events.len());
-    add_chip_cells(MipsAirId::Jump, record.jump_events.len());
-    add_chip_cells(MipsAirId::MovCond, record.movcond_events.len());
-    add_chip_cells(MipsAirId::MiscInstrs, record.misc_events.len());
-    add_chip_cells(MipsAirId::MemoryGlobalInit, record.global_memory_initialize_events.len());
-    add_chip_cells(MipsAirId::MemoryGlobalFinalize, record.global_memory_finalize_events.len());
-    add_chip_cells(MipsAirId::MemoryLocal, record.cpu_local_memory_access.len());
-    add_chip_cells(MipsAirId::SyscallInstrs, record.syscall_events.len());
-    add_chip_cells(MipsAirId::SyscallCore, record.syscall_events.len());
-    add_chip_cells(MipsAirId::Global, record.global_lookup_events.len());
-
-    let precompile_event_count: usize =
-        record.precompile_events.iter().map(|(_, events)| events.len()).sum();
-    if precompile_event_count > 0 {
-        let max_precompile_cost = costs_per_air
-            .iter()
-            .filter(|(air, _)| !is_core_air(**air))
-            .map(|(_, cost)| *cost)
-            .max()
-            .unwrap_or(0);
-        cells += (precompile_event_count as u64).next_power_of_two() * max_precompile_cost;
-    }
-
-    // Safety multiplier: the budget this feeds needs to bound *peak resident memory while a
-    // shard is actively being committed/proved*, not just the padded main traces' own storage
-    // size. `commit_traces` keeps its main traces, an interleaved-MLE copy, and a 4x-blown-up
-    // (`log_blowup`) FRI codeword over the extension field all resident *for the rest of the
-    // shard's proof* (the codeword isn't freed until FRI's query-opening phase, at the very end
-    // of `prove_evaluation_claims`); LogUp-GKR and zerocheck each stack a further transient
-    // extension-field-width peak on top of that already-resident baseline before their own
-    // buffers free. 10x approximates that combined peak; it must never undercount, since the
-    // budget this feeds has no other signal for how large a shard actually gets while active.
-    cells *= 10;
-
-    cells * ((core::mem::size_of::<KoalaBear>() << 1) as u64)
-}
-
 /// Estimates the LDE area.
 ///
-/// `program_size` is the calling program's real, padded (next-power-of-two) instruction count --
-/// see [`estimate_record_trace_bytes`]'s doc comment on the Program chip contribution for why
-/// this must be the real size rather than a worst-case ceiling.
+/// `program_size` is the calling program's real, padded (next-power-of-two) instruction count.
 #[must_use]
 pub fn estimate_mips_lde_size(
     num_events_per_air: EnumMap<MipsAirId, u64>,

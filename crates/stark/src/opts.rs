@@ -41,35 +41,40 @@ pub fn total_system_memory_bytes() -> u64 {
 // largest actual core shard_size in play.
 const RECURSION_MAX_SHARD_SIZE: usize = 1 << RECURSION_MAX_LOG_ROW_COUNT;
 const MAX_SHARD_BATCH_SIZE: usize = 8;
-// `trace_gen_workers` gates the number of concurrent trace-gen worker threads
-// (`crates/core/machine/src/utils/prove.rs`'s `for _ in 0..opts.trace_gen_workers`). It does not
-// bound how many shards' main traces can be held in memory at once -- that's the job of the
-// process-wide, byte-budget-weighted semaphore in `crates/core/machine/src/utils/trace_budget.rs`,
-// admission-gated by each shard's actual estimated size rather than a flat thread count.
+// Sizes the `ProverSemaphore` passed into `generate_main_traces` (called from inside each
+// shard-proving worker's own `prove_shard_with_pk`, `crates/core/machine/src/utils/prove.rs`) --
+// gates how many shards' main traces can be under construction at once, across every
+// shard-proving worker combined. There is no separate memory-budget admission control beyond
+// this and `prove_workers` below -- peak resident trace-matrix memory is bounded only by
+// `min(prove_workers, trace_gen_workers)` times whatever a single shard's own (uncapped by any
+// cross-shard byte budget) trace size happens to be.
 const DEFAULT_TRACE_GEN_WORKERS: usize = 8;
 // How many shards can be proved concurrently by the shard-proving workers (see
 // `crates/core/machine/src/utils/prove.rs`'s prover-worker loop). Kept separate from
 // `trace_gen_workers` since the two workloads have different resource profiles: trace generation
 // is lighter/more memory-bound, while shard proving (`commit_traces`'s FFT/Merkle-tree work) is
-// heavier/more CPU-bound. Real memory admission is the same shared `trace_budget` semaphore as
-// `trace_gen_workers` above (a shard's permit is held from trace generation through the end of
-// proving), so this isn't gated by a fixed per-worker memory multiplier.
+// heavier/more CPU-bound. Also the ceiling (together with `trace_gen_workers` above) on how many
+// shards' main traces can be resident at once -- see that constant's doc comment.
 const DEFAULT_PROVE_WORKERS: usize = 4;
 // How many `Chunk`s can be spliced concurrently (see `crates/core/machine/src/utils/prove.rs`'s
 // splicing-worker loop). `SplicingVM` replays each chunk independently rather than one continuous
 // walk, so a small worker pool is enough -- splicing's own per-chunk cost (a cost-model replay,
 // no typed events) is far lighter than tracing/dependency-generation/trace-generation/proving.
 const DEFAULT_SPLICING_WORKERS: usize = 2;
+// How many `SplicedChunk`s can be traced into typed `ExecutionRecord`s concurrently (see
+// `crates/core/machine/src/utils/prove.rs`'s tracing-worker loop). `TracingVM` replays each shard
+// independently (nothing threaded in from a previous shard's trace call), so a worker pool is
+// safe here the same way it is for `SplicingVM`.
+const DEFAULT_TRACING_WORKERS: usize = 4;
 // Bounds how many oracle values `MinimalRunner` buffers before yielding a `Chunk` --
 // independent of shard size, this just caps peak memory of the buffered value stream. Sized
 // generously relative to a typical shard's memory-access count so a shard only rarely spans more
 // than one chunk.
 const DEFAULT_MINIMAL_TRACE_CHUNK_THRESHOLD: u64 = 1 << 24;
-// Buffer depth between trace generation and shard proving
-// (`crates/core/machine/src/utils/prove.rs`). Bounded by `trace_budget`'s byte-weighted
-// semaphore, acquired *before* a shard's traces are even generated, so an oversubscribed channel
-// can't queue more resident trace data than the budget allows; this can safely be one in-flight
-// message per trace-gen worker.
+// Buffer depth of the channel feeding raw (not yet trace-generated) `ExecutionRecord`s into the
+// shard-proving worker pool (`crates/core/machine/src/utils/prove.rs`) -- cheap to size
+// generously, since what's queued here is just event lists, not padded trace matrices (those are
+// only ever materialized after a worker has already dequeued a record, one per worker at a time).
 const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = DEFAULT_TRACE_GEN_WORKERS;
 
 /// The threshold for splitting deferred events.
@@ -145,9 +150,8 @@ impl ZKMProverOpts {
         opts.core_opts.shard_size = 1 << log2_shard_size;
         opts.core_opts.shard_batch_size = shard_batch_size;
 
-        // See `DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY`'s doc comment: real memory
-        // admission is `trace_budget`'s byte-weighted semaphore, so this channel no longer
-        // needs to stay unbuffered to avoid an unbounded pile-up of resident shard data.
+        // See `DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY`'s doc comment: cheap to buffer
+        // generously, since what's queued here is raw records, not padded trace matrices.
         opts.core_opts.records_and_traces_channel_capacity =
             DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY;
         opts.core_opts.trace_gen_workers = DEFAULT_TRACE_GEN_WORKERS;
@@ -220,6 +224,8 @@ pub struct ZKMCoreOpts {
     pub prove_workers: usize,
     /// The number of `Chunk`s that can be spliced into shards concurrently.
     pub splicing_workers: usize,
+    /// The number of `SplicedChunk`s that can be traced into `ExecutionRecord`s concurrently.
+    pub tracing_workers: usize,
     /// The capacity of the channel for records and traces.
     pub records_and_traces_channel_capacity: usize,
     /// The frequency for shape checks.
@@ -259,6 +265,10 @@ impl Default for ZKMCoreOpts {
             splicing_workers: env::var("SPLICING_WORKERS").map_or_else(
                 |_| DEFAULT_SPLICING_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_SPLICING_WORKERS),
+            ),
+            tracing_workers: env::var("TRACING_WORKERS").map_or_else(
+                |_| DEFAULT_TRACING_WORKERS,
+                |s| s.parse::<usize>().unwrap_or(DEFAULT_TRACING_WORKERS),
             ),
             records_and_traces_channel_capacity: env::var("RECORDS_AND_TRACES_CHANNEL_CAPACITY")
                 .map_or_else(
@@ -337,6 +347,10 @@ impl ZKMCoreOpts {
             splicing_workers: env::var("SPLICING_WORKERS").map_or_else(
                 |_| DEFAULT_SPLICING_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_SPLICING_WORKERS),
+            ),
+            tracing_workers: env::var("TRACING_WORKERS").map_or_else(
+                |_| DEFAULT_TRACING_WORKERS,
+                |s| s.parse::<usize>().unwrap_or(DEFAULT_TRACING_WORKERS),
             ),
             records_and_traces_channel_capacity: env::var("RECORDS_AND_TRACES_CHANNEL_CAPACITY")
                 .map_or_else(
