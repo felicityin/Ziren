@@ -12,7 +12,7 @@ use zkm_hypercube::{
 
 use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    air::ZKMCoreAirBuilder,
     operations::KoalaBearWordRangeChecker,
 };
 
@@ -70,7 +70,7 @@ where
             clk_high.clone(),
             clk_low.clone(),
             &local.instruction,
-            local.op_a_value.map(Into::into),
+            local.reader.op_a_val().map(Into::into),
             Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
             AB::Expr::zero(),
             AB::Expr::one(),
@@ -79,10 +79,14 @@ where
 
         eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
+        // `op_b`/`op_c` are read directly from `local.reader` below wherever their value is
+        // needed (the SLT sends, the ADD lookup) -- there is no separate `op_b_value`/
+        // `op_c_value` column to keep in sync with the reader.
+
         // Unlike every other migrated chip, `outgoing_next_next_pc` here is NOT `next_pc + 4` --
         // it's the branch-resolved value this chip's own logic below already fully derives and
-        // constrains (`target_pc`/`is_branching`), fed straight into the state chain instead of
-        // being validated against a value pulled in from `CpuChip`.
+        // constrains (via the ADD/`is_branching` lookup), fed straight into the state chain
+        // instead of being validated against a value pulled in from `CpuChip`.
         eval_state_chain(
             builder,
             clk_high,
@@ -94,13 +98,6 @@ where
             AB::Expr::from_canonical_u32(5),
             is_real.clone(),
         );
-
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
 
         // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
         // can't claim the wrong branch variant while still passing the program lookup.
@@ -125,7 +122,7 @@ where
 
         // Evaluate program counter constraints.
         {
-            // Range check local.next_pc, local.next_next_pc and local.target_pc, .
+            // Range check local.next_pc and local.next_next_pc.
             // SAFETY: `is_real` is already checked to be boolean.
             // The `KoalaBearWordRangeChecker` assumes that the value is checked to be a valid word.
             // This is done when the word form is relevant, i.e. when `pc` and `next_pc` are sent to the ADD ALU table.
@@ -144,12 +141,15 @@ where
                 is_real.clone(),
             );
 
-            // When we are branching, assert that local.target_pc <==> local.next_pc + c.
+            // When we are branching, assert that local.next_next_pc <==> local.next_pc + c.
+            // `next_next_pc` is sent directly as the ADD lookup's result -- no intermediate
+            // `target_pc` column is needed, since the only thing it was ever compared against
+            // was `next_next_pc` itself.
             builder.send_alu(
                 Opcode::ADD.as_field::<AB::F>(),
-                local.target_pc,
+                local.next_next_pc,
                 local.next_pc,
-                local.op_c_value,
+                local.reader.op_c_val(),
                 local.is_branching,
             );
 
@@ -164,12 +164,6 @@ where
             builder.slice_range_check_u8(&local.next_pc.0, is_real.clone() - local.is_branching);
             builder
                 .slice_range_check_u8(&local.next_next_pc.0, is_real.clone() - local.is_branching);
-
-            // When we are branching, assert that local.next_next_pc <==> next.target_pc.
-            builder
-                .when(is_real.clone())
-                .when(local.is_branching)
-                .assert_word_eq(local.target_pc, local.next_next_pc);
 
             // To prevent the ALU send above to be non-zero when the row is a padding row.
             builder.when_not(is_real.clone()).assert_zero(local.is_branching);
@@ -232,8 +226,8 @@ where
         builder.send_alu(
             Opcode::SLT.as_field::<AB::F>(),
             Word::extend_var::<AB>(local.a_lt_b),
-            local.op_a_value,
-            local.op_b_value,
+            local.reader.op_a_val(),
+            local.reader.op_b_val(),
             is_real.clone(),
         );
 
@@ -241,8 +235,8 @@ where
         builder.send_alu(
             Opcode::SLT.as_field::<AB::F>(),
             Word::extend_var::<AB>(local.a_gt_b),
-            local.op_b_value,
-            local.op_a_value,
+            local.reader.op_b_val(),
+            local.reader.op_a_val(),
             is_real.clone(),
         );
     }

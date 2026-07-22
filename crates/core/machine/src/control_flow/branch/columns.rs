@@ -33,23 +33,12 @@ pub struct BranchColumns<T: Copy> {
     pub next_pc: Word<T>,
     pub next_pc_range_checker: KoalaBearWordRangeChecker<T>,
 
-    /// The target program counter.
-    pub target_pc: Word<T>,
-
-    /// The next next program counter.
+    /// The next next program counter. When branching, this is also the ADD lookup's result
+    /// (`next_pc + op_c`), so no separate `target_pc` column is needed.
     pub next_next_pc: Word<T>,
 
     /// Range check for next next program counter.
-    /// Use it instead of check on target pc since reduced next_next_pc is directly used
-    /// and target_pc equals to next_next_pc when it really works(the branch is taken).
     pub next_next_pc_range_checker: KoalaBearWordRangeChecker<T>,
-
-    /// The value of the first operand.
-    pub op_a_value: Word<T>,
-    /// The value of the second operand.
-    pub op_b_value: Word<T>,
-    /// The value of the third operand.
-    pub op_c_value: Word<T>,
 
     /// Branch Instructions Selectors.
     #[cfg_attr(feature = "picus", picus(selector))]

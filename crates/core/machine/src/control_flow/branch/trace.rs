@@ -135,10 +135,6 @@ impl BranchChip {
         cols.is_blez = F::from_bool(matches!(event.opcode, Opcode::BLEZ));
         cols.is_bgez = F::from_bool(matches!(event.opcode, Opcode::BGEZ));
 
-        cols.op_a_value = event.a.into();
-        cols.op_b_value = event.b.into();
-        cols.op_c_value = event.c.into();
-
         let a_eq_b = event.a == event.b;
 
         let a_lt_b = (event.a as i32) < (event.b as i32);
@@ -157,9 +153,7 @@ impl BranchChip {
             _ => panic!("Invalid opcode: {}", event.opcode),
         };
 
-        let target_pc = event.next_pc.wrapping_add(event.c);
         cols.next_pc = Word::from(event.next_pc);
-        cols.target_pc = Word::from(target_pc);
         cols.next_next_pc = Word::from(event.next_next_pc);
         cols.next_pc_range_checker.populate(event.next_pc);
         cols.next_next_pc_range_checker.populate(event.next_next_pc);

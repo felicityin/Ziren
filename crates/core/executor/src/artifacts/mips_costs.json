@@ -45,7 +45,7 @@
   "SyscallCore": 11,
   "ShaCompressControl": 70,
   "Bn254Fp2AddSubAssign": 735,
-  "Branch": 109,
+  "Branch": 93,
   "MemoryGlobalInit": 148,
   "Bls12381FpOpAssign": 557,
   "ShaCompress": 20960,

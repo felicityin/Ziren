@@ -16,10 +16,6 @@ __ZKM_HOSTDEV__ void event_to_row(const BranchEvent& event, BranchColumns<F>& co
     cols.is_blez = F::from_bool(event.opcode == Opcode::BLEZ);
     cols.is_bgez = F::from_bool(event.opcode == Opcode::BGEZ);
 
-    write_word_from_u32_v2<F>(cols.op_a_value, event.a);
-    write_word_from_u32_v2<F>(cols.op_b_value, event.b);
-    write_word_from_u32_v2<F>(cols.op_c_value, event.c);
-
     bool a_eq_b = false;
     if (event.a == event.b) {
         a_eq_b = true;
@@ -52,9 +48,7 @@ __ZKM_HOSTDEV__ void event_to_row(const BranchEvent& event, BranchColumns<F>& co
     }
     cols.is_branching = F::from_bool(branching);
 
-    uint32_t target_pc = event.next_pc + event.c;
     write_word_from_u32_v2<F>(cols.next_pc, event.next_pc);
-    write_word_from_u32_v2<F>(cols.target_pc, target_pc);
     write_word_from_u32_v2<F>(cols.next_next_pc, event.next_next_pc);
     populate_range_checker(cols.next_pc_range_checker, event.next_pc);
     populate_range_checker(cols.next_next_pc_range_checker, event.next_next_pc);
