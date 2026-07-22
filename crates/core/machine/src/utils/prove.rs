@@ -255,8 +255,21 @@ pub fn prove_with_context(
                                     let first_clk = record.first_instruction_clk.unwrap();
                                     state.initial_clk_high = (first_clk >> 24) as u32;
                                     state.initial_clk_low = (first_clk & 0xFFFFFF) as u32;
-                                    state.last_clk_high = (record.last_timestamp >> 24) as u32;
-                                    state.last_clk_low = (record.last_timestamp & 0xFFFFFF) as u32;
+                                    // Deliberately *not* `(record.last_timestamp >> 24) as u32`/
+                                    // `(record.last_timestamp & 0xFFFFFF) as u32`: those silently
+                                    // carry into the next window's `clk_high` (and wrap `clk_low`
+                                    // back to a small value) exactly when this shard's last real
+                                    // instruction's own increment is what crosses the `clk_high`
+                                    // boundary -- but the AIR's closing `receive_state` must match
+                                    // that instruction's own unreduced `send_state` bit-for-bit,
+                                    // which keeps `clk_high` at *that instruction's own* value and
+                                    // sends `clk_low + clk_low_increment` uncorrected, letting it
+                                    // spill past 24 bits (see `eval_state_chain`'s doc comment and
+                                    // `ExecutionRecord::last_instruction_clk`'s doc comment).
+                                    let last_clk_high = record.last_instruction_clk >> 24;
+                                    state.last_clk_high = last_clk_high as u32;
+                                    state.last_clk_low =
+                                        (record.last_timestamp - (last_clk_high << 24)) as u32;
                                 }
                                 state.committed_value_digest =
                                     record.public_values.committed_value_digest;

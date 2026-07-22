@@ -631,8 +631,13 @@ mod tests {
         let first_clk = record.first_instruction_clk.unwrap();
         record.public_values.initial_clk_high = (first_clk >> 24) as u32;
         record.public_values.initial_clk_low = (first_clk & 0xffffff) as u32;
-        record.public_values.last_clk_high = (record.last_timestamp >> 24) as u32;
-        record.public_values.last_clk_low = (record.last_timestamp & 0xffffff) as u32;
+        // See `zkm_core_machine::utils::prove::prove_with_context`'s identical computation for
+        // why this must use `last_instruction_clk`'s own high limb rather than
+        // `last_timestamp >> 24`/`last_timestamp & 0xffffff` directly.
+        let last_clk_high = record.last_instruction_clk >> 24;
+        record.public_values.last_clk_high = last_clk_high as u32;
+        record.public_values.last_clk_low =
+            (record.last_timestamp - (last_clk_high << 24)) as u32;
         // `Executor::run`/`execute` never calls chip-level `generate_dependencies`, so
         // cross-chip-derived public values that depend on the actual event contents --
         // `GlobalChip`'s `global_count`/`global_cumulative_sum_{x,y}` and

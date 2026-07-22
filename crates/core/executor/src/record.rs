@@ -47,9 +47,22 @@ pub struct ExecutionRecord {
     pub last_next_pc: u32,
     /// The `exit_code` of this record's most recently retired instruction.
     pub last_exit_code: u32,
+    /// The `clk` of this record's most recently retired instruction itself (*before* the
+    /// `+ 5 + num_extra_cycles` step to [`Self::last_timestamp`]) -- i.e. the same `clk` that
+    /// instruction's own chip populated its `CpuState`/sent via `eval_state_chain` with. Needed
+    /// to recover *that row's* `clk_high` (`last_instruction_clk >> 24`), which is what
+    /// `PublicValues::last_clk_high` must equal -- not `last_timestamp >> 24`, which silently
+    /// carries into the next window's `clk_high` whenever this instruction's increment is what
+    /// crosses the `clk_high` boundary (see `crates/core/machine/src/utils/prove.rs`'s use of
+    /// this field for why that distinction matters).
+    pub last_instruction_clk: u64,
     /// The expected `clk` of the instruction following this record's most recently retired one
-    /// (`clk + 5 + num_extra_cycles`). Split into `PublicValues::last_clk_high`/`last_clk_low`
-    /// when populated there (see `crates/core/machine/src/utils/prove.rs`).
+    /// (`last_instruction_clk + 5 + num_extra_cycles`), deliberately unreduced/uncorrected even
+    /// when it overflows past [`Self::last_instruction_clk`]'s own 24-bit `clk_low` window (see
+    /// `eval_state_chain`'s doc comment on why `send_state` sends it exactly that way). Combined
+    /// with [`Self::last_instruction_clk`]'s high limb into `PublicValues::last_clk_low` when
+    /// populated (see `crates/core/machine/src/utils/prove.rs`) -- never masked to 24 bits on its
+    /// own, unlike `last_instruction_clk`'s high limb.
     pub last_timestamp: u64,
     /// A trace of the register-form ADD and ADDU events (plus internal dependency-check rows
     /// from other chips reusing this arithmetic circuit).

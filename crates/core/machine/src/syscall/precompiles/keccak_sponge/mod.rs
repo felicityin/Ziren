@@ -68,8 +68,13 @@ pub mod sponge_tests {
         let first_clk = cpu_record.first_instruction_clk.unwrap();
         cpu_record.public_values.initial_clk_high = (first_clk >> 24) as u32;
         cpu_record.public_values.initial_clk_low = (first_clk & 0xffffff) as u32;
-        cpu_record.public_values.last_clk_high = (cpu_record.last_timestamp >> 24) as u32;
-        cpu_record.public_values.last_clk_low = (cpu_record.last_timestamp & 0xffffff) as u32;
+        // See `zkm_core_machine::utils::prove::prove_with_context`'s identical computation for
+        // why this must use `last_instruction_clk`'s own high limb rather than
+        // `last_timestamp >> 24`/`last_timestamp & 0xffffff` directly.
+        let last_clk_high = cpu_record.last_instruction_clk >> 24;
+        cpu_record.public_values.last_clk_high = last_clk_high as u32;
+        cpu_record.public_values.last_clk_low =
+            (cpu_record.last_timestamp - (last_clk_high << 24)) as u32;
         let mut deferred = cpu_record.defer();
         assert!(cpu_record.contains_cpu());
         assert!(cpu_record.precompile_events.is_empty());
