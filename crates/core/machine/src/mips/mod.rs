@@ -740,6 +740,188 @@ pub mod tests {
         serde_json::to_writer_pretty(file, &costs).unwrap();
     }
 
+    /// Loads a real guest ELF from disk, runs it with real stdin data, then checks that every
+    /// chip's local-scope send/receive interactions balance across every record the run produces
+    /// (the main execution record plus any deferred-memory-event records it splits into --
+    /// mirrors `prove_with_context`'s public-values threading exactly, crates/core/machine/src/
+    /// utils/prove.rs, since a real guest's global memory init/finalize events can split off into
+    /// their own non-execution record(s) that need their own public values). Much cheaper than a
+    /// full proving run: only execution, trace generation, and a direct interaction-count check,
+    /// no FRI/PCS commitment. Returns `true` iff everything balanced, printing which record index
+    /// broke first otherwise. Panics if `elf_path` doesn't exist -- build it first (real zkVM
+    /// toolchain required; these ELFs aren't part of the repo's default `ZKM_SKIP_PROGRAM_BUILD`
+    /// test path).
+    fn debug_local_interactions_balance_for_elf(elf_path: &str, stdin_bufs: Vec<Vec<u8>>) -> bool {
+        use p3_air::BaseAir;
+        use slop_multilinear::{Mle, PaddedMle};
+        use std::sync::Arc;
+        use zkm_core_executor::{Executor, ExecutionRecord};
+        use zkm_hypercube::{
+            air::{LookupScope, PublicValues},
+            lookup::{debug_interactions_with_all_chips, LookupKind},
+            prover::Traces,
+            record::MachineRecord,
+        };
+        use zkm_stark::ZKMCoreOpts;
+
+        setup_logger();
+
+        let elf_bytes = std::fs::read(elf_path)
+            .unwrap_or_else(|e| panic!("failed to read {elf_path}: {e} -- build it first"));
+        let program = Arc::new(Program::from(&elf_bytes).unwrap());
+        let mut runtime = Executor::new(Program::clone(&program), ZKMCoreOpts::default());
+        runtime.write_vecs(&stdin_bufs);
+        runtime.run().unwrap();
+        println!("{} execution shard(s)", runtime.records.len());
+
+        // Mirrors `prove_with_context`'s public-values threading and shared `deferred`
+        // accumulator exactly (crates/core/machine/src/utils/prove.rs), across every execution
+        // shard `Executor::run()` produced -- not just one, since a real guest can genuinely
+        // span many shards.
+        let mut state = PublicValues::<u32, u32>::default().reset();
+        let mut deferred = ExecutionRecord::new(program.clone());
+        let mut all_records = Vec::new();
+        let num_execution_shards = runtime.records.len();
+        for (execution_shard, mut record) in runtime.records.into_iter().enumerate() {
+            let execution_shard = execution_shard as u32 + 1;
+            let done = execution_shard as usize == num_execution_shards;
+
+            state.shard += 1;
+            state.execution_shard = execution_shard;
+            state.is_execution_shard = record.contains_cpu() as u32;
+            if let Some(first_pc) = record.first_instruction_pc {
+                state.start_pc = first_pc;
+                state.next_pc = record.last_next_pc;
+                let first_clk = record.first_instruction_clk.unwrap();
+                state.initial_clk_high = (first_clk >> 24) as u32;
+                state.initial_clk_low = (first_clk & 0xFFFFFF) as u32;
+                // See `prove_with_context`'s identical computation (and
+                // `ExecutionRecord::last_instruction_clk`'s doc comment) for why this must use
+                // `last_instruction_clk`'s own high limb rather than `last_timestamp`'s.
+                let last_clk_high = record.last_instruction_clk >> 24;
+                state.last_clk_high = last_clk_high as u32;
+                state.last_clk_low = (record.last_timestamp - (last_clk_high << 24)) as u32;
+            }
+            state.committed_value_digest = record.public_values.committed_value_digest;
+            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+            record.public_values = state;
+
+            deferred.append(&mut record.defer());
+            let mut records = vec![record];
+            let mut split_records =
+                deferred.split(done, records.last_mut(), ZKMCoreOpts::default().split_opts);
+
+            if !done {
+                state.execution_shard += 1;
+            }
+            for split_record in &mut split_records {
+                state.shard += 1;
+                state.is_execution_shard = 0;
+                state.previous_init_addr_bits = split_record.public_values.previous_init_addr_bits;
+                state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
+                state.previous_finalize_addr_bits =
+                    split_record.public_values.previous_finalize_addr_bits;
+                state.last_finalize_addr_bits = split_record.public_values.last_finalize_addr_bits;
+                state.start_pc = state.next_pc;
+                state.initial_clk_high = state.last_clk_high;
+                state.initial_clk_low = state.last_clk_low;
+                split_record.public_values = state;
+            }
+            records.append(&mut split_records);
+            all_records.append(&mut records);
+        }
+        println!("produced {} record(s)", all_records.len());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        machine.generate_dependencies(all_records.iter_mut(), None).unwrap();
+        let chips = machine.chips().to_vec();
+        let max_log_row_count = 22u32;
+
+        let mut all_balanced = true;
+        for (i, record) in all_records.into_iter().enumerate() {
+            let mut preprocessed_named = std::collections::BTreeMap::new();
+            let mut main_named = std::collections::BTreeMap::new();
+            for chip in &chips {
+                let name = MachineAir::<KoalaBear>::name(chip);
+                let pre_mle = match chip.generate_preprocessed_trace(&record.program) {
+                    Some(t) => {
+                        PaddedMle::padded_with_zeros(Arc::new(Mle::from(t)), max_log_row_count)
+                    }
+                    None => PaddedMle::zeros(0, max_log_row_count),
+                };
+                preprocessed_named.insert(name.clone(), pre_mle);
+
+                let main_mle = if chip.included(&record) {
+                    let trace = chip.generate_trace(&record, &mut Default::default()).unwrap();
+                    PaddedMle::padded_with_zeros(Arc::new(Mle::from(trace)), max_log_row_count)
+                } else {
+                    PaddedMle::zeros(chip.width(), max_log_row_count)
+                };
+                main_named.insert(name, main_mle);
+            }
+            let preprocessed_traces = Traces { named_traces: preprocessed_named };
+            let traces = Traces { named_traces: main_named };
+            let public_values = record.public_values::<KoalaBear>();
+
+            let balanced = debug_interactions_with_all_chips(
+                &chips,
+                &preprocessed_traces,
+                &traces,
+                public_values,
+                LookupKind::all_kinds(),
+                LookupScope::Local,
+            );
+            all_balanced &= balanced;
+            if !balanced {
+                println!("record {i} is imbalanced -- stopping early instead of checking the rest");
+                break;
+            }
+        }
+        all_balanced
+    }
+
+    /// Loads the real `examples/fibonacci/guest` ELF and feeds it a real `n = 1000` via stdin,
+    /// exactly like `examples/fibonacci/host` -- exercising the real `HINT_LEN`/`HINT_READ`/
+    /// `COMMIT` syscall path with real data. Requires the guest to already be built (`cargo run
+    /// --release` under `examples/fibonacci/host` with the zkVM toolchain sourced); `#[ignore]`d
+    /// since this repo's default `ZKM_SKIP_PROGRAM_BUILD` test path never builds it.
+    #[test]
+    #[ignore = "needs examples/fibonacci/guest built via the real zkVM toolchain"]
+    fn debug_real_fibonacci_guest_with_stdin_interactions_balance() {
+        let mut stdin_buf = Vec::new();
+        bincode::serialize_into(&mut stdin_buf, &1000u32).unwrap();
+        assert!(
+            debug_local_interactions_balance_for_elf(
+                "../../../examples/target/elf-compilation/mipsel-zkm-zkvm-elf/release/fibonacci",
+                vec![stdin_buf],
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    /// Loads the real `examples/tendermint/guest` ELF and feeds it the same two real, CBOR-
+    /// encoded light-block fixtures `examples/tendermint/host` uses (dumped to disk via
+    /// `examples/tendermint/host/bin/dump_stdin.rs`), exercising ed25519/secp256k1 signature
+    /// verification and sha256 hashing with real data -- a much heavier, more varied precompile
+    /// mix than the fibonacci guest above, and (at ~56M cycles) large enough to actually cross a
+    /// `clk_high` boundary. Requires both the guest ELF and the two `.bin` stdin dumps to already
+    /// exist; `#[ignore]`d for the same reason as the fibonacci variant.
+    #[test]
+    #[ignore = "needs examples/tendermint/guest built via the real zkVM toolchain, plus dumped stdin fixtures"]
+    fn debug_real_tendermint_guest_with_stdin_interactions_balance() {
+        let stdin_1 = std::fs::read("../../../examples/target/tendermint_stdin_1.bin")
+            .expect("run `cargo run --release --bin dump_stdin` under examples/tendermint/host first");
+        let stdin_2 = std::fs::read("../../../examples/target/tendermint_stdin_2.bin")
+            .expect("run `cargo run --release --bin dump_stdin` under examples/tendermint/host first");
+        assert!(
+            debug_local_interactions_balance_for_elf(
+                "../../../examples/target/elf-compilation/mipsel-zkm-zkvm-elf/release/tendermint",
+                vec![stdin_1, stdin_2],
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
     #[test]
     fn test_simple_prove() {
         setup_logger();
