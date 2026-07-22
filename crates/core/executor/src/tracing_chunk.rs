@@ -9,7 +9,6 @@
 //! Not named `tracing.rs` to avoid shadowing the `tracing` crate, used pervasively elsewhere in
 //! this crate via `tracing::debug_span!`/`tracing::info!`.
 
-use hashbrown::HashMap;
 use std::{collections::VecDeque, sync::Arc};
 
 use crate::{
@@ -19,14 +18,70 @@ use crate::{
     },
     events::{
         AluEvent, BranchEvent, CompAluEvent, CpuEvent, JumpEvent, MemInstrEvent,
-        MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent,
+        MemoryInitializeFinalizeEvent, MemoryRecord, MemoryRecordEnum, MemoryWriteRecord,
+        MiscEvent, MovCondEvent,
     },
     executor::LocalCounts,
+    memory::Memory,
     record::{ExecutionRecord, MemoryAccessRecord},
+    register::NUM_REGISTERS,
     splicing::SplicedChunk,
-    vm::{CoreVM, Oracle, StepOutcome},
+    vm::{CoreVM, MemValue, Oracle, StepOutcome},
     ExecutionError, Opcode, Program,
 };
+
+/// Emit the program's global memory initialize/finalize events into `record`, for every address
+/// ever touched. Must only be called once, after the final shard's `TracingVM` finishes -- reads
+/// `MinimalRunner`'s still-live final memory (`MinimalRunner::memory`/`uninitialized_memory`),
+/// since that's the only place the full, final state of every touched address exists (an
+/// `Oracle`-sourced `CoreVM` only ever sees a sequential replay, never a full memory map).
+/// Mirrors `Executor::postprocess`'s memory-events section.
+pub fn emit_globals(
+    memory: &Memory<MemValue>,
+    uninitialized_memory: &Memory<u32>,
+    program: &Program,
+    record: &mut ExecutionRecord,
+) {
+    let addr_0_final_record: MemoryRecord = match memory.get(0) {
+        Some(record) => (*record).into(),
+        None => MemoryRecord { value: 0, timestamp: 1 },
+    };
+    record
+        .global_memory_finalize_events
+        .push(MemoryInitializeFinalizeEvent::finalize_from_record(0, &addr_0_final_record));
+    record.global_memory_initialize_events.push(MemoryInitializeFinalizeEvent::initialize(0, 0));
+
+    for addr in 1..NUM_REGISTERS as u32 {
+        if let Some(reg_record) = memory.registers.get(addr) {
+            if !program.image.contains_key(&addr) {
+                let initial_value = uninitialized_memory.registers.get(addr).copied().unwrap_or(0);
+                record
+                    .global_memory_initialize_events
+                    .push(MemoryInitializeFinalizeEvent::initialize(addr, initial_value));
+            }
+            let reg_record: MemoryRecord = (*reg_record).into();
+            record
+                .global_memory_finalize_events
+                .push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, &reg_record));
+        }
+    }
+
+    for addr in memory.page_table.keys() {
+        if addr == 0 {
+            continue;
+        }
+        if !program.image.contains_key(&addr) {
+            let initial_value = uninitialized_memory.get(addr).copied().unwrap_or(0);
+            record
+                .global_memory_initialize_events
+                .push(MemoryInitializeFinalizeEvent::initialize(addr, initial_value));
+        }
+        let mem_record: MemoryRecord = (*memory.get(addr).unwrap()).into();
+        record
+            .global_memory_finalize_events
+            .push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, &mem_record));
+    }
+}
 
 /// Replays one already-decided shard (a [`SplicedChunk`]) and emits its typed events.
 pub struct TracingVM {
@@ -37,24 +92,15 @@ pub struct TracingVM {
 pub struct TracedShard {
     pub record: ExecutionRecord,
     pub done: bool,
-    /// Carried into the next `TracingVM` (see [`crate::vm::Oracle`]'s doc comment on why tags
-    /// must be threaded through, separately from `SplicingVM`'s own tags map).
-    pub tags: HashMap<u32, u64>,
-    /// Carried into the next `TracingVM`, for the same reason as `tags`: `HINT_LEN`/`HINT_READ`
-    /// replay against this stream and must stay positioned exactly where the previous shard left
-    /// off.
+    /// Carried into the next `TracingVM`: `HINT_LEN`/`HINT_READ` replay against this stream and
+    /// must stay positioned exactly where the previous shard left off.
     pub input_stream: VecDeque<Vec<u8>>,
 }
 
 impl TracingVM {
     #[must_use]
-    pub fn new(
-        program: Arc<Program>,
-        chunk: SplicedChunk,
-        tags: HashMap<u32, u64>,
-        input_stream: VecDeque<Vec<u8>>,
-    ) -> Self {
-        let mut core = CoreVM::new(program, Oracle::new(chunk.oracle, tags));
+    pub fn new(program: Arc<Program>, chunk: SplicedChunk, input_stream: VecDeque<Vec<u8>>) -> Self {
+        let mut core = CoreVM::new(program, Oracle::new(chunk.oracle));
         core.pc = chunk.pc_start;
         core.next_pc = chunk.next_pc_start;
         core.clk = chunk.initial_timestamp;
@@ -86,7 +132,6 @@ impl TracingVM {
                 return Ok(TracedShard {
                     record: self.core.record,
                     done,
-                    tags: self.core.mem.into_tags(),
                     input_stream: self.core.input_stream,
                 });
             }

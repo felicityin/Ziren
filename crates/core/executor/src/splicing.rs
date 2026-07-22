@@ -13,14 +13,14 @@ use crate::{
     cost::{estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts},
     executor::{CORE_SHARD_CLK_LIMIT, CORE_SHARD_HEIGHT_THRESHOLD},
     minimal::Chunk,
-    vm::{CoreVM, Oracle},
+    vm::{CoreVM, MemValue, Oracle},
     ExecutionError, MipsAirId, Program,
 };
 
 /// One shard's worth of a program's execution, ready to be traced into an `ExecutionRecord` by
 /// `TracingVM`.
 pub struct SplicedChunk {
-    pub oracle: Vec<u32>,
+    pub oracle: Vec<MemValue>,
     pub pc_start: u32,
     pub next_pc_start: u32,
     pub global_clk_start: u64,
@@ -37,7 +37,7 @@ pub struct SplicingVM {
     core: CoreVM<Oracle>,
     /// Oracle values belonging to the shard currently being accumulated, spanning however many
     /// `Chunk`s it takes to close (usually one).
-    pending_oracle: Vec<u32>,
+    pending_oracle: Vec<MemValue>,
     pending_pc_start: u32,
     pending_next_pc_start: u32,
     pending_global_clk_start: u64,
@@ -64,7 +64,7 @@ impl SplicingVM {
         let program_size = (program.instructions.len() as u64).next_power_of_two();
         let pc_start = program.pc_start;
         let next_pc_start = program.next_pc;
-        let core = CoreVM::new(program, Oracle::new(Vec::new(), HashMap::new()));
+        let core = CoreVM::new(program, Oracle::new(Vec::new()));
         Self {
             core,
             pending_oracle: Vec::new(),
@@ -143,9 +143,7 @@ impl SplicingVM {
         let chunk_values = chunk.oracle;
         let chunk_len = chunk_values.len();
 
-        let tags = std::mem::replace(&mut self.core.mem, Oracle::new(Vec::new(), HashMap::new()))
-            .into_tags();
-        self.core.mem = Oracle::new(chunk_values.clone(), tags);
+        self.core.mem = Oracle::new(chunk_values.clone());
         self.core.pc = chunk.pc_start;
         self.core.next_pc = chunk.next_pc_start;
         self.core.clk = chunk.clk_start;

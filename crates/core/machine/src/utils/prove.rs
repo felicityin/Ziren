@@ -16,7 +16,8 @@ use p3_koala_bear::KoalaBear;
 use crate::{io::ZKMStdin, utils::trace_budget};
 use zkm_core_executor::{
     estimate_record_trace_bytes, mips_costs, minimal::MinimalRunner, splicing::SplicingVM,
-    tracing_chunk::TracingVM, ExecutionError, ExecutionRecord, Executor, MipsAirId, Program,
+    tracing_chunk::{self, TracingVM}, ExecutionError, ExecutionRecord, Executor, MipsAirId,
+    Program,
     ZKMContext,
 };
 use zkm_primitives::io::ZKMPublicValues;
@@ -159,7 +160,6 @@ pub fn prove_with_context(
                     for buf in &stdin.buffer {
                         splicing.with_input(buf);
                     }
-                    let mut tracing_tags = HashMap::new();
                     let mut tracing_input_stream: std::collections::VecDeque<Vec<u8>> =
                         stdin.buffer.iter().cloned().collect();
                     let mut deferred = ExecutionRecord::new(producer_program.clone());
@@ -184,17 +184,20 @@ pub fn prove_with_context(
                             let tracer = TracingVM::new(
                                 producer_program.clone(),
                                 spliced,
-                                std::mem::take(&mut tracing_tags),
                                 std::mem::take(&mut tracing_input_stream),
                             );
                             let traced = tracer.trace().map_err(ZKMCoreProverError::ExecutionError)?;
-                            tracing_tags = traced.tags;
                             tracing_input_stream = traced.input_stream;
                             let mut record = traced.record;
                             let done = traced.done;
 
                             if done {
-                                minimal_runner.emit_globals(&mut record);
+                                tracing_chunk::emit_globals(
+                                    minimal_runner.memory(),
+                                    minimal_runner.uninitialized_memory(),
+                                    minimal_runner.program(),
+                                    &mut record,
+                                );
                             }
 
                             // Update the public values & prover state for this (execution)
@@ -529,6 +532,166 @@ mod tests {
     use crate::programs::tests::{
         halt_only_program, hello_world_program, simple_memory_program, simple_program,
     };
+
+    /// Drives the same `MinimalRunner` -> `SplicingVM` -> `TracingVM` pipeline
+    /// `prove_with_context` uses, then checks local-scope interaction balance per record via
+    /// `debug_interactions_with_all_chips` -- much faster than a full GKR proof, and pinpoints
+    /// which `LookupKind` is imbalanced instead of just "verification failed".
+    fn debug_generate_records_interactions_balance(program: Program) -> bool {
+        use p3_koala_bear::KoalaBear;
+        use slop_air::BaseAir;
+        use slop_multilinear::{Mle, PaddedMle};
+        use std::sync::Arc;
+        use zkm_core_executor::{minimal::MinimalRunner, splicing::SplicingVM, tracing_chunk::TracingVM};
+        use zkm_hypercube::{
+            air::{LookupScope, MachineAir},
+            lookup::{debug_interactions_with_all_chips, LookupKind},
+            prover::Traces,
+            record::MachineRecord,
+        };
+
+        let opts = ZKMCoreOpts::default();
+        // `Executor::new` normalizes the raw program (e.g. appends a halt safety net) --
+        // `run_test_core` always runs this first (`Program::clone(&runtime.program)`), and a bare
+        // `simple_program()`-style program with no explicit halt instruction relies on it.
+        let program = Executor::new(program, opts.clone()).program;
+        let mut minimal_runner =
+            MinimalRunner::new(program.clone(), opts.minimal_trace_chunk_threshold);
+        let mut splicing = SplicingVM::new(
+            program.clone(),
+            0,
+            (opts.shard_size as u32) * 4,
+            opts.shape_check_frequency,
+            opts.lde_size_threshold,
+            mips_costs().into_iter().map(|(k, v)| (k, v as u64)).collect(),
+        );
+        let mut tracing_input_stream: std::collections::VecDeque<Vec<u8>> = Default::default();
+        let mut deferred = ExecutionRecord::new(program.clone());
+        let mut state = PublicValues::<u32, u32>::default().reset();
+        let mut all_records = Vec::new();
+
+        loop {
+            let Some(chunk) = minimal_runner.try_next_chunk().unwrap() else { break };
+            let chunk_done = chunk.done;
+            for spliced in splicing.splice_chunk(chunk).unwrap() {
+                let execution_shard = spliced.shard;
+                let tracer = TracingVM::new(
+                    program.clone(),
+                    spliced,
+                    std::mem::take(&mut tracing_input_stream),
+                );
+                let traced = tracer.trace().unwrap();
+                tracing_input_stream = traced.input_stream;
+                let mut record = traced.record;
+                let done = traced.done;
+
+                if done {
+                    tracing_chunk::emit_globals(
+                        minimal_runner.memory(),
+                        minimal_runner.uninitialized_memory(),
+                        minimal_runner.program(),
+                        &mut record,
+                    );
+                }
+
+                state.shard += 1;
+                state.execution_shard = execution_shard;
+                state.is_execution_shard = record.contains_cpu() as u32;
+                if let Some(first_pc) = record.first_instruction_pc {
+                    state.start_pc = first_pc;
+                    state.next_pc = record.last_next_pc;
+                    let initial_clk = record.first_instruction_clk.unwrap();
+                    state.clk_high = (initial_clk >> 28) as u32;
+                    state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+                    state.last_timestamp =
+                        (record.last_timestamp - (u64::from(state.clk_high) << 28)) as u32;
+                }
+                state.committed_value_digest = record.public_values.committed_value_digest;
+                state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+                record.public_values = state;
+
+                deferred.append(&mut record.defer());
+                let mut records = vec![record];
+                let mut split_records = deferred.split(done, records.last_mut(), opts.split_opts);
+
+                if !done {
+                    state.execution_shard += 1;
+                }
+                for split_record in &mut split_records {
+                    state.shard += 1;
+                    state.is_execution_shard = 0;
+                    state.previous_init_addr_bits = split_record.public_values.previous_init_addr_bits;
+                    state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
+                    state.previous_finalize_addr_bits =
+                        split_record.public_values.previous_finalize_addr_bits;
+                    state.last_finalize_addr_bits = split_record.public_values.last_finalize_addr_bits;
+                    state.start_pc = state.next_pc;
+                    state.initial_timestamp = state.last_timestamp;
+                    split_record.public_values = state;
+                }
+                records.append(&mut split_records);
+                all_records.append(&mut records);
+            }
+            if chunk_done {
+                break;
+            }
+        }
+        println!("produced {} record(s)", all_records.len());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        machine.generate_dependencies(all_records.iter_mut(), None).unwrap();
+        let chips = machine.chips().to_vec();
+        let max_log_row_count = 22u32;
+
+        let mut all_balanced = true;
+        for (i, record) in all_records.into_iter().enumerate() {
+            let mut preprocessed_named = std::collections::BTreeMap::new();
+            let mut main_named = std::collections::BTreeMap::new();
+            for chip in &chips {
+                let chip_name = MachineAir::<KoalaBear>::name(chip);
+                let pre_mle = match chip.generate_preprocessed_trace(&program) {
+                    Some(t) => PaddedMle::padded_with_zeros(Arc::new(Mle::from(t)), max_log_row_count),
+                    None => PaddedMle::zeros(0, max_log_row_count),
+                };
+                preprocessed_named.insert(chip_name.clone(), pre_mle);
+
+                let main_mle = if chip.included(&record) {
+                    let trace = chip.generate_trace(&record, &mut Default::default()).unwrap();
+                    PaddedMle::padded_with_zeros(Arc::new(Mle::from(trace)), max_log_row_count)
+                } else {
+                    PaddedMle::zeros(BaseAir::<KoalaBear>::width(chip), max_log_row_count)
+                };
+                main_named.insert(chip_name, main_mle);
+            }
+            let preprocessed_traces = Traces { named_traces: preprocessed_named };
+            let traces = Traces { named_traces: main_named };
+            let public_values = record.public_values::<KoalaBear>();
+
+            println!("== record {i} ==");
+            let balanced = debug_interactions_with_all_chips(
+                &chips,
+                &preprocessed_traces,
+                &traces,
+                public_values,
+                LookupKind::all_kinds(),
+                LookupScope::Local,
+            );
+            all_balanced &= balanced;
+            if !balanced {
+                println!("record {i} is imbalanced -- stopping early instead of checking the rest");
+                break;
+            }
+        }
+        all_balanced
+    }
+
+    #[test]
+    fn debug_generate_records_pipeline_balance_smoke() {
+        assert!(
+            debug_generate_records_interactions_balance(simple_program()),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
 
     #[test]
     fn run_test_core_smoke() {

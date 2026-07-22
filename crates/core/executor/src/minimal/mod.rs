@@ -1,4 +1,4 @@
-//! `MinimalRunner` wraps `CoreVM<Live>` and does nothing but run the program for real (loads,
+//! `MinimalRunner` wraps `MinimalExecutor` and does nothing but run the program for real (loads,
 //! branches, syscalls all need real values and real control flow) and buffer the resulting value
 //! stream into bounded [`Chunk`]s. It makes no shard-cut decisions and does no cost accounting,
 //! which keeps its contract minimal enough for a different execution engine to implement in its
@@ -6,19 +6,18 @@
 
 use std::sync::Arc;
 
-use crate::{
-    events::{MemoryInitializeFinalizeEvent, MemoryRecord},
-    record::ExecutionRecord,
-    register::NUM_REGISTERS,
-    vm::{CoreVM, Live},
-    ExecutionError, Program,
-};
+use executor::MinimalExecutor;
+
+use crate::{memory::Memory, vm::MemValue, ExecutionError, Program};
+
+mod executor;
 
 /// A bounded slice of the program's execution: enough to later be spliced into shard-sized
-/// pieces and traced into `ExecutionRecord`s. `oracle` carries only *values* (see
-/// `crate::vm::Oracle`'s doc comment for why shard/timestamp tags are deliberately not included).
+/// pieces and traced into `ExecutionRecord`s. Each `oracle` entry carries both the value and the
+/// timestamp a memory/register access saw immediately before it (see `crate::vm::MemValue`'s doc
+/// comment).
 pub struct Chunk {
-    pub oracle: Vec<u32>,
+    pub oracle: Vec<MemValue>,
     pub pc_start: u32,
     pub next_pc_start: u32,
     pub clk_start: u64,
@@ -29,7 +28,7 @@ pub struct Chunk {
 
 /// Produces a stream of [`Chunk`]s from a program + inputs.
 pub struct MinimalRunner {
-    pub core: CoreVM<Live>,
+    core: MinimalExecutor,
     /// Number of oracle values to buffer before yielding a chunk. Independent of shard economics
     /// -- this bounds peak memory of the buffered value stream, not shard size (`ZKMCoreOpts`'s
     /// `minimal_trace_chunk_threshold`).
@@ -46,7 +45,7 @@ pub struct MinimalRunner {
 impl MinimalRunner {
     #[must_use]
     pub fn new(program: Arc<Program>, chunk_threshold: u64) -> Self {
-        let mut core = CoreVM::new(program, Live::new());
+        let mut core = MinimalExecutor::new(program);
         core.load_image();
         Self { core, chunk_threshold, started: false }
     }
@@ -71,6 +70,21 @@ impl MinimalRunner {
         &self.core.public_values_stream
     }
 
+    /// This runner's still-live memory, for a caller (`tracing_chunk::emit_globals`) to read the
+    /// final state of every address ever touched from, after the final chunk (`done`). Read-only:
+    /// `MinimalRunner` itself never builds `MemoryInitializeFinalizeEvent`s or any other typed
+    /// event/record content.
+    #[must_use]
+    pub fn memory(&self) -> &Memory<MemValue> {
+        &self.core.memory
+    }
+
+    /// See [`Self::memory`].
+    #[must_use]
+    pub fn uninitialized_memory(&self) -> &Memory<u32> {
+        &self.core.uninitialized_memory
+    }
+
     /// Run until the chunk-size bound is hit or the program halts, returning the resulting
     /// [`Chunk`]. Returns `Ok(None)` if the program has already halted (nothing left to produce).
     ///
@@ -88,67 +102,19 @@ impl MinimalRunner {
         let global_clk_start = self.core.global_clk;
 
         loop {
-            let outcome = self.core.step()?;
-            if outcome.done || self.core.mem.oracle_out.len() as u64 >= self.chunk_threshold {
-                let oracle = std::mem::take(&mut self.core.mem.oracle_out);
+            let done = self.core.execute_instruction()?;
+            if done || self.core.oracle_out.len() as u64 >= self.chunk_threshold {
+                let oracle = std::mem::take(&mut self.core.oracle_out);
                 return Ok(Some(Chunk {
                     oracle,
                     pc_start,
                     next_pc_start,
                     clk_start,
                     global_clk_start,
-                    done: outcome.done,
+                    done,
                 }));
             }
         }
     }
 
-    /// Emit the program's global memory initialize/finalize events into `record`, for every
-    /// address ever touched. Must only be called once, after the final chunk (`done`) -- ported
-    /// from `Executor::postprocess`'s memory-events section, reading from this runner's still-live
-    /// `Live` memory instead of `Executor`'s.
-    pub fn emit_globals(&self, record: &mut ExecutionRecord) {
-        let memory = &self.core.mem.memory;
-        let uninitialized_memory = &self.core.mem.uninitialized_memory;
-        let program = &self.core.program;
-
-        let addr_0_final_record = match memory.get(0) {
-            Some(record) => *record,
-            None => MemoryRecord { value: 0, timestamp: 1 },
-        };
-        record
-            .global_memory_finalize_events
-            .push(MemoryInitializeFinalizeEvent::finalize_from_record(0, &addr_0_final_record));
-        record.global_memory_initialize_events.push(MemoryInitializeFinalizeEvent::initialize(0, 0));
-
-        for addr in 1..NUM_REGISTERS as u32 {
-            if let Some(reg_record) = memory.registers.get(addr) {
-                if !program.image.contains_key(&addr) {
-                    let initial_value = uninitialized_memory.registers.get(addr).copied().unwrap_or(0);
-                    record
-                        .global_memory_initialize_events
-                        .push(MemoryInitializeFinalizeEvent::initialize(addr, initial_value));
-                }
-                record
-                    .global_memory_finalize_events
-                    .push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, reg_record));
-            }
-        }
-
-        for addr in memory.page_table.keys() {
-            if addr == 0 {
-                continue;
-            }
-            if !program.image.contains_key(&addr) {
-                let initial_value = uninitialized_memory.get(addr).copied().unwrap_or(0);
-                record
-                    .global_memory_initialize_events
-                    .push(MemoryInitializeFinalizeEvent::initialize(addr, initial_value));
-            }
-            let mem_record = *memory.get(addr).unwrap();
-            record
-                .global_memory_finalize_events
-                .push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, &mem_record));
-        }
-    }
 }

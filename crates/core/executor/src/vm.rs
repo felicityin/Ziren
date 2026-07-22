@@ -1,12 +1,13 @@
-//! `CoreVM`: the shared instruction-semantics core underlying `generate_records`
-//! (`MinimalRunner`, `SplicingVM`, `TracingVM`; see `minimal.rs`/`splicing.rs`/`tracing_chunk.rs`).
+//! `CoreVM`: the shared instruction-semantics core underlying `generate_records`'s `SplicingVM`
+//! and `TracingVM` (see `splicing.rs`/`tracing_chunk.rs`). `MinimalRunner` uses its own,
+//! independent `MinimalExecutor` instead (see `minimal/executor.rs`) -- only `SplicingVM`/
+//! `TracingVM` replay an already-recorded [`MemValue`] log via [`Oracle`].
 //!
 //! `CoreVM<M: MemSource>` implements per-instruction semantics, generalized over where memory
-//! reads/writes come from: a real, persistent [`Memory<MemoryRecord>`] (`Live`, used by
-//! `MinimalRunner`), or a linear cursor over an already-recorded oracle log (`Oracle`, used by
-//! `SplicingVM`/`TracingVM`). It does not construct typed chip events itself -- callers get a
-//! [`StepOutcome`] back from [`CoreVM::step`] and decide what to do with it (cost accounting
-//! only, or full event construction).
+//! reads/writes come from -- currently always a linear cursor over an oracle log (`Oracle`), but
+//! kept generic since `MemSource` documents the exact contract a source must satisfy. It does not
+//! construct typed chip events itself -- callers get a [`StepOutcome`] back from [`CoreVM::step`]
+//! and decide what to do with it (cost accounting only, or full event construction).
 //!
 //! `Executor` keeps its own independent instruction-dispatch implementation for
 //! `run()`/`run_fast()`/other non-`generate_records` callers and does not use `CoreVM`.
@@ -20,7 +21,6 @@ use crate::{
         MemoryAccessPosition, MemoryLocalEvent, MemoryReadRecord, MemoryRecord, MemoryWriteRecord,
     },
     executor::LocalCounts,
-    memory::{Entry, Memory},
     program::MAX_MEMORY,
     record::{ExecutionRecord, MemoryAccessRecord},
     syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext, SyscallRuntime},
@@ -34,11 +34,6 @@ use crate::{
 /// `prev_record` every existing `Executor` accessor already captures -- and `commit` is where the
 /// *new* record (post-access) gets persisted, if this source has anywhere to persist it.
 pub trait MemSource {
-    /// Whether this source is a real, persistent memory (`Live`) as opposed to a replay of an
-    /// already-recorded oracle log (`Oracle`). Gates host-visible side effects (stdout/stderr
-    /// printing) that must only happen once.
-    const IS_LIVE: bool;
-
     /// The record at `addr` immediately before this access.
     fn access(&mut self, addr: u32) -> MemoryRecord;
     /// Persist the new record at `addr` after this access. No-op for [`Oracle`] -- there is
@@ -59,130 +54,36 @@ pub trait MemSource {
     fn exit_unconstrained(&mut self) {}
 }
 
-/// A real, persistent memory -- used by `MinimalRunner`. Every access appends its *value* to
-/// `oracle_out`; that value stream is exactly the oracle log `SplicingVM`/`TracingVM` replay from
-/// later.
+/// A single buffered oracle entry: the record immediately before one memory/register access.
+/// `value` is `u32`, matching `MemoryRecord` and the rest of this crate's MIPS32 words.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemValue {
+    pub clk: u64,
+    pub value: u32,
+}
+
+impl From<MemValue> for MemoryRecord {
+    fn from(value: MemValue) -> Self {
+        MemoryRecord { value: value.value, timestamp: value.clk }
+    }
+}
+
+/// A replay of an already-recorded [`MemValue`] stream -- used by `SplicingVM`/`TracingVM`.
 ///
-/// Deliberately **not** carried in the oracle: `shard`/`timestamp`. `MinimalRunner` doesn't decide
-/// real shard cuts, so any shard/timestamp it tagged records with here would be placeholders --
-/// carrying them into the oracle would hand `SplicingVM`/`TracingVM` *wrong* tags. Instead each of
-/// those passes reconstructs correct shard/timestamp tags itself, from its own persistent
-/// `addr -> (shard, timestamp)` map (see [`Oracle`]) built up as it processes shards in true
-/// program order -- exactly the information a real, continuously-updated memory would carry, just
-/// without the values (which come from this stream instead).
-pub struct Live {
-    pub memory: Memory<MemoryRecord>,
-    pub uninitialized_memory: Memory<u32>,
-    /// The value stream being produced for the current chunk. `MinimalRunner` drains this into a
-    /// `Chunk` once it's full or the program halts.
-    pub oracle_out: Vec<u32>,
-    /// Memory diff since the matching `enter_unconstrained`, reverted on exit -- mirrors
-    /// `Executor`'s `ForkState::memory_diff`.
-    unconstrained_diff: Option<HashMap<u32, Option<MemoryRecord>>>,
-}
-
-impl Live {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            memory: Memory::new_preallocated(),
-            uninitialized_memory: Memory::new_preallocated(),
-            oracle_out: Vec::new(),
-            unconstrained_diff: None,
-        }
-    }
-}
-
-impl Default for Live {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MemSource for Live {
-    const IS_LIVE: bool = true;
-
-    fn access(&mut self, addr: u32) -> MemoryRecord {
-        let entry = self.memory.entry(addr);
-        if let Some(diff) = self.unconstrained_diff.as_mut() {
-            let existing = match &entry {
-                Entry::Occupied(entry) => Some(*entry.get()),
-                Entry::Vacant(_) => None,
-            };
-            diff.entry(addr).or_insert(existing);
-        }
-        let record: &mut MemoryRecord = match entry {
-            Entry::Occupied(entry) => entry.into_mut(),
-            Entry::Vacant(entry) => {
-                let value = self.uninitialized_memory.get(addr).copied().unwrap_or(0);
-                entry.insert(MemoryRecord { value, timestamp: 0 })
-            }
-        };
-        let prev_record = *record;
-        self.oracle_out.push(prev_record.value);
-        prev_record
-    }
-
-    fn commit(&mut self, addr: u32, record: MemoryRecord) {
-        self.memory.insert(addr, record);
-    }
-
-    fn seed_uninitialized(&mut self, addr: u32, value: u32) -> Result<(), ExecutionError> {
-        match self.uninitialized_memory.entry(addr) {
-            Entry::Occupied(_) => {
-                log::error!("hint read address is initialized already");
-                Err(ExecutionError::InvalidSyscallArgs())
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(value);
-                Ok(())
-            }
-        }
-    }
-
-    fn enter_unconstrained(&mut self) {
-        assert!(self.unconstrained_diff.is_none(), "Unconstrained block is already active.");
-        self.unconstrained_diff = Some(HashMap::default());
-    }
-
-    fn exit_unconstrained(&mut self) {
-        if let Some(diff) = self.unconstrained_diff.take() {
-            for (addr, value) in diff {
-                match value {
-                    Some(record) => {
-                        self.memory.insert(addr, record);
-                    }
-                    None => {
-                        self.memory.remove(addr);
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// A replay of an already-recorded value stream -- used by `SplicingVM`/`TracingVM`.
-///
-/// Each access pops the next value and pairs it with a `timestamp` tag looked up (and then
-/// updated) in `tags`. `tags` is owned by this `Oracle`, but a shard can span more than one
-/// `Chunk`, so `SplicingVM`/`TracingVM` swap a continuing `CoreVM<Oracle>`'s `mem` field for a
-/// fresh `Oracle` (new chunk's values, but the *same* `tags` map carried over via
-/// [`Oracle::into_tags`]/[`Oracle::new`]) rather than reconstructing the whole `CoreVM` -- that's
-/// what keeps `tags` accumulating the true timestamp history exactly as if it were a real memory:
-/// correct as long as its owner processes every shard exactly once, in true program order,
-/// without ever rewinding, which is how both `SplicingVM` (discovering shard cuts) and
-/// `TracingVM` (replaying already-decided shards) actually work. `SplicingVM` and `TracingVM`
-/// must NOT share one `tags` map with each other (splicing runs a whole chunk ahead of tracing
-/// and would corrupt tracing's view) -- each owns its own, independently threaded across chunks.
+/// Each access just pops the next `MemValue` and turns it directly into a `MemoryRecord` -- no
+/// bookkeeping of its own. This works because `MinimalExecutor` (`minimal/executor.rs`) already
+/// buffered the *final* timestamp for every access, computed from real execution; there is
+/// nothing left for `Oracle` to reconstruct. `commit` is correspondingly a no-op: with the
+/// timestamp already correct in the buffer, there's nothing to persist for a later access at the
+/// same address to look up.
 pub struct Oracle {
-    values: std::vec::IntoIter<u32>,
-    tags: HashMap<u32, u64>,
+    values: std::vec::IntoIter<MemValue>,
 }
 
 impl Oracle {
     #[must_use]
-    pub fn new(values: Vec<u32>, tags: HashMap<u32, u64>) -> Self {
-        Self { values: values.into_iter(), tags }
+    pub fn new(values: Vec<MemValue>) -> Self {
+        Self { values: values.into_iter() }
     }
 
     /// Number of values not yet consumed -- used by `SplicingVM` to know how many oracle entries
@@ -191,28 +92,18 @@ impl Oracle {
     pub fn remaining(&self) -> usize {
         self.values.len()
     }
-
-    /// Take back the accumulated timestamp tags, to carry into the next chunk's `Oracle` when a
-    /// shard spans a chunk boundary.
-    #[must_use]
-    pub fn into_tags(self) -> HashMap<u32, u64> {
-        self.tags
-    }
 }
 
 impl MemSource for Oracle {
-    const IS_LIVE: bool = false;
-
     fn access(&mut self, addr: u32) -> MemoryRecord {
-        let value =
-            self.values.next().unwrap_or_else(|| panic!("oracle exhausted while accessing address {addr}"));
-        let &timestamp = self.tags.get(&addr).unwrap_or(&0);
-        MemoryRecord { value, timestamp }
+        let MemValue { clk, value } = self
+            .values
+            .next()
+            .unwrap_or_else(|| panic!("oracle exhausted while accessing address {addr}"));
+        MemoryRecord { value, timestamp: clk }
     }
 
-    fn commit(&mut self, addr: u32, record: MemoryRecord) {
-        self.tags.insert(addr, record.timestamp);
-    }
+    fn commit(&mut self, _addr: u32, _record: MemoryRecord) {}
 
     fn seed_uninitialized(&mut self, _addr: u32, _value: u32) -> Result<(), ExecutionError> {
         Ok(())
@@ -298,7 +189,6 @@ pub struct CoreVM<M: MemSource> {
     pub input_stream: std::collections::VecDeque<Vec<u8>>,
     pub public_values_stream: Vec<u8>,
     pub io_buf: HashMap<u32, String>,
-    pub cycle_tracker: HashMap<String, (u64, u32)>,
 
     pub deferred_proof_verification: crate::DeferredProofVerification,
 }
@@ -315,11 +205,16 @@ impl<M: MemSource> CoreVM<M> {
             mem,
             pc,
             next_pc,
-            clk: 0,
+            // 1, not 0: `0` is the "never touched" sentinel `MemoryRecord::timestamp` (mirrors
+            // `ExecutionState::new`). `MinimalRunner` is the only consumer that keeps this value
+            // (`SplicingVM`/`TracingVM` overwrite it right after construction from `Chunk`/
+            // `SplicedChunk` fields) -- its buffered `MemValue`s carry real timestamps computed
+            // from this starting point, so it must agree with the `1`-based convention
+            // `SplicingVM`'s own `pending_initial_timestamp` and `TracingVM`'s seeded
+            // `initial_timestamp` already use for a program's first shard.
+            clk: 1,
             global_clk: 0,
             current_shard: 1,
-            // 1, not 0: `0` is the "never touched" sentinel `MemoryRecord::timestamp` (mirrors
-            // `ExecutionState::new`).
             initial_timestamp: 1,
             next_is_delayslot: false,
             exited: false,
@@ -334,17 +229,7 @@ impl<M: MemSource> CoreVM<M> {
             input_stream: std::collections::VecDeque::new(),
             public_values_stream: Vec::new(),
             io_buf: HashMap::new(),
-            cycle_tracker: HashMap::new(),
             deferred_proof_verification: crate::DeferredProofVerification::Enabled,
-        }
-    }
-
-    /// Load the program's initial memory image. Only meaningful for `Live` sources -- `Oracle`
-    /// sources never need it, since every read of an image address is already captured in the
-    /// oracle log.
-    pub fn load_image(&mut self) {
-        for (&addr, value) in &self.program.image.clone() {
-            self.mem.commit(addr, MemoryRecord { value: *value, timestamp: 0 });
         }
     }
 
@@ -1291,17 +1176,11 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
         self.public_values_stream.extend_from_slice(bytes);
     }
 
-    fn stdout_line(&mut self, line: &str) {
-        if M::IS_LIVE {
-            println!("stdout: {line}");
-        }
-    }
-
-    fn stderr_line(&mut self, line: &str) {
-        if M::IS_LIVE {
-            println!("stderr: {line}");
-        }
-    }
+    // `stdout_line`/`stderr_line`/`cycle_tracker_start`/`cycle_tracker_end` stay at
+    // `SyscallRuntime`'s no-op defaults: `CoreVM<M>` only ever replays an already-recorded
+    // instruction stream (`M = Oracle`, used by `SplicingVM`/`TracingVM`), so these host-visible
+    // side effects (which must happen exactly once) belong to `MinimalExecutor`'s real pass, not
+    // here.
 
     fn io_buf_push(&mut self, fd: u32, s: &str) -> Vec<String> {
         let entry = self.io_buf.entry(fd).or_default();
@@ -1323,27 +1202,11 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
         Ok(None)
     }
 
-    fn cycle_tracker_start(&mut self, name: &str) {
-        if M::IS_LIVE {
-            let depth = self.cycle_tracker.len() as u32;
-            self.cycle_tracker.insert(name.to_string(), (self.global_clk, depth));
-        }
-    }
-
-    fn cycle_tracker_end(&mut self, name: &str) -> Option<u64> {
-        if !M::IS_LIVE {
-            return None;
-        }
-        self.cycle_tracker.remove(name).map(|(start, _depth)| self.global_clk - start)
-    }
-
     fn cycle_tracker_report(&mut self, _name: &str, _total_cycles: u64) {}
 
     fn verify_deferred_proof(&mut self, _vkey: [u32; 8], _pv_digest: [u32; 8]) -> Result<(), ExecutionError> {
-        // Deferred-proof verification only needs to happen once, during phase 1 -- see the
-        // `SyscallRuntime::verify_deferred_proof` doc comment. `MinimalRunner`'s `Live`-sourced
-        // `CoreVM` doesn't carry a proof stream at all (no `generate_records` caller currently
-        // feeds one in); this is a no-op for both sources until that's wired up.
+        // `CoreVM<Oracle>` doesn't carry a proof stream at all (no `generate_records` caller
+        // currently feeds one in); this is a no-op until that's wired up.
         Ok(())
     }
 }

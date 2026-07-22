@@ -9,13 +9,15 @@ use crate::{
 use super::SyscallCode;
 
 /// Everything a [`Syscall`](super::Syscall) implementation needs from whatever engine is running
-/// it. Implemented by [`Executor`] (unchanged, real behavior) and by `CoreVM<M>` (used by
-/// `MinimalRunner`/`SplicingVM`/`TracingVM`), so every existing precompile keeps working
-/// unchanged across all of them.
+/// it. Implemented by [`Executor`] (real behavior), `MinimalExecutor` (`crate::minimal::executor`,
+/// used by `MinimalRunner`; also real behavior), and `CoreVM<Oracle>` (used by
+/// `SplicingVM`/`TracingVM`), so every existing precompile keeps working unchanged across all of
+/// them.
 ///
 /// Host-visible side effects (`stdout_line`/`stderr_line`/`invoke_hook`/cycle-tracker reporting)
-/// are real only for `Executor` and `CoreVM<Live>`; `CoreVM<Oracle>` (which replays the same
-/// instruction stream) implements them as no-ops, since those effects must happen exactly once.
+/// are real only for `Executor` and `MinimalExecutor`; `CoreVM<Oracle>` (which replays an
+/// already-recorded instruction stream) implements them as no-ops, since those effects must
+/// happen exactly once.
 pub trait SyscallRuntime {
     /// The current shard.
     fn shard(&self) -> u32;
