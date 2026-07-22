@@ -55,6 +55,11 @@ const DEFAULT_TRACE_GEN_WORKERS: usize = 8;
 // `trace_gen_workers` above (a shard's permit is held from trace generation through the end of
 // proving), so this isn't gated by a fixed per-worker memory multiplier.
 const DEFAULT_PROVE_WORKERS: usize = 4;
+// How many `Chunk`s can be spliced concurrently (see `crates/core/machine/src/utils/prove.rs`'s
+// splicing-worker loop). `SplicingVM` replays each chunk independently rather than one continuous
+// walk, so a small worker pool is enough -- splicing's own per-chunk cost (a cost-model replay,
+// no typed events) is far lighter than tracing/dependency-generation/trace-generation/proving.
+const DEFAULT_SPLICING_WORKERS: usize = 2;
 // Bounds how many oracle values `MinimalRunner` buffers before yielding a `Chunk` --
 // independent of shard size, this just caps peak memory of the buffered value stream. Sized
 // generously relative to a typical shard's memory-access count so a shard only rarely spans more
@@ -213,6 +218,8 @@ pub struct ZKMCoreOpts {
     pub trace_gen_workers: usize,
     /// The number of shards that can be proved concurrently by the shard-proving workers.
     pub prove_workers: usize,
+    /// The number of `Chunk`s that can be spliced into shards concurrently.
+    pub splicing_workers: usize,
     /// The capacity of the channel for records and traces.
     pub records_and_traces_channel_capacity: usize,
     /// The frequency for shape checks.
@@ -248,6 +255,10 @@ impl Default for ZKMCoreOpts {
             prove_workers: env::var("PROVE_WORKERS").map_or_else(
                 |_| DEFAULT_PROVE_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_PROVE_WORKERS),
+            ),
+            splicing_workers: env::var("SPLICING_WORKERS").map_or_else(
+                |_| DEFAULT_SPLICING_WORKERS,
+                |s| s.parse::<usize>().unwrap_or(DEFAULT_SPLICING_WORKERS),
             ),
             records_and_traces_channel_capacity: env::var("RECORDS_AND_TRACES_CHANNEL_CAPACITY")
                 .map_or_else(
@@ -322,6 +333,10 @@ impl ZKMCoreOpts {
             prove_workers: env::var("PROVE_WORKERS").map_or_else(
                 |_| DEFAULT_PROVE_WORKERS,
                 |s| s.parse::<usize>().unwrap_or(DEFAULT_PROVE_WORKERS),
+            ),
+            splicing_workers: env::var("SPLICING_WORKERS").map_or_else(
+                |_| DEFAULT_SPLICING_WORKERS,
+                |s| s.parse::<usize>().unwrap_or(DEFAULT_SPLICING_WORKERS),
             ),
             records_and_traces_channel_capacity: env::var("RECORDS_AND_TRACES_CHANNEL_CAPACITY")
                 .map_or_else(

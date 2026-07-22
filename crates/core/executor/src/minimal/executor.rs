@@ -979,12 +979,55 @@ impl SyscallRuntime for MinimalExecutor {
         }
     }
 
-    fn peek_input(&self) -> Option<&Vec<u8>> {
-        self.input_stream.front()
+    /// `SYSHINTLEN`'s full behavior. Unlike `Executor`, also buffers the resolved length into
+    /// `oracle_out` as a synthetic `MemValue` entry, interleaved in true chronological order with
+    /// the real memory-access entries already pushed there from the same single-threaded
+    /// execution loop -- this is what lets oracle-sourced runtimes (`CoreVM<Oracle>`, used by
+    /// `SplicingVM`/`TracingVM`) resolve the same value deterministically without a live queue of
+    /// their own (see `crate::vm::MemSource::next_raw`). `clk` on the entry is otherwise unused --
+    /// there's no real address for a "previous vs new" comparison here -- but kept for
+    /// consistency/debuggability with every other `oracle_out` entry.
+    fn resolve_hint_len(&mut self) -> Result<u32, ExecutionError> {
+        let Some(item) = self.input_stream.front() else {
+            log::error!("failed reading stdin due to insufficient input data");
+            return Err(ExecutionError::InvalidSyscallArgs());
+        };
+        let len = item.len() as u32;
+        self.oracle_out.push(MemValue { clk: self.clk, value: len });
+        Ok(len)
     }
 
-    fn consume_input(&mut self) -> Option<Vec<u8>> {
-        self.input_stream.pop_front()
+    /// `SYSHINTREAD`'s full behavior -- the resolved bytes reach the oracle stream via the
+    /// guest's own subsequent genuine load of `ptr` (an ordinary `mem_access`/`mem_commit` call),
+    /// not through this method directly; `seed_uninitialized` only establishes the first-touch
+    /// value that load sees.
+    fn resolve_hint_read(&mut self, ptr: u32, len: u32) -> Result<(), ExecutionError> {
+        let Some(vec) = self.input_stream.pop_front() else {
+            log::error!("failed reading stdin due to insufficient input data");
+            return Err(ExecutionError::InvalidSyscallArgs());
+        };
+        if self.unconstrained {
+            log::error!("hint read should not be used in a unconstrained block");
+            return Err(ExecutionError::ExceptionOrTrap());
+        }
+        if vec.len() as u32 != len || !ptr.is_multiple_of(4) {
+            log::error!(
+                "Invalid hint read syscall arguments: ptr={}, len={}, vec_len={}",
+                ptr,
+                len,
+                vec.len()
+            );
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        for i in (0..len).step_by(4) {
+            let b1 = vec[i as usize];
+            let b2 = vec.get(i as usize + 1).copied().unwrap_or(0);
+            let b3 = vec.get(i as usize + 2).copied().unwrap_or(0);
+            let b4 = vec.get(i as usize + 3).copied().unwrap_or(0);
+            let word = u32::from_le_bytes([b1, b2, b3, b4]);
+            self.seed_uninitialized(ptr + i, word)?;
+        }
+        Ok(())
     }
 
     fn push_hint_input(&mut self, bytes: Vec<u8>) {

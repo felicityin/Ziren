@@ -46,6 +46,12 @@ pub trait MemSource {
     /// for [`Oracle`] -- the oracle already encodes the correct first-touch value.
     fn seed_uninitialized(&mut self, addr: u32, value: u32) -> Result<(), ExecutionError>;
 
+    /// Pop the next raw value off the source, with no address and no `MemoryRecord` semantics --
+    /// used for values that aren't a memory/register access at all (`SYSHINTLEN`'s resolved
+    /// length, buffered by `MinimalExecutor` into the same stream as everything else; see
+    /// `MinimalExecutor::resolve_hint_len`'s doc comment).
+    fn next_raw(&mut self) -> u32;
+
     /// Enter an unconstrained block: snapshot whatever's needed to undo memory writes made during
     /// it. No-op for [`Oracle`] -- nothing persists there in the first place, so there's nothing
     /// to undo.
@@ -108,6 +114,13 @@ impl MemSource for Oracle {
 
     fn seed_uninitialized(&mut self, _addr: u32, _value: u32) -> Result<(), ExecutionError> {
         Ok(())
+    }
+
+    fn next_raw(&mut self) -> u32 {
+        self.values
+            .next()
+            .unwrap_or_else(|| panic!("oracle exhausted while resolving a raw value"))
+            .value
     }
 }
 
@@ -196,7 +209,6 @@ pub struct CoreVM<M: MemSource> {
 
     pub syscall_map: HashMap<SyscallCode, Arc<dyn Syscall<Self>>>,
 
-    pub input_stream: std::collections::VecDeque<Vec<u8>>,
     pub public_values_stream: Vec<u8>,
     pub io_buf: HashMap<u32, String>,
 
@@ -248,7 +260,6 @@ impl<M: MemSource> CoreVM<M> {
             record,
             memory_accesses: MemoryAccessRecord::default(),
             syscall_map,
-            input_stream: std::collections::VecDeque::new(),
             public_values_stream: Vec::new(),
             io_buf: HashMap::new(),
             deferred_proof_verification: crate::DeferredProofVerification::Enabled,
@@ -1202,16 +1213,21 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
         self.mem.seed_uninitialized(addr, value)
     }
 
-    fn peek_input(&self) -> Option<&Vec<u8>> {
-        self.input_stream.front()
+    fn resolve_hint_len(&mut self) -> Result<u32, ExecutionError> {
+        Ok(self.mem.next_raw())
     }
 
-    fn consume_input(&mut self) -> Option<Vec<u8>> {
-        self.input_stream.pop_front()
+    fn resolve_hint_read(&mut self, _ptr: u32, _len: u32) -> Result<(), ExecutionError> {
+        // The resolved length was already pulled from the oracle in `resolve_hint_len`, and the
+        // resolved bytes reach the oracle stream via the guest's own subsequent genuine load of
+        // `ptr` (see `MinimalExecutor::resolve_hint_read`'s doc comment) -- nothing left to do
+        // here during replay.
+        Ok(())
     }
 
-    fn push_hint_input(&mut self, bytes: Vec<u8>) {
-        self.input_stream.push_front(bytes);
+    fn push_hint_input(&mut self, _bytes: Vec<u8>) {
+        // No live queue to push to during replay -- see this impl block's other no-op methods
+        // (`stdout_line`/`invoke_hook`/etc.) for the same reasoning.
     }
 
     fn write_public_values(&mut self, bytes: &[u8]) {

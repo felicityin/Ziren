@@ -27,6 +27,11 @@ pub struct Chunk {
     pub next_pc_start: u32,
     pub clk_start: u64,
     pub global_clk_start: u64,
+    /// This chunk's starting register state -- `SplicingVM` replays each chunk independently (no
+    /// continuity across chunks, so it can run as a worker pool), so unlike a single continuous
+    /// walk it can't fall back on carrying `CoreVM::registers` forward from the previous chunk.
+    /// See `SplicedChunk::registers_start`'s doc comment for the same pattern one level down.
+    pub registers_start: [MemValue; NUM_REGISTERS],
     /// The `global_clk` value immediately after this chunk's last instruction. `SplicingVM`
     /// replays exactly `global_clk_end - global_clk_start` instructions before treating this
     /// chunk as exhausted -- unlike before registers were split out of the oracle (see
@@ -125,6 +130,7 @@ impl MinimalRunner {
         let next_pc_start = self.core.next_pc;
         let clk_start = self.core.clk;
         let global_clk_start = self.core.global_clk;
+        let registers_start = self.core.registers;
 
         loop {
             let done = self.core.execute_instruction()?;
@@ -136,6 +142,7 @@ impl MinimalRunner {
                     next_pc_start,
                     clk_start,
                     global_clk_start,
+                    registers_start,
                     global_clk_end: self.core.global_clk,
                     done,
                 }));

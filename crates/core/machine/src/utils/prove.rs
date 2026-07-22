@@ -15,10 +15,11 @@ use p3_koala_bear::KoalaBear;
 
 use crate::{io::ZKMStdin, utils::trace_budget};
 use zkm_core_executor::{
-    estimate_record_trace_bytes, mips_costs, minimal::MinimalRunner, splicing::SplicingVM,
-    tracing_chunk::{self, TracingVM}, ExecutionError, ExecutionRecord, Executor, MipsAirId,
-    Program,
-    ZKMContext,
+    estimate_record_trace_bytes, mips_costs,
+    minimal::{Chunk, MinimalRunner},
+    splicing::{SplicedChunk, SplicingVM},
+    tracing_chunk::{self, TracingVM},
+    ExecutionError, ExecutionRecord, Executor, MipsAirId, Program, ZKMContext,
 };
 use zkm_primitives::io::ZKMPublicValues;
 
@@ -27,8 +28,8 @@ use zkm_hypercube::{
     air::PublicValues,
     config::{default_fri_config, ZkmGlobalContext, ZkmStackedPcs},
     prover::{
-        AirProver, PcsProof, ProverPermit, ProverSemaphore, ShardData, TraceGenerator,
-        ZkmInnerPcsProver, ZkmShardProver,
+        AirProver, PcsProof, ProverSemaphore, ShardData, TraceGenerator, ZkmInnerPcsProver,
+        ZkmShardProver,
     },
     record::MachineRecord,
     ShardContextImpl, ShardProof, ShardVerifier, ZkmSC,
@@ -119,53 +120,33 @@ pub fn prove_with_context(
     std::thread::scope(move |s| {
         let _span = span.enter();
 
-        // `generate_records` producer: a single sequential pass through `MinimalRunner` ->
-        // `SplicingVM` -> `TracingVM`, with no worker threads for record generation. Runs on its
-        // own thread only so it can pipeline concurrently with the prover workers below via the
-        // channel.
-        let (p2_records_and_traces_tx, p2_records_and_traces_rx) = sync_channel::<(
-            Vec<ExecutionRecord>,
-            Vec<ZkmShardData>,
-            Vec<ProverPermit>,
-        )>(opts.records_and_traces_channel_capacity);
+        let (p2_records_tx, p2_records_rx) =
+            sync_channel::<ExecutionRecord>(opts.records_and_traces_channel_capacity);
 
-        let producer_span = tracing::Span::current().clone();
-        let producer_program = program_arc.clone();
-        let producer_machine = shard_prover.machine().clone();
-        let producer_shard_prover = Arc::clone(&shard_prover);
-        let producer_pk = Arc::clone(&pk);
-        let producer_prover_permits = prover_permits.clone();
-        let producer_trace_byte_costs = Arc::clone(&trace_byte_costs);
-        let producer_handle: ScopedJoinHandle<Result<(Vec<u8>, u64), ZKMCoreProverError>> =
+        // Stage A (raw execution): `MinimalRunner`'s own sequential walk. It never builds typed
+        // events, so there's no event-construction work here to parallelize -- this stays cheap
+        // and single-threaded, dispatching each `Chunk` round-robin to Stage B's splicing
+        // workers.
+        let splicing_worker_count = opts.splicing_workers.max(1);
+        let mut splicing_chunk_txs = Vec::with_capacity(splicing_worker_count);
+        let mut splicing_chunk_rxs = Vec::with_capacity(splicing_worker_count);
+        for _ in 0..splicing_worker_count {
+            let (tx, rx) = sync_channel::<Chunk>(1);
+            splicing_chunk_txs.push(tx);
+            splicing_chunk_rxs.push(rx);
+        }
+        // Stage C (see below) needs `minimal_runner`'s final registers/memory for `emit_globals`
+        // once it reaches the last shard -- sent wholesale (not cloned; `PagedMemory` can be
+        // large) once Stage A's loop finishes with it.
+        let (final_runner_tx, final_runner_rx) = sync_channel::<MinimalRunner>(1);
+
+        let stage_a_span = tracing::Span::current().clone();
+        let stage_a_handle: ScopedJoinHandle<Result<(Vec<u8>, u64), ZKMCoreProverError>> =
             s.spawn(move || {
-                let _span = producer_span.enter();
-                tracing::debug_span!("generate_records").in_scope(|| {
-                    let async_rt =
-                        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-
-                    let max_syscall_cycles = 0; // see `ZKMCoreOpts::minimal_trace_chunk_threshold`'s doc comment
-                    let mut splicing = SplicingVM::new(
-                        producer_program.clone(),
-                        max_syscall_cycles,
-                        (opts.shard_size as u32) * 4,
-                        opts.shape_check_frequency,
-                        opts.lde_size_threshold,
-                        (*producer_trace_byte_costs).clone(),
-                    );
-                    // `SplicingVM`/`TracingVM` replay `HINT_LEN`/`HINT_READ` syscalls against
-                    // this same stream (see `SyscallRuntime::seed_uninitialized`'s doc comment:
-                    // only the *values* are oracle-carried, not the syscall's own bookkeeping),
-                    // so they need the same stdin, consumed in the same order `minimal_runner`
-                    // already consumed it in above.
-                    for buf in &stdin.buffer {
-                        splicing.with_input(buf);
-                    }
-                    let mut tracing_input_stream: std::collections::VecDeque<Vec<u8>> =
-                        stdin.buffer.iter().cloned().collect();
-                    let mut deferred = ExecutionRecord::new(producer_program.clone());
-                    let mut state = PublicValues::<u32, u32>::default().reset();
+                let _span = stage_a_span.enter();
+                tracing::debug_span!("minimal_execution").in_scope(|| {
+                    let mut chunk_index = 0usize;
                     let mut cycles = 0u64;
-
                     loop {
                         let Some(chunk) = minimal_runner
                             .try_next_chunk()
@@ -174,170 +155,263 @@ pub fn prove_with_context(
                             break;
                         };
                         let chunk_done = chunk.done;
-
-                        let spliced_pieces = splicing
-                            .splice_chunk(chunk)
-                            .map_err(ZKMCoreProverError::ExecutionError)?;
-
-                        for spliced in spliced_pieces {
-                            let execution_shard = spliced.shard;
-                            let tracer = TracingVM::new(
-                                producer_program.clone(),
-                                spliced,
-                                std::mem::take(&mut tracing_input_stream),
-                            );
-                            let traced = tracer.trace().map_err(ZKMCoreProverError::ExecutionError)?;
-                            tracing_input_stream = traced.input_stream;
-                            let mut record = traced.record;
-                            let done = traced.done;
-
-                            if done {
-                tracing_chunk::emit_globals(
-                                    minimal_runner.registers(),
-                                    minimal_runner.registers_touched(),
-                                    minimal_runner.memory(),
-                                    minimal_runner.uninitialized_memory(),
-                                    minimal_runner.program(),
-                                    &mut record,
-                                );
-                            }
-
-                            // Update the public values & prover state for this (execution)
-                            // shard, then propagate to the record -- sequential, so (unlike the
-                            // old multi-worker design) no turn-based synchronization is needed.
-                            state.shard += 1;
-                            state.execution_shard = execution_shard;
-                            state.is_execution_shard = record.contains_cpu() as u32;
-                            if let Some(first_pc) = record.first_instruction_pc {
-                                state.start_pc = first_pc;
-                                state.next_pc = record.last_next_pc;
-                                let initial_clk = record.first_instruction_clk.unwrap();
-                                // `clk_high` is constant across a shard (see
-                                // `SplicingVM::should_cut_shard`'s window-boundary rule), so the
-                                // shard's first row's high limb is this shard's only value.
-                                state.clk_high = (initial_clk >> 28) as u32;
-                                state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
-                                // Unlike `initial_timestamp`, deliberately relative to this shard's
-                                // own `clk_high` window rather than masked to it: the AIR's
-                                // `send_state` for the shard's last row predicts its successor's
-                                // incoming clk as the unreduced expression `clk_low + clk_increment`
-                                // (see `eval_state_chain`'s doc comment), which the window-boundary
-                                // shard-cut rule allows to spill past `1 << 28` by up to one
-                                // instruction's `clk_increment` exactly when it triggers the cut.
-                                // `eval_public_values`'s closing `receive_state` must match that
-                                // same unreduced value bit-for-bit -- masking to 28 bits would wrap
-                                // it back into the shard's own window and never match.
-                                state.last_timestamp =
-                                    (record.last_timestamp - (u64::from(state.clk_high) << 28))
-                                        as u32;
-                            }
-                            state.committed_value_digest = record.public_values.committed_value_digest;
-                            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
-                            record.public_values = state;
-
-                            // Defer events that are too expensive to include in every shard.
-                            deferred.append(&mut record.defer());
-
-                            let mut records = vec![record];
-                            let mut split_records =
-                                deferred.split(done, records.last_mut(), opts.split_opts);
-
-                            // Update the public values & prover state for the shards which do
-                            // not contain "cpu events" before committing to them.
-                            if !done {
-                                state.execution_shard += 1;
-                            }
-                            for split_record in &mut split_records {
-                                state.shard += 1;
-                                state.is_execution_shard = 0;
-                                state.previous_init_addr_bits =
-                                    split_record.public_values.previous_init_addr_bits;
-                                state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
-                                state.previous_finalize_addr_bits =
-                                    split_record.public_values.previous_finalize_addr_bits;
-                                state.last_finalize_addr_bits =
-                                    split_record.public_values.last_finalize_addr_bits;
-                                state.start_pc = state.next_pc;
-                                state.initial_timestamp = state.last_timestamp;
-                                split_record.public_values = state;
-                            }
-                            records.append(&mut split_records);
-
-                            producer_machine.generate_dependencies(records.iter_mut(), None).map_err(
-                                |e| {
-                                    tracing::error!("Error generating dependencies: {:?}", e);
-                                    ZKMCoreProverError::DependenciesGenerationError
-                                },
-                            )?;
-
-                            // Generate each record's traces and send it to the shard-proving
-                            // workers immediately, one record at a time -- see the long-form
-                            // comment on this same pattern further down.
-                            for record in records {
-                                let estimated_bytes =
-                                    estimate_record_trace_bytes(&record, &producer_trace_byte_costs);
-                                let budget_permit =
-                                    async_rt.block_on(trace_budget::acquire_trace_budget(estimated_bytes));
-                                let main_trace_data =
-                                    async_rt.block_on(producer_shard_prover.trace_generator().generate_main_traces(
-                                        record.clone(),
-                                        producer_shard_prover.max_log_row_count(),
-                                        producer_prover_permits.clone(),
-                                    ));
-                                let shard_data =
-                                    ZkmShardData { pk: Arc::clone(&producer_pk), main_trace_data };
-                                p2_records_and_traces_tx
-                                    .send((vec![record], vec![shard_data], vec![budget_permit]))
-                                    .unwrap();
-                            }
-                        }
-
+                        splicing_chunk_txs[chunk_index % splicing_worker_count]
+                            .send(chunk)
+                            .unwrap();
+                        chunk_index += 1;
                         if chunk_done {
                             cycles = minimal_runner.global_clk();
                             break;
                         }
                     }
-
-                    tracing::info!(
-                        "generate_records finished at {:?} (cycles={})",
-                        proving_start.elapsed(),
-                        cycles,
-                    );
-
-                    Ok((minimal_runner.public_values_stream().to_vec(), cycles))
+                    let public_values_stream = minimal_runner.public_values_stream().to_vec();
+                    final_runner_tx.send(minimal_runner).unwrap();
+                    Ok((public_values_stream, cycles))
                 })
             });
-        // Spawn shard-proving worker threads, sized by `prove_workers` -- a separate knob from
-        // `trace_gen_workers` (see `ZKMCoreOpts::prove_workers`'s doc comment), since trace
-        // generation and shard proving are different workloads with different scaling
-        // characteristics (trace generation is lighter/more memory-bound; shard proving's
-        // `commit_traces` step is heavier/more CPU-bound). The receiver is wrapped in
-        // `Arc<Mutex<_>>` and shared across `prove_workers` threads that each lock only for the
-        // brief `recv()`, so multiple shards' `prove_shard_with_data` calls (each itself already
-        // using rayon internally) can run concurrently, sharing rayon's global thread pool rather
-        // than competing with each other for whole worker threads. Proofs finish out of order
-        // across workers, so tag each with its `ExecutionRecord`'s `shard` index and sort by it
-        // afterward -- downstream verification requires proofs in strictly increasing shard
-        // order.
+
+        // Stage B (splicing): decides real shard cuts. Each worker replays `Chunk`s
+        // independently via its own `SplicingVM` config clone (`SplicingVM` carries no state
+        // across calls -- see its module doc comment for why that's safe: every chunk boundary
+        // forces a shard cut if the cost threshold hasn't naturally been hit yet). Dispatched
+        // round-robin from Stage A and consumed round-robin by Stage C below, so static
+        // partitioning keeps chunk order aligned on both ends without a reorder buffer -- each
+        // worker's own input and output channels stay in the order it received/produced them.
+        let mut splicing_result_txs = Vec::with_capacity(splicing_worker_count);
+        let mut splicing_result_rxs = Vec::with_capacity(splicing_worker_count);
+        for _ in 0..splicing_worker_count {
+            let (tx, rx) = sync_channel::<(Vec<SplicedChunk>, bool)>(1);
+            splicing_result_txs.push(tx);
+            splicing_result_rxs.push(rx);
+        }
+
+        let stage_b_span = tracing::Span::current().clone();
+        let mut stage_b_handles = Vec::with_capacity(splicing_worker_count);
+        for (chunk_rx, result_tx) in splicing_chunk_rxs.into_iter().zip(splicing_result_txs) {
+            let span = stage_b_span.clone();
+            let splicing_program = program_arc.clone();
+            let splicing_trace_byte_costs = Arc::clone(&trace_byte_costs);
+            let max_syscall_cycles = 0; // see `ZKMCoreOpts::minimal_trace_chunk_threshold`'s doc comment
+            let shard_size = (opts.shard_size as u32) * 4;
+            let shape_check_frequency = opts.shape_check_frequency;
+            let lde_size_threshold = opts.lde_size_threshold;
+            let handle: ScopedJoinHandle<Result<(), ZKMCoreProverError>> = s.spawn(move || {
+                let _span = span.enter();
+                tracing::debug_span!("splicing").in_scope(|| {
+                    let splicing = SplicingVM::new(
+                        splicing_program,
+                        max_syscall_cycles,
+                        shard_size,
+                        shape_check_frequency,
+                        lde_size_threshold,
+                        (*splicing_trace_byte_costs).clone(),
+                    );
+                    loop {
+                        let Ok(chunk) = chunk_rx.recv() else { break };
+                        let chunk_done = chunk.done;
+                        let spliced = splicing
+                            .splice_chunk(chunk)
+                            .map_err(ZKMCoreProverError::ExecutionError)?;
+                        result_tx.send((spliced, chunk_done)).unwrap();
+                    }
+                    Ok(())
+                })
+            });
+            stage_b_handles.push(handle);
+        }
+
+        // Stage C (tracing + state/deferred bookkeeping): reads Stage B's results round-robin
+        // (the same order Stage A dispatched chunks in), builds the real typed `ExecutionRecord`
+        // for each shard, and finalizes its `public_values`. Stays sequential -- `deferred`/
+        // `state`'s cross-shard chaining is order-dependent (see the long comment below), so this
+        // can't be split across a worker pool the way Stage B was. `TracingVM::new()` no longer
+        // needs anything threaded in from a previous call (`HINT_LEN`/`HINT_READ` resolve against
+        // the same oracle stream as everything else now, see `MinimalExecutor::resolve_hint_len`'s
+        // doc comment) -- the only remaining sequential dependency here is `state`/`deferred`.
+        // Feeds the existing Stage 2 pool (dependency generation/trace generation/proving) via
+        // `p2_records_tx`, unchanged from before this stage split.
+        let stage_c_span = tracing::Span::current().clone();
+        let tracing_program = program_arc.clone();
+        let stage_c_handle: ScopedJoinHandle<Result<(), ZKMCoreProverError>> = s.spawn(move || {
+            let _span = stage_c_span.enter();
+            tracing::debug_span!("tracing").in_scope(|| {
+                let mut deferred = ExecutionRecord::new(tracing_program.clone());
+                let mut state = PublicValues::<u32, u32>::default().reset();
+                // `SplicedChunk::shard` is only chunk-local (Stage B doesn't know the true global
+                // index -- see its doc comment) -- this thread is the sole source of truth for
+                // it, same role `state.shard`/`state.execution_shard` already play below. Starts
+                // at 1, not 0: matches `CoreVM::new()`'s own `current_shard: 1` convention, which
+                // is what `SplicingVM`'s shard numbering used before this stage split.
+                let mut execution_shard_counter = 1u32;
+                let mut chunk_index = 0usize;
+
+                'outer: loop {
+                    let Ok((spliced_pieces, chunk_done)) =
+                        splicing_result_rxs[chunk_index % splicing_worker_count].recv()
+                    else {
+                        break;
+                    };
+                    chunk_index += 1;
+
+                    for mut spliced in spliced_pieces {
+                        let execution_shard = execution_shard_counter;
+                        execution_shard_counter += 1;
+                        spliced.shard = execution_shard;
+                        let tracer = TracingVM::new(tracing_program.clone(), spliced);
+                        let traced = tracer.trace().map_err(ZKMCoreProverError::ExecutionError)?;
+                        let mut record = traced.record;
+                        let done = traced.done;
+
+                        if done {
+                            let minimal_runner_final = final_runner_rx.recv().unwrap();
+                            tracing_chunk::emit_globals(
+                                minimal_runner_final.registers(),
+                                minimal_runner_final.registers_touched(),
+                                minimal_runner_final.memory(),
+                                minimal_runner_final.uninitialized_memory(),
+                                minimal_runner_final.program(),
+                                &mut record,
+                            );
+                        }
+
+                        // Update the public values & prover state for this (execution)
+                        // shard, then propagate to the record -- sequential, so (unlike the
+                        // old multi-worker design) no turn-based synchronization is needed.
+                        state.shard += 1;
+                        state.execution_shard = execution_shard;
+                        state.is_execution_shard = record.contains_cpu() as u32;
+                        if let Some(first_pc) = record.first_instruction_pc {
+                            state.start_pc = first_pc;
+                            state.next_pc = record.last_next_pc;
+                            let initial_clk = record.first_instruction_clk.unwrap();
+                            // `clk_high` is constant across a shard (see
+                            // `SplicingVM::should_cut_shard`'s window-boundary rule), so the
+                            // shard's first row's high limb is this shard's only value.
+                            state.clk_high = (initial_clk >> 28) as u32;
+                            state.initial_timestamp = (initial_clk & 0xfff_ffff) as u32;
+                            // Unlike `initial_timestamp`, deliberately relative to this shard's
+                            // own `clk_high` window rather than masked to it: the AIR's
+                            // `send_state` for the shard's last row predicts its successor's
+                            // incoming clk as the unreduced expression `clk_low + clk_increment`
+                            // (see `eval_state_chain`'s doc comment), which the window-boundary
+                            // shard-cut rule allows to spill past `1 << 28` by up to one
+                            // instruction's `clk_increment` exactly when it triggers the cut.
+                            // `eval_public_values`'s closing `receive_state` must match that
+                            // same unreduced value bit-for-bit -- masking to 28 bits would wrap
+                            // it back into the shard's own window and never match.
+                            state.last_timestamp =
+                                (record.last_timestamp - (u64::from(state.clk_high) << 28))
+                                    as u32;
+                        }
+                        state.committed_value_digest = record.public_values.committed_value_digest;
+                        state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+                        record.public_values = state;
+
+                        // Defer events that are too expensive to include in every shard.
+                        deferred.append(&mut record.defer());
+
+                        let mut records = vec![record];
+                        let mut split_records =
+                            deferred.split(done, records.last_mut(), opts.split_opts);
+
+                        // Update the public values & prover state for the shards which do
+                        // not contain "cpu events" before committing to them.
+                        if !done {
+                            state.execution_shard += 1;
+                        }
+                        for split_record in &mut split_records {
+                            state.shard += 1;
+                            state.is_execution_shard = 0;
+                            state.previous_init_addr_bits =
+                                split_record.public_values.previous_init_addr_bits;
+                            state.last_init_addr_bits = split_record.public_values.last_init_addr_bits;
+                            state.previous_finalize_addr_bits =
+                                split_record.public_values.previous_finalize_addr_bits;
+                            state.last_finalize_addr_bits =
+                                split_record.public_values.last_finalize_addr_bits;
+                            state.start_pc = state.next_pc;
+                            state.initial_timestamp = state.last_timestamp;
+                            split_record.public_values = state;
+                        }
+                        records.append(&mut split_records);
+
+                        // Dependency generation, trace-matrix generation, and proving
+                        // (Stage 2, below) are all per-record-independent once
+                        // `public_values` is finalized -- `Machine::generate_dependencies`
+                        // allocates a fresh scratch record per (record, chip) and only ever
+                        // reads/writes that one record, with no shared or cross-record
+                        // accumulator. Hand each record off immediately so Stage 2 can work
+                        // on shard N's dependency generation/trace generation/proving
+                        // concurrently with this thread producing and tracing shard N+1
+                        // onward.
+                        for record in records {
+                            p2_records_tx.send(record).unwrap();
+                        }
+                    }
+
+                    if chunk_done {
+                        break 'outer;
+                    }
+                }
+
+                Ok(())
+            })
+        });
+
+        // Stage 2 (dependency generation, trace-matrix generation, and shard proving): a fixed
+        // pool of `prove_workers` threads -- a separate knob from `trace_gen_workers` (see
+        // `ZKMCoreOpts::prove_workers`'s doc comment), since trace generation and shard proving
+        // are different workloads with different scaling characteristics (trace generation is
+        // lighter/more memory-bound; shard proving's `commit_traces` step is heavier/more
+        // CPU-bound). The receiver is wrapped in `Arc<Mutex<_>>` and shared across `prove_workers`
+        // threads that each lock only for the brief `recv()`, so multiple shards' work (each
+        // itself already using rayon internally, e.g. some chips' own `generate_dependencies`)
+        // can run concurrently, sharing rayon's global thread pool rather than competing with
+        // each other for whole worker threads. Shards finish out of order across workers, so tag
+        // each with its `ExecutionRecord`'s `shard` index and sort by it afterward -- downstream
+        // verification requires proofs in strictly increasing shard order.
         let p2_prover_span = tracing::Span::current().clone();
-        let p2_records_and_traces_rx = Arc::new(Mutex::new(p2_records_and_traces_rx));
+        let p2_records_rx = Arc::new(Mutex::new(p2_records_rx));
         let all_shard_proofs_unordered = Arc::new(Mutex::new(Vec::new()));
         let mut p2_prover_handles = Vec::new();
         for _ in 0..opts.prove_workers.max(1) {
             let span = p2_prover_span.clone();
+            let machine = shard_prover.machine().clone();
             let shard_prover = Arc::clone(&shard_prover);
-            let rx = Arc::clone(&p2_records_and_traces_rx);
+            let rx = Arc::clone(&p2_records_rx);
             let all_shard_proofs_unordered = Arc::clone(&all_shard_proofs_unordered);
-            let handle = s.spawn(move || {
+            let pk = Arc::clone(&pk);
+            let prover_permits = prover_permits.clone();
+            let trace_byte_costs = Arc::clone(&trace_byte_costs);
+            let handle: ScopedJoinHandle<Result<(), ZKMCoreProverError>> = s.spawn(move || {
                 let _span = span.enter();
-                tracing::debug_span!("shard prover").in_scope(|| loop {
-                    let received = { rx.lock().unwrap().recv() };
-                    let Ok((records, shard_data, budget_permits)) = received else {
-                        break;
-                    };
-                    for ((record, data), budget_permit) in
-                        records.into_iter().zip(shard_data).zip(budget_permits)
-                    {
+                tracing::debug_span!("shard prover").in_scope(|| -> Result<(), ZKMCoreProverError> {
+                    let async_rt =
+                        tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+                    loop {
+                        let received = { rx.lock().unwrap().recv() };
+                        let Ok(mut record) = received else {
+                            break;
+                        };
+
+                        machine.generate_dependencies(std::iter::once(&mut record), None).map_err(
+                            |e| {
+                                tracing::error!("Error generating dependencies: {:?}", e);
+                                ZKMCoreProverError::DependenciesGenerationError
+                            },
+                        )?;
+
+                        let estimated_bytes = estimate_record_trace_bytes(&record, &trace_byte_costs);
+                        let budget_permit =
+                            async_rt.block_on(trace_budget::acquire_trace_budget(estimated_bytes));
+                        let main_trace_data =
+                            async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
+                                record.clone(),
+                                shard_prover.max_log_row_count(),
+                                prover_permits.clone(),
+                            ));
+                        let data = ZkmShardData { pk: Arc::clone(&pk), main_trace_data };
+
                         let shard_index = record.public_values.shard;
                         let shard_start = Instant::now();
                         let mut challenger = ZkmGlobalContext::default_challenger();
@@ -362,17 +436,22 @@ pub fn prove_with_context(
                             proving_start.elapsed(),
                         );
                     }
-                });
+                    Ok(())
+                })
             });
             p2_prover_handles.push(handle);
         }
 
-        // Wait until the sequential producer has fully finished.
-        let (public_values_stream, cycles) = producer_handle.join().unwrap()?;
+        // Wait until Stages A/B/C have fully finished.
+        let (public_values_stream, cycles) = stage_a_handle.join().unwrap()?;
+        for handle in stage_b_handles {
+            handle.join().unwrap()?;
+        }
+        stage_c_handle.join().unwrap()?;
 
         // Wait until all shard-proving workers have finished, then restore shard order.
         for handle in p2_prover_handles {
-            handle.join().unwrap();
+            handle.join().unwrap()?;
         }
         let mut all_shard_proofs_unordered = match Arc::try_unwrap(all_shard_proofs_unordered) {
             Ok(mutex) => mutex.into_inner().unwrap(),
@@ -559,7 +638,7 @@ mod tests {
         let program = Executor::new(program, opts.clone()).program;
         let mut minimal_runner =
             MinimalRunner::new(program.clone(), opts.minimal_trace_chunk_threshold);
-        let mut splicing = SplicingVM::new(
+        let splicing = SplicingVM::new(
             program.clone(),
             0,
             (opts.shard_size as u32) * 4,
@@ -567,7 +646,6 @@ mod tests {
             opts.lde_size_threshold,
             mips_costs().into_iter().map(|(k, v)| (k, v as u64)).collect(),
         );
-        let mut tracing_input_stream: std::collections::VecDeque<Vec<u8>> = Default::default();
         let mut deferred = ExecutionRecord::new(program.clone());
         let mut state = PublicValues::<u32, u32>::default().reset();
         let mut all_records = Vec::new();
@@ -577,13 +655,8 @@ mod tests {
             let chunk_done = chunk.done;
             for spliced in splicing.splice_chunk(chunk).unwrap() {
                 let execution_shard = spliced.shard;
-                let tracer = TracingVM::new(
-                    program.clone(),
-                    spliced,
-                    std::mem::take(&mut tracing_input_stream),
-                );
+                let tracer = TracingVM::new(program.clone(), spliced);
                 let traced = tracer.trace().unwrap();
-                tracing_input_stream = traced.input_stream;
                 let mut record = traced.record;
                 let done = traced.done;
 
@@ -774,6 +847,81 @@ mod tests {
             prove_with_context(program, &ZKMStdin::new(), opts, ZKMContext::default()).unwrap();
 
         assert!(shard_proofs.len() > 1, "expected more than one shard, got {}", shard_proofs.len());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        for proof in &shard_proofs {
+            let mut challenger = ZkmGlobalContext::default_challenger();
+            vk.observe_into(&mut challenger);
+            shard_verifier.verify_shard(&vk, proof, &mut challenger).unwrap();
+        }
+    }
+
+    /// A tiny `minimal_trace_chunk_threshold` forces `MinimalRunner` to yield many `Chunk`s well
+    /// before any shard's cost threshold is hit, so `SplicingVM::splice_chunk` must repeatedly
+    /// force-close a shard at a chunk boundary rather than at a natural `should_cut_shard()` cut
+    /// -- the new code path this stage split added. None of the other smoke tests here exercise
+    /// it: `many_adds_program` never touches the oracle at all (pure register ops), and every
+    /// other test's `minimal_trace_chunk_threshold` stays at the default (sized well above a
+    /// typical shard's own oracle-entry count), so a shard always closes before its chunk does.
+    #[test]
+    fn run_test_chunk_boundary_mid_shard() {
+        use crate::programs::tests::fibonacci_program;
+        use zkm_core_executor::ZKMContext;
+        use zkm_stark::ZKMCoreOpts;
+
+        let program = fibonacci_program();
+        // Small enough to force many chunks within fibonacci's own (small, likely single-shard)
+        // execution, but not so small that per-chunk channel/replay overhead dominates runtime --
+        // `shard_size` stays at its default so this doesn't also multiply shard count on top of
+        // chunk count.
+        let opts = ZKMCoreOpts { minimal_trace_chunk_threshold: 64, ..Default::default() };
+        let (shard_proofs, _public_values_stream, _cycles, vk) =
+            prove_with_context(program, &ZKMStdin::new(), opts, ZKMContext::default()).unwrap();
+
+        assert!(!shard_proofs.is_empty());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        for proof in &shard_proofs {
+            let mut challenger = ZkmGlobalContext::default_challenger();
+            vk.observe_into(&mut challenger);
+            shard_verifier.verify_shard(&vk, proof, &mut challenger).unwrap();
+        }
+    }
+
+    /// Combines real `HINT_LEN`/`HINT_READ` usage (via real stdin) with a tiny
+    /// `minimal_trace_chunk_threshold`, so a synthetic hint-length oracle entry (see
+    /// `MinimalExecutor::resolve_hint_len`'s doc comment) is likely to land at or near a forced
+    /// chunk boundary. Neither `run_test_fibonacci_real_stdin` (real stdin, but default -- large
+    /// -- chunk threshold, so it never crosses a chunk boundary) nor
+    /// `run_test_chunk_boundary_mid_shard` (forces a chunk boundary, but with empty stdin, so it
+    /// never calls `HINT_READ` at all) exercises both at once.
+    #[test]
+    fn run_test_hint_read_chunk_boundary() {
+        use zkm_core_executor::ZKMContext;
+        use zkm_stark::ZKMCoreOpts;
+
+        let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
+        let mut stdin = ZKMStdin::new();
+        stdin.write(&1000u32);
+        let opts = ZKMCoreOpts { minimal_trace_chunk_threshold: 64, ..Default::default() };
+        let (shard_proofs, _public_values_stream, _cycles, vk) =
+            prove_with_context(program, &stdin, opts, ZKMContext::default()).unwrap();
+
+        assert!(!shard_proofs.is_empty());
 
         let machine = MipsAir::<KoalaBear>::hypercube_machine();
         let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;

@@ -126,11 +126,19 @@ pub trait SyscallRuntime {
     /// `SYSHINTREAD`). No-op for oracle-sourced runtimes -- the oracle already encodes the
     /// correct first-touch value.
     fn seed_uninitialized(&mut self, addr: u32, value: u32) -> Result<(), ExecutionError>;
-    /// Peek at the next input-stream item without consuming it (`SYSHINTLEN`).
-    fn peek_input(&self) -> Option<&Vec<u8>>;
-    /// Consume and return the next input-stream item (`SYSHINTREAD`).
-    fn consume_input(&mut self) -> Option<Vec<u8>>;
+    /// `SYSHINTLEN`'s full behavior: resolve and return the length of the next input-stream item.
+    /// Real runtimes (`Executor`/`MinimalExecutor`) peek their live input stream;
+    /// `MinimalExecutor` additionally buffers the resolved length into `oracle_out` (see its doc
+    /// comment) so oracle-sourced runtimes (`CoreVM<Oracle>`, used by `SplicingVM`/`TracingVM`)
+    /// can pull it back out deterministically, without needing any live queue of their own.
+    fn resolve_hint_len(&mut self) -> Result<u32, ExecutionError>;
+    /// `SYSHINTREAD`'s full behavior: consume the next input-stream item, validate it against
+    /// `len`, and seed `ptr..ptr+len` with its bytes (real runtimes only -- a no-op for
+    /// oracle-sourced runtimes, since `seed_uninitialized` already is, and the resolved bytes
+    /// reach the oracle via the guest's own subsequent genuine load of `ptr`).
+    fn resolve_hint_read(&mut self, ptr: u32, len: u32) -> Result<(), ExecutionError>;
     /// Push a new item onto the input stream (`WRITE` to `FD_HINT`, or a hook's injected result).
+    /// No-op for oracle-sourced runtimes -- nothing left to push to during a replay pass.
     fn push_hint_input(&mut self, bytes: Vec<u8>);
 
     /// Verify the next deferred proof against `(vkey, pv_digest)` (`VERIFY_ZKM_PROOF`/`SYSVERIFY`).
@@ -321,16 +329,45 @@ impl SyscallRuntime for Executor<'_> {
         }
     }
 
-    fn peek_input(&self) -> Option<&Vec<u8>> {
-        self.state.input_stream.get(self.state.input_stream_ptr)
+    fn resolve_hint_len(&mut self) -> Result<u32, ExecutionError> {
+        self.state
+            .input_stream
+            .get(self.state.input_stream_ptr)
+            .map(|item| item.len() as u32)
+            .ok_or_else(|| {
+                log::error!("failed reading stdin due to insufficient input data");
+                ExecutionError::InvalidSyscallArgs()
+            })
     }
 
-    fn consume_input(&mut self) -> Option<Vec<u8>> {
-        let item = self.state.input_stream.get(self.state.input_stream_ptr).cloned();
-        if item.is_some() {
-            self.state.input_stream_ptr += 1;
+    fn resolve_hint_read(&mut self, ptr: u32, len: u32) -> Result<(), ExecutionError> {
+        let Some(vec) = self.state.input_stream.get(self.state.input_stream_ptr).cloned() else {
+            log::error!("failed reading stdin due to insufficient input data");
+            return Err(ExecutionError::InvalidSyscallArgs());
+        };
+        self.state.input_stream_ptr += 1;
+        if self.unconstrained {
+            log::error!("hint read should not be used in a unconstrained block");
+            return Err(ExecutionError::ExceptionOrTrap());
         }
-        item
+        if vec.len() as u32 != len || !ptr.is_multiple_of(4) {
+            log::error!(
+                "Invalid hint read syscall arguments: ptr={}, len={}, vec_len={}",
+                ptr,
+                len,
+                vec.len()
+            );
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        for i in (0..len).step_by(4) {
+            let b1 = vec[i as usize];
+            let b2 = vec.get(i as usize + 1).copied().unwrap_or(0);
+            let b3 = vec.get(i as usize + 2).copied().unwrap_or(0);
+            let b4 = vec.get(i as usize + 3).copied().unwrap_or(0);
+            let word = u32::from_le_bytes([b1, b2, b3, b4]);
+            self.seed_uninitialized(ptr + i, word)?;
+        }
+        Ok(())
     }
 
     fn push_hint_input(&mut self, bytes: Vec<u8>) {

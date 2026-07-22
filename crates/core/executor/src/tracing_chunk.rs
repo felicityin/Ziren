@@ -9,7 +9,7 @@
 //! Not named `tracing.rs` to avoid shadowing the `tracing` crate, used pervasively elsewhere in
 //! this crate via `tracing::debug_span!`/`tracing::info!`.
 
-use std::{collections::VecDeque, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     dependencies::{
@@ -91,14 +91,11 @@ pub struct TracingVM {
 pub struct TracedShard {
     pub record: ExecutionRecord,
     pub done: bool,
-    /// Carried into the next `TracingVM`: `HINT_LEN`/`HINT_READ` replay against this stream and
-    /// must stay positioned exactly where the previous shard left off.
-    pub input_stream: VecDeque<Vec<u8>>,
 }
 
 impl TracingVM {
     #[must_use]
-    pub fn new(program: Arc<Program>, chunk: SplicedChunk, input_stream: VecDeque<Vec<u8>>) -> Self {
+    pub fn new(program: Arc<Program>, chunk: SplicedChunk) -> Self {
         let mut core = CoreVM::new(program, Oracle::new(chunk.oracle));
         core.pc = chunk.pc_start;
         core.next_pc = chunk.next_pc_start;
@@ -112,7 +109,6 @@ impl TracingVM {
         core.registers = chunk.registers_start;
         core.current_shard = chunk.shard;
         core.record.public_values.shard = chunk.shard;
-        core.input_stream = input_stream;
         core.is_tracing = true;
         Self { core }
     }
@@ -133,11 +129,7 @@ impl TracingVM {
                 for (_, event) in self.core.local_memory_access.drain() {
                     self.core.record.cpu_local_memory_access.push(event);
                 }
-                return Ok(TracedShard {
-                    record: self.core.record,
-                    done,
-                    input_stream: self.core.input_stream,
-                });
+                return Ok(TracedShard { record: self.core.record, done });
             }
         }
     }
