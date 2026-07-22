@@ -537,7 +537,7 @@ impl<GC: IopCtx, SC: ShardContext<GC>, C: DefaultJaggedProver<GC, SC::Config>> S
             total_number_of_cells += stats.total_number_of_cells();
         }
 
-        tracing::debug!(
+        tracing::info!(
             "Total number of cells: {}, number of variables: {}",
             total_number_of_cells.separate_with_underscores(),
             total_number_of_cells.next_power_of_two().ilog2(),

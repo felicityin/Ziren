@@ -1115,6 +1115,7 @@ impl<'a> Executor<'a> {
         self.record.first_instruction_clk.get_or_insert(clk);
         self.record.last_next_pc = next_pc;
         self.record.last_exit_code = exit_code;
+        self.record.last_instruction_clk = clk;
         self.record.last_timestamp = clk + 5 + u64::from(num_extra_cycles);
 
         // Opcodes whose chip has been migrated off of `CpuChip` (see
@@ -1876,14 +1877,30 @@ impl<'a> Executor<'a> {
     /// Every sub-access within one instruction's row is proven against a single shared
     /// `clk_high` column (see `execute_cycle`'s doc comment on its call site). If
     /// `self.state.clk`'s current `1 << 24` window doesn't have room for the widest
-    /// `MemoryAccessPosition` offset (`HI` = 4), jump `self.state.clk` to the next window's
-    /// start and record the jump for the `clk_high`-transition AIR chip (see
+    /// `MemoryAccessPosition` offset (`HI` = 4) *and* the instruction's full post-execution
+    /// advance (`5 + num_extra_cycles`, up to `self.max_syscall_cycles` in the worst case -- see
+    /// `emit_events`'s identical `last_timestamp` computation), jump `self.state.clk` to the next
+    /// window's start and record the jump for the `clk_high`-transition AIR chip (see
     /// [`BumpClkHighEvent`]'s doc comment) so the instruction about to execute starts cleanly
-    /// inside a single window.
+    /// inside a single window *and* finishes inside it too.
+    ///
+    /// Checking only room for `HI` (as this used to) misses the case where an instruction's own
+    /// advance -- always at least `5`, i.e. `HI + 1` -- lands exactly on or past the window
+    /// boundary on its own: e.g. `window_remaining == 5` passes an `> HI` check, but a plain
+    /// (non-syscall) instruction's `+ 5` then lands `self.state.clk` exactly at the next window's
+    /// start. Numerically that's harmless (still a valid, monotonic `clk`), but no
+    /// `BumpClkHighEvent` gets recorded for it, so the AIR's `LookupKind::State` chain breaks:
+    /// the instruction's own `send_state` sent its unreduced `(clk_high, clk_low + 5)` (per
+    /// `eval_state_chain`'s doc comment, deliberately never reduced in an ordinary opcode chip's
+    /// row), but the very next instruction's `CpuState` populates from the *already-rolled-over*
+    /// `self.state.clk`, i.e. the reduced `(clk_high + 1, 0)` -- two different field elements that
+    /// were supposed to be the same interaction, with no `StateBumpChip` row in between to bridge
+    /// them via its own receive/send pair.
     fn bump_clk_high_if_need(&mut self) {
         let window_start = self.state.clk & !(CORE_SHARD_CLK_LIMIT - 1);
         let window_remaining = window_start + CORE_SHARD_CLK_LIMIT - self.state.clk;
-        if window_remaining > MemoryAccessPosition::HI as u64 {
+        let max_total_advance = MemoryAccessPosition::HI as u64 + 1 + u64::from(self.max_syscall_cycles);
+        if window_remaining > max_total_advance {
             return;
         }
 
