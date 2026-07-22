@@ -280,6 +280,7 @@ impl<F: PrimeField32> MipsAir<F> {
             Jump,
             MiscInstrs,
             MovCond,
+            StateBump,
             MemoryInstrs,
             LoadWord,
             StoreWord,
