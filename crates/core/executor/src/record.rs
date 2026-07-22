@@ -16,8 +16,8 @@ use std::{borrow::Borrow, iter::once, mem::take, sync::Arc};
 
 use crate::{
     events::{
-        AluEvent, BranchEvent, ByteLookupEvent, ByteRecord, CompAluEvent, CpuEvent,
-        GlobalLookupEvent, JumpEvent, MemInstrEvent, MemoryInitializeFinalizeEvent,
+        AluEvent, BranchEvent, BumpClkHighEvent, ByteLookupEvent, ByteRecord, CompAluEvent,
+        CpuEvent, GlobalLookupEvent, JumpEvent, MemInstrEvent, MemoryInitializeFinalizeEvent,
         MemoryLocalEvent, MemoryRecordEnum, MiscEvent, MovCondEvent, PrecompileEvent,
         PrecompileEvents, SyscallEvent,
     },
@@ -42,14 +42,15 @@ pub struct ExecutionRecord {
     pub first_instruction_pc: Option<u32>,
     /// The `clk` of this record's first retired instruction, if any. Set alongside
     /// [`Self::first_instruction_pc`].
-    pub first_instruction_clk: Option<u32>,
+    pub first_instruction_clk: Option<u64>,
     /// The `next_pc` of this record's most recently retired instruction.
     pub last_next_pc: u32,
     /// The `exit_code` of this record's most recently retired instruction.
     pub last_exit_code: u32,
     /// The expected `clk` of the instruction following this record's most recently retired one
-    /// (`clk + 5 + num_extra_cycles`), mirroring [`zkm_hypercube::air::PublicValues::last_timestamp`].
-    pub last_timestamp: u32,
+    /// (`clk + 5 + num_extra_cycles`). Split into `PublicValues::last_clk_high`/`last_clk_low`
+    /// when populated there (see `crates/core/machine/src/utils/prove.rs`).
+    pub last_timestamp: u64,
     /// A trace of the register-form ADD and ADDU events (plus internal dependency-check rows
     /// from other chips reusing this arithmetic circuit).
     pub add_events: Vec<AluEvent>,
@@ -102,6 +103,8 @@ pub struct ExecutionRecord {
     pub syscall_events: Vec<SyscallEvent>,
     /// A trace of all the global lookup events.
     pub global_lookup_events: Vec<GlobalLookupEvent>,
+    /// A trace of `clk_high` boundary crossings (see [`BumpClkHighEvent`]'s doc comment).
+    pub bump_clk_high_events: Vec<BumpClkHighEvent>,
     /// The public values.
     pub public_values: PublicValues<u32, u32>,
 }
@@ -419,6 +422,7 @@ impl MachineRecord for ExecutionRecord {
         self.global_memory_finalize_events.append(&mut other.global_memory_finalize_events);
         self.cpu_local_memory_access.append(&mut other.cpu_local_memory_access);
         self.global_lookup_events.append(&mut other.global_lookup_events);
+        self.bump_clk_high_events.append(&mut other.bump_clk_high_events);
 
         // `Machine::generate_dependencies` calls each chip's `generate_dependencies` with a
         // fresh, per-chip `other` record and merges it in via this method -- `MemoryGlobalChip`
@@ -456,17 +460,19 @@ impl MachineRecord for ExecutionRecord {
         // sends/receives close that chain against public values instead. A shard boundary is only
         // ever sequential (see `CpuChip::eval_pc`), so the paired pc is always `pc + 4`. Gated on
         // `is_execution_shard` so a shard that retired no instructions contributes nothing to the
-        // chain, rather than relying on `start_pc == next_pc` / `initial_timestamp ==
-        // last_timestamp` to self-cancel.
+        // chain, rather than relying on `start_pc == next_pc` / `(initial_clk_high,
+        // initial_clk_low) == (last_clk_high, last_clk_low)` to self-cancel.
         let pc_inc = AB::Expr::from_canonical_u32(DEFAULT_PC_INC);
         builder.send_state(
-            public_values.initial_timestamp,
+            public_values.initial_clk_high,
+            public_values.initial_clk_low,
             public_values.start_pc,
             public_values.start_pc.into() + pc_inc.clone(),
             public_values.is_execution_shard.into(),
         );
         builder.receive_state(
-            public_values.last_timestamp,
+            public_values.last_clk_high,
+            public_values.last_clk_low,
             public_values.next_pc,
             public_values.next_pc.into() + pc_inc,
             public_values.is_execution_shard.into(),

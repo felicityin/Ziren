@@ -38,6 +38,7 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::Global
             | MipsAirId::Byte
             | MipsAirId::MovCond
+            | MipsAirId::StateBump
     )
 }
 
@@ -93,6 +94,7 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::SyscallInstrs, record.syscall_events.len());
     add_chip_cells(MipsAirId::SyscallCore, record.syscall_events.len());
     add_chip_cells(MipsAirId::Global, record.global_lookup_events.len());
+    add_chip_cells(MipsAirId::StateBump, record.bump_clk_high_events.len());
 
     let precompile_event_count: usize =
         record.precompile_events.iter().map(|(_, events)| events.len()).sum();
@@ -220,6 +222,10 @@ pub fn estimate_mips_lde_size(
     // Compute the global chip contribution.
     cells += (num_events_per_air[MipsAirId::Global]).next_power_of_two()
         * costs_per_air[&MipsAirId::Global];
+
+    // Compute the state bump chip contribution.
+    cells += (num_events_per_air[MipsAirId::StateBump]).next_power_of_two()
+        * costs_per_air[&MipsAirId::StateBump];
 
     cells * ((core::mem::size_of::<KoalaBear>() << 1) as u64)
 }
@@ -385,6 +391,10 @@ pub fn pad_mips_event_counts(
         MipsAirId::SyscallCore => *v += 2 * num_cycles,
         MipsAirId::MovCond => *v += 2 * num_cycles,
         MipsAirId::Global => *v += 64 * num_cycles,
+        // A `clk_high` crossing happens roughly once every `1 << 24` clk ticks (clk advances by
+        // 5 or more per cycle); dividing by `1 << 20` instead of the real `1 << 24`-ish rate
+        // keeps this a safe overestimate.
+        MipsAirId::StateBump => *v += num_cycles.div_ceil(1 << 20),
         _ => (),
     });
     event_counts

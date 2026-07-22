@@ -3,6 +3,28 @@ use super::MemoryWriteRecord;
 use crate::Opcode;
 use serde::{Deserialize, Serialize};
 
+/// Emitted whenever the executor pre-emptively advances `clk` to the start of the next `1 << 24`
+/// window because the current window doesn't have room for the widest `MemoryAccessPosition`
+/// offset (see `Executor::bump_clk_high_if_need`'s doc comment). Consumed by the `StateBumpChip`
+/// AIR that proves the resulting `clk_high` transition in-circuit: this event's `pc`/`next_pc`
+/// are exactly what the *previous* instruction sent as its own outgoing
+/// `(outgoing_next_pc, outgoing_next_next_pc)`, so `StateBumpChip` can receive that state and
+/// pass `pc`/`next_pc` through unchanged to whatever instruction executes next.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[repr(C)]
+pub struct BumpClkHighEvent {
+    /// The `clk` value before this jump.
+    pub prev_clk: u64,
+    /// The size of this jump (brings `clk` to the next `1 << 24` boundary).
+    pub increment: u64,
+    /// The pc of the instruction about to execute (matches the previous instruction's own
+    /// outgoing `next_pc`).
+    pub pc: u32,
+    /// The `next_pc` the instruction about to execute will itself receive as incoming state
+    /// (matches the previous instruction's own outgoing `next_next_pc`).
+    pub next_pc: u32,
+}
+
 /// Arithmetic Logic Unit (ALU) Event.
 ///
 /// This object encapsulated the information needed to prove an ALU operation. This includes its
@@ -10,10 +32,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct AluEvent {
-    /// The shard number.
-    pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     pub pc: u32,
     pub next_pc: u32,
     /// The opcode.
@@ -42,7 +62,6 @@ impl AluEvent {
     #[must_use]
     pub fn new(pc: u32, opcode: Opcode, a: u32, b: u32, c: u32) -> Self {
         Self {
-            shard: 0,
             clk: 0,
             pc,
             next_pc: pc + 4,
@@ -63,7 +82,6 @@ impl AluEvent {
     #[must_use]
     pub fn new_with_hi(pc: u32, opcode: Opcode, a: u32, b: u32, c: u32, hi: u32) -> Self {
         Self {
-            shard: 0,
             clk: 0,
             pc,
             next_pc: pc + 4,
@@ -86,10 +104,8 @@ impl AluEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct CompAluEvent {
-    /// The shard number.
-    pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
 
     pub pc: u32,
     pub next_pc: u32,
@@ -125,7 +141,6 @@ impl CompAluEvent {
     pub fn new(pc: u32, opcode: Opcode, a: u32, b: u32, c: u32) -> Self {
         Self {
             clk: 0,
-            shard: 0,
             pc,
             next_pc: pc + 4,
             opcode,
@@ -144,7 +159,6 @@ impl CompAluEvent {
     pub fn new_with_hi(pc: u32, opcode: Opcode, a: u32, b: u32, c: u32, hi: u32) -> Self {
         Self {
             clk: 0,
-            shard: 0,
             pc,
             next_pc: pc + 4,
             opcode,
@@ -167,10 +181,8 @@ impl CompAluEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MemInstrEvent {
-    /// The shard.
-    pub shard: u32,
     /// The clk.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     pub next_pc: u32,
@@ -201,8 +213,7 @@ impl MemInstrEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,
@@ -213,7 +224,6 @@ impl MemInstrEvent {
         prev_a_val: u32,
     ) -> Self {
         Self {
-            shard,
             clk,
             pc,
             next_pc,
@@ -236,10 +246,8 @@ impl MemInstrEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct BranchEvent {
-    /// The shard number.
-    pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     /// The next program counter.
@@ -269,8 +277,7 @@ impl BranchEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         next_next_pc: u32,
@@ -280,7 +287,6 @@ impl BranchEvent {
         c: u32,
     ) -> Self {
         Self {
-            shard,
             clk,
             pc,
             next_pc,
@@ -302,10 +308,8 @@ impl BranchEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct JumpEvent {
-    /// The shard number.
-    pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     /// The next program counter.
@@ -335,8 +339,7 @@ impl JumpEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         next_next_pc: u32,
@@ -346,7 +349,6 @@ impl JumpEvent {
         c: u32,
     ) -> Self {
         Self {
-            shard,
             clk,
             pc,
             next_pc,
@@ -368,10 +370,8 @@ impl JumpEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MiscEvent {
-    /// The shard number.
-    pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     pub next_pc: u32,
@@ -402,8 +402,7 @@ impl MiscEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        clk: u32,
-        shard: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,
@@ -415,7 +414,6 @@ impl MiscEvent {
     ) -> Self {
         Self {
             clk,
-            shard,
             pc,
             next_pc,
             opcode,
@@ -437,10 +435,8 @@ impl MiscEvent {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MovCondEvent {
-    /// The shard number.
-    pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The program counter.
     pub pc: u32,
     pub next_pc: u32,
@@ -469,8 +465,7 @@ impl MovCondEvent {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        shard: u32,
-        clk: u32,
+        clk: u64,
         pc: u32,
         next_pc: u32,
         opcode: Opcode,
@@ -480,7 +475,6 @@ impl MovCondEvent {
         prev_a: u32,
     ) -> Self {
         Self {
-            shard,
             clk,
             pc,
             next_pc,

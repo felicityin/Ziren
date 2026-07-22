@@ -6,14 +6,12 @@ pub const NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC: usize = 4;
 /// Memory Record.
 ///
 /// This object encapsulates the information needed to prove a memory access operation. This
-/// includes the shard, timestamp, and value of the memory address.
+/// includes the (global, never-reset) clk timestamp and value of the memory address.
 #[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MemoryRecord {
-    /// The shard number.
-    pub shard: u32,
-    /// The timestamp.
-    pub timestamp: u32,
+    /// The timestamp. `0` means "never touched" (see `ExecutionState::clk`'s doc comment).
+    pub timestamp: u64,
     /// The value.
     pub value: u32,
 }
@@ -42,43 +40,35 @@ pub enum MemoryAccessPosition {
 /// Memory Read Record.
 ///
 /// This object encapsulates the information needed to prove a memory read operation. This
-/// includes the value, shard, timestamp, and previous shard and timestamp.
+/// includes the value, timestamp, and previous timestamp.
 #[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MemoryReadRecord {
     /// The value.
     pub value: u32,
-    /// The shard number.
-    pub shard: u32,
     /// The timestamp.
-    pub timestamp: u32,
-    /// The previous shard number.
-    pub prev_shard: u32,
+    pub timestamp: u64,
     /// The previous timestamp.
-    pub prev_timestamp: u32,
+    pub prev_timestamp: u64,
 }
 
 /// Memory Write Record.
 ///
 /// This object encapsulates the information needed to prove a memory write operation. This
-/// includes the value, shard, timestamp, previous value, previous shard, and previous timestamp.
+/// includes the value, timestamp, previous value, and previous timestamp.
 #[allow(clippy::manual_non_exhaustive)]
 #[derive(Debug, Copy, Clone, Default, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MemoryWriteRecord {
     /// The value.
     pub value: u32,
-    /// The shard number.
-    pub shard: u32,
     /// The timestamp.
-    pub timestamp: u32,
+    pub timestamp: u64,
     /// The previous value.
     pub prev_value: u32,
-    /// The previous shard number.
-    pub prev_shard: u32,
     /// The previous timestamp.
-    pub prev_timestamp: u32,
+    pub prev_timestamp: u64,
 }
 
 /// Memory Record Enum.
@@ -99,16 +89,12 @@ impl MemoryRecordEnum {
     #[must_use]
     pub fn current_record(&self) -> MemoryRecord {
         match self {
-            MemoryRecordEnum::Read(record) => MemoryRecord {
-                shard: record.shard,
-                timestamp: record.timestamp,
-                value: record.value,
-            },
-            MemoryRecordEnum::Write(record) => MemoryRecord {
-                shard: record.shard,
-                timestamp: record.timestamp,
-                value: record.value,
-            },
+            MemoryRecordEnum::Read(record) => {
+                MemoryRecord { timestamp: record.timestamp, value: record.value }
+            }
+            MemoryRecordEnum::Write(record) => {
+                MemoryRecord { timestamp: record.timestamp, value: record.value }
+            }
         }
     }
 
@@ -116,16 +102,12 @@ impl MemoryRecordEnum {
     #[must_use]
     pub fn previous_record(&self) -> MemoryRecord {
         match self {
-            MemoryRecordEnum::Read(record) => MemoryRecord {
-                shard: record.prev_shard,
-                timestamp: record.prev_timestamp,
-                value: record.value,
-            },
-            MemoryRecordEnum::Write(record) => MemoryRecord {
-                shard: record.prev_shard,
-                timestamp: record.prev_timestamp,
-                value: record.prev_value,
-            },
+            MemoryRecordEnum::Read(record) => {
+                MemoryRecord { timestamp: record.prev_timestamp, value: record.value }
+            }
+            MemoryRecordEnum::Write(record) => {
+                MemoryRecord { timestamp: record.prev_timestamp, value: record.prev_value }
+            }
         }
     }
 }
@@ -133,8 +115,7 @@ impl MemoryRecordEnum {
 /// Memory Initialize/Finalize Event.
 ///
 /// This object encapsulates the information needed to prove a memory initialize or finalize
-/// operation. This includes the address, value, shard, timestamp, and whether the memory is
-/// initialized or finalized.
+/// operation. This includes the address, value, and timestamp.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[repr(C)]
 pub struct MemoryInitializeFinalizeEvent {
@@ -142,26 +123,16 @@ pub struct MemoryInitializeFinalizeEvent {
     pub addr: u32,
     /// The value.
     pub value: u32,
-    /// The shard number.
-    pub shard: u32,
     /// The timestamp.
-    pub timestamp: u32,
+    pub timestamp: u64,
 }
 
 impl MemoryReadRecord {
     /// Creates a new [``MemoryReadRecord``].
     #[must_use]
-    pub const fn new(
-        value: u32,
-        shard: u32,
-        timestamp: u32,
-        prev_shard: u32,
-        prev_timestamp: u32,
-    ) -> Self {
-        debug_assert!(
-            shard > prev_shard || ((shard == prev_shard) && (timestamp > prev_timestamp))
-        );
-        Self { value, shard, timestamp, prev_shard, prev_timestamp }
+    pub const fn new(value: u32, timestamp: u64, prev_timestamp: u64) -> Self {
+        debug_assert!(timestamp > prev_timestamp);
+        Self { value, timestamp, prev_timestamp }
     }
 }
 
@@ -170,16 +141,12 @@ impl MemoryWriteRecord {
     #[must_use]
     pub const fn new(
         value: u32,
-        shard: u32,
-        timestamp: u32,
+        timestamp: u64,
         prev_value: u32,
-        prev_shard: u32,
-        prev_timestamp: u32,
+        prev_timestamp: u64,
     ) -> Self {
-        debug_assert!(
-            shard > prev_shard || ((shard == prev_shard) && (timestamp > prev_timestamp)),
-        );
-        Self { value, shard, timestamp, prev_value, prev_shard, prev_timestamp }
+        debug_assert!(timestamp > prev_timestamp);
+        Self { value, timestamp, prev_value, prev_timestamp }
     }
 }
 
@@ -198,13 +165,13 @@ impl MemoryInitializeFinalizeEvent {
     /// Creates a new [``MemoryInitializeFinalizeEvent``] for an initialization.
     #[must_use]
     pub const fn initialize(addr: u32, value: u32) -> Self {
-        Self { addr, value, shard: 1, timestamp: 1 }
+        Self { addr, value, timestamp: 1 }
     }
 
     /// Creates a new [``MemoryInitializeFinalizeEvent``] for a finalization.
     #[must_use]
     pub const fn finalize_from_record(addr: u32, record: &MemoryRecord) -> Self {
-        Self { addr, value: record.value, shard: record.shard, timestamp: record.timestamp }
+        Self { addr, value: record.value, timestamp: record.timestamp }
     }
 }
 

@@ -13,7 +13,7 @@ pub struct LinuxEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The first argument of the syscall.
     pub a0: u32,
     /// The second argument of the syscall.

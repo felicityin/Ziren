@@ -23,7 +23,6 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
 
     if c_neg == 1 {
         executor.record.add_events.push(AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -39,7 +38,6 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
     }
     if rem_neg == 1 {
         executor.record.add_events.push(AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -66,7 +64,6 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
 
     let multiplication = CompAluEvent {
         clk: 0,
-        shard: 0,
         pc: UNUSED_PC,
         next_pc: UNUSED_PC + DEFAULT_PC_INC,
         opcode: {
@@ -90,7 +87,6 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
 
     let lt_event = if is_signed_operation {
         AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -105,7 +101,6 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
         }
     } else {
         AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -131,7 +126,6 @@ pub fn emit_cloclz_dependencies(executor: &mut Executor, event: AluEvent) {
     let b = if event.opcode == Opcode::CLZ { event.b } else { !event.b };
     if b != 0 {
         let srl_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -158,7 +152,6 @@ pub fn emit_memory_dependencies(
     let memory_addr = event.b.wrapping_add(event.c);
     // Add event to ALU check to check that addr == b + c
     let add_event = AluEvent {
-        shard: 0,
         clk: 0,
         pc: UNUSED_PC,
         next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -197,7 +190,6 @@ pub fn emit_memory_dependencies(
 
         if most_sig_mem_value_byte >> 7 & 0x01 == 1 {
             let sub_event = AluEvent {
-                shard: 0,
                 clk: 0,
                 pc: UNUSED_PC,
                 next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -222,7 +214,6 @@ pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
     let a_gt_b = (event.a as i32) > (event.b as i32);
 
     let lt_comp_event = AluEvent {
-        shard: 0,
         clk: 0,
         pc: UNUSED_PC,
         next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -236,7 +227,6 @@ pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
         c_record: None,
     };
     let gt_comp_event = AluEvent {
-        shard: 0,
         clk: 0,
         pc: UNUSED_PC,
         next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -262,7 +252,6 @@ pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
     };
     if branching {
         let add_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -285,7 +274,6 @@ pub fn emit_jump_dependencies(executor: &mut Executor, event: JumpEvent) {
         Opcode::JumpDirect => {
             let target_pc = event.next_pc.wrapping_add(event.b);
             let add_event = AluEvent {
-                shard: 0,
                 clk: 0,
                 pc: UNUSED_PC,
                 next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -313,7 +301,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         let mul_lo = multiply as u32;
         let mul_event = CompAluEvent {
             clk: 0,
-            shard: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
             opcode: Opcode::MULTU,
@@ -334,7 +321,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         let mul_lo = multiply as u32;
         let mul_event = CompAluEvent {
             clk: 0,
-            shard: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
             opcode: Opcode::MULT,
@@ -360,7 +346,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         );
         let sll_val = event.b << (31 - lsb - msbd);
         let sll_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -375,7 +360,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         };
         executor.record.shift_left_events.push(sll_event);
         let srl_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -395,7 +379,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         let msb = event.c >> 5;
         let ror_val = event.prev_a.rotate_right(lsb);
         let ror_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -412,7 +395,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
 
         let srl1_val = ror_val >> 1;
         let srl1_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -429,7 +411,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
 
         let srl_val = srl1_val >> (msb - lsb);
         let srl_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -446,7 +427,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
 
         let sll_val = event.b << (31 - msb + lsb);
         let sll_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -463,7 +443,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
 
         let extra_shift = srl_val + sll_val;
         let add_event = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,
@@ -479,7 +458,6 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         executor.record.add_events.push(add_event);
 
         let ror_event2 = AluEvent {
-            shard: 0,
             clk: 0,
             pc: UNUSED_PC,
             next_pc: UNUSED_PC + DEFAULT_PC_INC,

@@ -21,6 +21,7 @@ impl Syscall for EnterUnconstrainedSyscall {
         ctx.rt.unconstrained_state = ForkState {
             global_clk: ctx.rt.state.global_clk,
             clk: ctx.rt.state.clk,
+            initial_timestamp: ctx.rt.state.initial_timestamp,
             pc: ctx.rt.state.pc,
             memory_diff: HashMap::default(),
             record: std::mem::take(&mut ctx.rt.record),
@@ -46,6 +47,7 @@ impl Syscall for ExitUnconstrainedSyscall {
         if ctx.rt.unconstrained {
             ctx.rt.state.global_clk = ctx.rt.unconstrained_state.global_clk;
             ctx.rt.state.clk = ctx.rt.unconstrained_state.clk;
+            ctx.rt.state.initial_timestamp = ctx.rt.unconstrained_state.initial_timestamp;
             ctx.rt.state.pc = ctx.rt.unconstrained_state.pc;
             ctx.next_pc = ctx.rt.state.pc.wrapping_add(4);
             for (addr, value) in ctx.rt.unconstrained_state.memory_diff.drain() {

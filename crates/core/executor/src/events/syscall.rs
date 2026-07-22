@@ -12,10 +12,8 @@ pub struct SyscallEvent {
     pub pc: u32,
     /// The next program counter.
     pub next_pc: u32,
-    /// The shard number.
-    pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The `op_a` memory write record.
     pub a_record: MemoryWriteRecord,
     /// Whether the `op_a` memory write record is real.

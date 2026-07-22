@@ -14,10 +14,11 @@ use super::SyscallCode;
 /// runtime.
 #[allow(dead_code)]
 pub struct SyscallContext<'a, 'b: 'a> {
-    /// The current shard.
+    /// The current shard. Only used for host-side bookkeeping now, not threaded into memory
+    /// records/events (see `Executor::shard`'s doc comment).
     pub current_shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The next program counter.
     pub next_pc: u32,
     /// The exit code.
@@ -69,8 +70,7 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
 
     /// Read a word from memory.
     pub fn mr(&mut self, addr: u32) -> (MemoryReadRecord, u32) {
-        let record =
-            self.rt.mr(addr, self.current_shard, self.clk, Some(&mut self.local_memory_access));
+        let record = self.rt.mr(addr, self.clk, Some(&mut self.local_memory_access));
         (record, record.value)
     }
 
@@ -88,7 +88,7 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
 
     /// Write a word to memory.
     pub fn mw(&mut self, addr: u32, value: u32) -> MemoryWriteRecord {
-        self.rt.mw(addr, value, self.current_shard, self.clk, Some(&mut self.local_memory_access))
+        self.rt.mw(addr, value, self.clk, Some(&mut self.local_memory_access))
     }
 
     /// Write a slice of words to memory.
@@ -104,24 +104,14 @@ impl<'a, 'b> SyscallContext<'a, 'b> {
 
     /// Read a register and record the memory access.
     pub fn rr_traced(&mut self, register: Register) -> (MemoryReadRecord, u32) {
-        let record = self.rt.rr_traced(
-            register,
-            self.current_shard,
-            self.clk,
-            Some(&mut self.local_memory_access),
-        );
+        let record =
+            self.rt.rr_traced(register, self.clk, Some(&mut self.local_memory_access));
         (record, record.value)
     }
 
     /// Write a register and record the memory access.
     pub fn rw_traced(&mut self, register: Register, value: u32) -> MemoryWriteRecord {
-        self.rt.rw_cpu_traced(
-            register,
-            value,
-            self.current_shard,
-            self.clk,
-            Some(&mut self.local_memory_access),
-        )
+        self.rt.rw_cpu_traced(register, value, self.clk, Some(&mut self.local_memory_access))
     }
 
     /// Postprocess the syscall.  Specifically will process the syscall's memory local events.

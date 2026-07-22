@@ -16,7 +16,7 @@ pub struct KeccakSpongeEvent {
     /// The shard number.
     pub shard: u32,
     /// The clock cycle.
-    pub clk: u32,
+    pub clk: u64,
     /// The input as a list of u32 words.
     pub input: Vec<u32>,
     /// The output as a list of u32 words.

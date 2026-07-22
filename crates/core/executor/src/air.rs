@@ -123,6 +123,8 @@ pub enum MipsAirId {
     SysLinux = 47,
     /// The MovCondChip.
     MovCond = 49,
+    /// The `clk_high`-transition chip.
+    StateBump = 55,
 }
 
 impl MipsAirId {
@@ -184,6 +186,7 @@ impl MipsAirId {
             Self::SysLinux => "SysLinux",
             Self::MovCond => "MovCond",
             Self::Addi => "Addi",
+            Self::StateBump => "StateBump",
         }
     }
 }

@@ -10,7 +10,7 @@ pub struct U256xU2048MulEvent {
     /// The shard number.
     pub shard: u32,
     /// The channel number.
-    pub clk: u32,
+    pub clk: u64,
     /// The pointer to the a value.
     pub a_ptr: u32,
     /// The a value as a list of words.

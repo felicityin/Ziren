@@ -42,11 +42,18 @@ pub struct ExecutionState {
     pub global_clk: u64,
 
     /// The clock increments by 5 (possibly more in syscalls) for each instruction that has been
-    /// executed in this shard.
-    pub clk: u32,
+    /// executed. Unlike `global_clk`, this is the clock value that reaches events/AIR: it never
+    /// resets across shards (see `CORE_SHARD_CLK_LIMIT`'s doc comment for why it's global now).
+    pub clk: u64,
+
+    /// The `clk` value at the start of the current shard. Used both to bound a shard's clk range
+    /// (`clk - initial_timestamp`) and to detect "first touch this shard" for local memory
+    /// events (`record.timestamp < initial_timestamp`), replacing the old `record.shard != shard`
+    /// check now that there's no per-shard `shard` counter on memory records.
+    pub initial_timestamp: u64,
 
     /// Max clocks for each record.
-    pub records_clk: Vec<u32>,
+    pub records_clk: Vec<u64>,
     pub records_clk_index: u32,
 
     /// Uninitialized memory addresses that have a specific value they should be initialized with.
@@ -84,7 +91,10 @@ impl ExecutionState {
             global_clk: 0,
             // Start at shard 1 since shard 0 is reserved for memory initialization.
             current_shard: 1,
-            clk: 0,
+            // `clk == 0` is reserved as the "never touched" sentinel for `MemoryRecord::timestamp`,
+            // so real execution starts at `clk == 1`.
+            clk: 1,
+            initial_timestamp: 1,
             records_clk: vec![],
             records_clk_index: 0,
             pc: pc_start,
@@ -111,7 +121,9 @@ pub struct ForkState {
     /// The `global_clk` value at the fork point.
     pub global_clk: u64,
     /// The original `clk` value at the fork point.
-    pub clk: u32,
+    pub clk: u64,
+    /// The original `initial_timestamp` value at the fork point.
+    pub initial_timestamp: u64,
     /// The original `pc` value at the fork point.
     pub pc: u32,
     /// All memory changes since the fork point.
