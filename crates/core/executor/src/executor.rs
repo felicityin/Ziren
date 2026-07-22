@@ -2688,6 +2688,7 @@ impl<'a> Executor<'a> {
                 padded_event_counts,
                 &self.costs,
                 (self.program.instructions.len() as u64).next_power_of_two(),
+                &self.record.precompile_events,
             );
             if padded_lde_size > self.lde_size_threshold {
                 tracing::warn!(

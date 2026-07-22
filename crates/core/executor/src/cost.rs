@@ -3,10 +3,99 @@ use hashbrown::HashMap;
 use p3_koala_bear::KoalaBear;
 
 use crate::{
-    events::NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC, ExecutionRecord, MipsAirId, Opcode,
+    events::{PrecompileEvents, NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC},
+    syscalls::SyscallCode,
+    ExecutionRecord, MipsAirId, Opcode,
 };
 
 const BYTE_NUM_ROWS: u64 = 1 << 16;
+
+/// Maps each precompile [`SyscallCode`] that [`PrecompileEvents`] actually stores events under to
+/// the [`MipsAirId`] chip(s) whose row count it drives one-for-one.
+///
+/// A handful of `SyscallCode`s are coalesced into one bucket at event-recording time (see e.g.
+/// `FpOpSyscall::execute`, which files `*_FP_SUB`/`*_FP_MUL` events under the `*_FP_ADD` key, and
+/// `Fp2AddSubAssignSyscall`, which files `*_FP2_SUB` under `*_FP2_ADD`), so counting the listed
+/// key alone already covers every op it's coalesced with -- this table only needs the key each
+/// family is actually stored under, not every `SyscallCode` variant. `SHA_EXTEND`/`SHA_COMPRESS`
+/// each drive two chips (a `*Control` bracket chip, one row per event, plus the round-level
+/// worker chip); every other precompile family drives exactly one chip.
+///
+/// `SysLinux` isn't included here: every individual Linux syscall (`SYS_BRK`, `SYS_READ`, ...)
+/// already files its event under the single `SyscallCode::SYS_LINUX` key, so it's handled as a
+/// regular one-chip entry via that key like everything else.
+const PRECOMPILE_AIR_IDS: &[(SyscallCode, &[MipsAirId])] = &[
+    (SyscallCode::SHA_EXTEND, &[MipsAirId::ShaExtendControl, MipsAirId::ShaExtend]),
+    (SyscallCode::SHA_COMPRESS, &[MipsAirId::ShaCompressControl, MipsAirId::ShaCompress]),
+    (SyscallCode::ED_ADD, &[MipsAirId::EdAddAssign]),
+    (SyscallCode::ED_DECOMPRESS, &[MipsAirId::EdDecompress]),
+    (SyscallCode::KECCAK_SPONGE, &[MipsAirId::KeccakSponge]),
+    (SyscallCode::SECP256K1_ADD, &[MipsAirId::Secp256k1AddAssign]),
+    (SyscallCode::SECP256K1_DOUBLE, &[MipsAirId::Secp256k1DoubleAssign]),
+    (SyscallCode::SECP256K1_DECOMPRESS, &[MipsAirId::Secp256k1Decompress]),
+    (SyscallCode::SECP256R1_ADD, &[MipsAirId::Secp256r1AddAssign]),
+    (SyscallCode::SECP256R1_DOUBLE, &[MipsAirId::Secp256r1DoubleAssign]),
+    (SyscallCode::SECP256R1_DECOMPRESS, &[MipsAirId::Secp256r1Decompress]),
+    (SyscallCode::BN254_ADD, &[MipsAirId::Bn254AddAssign]),
+    (SyscallCode::BN254_DOUBLE, &[MipsAirId::Bn254DoubleAssign]),
+    (SyscallCode::BLS12381_ADD, &[MipsAirId::Bls12381AddAssign]),
+    (SyscallCode::BLS12381_DOUBLE, &[MipsAirId::Bls12381DoubleAssign]),
+    (SyscallCode::BLS12381_DECOMPRESS, &[MipsAirId::Bls12381Decompress]),
+    (SyscallCode::UINT256_MUL, &[MipsAirId::Uint256MulMod]),
+    (SyscallCode::U256XU2048_MUL, &[MipsAirId::U256XU2048Mul]),
+    (SyscallCode::POSEIDON2_PERMUTE, &[MipsAirId::Poseidon2Permute]),
+    (SyscallCode::BLS12381_FP_ADD, &[MipsAirId::Bls12381FpOpAssign]),
+    (SyscallCode::BLS12381_FP2_ADD, &[MipsAirId::Bls12831Fp2AddSubAssign]),
+    (SyscallCode::BLS12381_FP2_MUL, &[MipsAirId::Bls12831Fp2MulAssign]),
+    (SyscallCode::BN254_FP_ADD, &[MipsAirId::Bn254FpOpAssign]),
+    (SyscallCode::BN254_FP2_ADD, &[MipsAirId::Bn254Fp2AddSubAssign]),
+    (SyscallCode::BN254_FP2_MUL, &[MipsAirId::Bn254Fp2MulAssign]),
+    (SyscallCode::SYS_LINUX, &[MipsAirId::SysLinux]),
+];
+
+/// Adds every precompile chip's contribution to `cells`, in the same `next_power_of_two(event
+/// count) * cost_per_event` unit system the core-chip terms above/below use.
+///
+/// Unlike the core-chip terms (which project a worst case from `num_events_per_air`, a count
+/// derived from opcode counters *before* the next `shape_check_frequency`-cycle window has
+/// executed), precompile counts are read directly off the live shard's `ExecutionRecord` --
+/// exact, not projected. That's fine here: `estimate_mips_lde_size` is re-run every
+/// `shape_check_frequency` cycles regardless, so the (at most one, since a syscall retires at
+/// most once per cycle) precompile event that could fire in between two checks is already well
+/// within the slack every other chip's periodic-recheck cadence tolerates.
+///
+/// `O(number of precompile families)` (~28 fixed entries), not `O(number of precompile events)`:
+/// each family costs one `HashMap` lookup into `PrecompileEvents` plus a `Vec::len()`, so this
+/// stays cheap enough for the hot `inc_shard_if_need` path that calls it every
+/// `shape_check_frequency` cycles.
+fn add_precompile_cells(
+    cells: &mut u64,
+    precompile_events: &PrecompileEvents,
+    costs_per_air: &HashMap<MipsAirId, u64>,
+) {
+    let mut total_precompile_events: u64 = 0;
+    for (syscall_code, air_ids) in PRECOMPILE_AIR_IDS {
+        let Some(events) = precompile_events.get_events(*syscall_code) else {
+            continue;
+        };
+        let count = events.len() as u64;
+        if count == 0 {
+            continue;
+        }
+        total_precompile_events += count;
+        let padded = count.next_power_of_two();
+        for air_id in *air_ids {
+            *cells += padded * costs_per_air[air_id];
+        }
+    }
+    // The syscall-precompile dispatch chip: one row per precompile event, across every family
+    // (see `SyscallChip::generate_trace`'s `SyscallShardKind::Precompile` arm, which iterates
+    // `precompile_events.all_events()`).
+    if total_precompile_events > 0 {
+        *cells += total_precompile_events.next_power_of_two()
+            * costs_per_air[&MipsAirId::SyscallPrecompile];
+    }
+}
 
 /// Returns `true` for the `MipsAirId` variants covered exactly (not just conservatively) by
 /// [`estimate_record_trace_bytes`]'s per-chip event counting.
@@ -127,11 +216,19 @@ pub fn estimate_record_trace_bytes(
 /// `program_size` is the calling program's real, padded (next-power-of-two) instruction count --
 /// see [`estimate_record_trace_bytes`]'s doc comment on the Program chip contribution for why
 /// this must be the real size rather than a worst-case ceiling.
+///
+/// `precompile_events` is the live shard-in-progress's exact precompile events (see
+/// [`add_precompile_cells`]'s doc comment for why these are read directly rather than projected
+/// like `num_events_per_air`). Every precompile/syscall-family `MipsAirId` (SHA/Keccak/
+/// Poseidon2/Edwards/Weierstrass/BN254/BLS12-381/Uint256/SysLinux/...) is accounted for here --
+/// previously this function had no precompile terms at all, so a shard whose *CPU-chip* cost
+/// looked small could still carry an unbounded amount of un-budgeted precompile row weight.
 #[must_use]
 pub fn estimate_mips_lde_size(
     num_events_per_air: EnumMap<MipsAirId, u64>,
     costs_per_air: &HashMap<MipsAirId, u64>,
     program_size: u64,
+    precompile_events: &PrecompileEvents,
 ) -> u64 {
     // Compute the byte chip contribution.
     let mut cells = BYTE_NUM_ROWS * costs_per_air[&MipsAirId::Byte];
@@ -226,6 +323,11 @@ pub fn estimate_mips_lde_size(
     // Compute the state bump chip contribution.
     cells += (num_events_per_air[MipsAirId::StateBump]).next_power_of_two()
         * costs_per_air[&MipsAirId::StateBump];
+
+    // Compute every precompile/syscall-family chip's contribution (SHA/Keccak/Poseidon2/
+    // Edwards/Weierstrass/BN254/BLS12-381/Uint256/SysLinux/...) -- see `add_precompile_cells`'s
+    // doc comment.
+    add_precompile_cells(&mut cells, precompile_events, costs_per_air);
 
     cells * ((core::mem::size_of::<KoalaBear>() << 1) as u64)
 }
@@ -398,4 +500,140 @@ pub fn pad_mips_event_counts(
         _ => (),
     });
     event_counts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{estimate_mips_lde_size, MipsAirId, PrecompileEvents};
+    use crate::events::{KeccakSpongeEvent, MemoryWriteRecord, PrecompileEvent, SyscallEvent};
+    use crate::syscalls::SyscallCode;
+    use enum_map::EnumMap;
+    use hashbrown::HashMap;
+    use strum::IntoEnumIterator;
+
+    /// A `costs_per_air` covering every `MipsAirId`, so `estimate_mips_lde_size`'s unconditional
+    /// `costs_per_air[&id]` lookups never panic on a missing entry -- every AIR gets a small
+    /// distinct-ish placeholder cost except the two under test below, which get real,
+    /// deliberately memorable values so the assertions can compute an exact expected delta.
+    fn test_costs() -> HashMap<MipsAirId, u64> {
+        let mut costs: HashMap<MipsAirId, u64> = MipsAirId::iter().map(|id| (id, 1)).collect();
+        costs.insert(MipsAirId::KeccakSponge, 1000);
+        costs.insert(MipsAirId::SyscallPrecompile, 7);
+        costs
+    }
+
+    fn dummy_syscall_event() -> SyscallEvent {
+        SyscallEvent {
+            pc: 0,
+            next_pc: 0,
+            clk: 0,
+            a_record: MemoryWriteRecord::default(),
+            a_record_is_real: false,
+            b_record: None,
+            c_record: None,
+            syscall_id: 0,
+            arg1: 0,
+            arg2: 0,
+        }
+    }
+
+    /// A record with zero precompile events must produce exactly the same estimate as the
+    /// pre-precompile-awareness version did (i.e. `add_precompile_cells` is a strict no-op),
+    /// so this fix can't regress the common non-precompile-heavy shard.
+    #[test]
+    fn precompile_free_shard_is_unaffected() {
+        let costs = test_costs();
+        let counts: EnumMap<MipsAirId, u64> = EnumMap::default();
+        let empty = PrecompileEvents::default();
+
+        let baseline = estimate_mips_lde_size(counts, &costs, 1, &empty);
+
+        // Sanity: this isn't just trivially zero.
+        assert!(baseline > 0);
+        // Calling again with the same (still-empty) events must be perfectly stable.
+        assert_eq!(baseline, estimate_mips_lde_size(counts, &costs, 1, &empty));
+    }
+
+    /// The previously-missing gap this fix closes: a shard whose only real weight is a heavy
+    /// precompile (here, `KeccakSponge`, the widest chip in `mips_costs.json`) must have that
+    /// weight reflected in the estimate, in the same `next_power_of_two(events) * cost` unit
+    /// system as every core-chip term, not silently ignored.
+    #[test]
+    fn precompile_heavy_shard_is_priced_in() {
+        let costs = test_costs();
+        let counts: EnumMap<MipsAirId, u64> = EnumMap::default();
+
+        let empty = PrecompileEvents::default();
+        let baseline = estimate_mips_lde_size(counts, &costs, 1, &empty);
+
+        let mut heavy = PrecompileEvents::default();
+        let num_events = 10_000_u64;
+        for _ in 0..num_events {
+            heavy.add_event(
+                SyscallCode::KECCAK_SPONGE,
+                dummy_syscall_event(),
+                PrecompileEvent::KeccakSponge(KeccakSpongeEvent::default()),
+            );
+        }
+
+        let with_keccak = estimate_mips_lde_size(counts, &costs, 1, &heavy);
+        assert!(
+            with_keccak > baseline,
+            "a shard with {num_events} KeccakSponge events must be priced higher than an \
+             otherwise-identical shard with none"
+        );
+
+        // The delta must match the documented unit system exactly: `next_power_of_two(event
+        // count) * cost_per_event`, folded through the same `size_of::<KoalaBear>() << 1`
+        // bytes-per-cell factor as every other term -- for both the KeccakSponge chip itself and
+        // the one-row-per-event SyscallPrecompile dispatch chip that every precompile family also
+        // feeds.
+        let padded = num_events.next_power_of_two();
+        let expected_cells = padded * costs[&MipsAirId::KeccakSponge]
+            + padded * costs[&MipsAirId::SyscallPrecompile];
+        let bytes_per_cell = (core::mem::size_of::<p3_koala_bear::KoalaBear>() << 1) as u64;
+        assert_eq!(with_keccak - baseline, expected_cells * bytes_per_cell);
+    }
+
+    /// Two precompile families present at once must both be priced in, independently -- this
+    /// guards against a regression where only the *first* matching entry in
+    /// `PRECOMPILE_AIR_IDS` (or only the widest family, mirroring the old
+    /// `estimate_record_trace_bytes`-style single-max-cost shortcut) gets counted.
+    #[test]
+    fn multiple_precompile_families_all_counted() {
+        let costs = test_costs();
+        let counts: EnumMap<MipsAirId, u64> = EnumMap::default();
+
+        let mut events = PrecompileEvents::default();
+        for _ in 0..4 {
+            events.add_event(
+                SyscallCode::KECCAK_SPONGE,
+                dummy_syscall_event(),
+                PrecompileEvent::KeccakSponge(KeccakSpongeEvent::default()),
+            );
+        }
+        for _ in 0..4 {
+            events.add_event(
+                SyscallCode::POSEIDON2_PERMUTE,
+                dummy_syscall_event(),
+                PrecompileEvent::Poseidon2Permute(Default::default()),
+            );
+        }
+
+        let combined = estimate_mips_lde_size(counts, &costs, 1, &events);
+
+        let mut keccak_only = PrecompileEvents::default();
+        for _ in 0..4 {
+            keccak_only.add_event(
+                SyscallCode::KECCAK_SPONGE,
+                dummy_syscall_event(),
+                PrecompileEvent::KeccakSponge(KeccakSpongeEvent::default()),
+            );
+        }
+        let keccak_only_estimate = estimate_mips_lde_size(counts, &costs, 1, &keccak_only);
+
+        // Adding the second family on top of the first must add strictly more area -- if only
+        // one family were being counted, these would be equal.
+        assert!(combined > keccak_only_estimate);
+    }
 }
