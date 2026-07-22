@@ -31,6 +31,7 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder};
 
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
     memory::{value_as_limbs, MemoryReadCols, MemoryWriteCols},
     operations::field::{
         field_den::FieldDenCols, field_inner_product::FieldInnerProductCols, field_op::FieldOpCols,
@@ -46,10 +47,9 @@ pub const NUM_ED_ADD_COLS: usize = size_of::<EdAddAssignCols<u8>>();
 #[derive(Debug, Clone, AlignedBorrow)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct EdAddAssignCols<T> {
+pub struct EdAddAssignCols<T: Copy> {
     pub is_real: T,
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     pub p_ptr: T,
     pub q_ptr: T,
     pub p_access: [MemoryWriteCols<T>; WORDS_CURVE_POINT],
@@ -227,8 +227,7 @@ impl<E: EllipticCurve + EdwardsParameters> EdAddAssignChip<E> {
 
         // Populate basic columns.
         cols.is_real = F::ONE;
-        cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
+        cols.state.populate(blu, event.clk);
         cols.p_ptr = F::from_canonical_u32(event.p_ptr);
         cols.q_ptr = F::from_canonical_u32(event.q_ptr);
 
@@ -306,25 +305,29 @@ where
             .when(local.is_real)
             .assert_all_eq(local.y3_ins.result, p_access_vec[NUM_LIMBS..NUM_LIMBS * 2].to_vec());
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             local.q_ptr,
             &local.q_access,
             local.is_real,
         );
 
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk + AB::F::from_canonical_u32(1),
+            clk_high,
+            clk_low.clone() + AB::F::from_canonical_u32(1),
             local.p_ptr,
             &local.p_access,
             local.is_real,
         );
 
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             AB::F::from_canonical_u32(SyscallCode::ED_ADD.syscall_id()),
             local.p_ptr,
             local.q_ptr,

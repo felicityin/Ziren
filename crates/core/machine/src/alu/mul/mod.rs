@@ -51,7 +51,7 @@ use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{
-    air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
+    air::MachineAir,
     word::Word,
 };
 use zkm_primitives::consts::WORD_SIZE;
@@ -59,7 +59,8 @@ use zkm_primitives::consts::WORD_SIZE;
 use crate::{
     adapter::InstructionCols,
     adapter::{
-        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
+        RegisterReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     alu::mul::utils::get_msb,
@@ -282,7 +283,7 @@ impl MulChip {
         let is_real_instruction = event.pc != UNUSED_PC;
         cols.is_real_instruction = F::from_bool(is_real_instruction);
         if is_real_instruction {
-            cols.state.populate(blu, event.shard, event.clk);
+            cols.state.populate(blu, event.clk);
 
             let instruction = program.fetch(event.pc);
             cols.instruction.populate(&instruction);
@@ -412,10 +413,6 @@ where
         let local: &MulCols<AB::Var> = (*local).borrow();
         let base = AB::F::from_canonical_u32(1 << 8);
 
-        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
-            core::array::from_fn(|i| builder.public_values()[i]);
-        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
-            public_values_slice.as_slice().borrow();
 
         let zero: AB::Expr = AB::F::ZERO.into();
         let one: AB::Expr = AB::F::ONE.into();
@@ -545,15 +542,16 @@ where
         let is_real_instruction: AB::Expr = local.is_real_instruction.into();
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, is_real_instruction.clone());
 
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             &local.instruction,
             // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
             // reader.op_a_val())` fires unconditionally whenever `op_a_0` is unset, which it is
@@ -565,18 +563,13 @@ where
             is_real_instruction.clone(),
         );
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            is_real_instruction.clone(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real_instruction.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             local.pc.into(),
             local.next_pc.into(),
             local.next_pc.into(),
@@ -630,8 +623,8 @@ where
 
         // Write the HI register, the register can only be Register::HI（33）.
         builder.eval_memory_access(
-            local.state.shard,
-            clk + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
+            clk_high,
+            clk_low + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
             AB::F::from_canonical_u32(33),
             &local.op_hi_access,
             local.hi_record_is_real,

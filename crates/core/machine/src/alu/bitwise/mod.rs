@@ -20,14 +20,15 @@ use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{
-    air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
+    air::MachineAir,
     word::Word,
 };
 
 use crate::{
     adapter::InstructionCols,
     adapter::{
-        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
+        RegisterReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
@@ -233,7 +234,7 @@ impl BitwiseChip {
             cols.is_real_or = cols.is_or;
             cols.is_real_and = cols.is_and;
 
-            cols.state.populate(blu, event.shard, event.clk);
+            cols.state.populate(blu, event.clk);
 
             let instruction = program.fetch(event.pc);
             cols.instruction.populate(&instruction);
@@ -285,10 +286,6 @@ where
         let local = main.row_slice(0);
         let local: &BitwiseCols<AB::Var> = (*local).borrow();
 
-        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
-            core::array::from_fn(|i| builder.public_values()[i]);
-        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
-            public_values_slice.as_slice().borrow();
 
         // Get the opcode for the operation.
         let opcode = local.is_xor * ByteOpcode::XOR.as_field::<AB::F>()
@@ -323,15 +320,16 @@ where
             local.is_real_xor + local.is_real_or + local.is_real_and + local.is_real_nor;
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, is_real_instruction.clone());
 
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             &local.instruction,
             // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
             // reader.op_a_val())` fires unconditionally whenever `op_a_0` is unset, which it is
@@ -345,18 +343,13 @@ where
             is_real_instruction.clone(),
         );
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            is_real_instruction.clone(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real_instruction.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
-            clk,
+            clk_high,
+            clk_low,
             local.pc.into(),
             local.next_pc.into(),
             local.next_pc.into(),

@@ -68,13 +68,13 @@ impl SyscallChip {
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct SyscallCols<T: Copy> {
-    /// The shard number of the syscall.
+    /// The `clk_high` of the syscall.
     #[cfg_attr(feature = "picus", picus(input))]
-    pub shard: T,
+    pub clk_high: T,
 
-    /// The clk of the syscall.
+    /// The `clk_low` of the syscall.
     #[cfg_attr(feature = "picus", picus(input))]
-    pub clk: T,
+    pub clk_low: T,
 
     /// The syscall_id of the syscall.
     #[cfg_attr(feature = "picus", picus(input))]
@@ -179,17 +179,19 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
         for &(event, rlo, rhi) in &event_triples {
             let (a1_lo, a1_hi) = Self::pack_result_halves(event.arg1);
             let (a2_lo, a2_hi) = Self::pack_result_halves(event.arg2);
+            let clk_high = (event.clk >> 24) as u32;
+            let clk_low = (event.clk & 0xffffff) as u32;
 
             // Cross-shard argument linkage using collision-resistant half-word packing.
             output.global_lookup_events.push(GlobalLookupEvent {
-                message: [event.shard, event.clk, event.syscall_id, a1_lo, a1_hi, a2_lo, a2_hi],
+                message: [clk_high, clk_low, event.syscall_id, a1_lo, a1_hi, a2_lo, a2_hi],
                 is_receive,
                 kind: LookupKind::Syscall as u8,
             });
 
             // Cross-shard result linkage to ensure both shards agree on the return value.
             output.global_lookup_events.push(GlobalLookupEvent {
-                message: [event.shard, event.clk, event.syscall_id, rlo, rhi, 0, 0],
+                message: [clk_high, clk_low, event.syscall_id, rlo, rhi, 0, 0],
                 is_receive,
                 kind: LookupKind::SyscallResult as u8,
             });
@@ -238,8 +240,8 @@ impl<F: PrimeField32> MachineAir<F> for SyscallChip {
             let mut row = [F::ZERO; NUM_SYSCALL_COLS];
             let cols: &mut SyscallCols<F> = row.as_mut_slice().borrow_mut();
 
-            cols.shard = F::from_canonical_u32(syscall_event.shard);
-            cols.clk = F::from_canonical_u32(syscall_event.clk);
+            cols.clk_high = F::from_canonical_u64(syscall_event.clk >> 24);
+            cols.clk_low = F::from_canonical_u64(syscall_event.clk & 0xffffff);
             cols.syscall_id = F::from_canonical_u32(syscall_event.syscall_id);
             let a1b = syscall_event.arg1.to_le_bytes();
             cols.arg1_lo = F::from_canonical_u32(a1b[0] as u32 + (a1b[1] as u32) * 256);
@@ -391,8 +393,8 @@ where
         match self.shard_kind {
             SyscallShardKind::Core => {
                 builder.receive_syscall(
-                    local.shard,
-                    local.clk,
+                    local.clk_high,
+                    local.clk_low,
                     local.syscall_id,
                     arg1.clone(),
                     arg2.clone(),
@@ -401,8 +403,8 @@ where
                 );
 
                 builder.receive_syscall_result_packed(
-                    local.shard,
-                    local.clk,
+                    local.clk_high,
+                    local.clk_low,
                     local.result_lo,
                     local.result_hi,
                     local.arg1_lo,
@@ -418,8 +420,8 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
-                            local.clk.into(),
+                            local.clk_high.into(),
+                            local.clk_low.into(),
                             local.syscall_id.into(),
                             local.arg1_lo.into(),
                             local.arg1_hi.into(),
@@ -440,8 +442,8 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
-                            local.clk.into(),
+                            local.clk_high.into(),
+                            local.clk_low.into(),
                             local.syscall_id.into(),
                             local.result_lo.into(),
                             local.result_hi.into(),
@@ -459,8 +461,8 @@ where
             }
             SyscallShardKind::Precompile => {
                 builder.send_syscall(
-                    local.shard,
-                    local.clk,
+                    local.clk_high,
+                    local.clk_low,
                     local.syscall_id,
                     arg1.clone(),
                     arg2.clone(),
@@ -469,8 +471,8 @@ where
                 );
 
                 builder.send_syscall_result_packed(
-                    local.shard,
-                    local.clk,
+                    local.clk_high,
+                    local.clk_low,
                     local.result_lo,
                     local.result_hi,
                     local.arg1_lo,
@@ -486,8 +488,8 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
-                            local.clk.into(),
+                            local.clk_high.into(),
+                            local.clk_low.into(),
                             local.syscall_id.into(),
                             local.arg1_lo.into(),
                             local.arg1_hi.into(),
@@ -507,8 +509,8 @@ where
                 builder.send(
                     AirLookup::new(
                         vec![
-                            local.shard.into(),
-                            local.clk.into(),
+                            local.clk_high.into(),
+                            local.clk_low.into(),
                             local.syscall_id.into(),
                             local.result_lo.into(),
                             local.result_hi.into(),

@@ -6,6 +6,7 @@ use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
 use crate::{
+    adapter::CpuState,
     memory::MemoryReadWriteCols,
     operations::{
         Add5Operation, AddOperation, AndOperation, FixedRotateRightOperation, NotOperation,
@@ -25,12 +26,9 @@ pub const NUM_SHA_COMPRESS_COLS: usize = size_of::<ShaCompressCols<u8>>();
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct ShaCompressCols<T> {
+pub struct ShaCompressCols<T: Copy> {
     /// Inputs.
-    #[cfg_attr(feature = "picus", picus(transition_input))]
-    pub shard: T,
-    #[cfg_attr(feature = "picus", picus(transition_input))]
-    pub clk: T,
+    pub state: CpuState<T>,
     #[cfg_attr(feature = "picus", picus(transition_input))]
     pub w_ptr: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]

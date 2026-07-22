@@ -40,7 +40,7 @@ mod tests {
         let lo_ptr: u32 = 2u32;
         let hi_ptr: u32 = 3u32;
 
-        let lo_ts = 1u32;
+        let lo_ts = 1u64;
         let hi_ts = lo_ts + 1;
 
         let a: Vec<u32> = (0..8).map(|_| rng.gen()).collect();
@@ -59,9 +59,7 @@ mod tests {
         for i in 0..8 {
             a_memory_records.push(MemoryReadRecord {
                 value: a[i],
-                shard: 0u32,
                 timestamp: hi_ts,
-                prev_shard: 0u32,
                 prev_timestamp: lo_ts,
             });
         }
@@ -69,25 +67,19 @@ mod tests {
         for i in 0..64 {
             b_memory_records.push(MemoryReadRecord {
                 value: b[i],
-                shard: 0u32,
                 timestamp: hi_ts,
-                prev_shard: 0u32,
                 prev_timestamp: lo_ts,
             });
         }
         let lo_ptr_memory = MemoryReadRecord {
             value: lo_ptr,
-            shard: 0u32,
             timestamp: hi_ts,
-            prev_shard: 0u32,
-            prev_timestamp: lo_ts,
+                prev_timestamp: lo_ts,
         };
         let hi_ptr_memory = MemoryReadRecord {
             value: hi_ptr,
-            shard: 0u32,
             timestamp: hi_ts,
-            prev_shard: 0u32,
-            prev_timestamp: lo_ts,
+                prev_timestamp: lo_ts,
         };
 
         let (lo, hi) = if pass {
@@ -108,10 +100,8 @@ mod tests {
         for i in 0..64 {
             lo_memory_records.push(MemoryWriteRecord {
                 value: lo[i],
-                shard: 0u32,
                 timestamp: hi_ts + 1,
                 prev_value: 0u32,
-                prev_shard: 0u32,
                 prev_timestamp: hi_ts,
             });
         }
@@ -119,10 +109,8 @@ mod tests {
         for i in 0..8 {
             hi_memory_records.push(MemoryWriteRecord {
                 value: hi[i],
-                shard: 0u32,
                 timestamp: hi_ts + 1,
                 prev_value: 0u32,
-                prev_shard: 0u32,
                 prev_timestamp: hi_ts,
             });
         }
@@ -151,7 +139,6 @@ mod tests {
         let syscall_event = SyscallEvent {
             pc: 32,
             next_pc: 36,
-            shard: 0u32,
             clk: hi_ts,
             a_record: MemoryWriteRecord::default(),
             a_record_is_real: false,

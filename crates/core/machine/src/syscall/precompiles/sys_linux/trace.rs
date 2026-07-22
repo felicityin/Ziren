@@ -116,8 +116,7 @@ impl SysLinuxChip {
     ) {
         cols.a0 = event.a0.into();
         cols.a1 = event.a1.into();
-        cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
+        cols.state.populate(blu, event.clk);
         cols.syscall_id = F::from_canonical_u32(event.syscall_code);
         cols.is_real = F::ONE;
         cols.result = event.v0.into();

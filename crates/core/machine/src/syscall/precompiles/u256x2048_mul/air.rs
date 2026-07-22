@@ -1,4 +1,5 @@
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
     air::MemoryAirBuilder,
     memory::{value_as_limbs, MemoryCols, MemoryReadCols, MemoryWriteCols},
     operations::{field::field_op::FieldOpCols, KoalaBearWordRangeChecker},
@@ -56,12 +57,9 @@ const HI_REGISTER: u32 = Register::A3 as u32;
 #[derive(Debug, Clone, AlignedBorrow)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct U256x2048MulCols<T> {
-    /// The shard number of the syscall.
-    pub shard: T,
-
-    /// The clock cycle of the syscall.
-    pub clk: T,
+pub struct U256x2048MulCols<T: Copy> {
+    /// The global clock state of the syscall.
+    pub state: CpuState<T>,
 
     /// The pointer to the first input.
     pub a_ptr: T,
@@ -136,8 +134,7 @@ impl<F: PrimeField32> MachineAir<F> for U256x2048MulChip {
 
                         // Assign basic values to the columns.
                         cols.is_real = F::ONE;
-                        cols.shard = F::from_canonical_u32(event.shard);
-                        cols.clk = F::from_canonical_u32(event.clk);
+                        cols.state.populate(&mut new_byte_lookup_events, event.clk);
                         cols.a_ptr = F::from_canonical_u32(event.a_ptr);
                         cols.b_ptr = F::from_canonical_u32(event.b_ptr);
                         cols.lo_ptr = F::from_canonical_u32(event.lo_ptr);
@@ -278,10 +275,14 @@ where
         // Assert that is_real is a boolean.
         builder.assert_bool(local.is_real);
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         // Receive the arguments.
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low.clone(),
             AB::F::from_canonical_u32(SyscallCode::U256XU2048_MUL.syscall_id()),
             local.a_ptr,
             local.b_ptr,
@@ -291,16 +292,16 @@ where
 
         // Evaluate that the lo_ptr and hi_ptr are read from the correct memory locations.
         builder.eval_memory_access(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             AB::Expr::from_canonical_u32(LO_REGISTER),
             &local.lo_ptr_memory,
             local.is_real,
         );
 
         builder.eval_memory_access(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             AB::Expr::from_canonical_u32(HI_REGISTER),
             &local.hi_ptr_memory,
             local.is_real,
@@ -308,16 +309,16 @@ where
 
         // Evaluate the memory accesses for a_memory and b_memory.
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             local.a_ptr,
             &local.a_memory,
             local.is_real,
         );
 
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             local.b_ptr,
             &local.b_memory,
             local.is_real,
@@ -325,16 +326,16 @@ where
 
         // Evaluate the memory accesses for lo_memory and hi_memory.
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into() + AB::Expr::one(),
+            clk_high,
+            clk_low.clone() + AB::Expr::one(),
             local.lo_ptr,
             &local.lo_memory,
             local.is_real,
         );
 
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into() + AB::Expr::one(),
+            clk_high,
+            clk_low.clone() + AB::Expr::one(),
             local.hi_ptr,
             &local.hi_memory,
             local.is_real,

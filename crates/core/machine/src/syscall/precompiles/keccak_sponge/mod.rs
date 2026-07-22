@@ -57,7 +57,7 @@ pub mod sponge_tests {
         let mut cpu_record = records.remove(0);
         // `Executor::run`/`execute` never back-fills `initial_timestamp`/`last_timestamp` (unlike
         // `start_pc`/`next_pc`, which it does set from the same events) -- mirrors the
-        // `state.initial_timestamp`/`state.last_timestamp` computation in
+        // `state.initial_clk_low`/`state.last_clk_low` computation in
         // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. Left at their
         // zero defaults, `eval_public_values`'s `State` boundary-anchor interaction won't match
         // `Cpu`'s own last-row send, producing a spurious debug-harness discrepancy.
@@ -65,8 +65,11 @@ pub mod sponge_tests {
         // Uses the migration-safe `first_instruction_clk`/`last_timestamp` bookkeeping (tracked
         // independent of which chip retires an instruction) rather than `cpu_events`, since
         // `cpu_events` is permanently empty once every opcode has migrated off `CpuChip`.
-        cpu_record.public_values.initial_timestamp = cpu_record.first_instruction_clk.unwrap();
-        cpu_record.public_values.last_timestamp = cpu_record.last_timestamp;
+        let first_clk = cpu_record.first_instruction_clk.unwrap();
+        cpu_record.public_values.initial_clk_high = (first_clk >> 24) as u32;
+        cpu_record.public_values.initial_clk_low = (first_clk & 0xffffff) as u32;
+        cpu_record.public_values.last_clk_high = (cpu_record.last_timestamp >> 24) as u32;
+        cpu_record.public_values.last_clk_low = (cpu_record.last_timestamp & 0xffffff) as u32;
         let mut deferred = cpu_record.defer();
         assert!(cpu_record.contains_cpu());
         assert!(cpu_record.precompile_events.is_empty());

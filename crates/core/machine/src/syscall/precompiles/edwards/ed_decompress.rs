@@ -32,6 +32,7 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder};
 
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
     memory::{MemoryReadCols, MemoryWriteCols},
     operations::field::{field_op::FieldOpCols, field_sqrt::FieldSqrtCols, range::FieldLtCols},
     utils::{limbs_from_access, limbs_from_prev_access},
@@ -47,10 +48,9 @@ pub const NUM_ED_DECOMPRESS_COLS: usize = size_of::<EdDecompressCols<u8>>();
 #[derive(Debug, Clone, AlignedBorrow)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct EdDecompressCols<T> {
+pub struct EdDecompressCols<T: Copy> {
     pub is_real: T,
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     pub ptr: T,
     pub sign: T,
     pub x_access: GenericArray<MemoryWriteCols<T>, WordsFieldElement>,
@@ -73,8 +73,7 @@ impl<F: PrimeField32> EdDecompressCols<F> {
     ) -> Result<(), CurveError> {
         let mut new_byte_lookup_events = Vec::new();
         self.is_real = F::from_bool(true);
-        self.shard = F::from_canonical_u32(event.shard);
-        self.clk = F::from_canonical_u32(event.clk);
+        self.state.populate(record, event.clk);
         self.ptr = F::from_canonical_u32(event.ptr);
         self.sign = F::from_bool(event.sign);
         for i in 0..8 {
@@ -158,16 +157,20 @@ impl<V: Copy> EdDecompressCols<V> {
             self.is_real,
         );
 
+        let clk_high = self.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&self.state);
+        eval_cpu_state(builder, &self.state, clk_low.clone(), self.is_real.into());
+
         builder.eval_memory_access_slice(
-            self.shard,
-            self.clk,
+            clk_high,
+            clk_low.clone(),
             self.ptr,
             &self.x_access,
             self.is_real,
         );
         builder.eval_memory_access_slice(
-            self.shard,
-            self.clk,
+            clk_high,
+            clk_low.clone(),
             self.ptr.into() + AB::F::from_canonical_u32(32),
             &self.y_access,
             self.is_real,
@@ -182,8 +185,8 @@ impl<V: Copy> EdDecompressCols<V> {
             .assert_all_eq(self.x.multiplication.result, x_limbs);
 
         builder.receive_syscall(
-            self.shard,
-            self.clk,
+            clk_high,
+            clk_low,
             AB::F::from_canonical_u32(SyscallCode::ED_DECOMPRESS.syscall_id()),
             self.ptr,
             self.sign,

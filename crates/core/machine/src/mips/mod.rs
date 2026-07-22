@@ -1,4 +1,5 @@
 use crate::{
+    adapter::StateBumpChip,
     global::GlobalChip,
     memory::{MemoryChipType, MemoryLocalChip},
     syscall::precompiles::{
@@ -113,6 +114,8 @@ pub enum MipsAir<F: PrimeField32> {
     MovCond(MovCondChip),
     /// An AIR for MIPS misc instructions.
     MiscInstrs(MiscInstrsChip),
+    /// An AIR proving `clk_high` transitions (see [`StateBumpChip`]'s doc comment).
+    StateBump(StateBumpChip),
     /// An AIR for MIPS syscall instructions.
     SyscallInstrs(SyscallInstrsChip),
     /// A table for initializing the global memory state.
@@ -647,6 +650,10 @@ impl<F: PrimeField32> MipsAir<F> {
         let movcond_instrs = Chip::new(MipsAir::MovCond(MovCondChip::default()));
         costs.insert(movcond_instrs.name(), movcond_instrs.cost());
         chips.push(movcond_instrs);
+
+        let state_bump = Chip::new(MipsAir::StateBump(StateBumpChip::new()));
+        costs.insert(state_bump.name(), state_bump.cost());
+        chips.push(state_bump);
 
         (chips, costs)
     }

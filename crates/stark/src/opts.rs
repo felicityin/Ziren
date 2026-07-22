@@ -117,11 +117,14 @@ impl ZKMProverOpts {
             33..49 => (20, 1, 2),
             49..65 => (21, 1, 3),
             65..81 => (21, 3, 1),
-            // `shard_size` can reach `1 << CORE_MAX_LOG_ROW_COUNT` safely: the executor's own
-            // per-chip height ceiling and `clk`-overflow guard
-            // (`crates/core/executor/src/executor.rs`) keep every chip's real row count under
-            // that same bound regardless.
-            81.. => (22, 4, 1),
+            // `shard_size` (a cycle-count target) is allowed to exceed `CORE_MAX_LOG_ROW_COUNT`
+            // (a per-chip real-row-count ceiling): the executor's own `CORE_SHARD_HEIGHT_THRESHOLD`
+            // check (`crates/core/executor/src/executor.rs`) force-cuts a shard early whenever any
+            // individual chip's estimated height approaches that ceiling, independent of whether
+            // the nominal `shard_size` cycle budget has been reached -- so a workload concentrated
+            // on one opcode still cuts safely, while a more evenly distributed one can grow shards
+            // up to this larger cycle target before hitting that safety net.
+            81.. => (24, 4, 1),
         }
     }
 

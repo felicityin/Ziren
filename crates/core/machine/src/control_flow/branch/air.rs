@@ -6,12 +6,12 @@ use p3_matrix::Matrix;
 use slop_air::{Air, AirBuilderWithPublicValues};
 use zkm_core_executor::Opcode;
 use zkm_hypercube::{
-    air::{BaseAirBuilder, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
+    air::BaseAirBuilder,
     word::Word,
 };
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     operations::KoalaBearWordRangeChecker,
 };
@@ -38,10 +38,6 @@ where
         let local = main.row_slice(0);
         let local: &BranchColumns<AB::Var> = (*local).borrow();
 
-        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
-            core::array::from_fn(|i| builder.public_values()[i]);
-        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
-            public_values_slice.as_slice().borrow();
 
         // SAFETY: All selectors `is_beq`, `is_bne`, `is_bltz`, `is_bgez`, `is_blez`, `is_bgtz` are checked to be boolean.
         // Each "real" row has exactly one selector turned on, as `is_real`, the sum of the six selectors, is boolean.
@@ -61,7 +57,8 @@ where
         builder.assert_bool(is_real.clone());
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, is_real.clone());
 
@@ -70,8 +67,8 @@ where
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             &local.instruction,
             local.op_a_value.map(Into::into),
             Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
@@ -80,13 +77,7 @@ where
             is_real.clone(),
         );
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            is_real.clone(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         // Unlike every other migrated chip, `outgoing_next_next_pc` here is NOT `next_pc + 4` --
         // it's the branch-resolved value this chip's own logic below already fully derives and
@@ -94,7 +85,8 @@ where
         // being validated against a value pulled in from `CpuChip`.
         eval_state_chain(
             builder,
-            clk,
+            clk_high,
+            clk_low,
             local.pc.into(),
             local.next_pc.reduce::<AB>(),
             local.next_pc.reduce::<AB>(),

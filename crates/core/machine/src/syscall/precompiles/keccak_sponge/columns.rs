@@ -1,5 +1,6 @@
 use core::mem::size_of;
 
+use crate::adapter::CpuState;
 use crate::memory::{MemoryReadCols, MemoryWriteCols};
 use crate::operations::{IsZeroOperation, XorOperation};
 use crate::syscall::precompiles::keccak_sponge::{
@@ -17,7 +18,7 @@ use zkm_hypercube::word::Word;
 #[derive(AlignedBorrow)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub(crate) struct KeccakSpongeCols<T> {
+pub(crate) struct KeccakSpongeCols<T: Copy> {
     pub keccak: KeccakCols<T>,
     /// The round position (0..NUM_ROUNDS) of this row within its block's Keccak-f permutation.
     /// Cross-checked combinatorially against `keccak.step_flags` and used, together with
@@ -25,10 +26,7 @@ pub(crate) struct KeccakSpongeCols<T> {
     /// replaces the old row-adjacent (`next`-row) permutation chaining.
     pub round_index: T,
     pub block_mem: [MemoryReadCols<T>; KECCAK_GENERAL_RATE_U32S],
-    #[cfg_attr(feature = "picus", picus(transition_input))]
-    pub shard: T,
-    #[cfg_attr(feature = "picus", picus(transition_input))]
-    pub clk: T,
+    pub state: CpuState<T>,
     pub is_real: T,
     pub read_block: T,
     #[cfg_attr(feature = "picus", picus(transition_input))]

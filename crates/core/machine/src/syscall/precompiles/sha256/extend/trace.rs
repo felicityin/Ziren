@@ -105,8 +105,7 @@ impl ShaExtendChip {
             let cols: &mut ShaExtendCols<F> = row.as_mut_slice().borrow_mut();
             cols.is_real = F::ONE;
             cols.i = F::from_canonical_usize(16 + j);
-            cols.shard = F::from_canonical_u32(event.shard);
-            cols.clk = F::from_canonical_u32(event.clk);
+            cols.state.populate(blu, event.clk);
             cols.w_ptr = F::from_canonical_u32(event.w_ptr);
 
             // Matches the AIR's `send_byte(LTU, 1, i - 16, 48, is_real)` bound check.

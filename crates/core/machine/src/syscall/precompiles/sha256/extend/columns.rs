@@ -5,6 +5,7 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 
 use crate::{
+    adapter::CpuState,
     memory::{MemoryReadCols, MemoryWriteCols},
     operations::{Add4Operation, FixedRotateRightOperation, FixedShiftRightOperation, XorOperation},
 };
@@ -14,10 +15,9 @@ pub const NUM_SHA_EXTEND_COLS: usize = size_of::<ShaExtendCols<u8>>();
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct ShaExtendCols<T> {
+pub struct ShaExtendCols<T: Copy> {
     /// Inputs.
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     pub w_ptr: T,
 
     /// This iteration's index, `16 <= i < 64`. Anchors the `LookupKind::ShaExtend` chain by

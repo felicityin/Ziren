@@ -284,8 +284,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     #[allow(clippy::too_many_arguments)]
     fn send_instruction(
         &mut self,
-        shard: impl Into<Self::Expr> + Clone,
-        clk: impl Into<Self::Expr> + Clone,
+        clk_high: impl Into<Self::Expr> + Clone,
+        clk_low: impl Into<Self::Expr> + Clone,
         pc: impl Into<Self::Expr>,
         next_pc: impl Into<Self::Expr>,
         next_next_pc: impl Into<Self::Expr>,
@@ -302,8 +302,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         is_sequential: impl Into<Self::Expr>,
         multiplicity: impl Into<Self::Expr>,
     ) {
-        let values = once(shard.into())
-            .chain(once(clk.into()))
+        let values = once(clk_high.into())
+            .chain(once(clk_low.into()))
             .chain(once(pc.into()))
             .chain(once(next_pc.into()))
             .chain(once(next_next_pc.into()))
@@ -326,8 +326,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     #[allow(clippy::too_many_arguments)]
     fn receive_instruction(
         &mut self,
-        shard: impl Into<Self::Expr> + Clone,
-        clk: impl Into<Self::Expr> + Clone,
+        clk_high: impl Into<Self::Expr> + Clone,
+        clk_low: impl Into<Self::Expr> + Clone,
         pc: impl Into<Self::Expr>,
         next_pc: impl Into<Self::Expr>,
         next_next_pc: impl Into<Self::Expr>,
@@ -344,8 +344,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         is_sequential: impl Into<Self::Expr>,
         multiplicity: impl Into<Self::Expr>,
     ) {
-        let values = once(shard.into())
-            .chain(once(clk.into()))
+        let values = once(clk_high.into())
+            .chain(once(clk_low.into()))
             .chain(once(pc.into()))
             .chain(once(next_pc.into()))
             .chain(once(next_next_pc.into()))
@@ -365,22 +365,35 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         self.receive(AirLookup::new(values, multiplicity.into(), LookupKind::Instruction), LookupScope::Local);
     }
 
-    /// Sends this row's own `(clk, pc, next_pc)` as the incoming CPU state for whichever row
-    /// receives it, and separately receives this row's own incoming `(clk, pc, next_pc)` via
-    /// [`Self::receive_state`] -- together these replace the old row-adjacency `shard`/`clk`/`pc`
-    /// chaining, matched by value instead of physical row position. `next_pc` here is the pc two
-    /// steps ahead (MIPS has a branch-delay slot, so successor state carries two forward pcs, not
-    /// one): the row-local pc always advances by [`DEFAULT_PC_INC`] to reach the delay slot, and
-    /// `next_pc` is the (possibly branch/jump-resolved) pc after the delay slot.
+    /// Sends this row's own `(clk_high, clk_low, pc, next_pc)` as the incoming CPU state for
+    /// whichever row receives it, and separately receives this row's own incoming
+    /// `(clk_high, clk_low, pc, next_pc)` via [`Self::receive_state`] -- together these replace
+    /// row-adjacency `clk`/`pc` chaining, matched by value instead of physical row position.
+    /// `next_pc` here is the pc two steps ahead (MIPS has a branch-delay slot, so successor state
+    /// carries two forward pcs, not one): the row-local pc always advances by [`DEFAULT_PC_INC`]
+    /// to reach the delay slot, and `next_pc` is the (possibly branch/jump-resolved) pc after the
+    /// delay slot.
+    ///
+    /// The `clk_low` a row sends as part of its outgoing state is not itself range-checked to 24
+    /// bits (only a row's own *incoming* `clk_low`, via [`crate::air::MemoryAirBuilder`]'s
+    /// `eval_range_check_24bits`, is): an ordinary next row can only match it via this lookup if
+    /// the two actually agree bit-for-bit, and a value that overflowed 24 bits can only be
+    /// consumed by the `clk_high`-transition chip, which is the one place that decomposes and
+    /// range-checks it into a correct `(clk_high + 1, wrapped clk_low)` pair.
     fn send_state(
         &mut self,
-        clk: impl Into<Self::Expr>,
+        clk_high: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
         pc: impl Into<Self::Expr>,
         next_pc: impl Into<Self::Expr>,
         multiplicity: impl Into<Self::Expr>,
     ) {
         self.send(
-            AirLookup::new(vec![clk.into(), pc.into(), next_pc.into()], multiplicity.into(), LookupKind::State),
+            AirLookup::new(
+                vec![clk_high.into(), clk_low.into(), pc.into(), next_pc.into()],
+                multiplicity.into(),
+                LookupKind::State,
+            ),
             LookupScope::Local,
         );
     }
@@ -388,13 +401,18 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     /// See [`Self::send_state`].
     fn receive_state(
         &mut self,
-        clk: impl Into<Self::Expr>,
+        clk_high: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
         pc: impl Into<Self::Expr>,
         next_pc: impl Into<Self::Expr>,
         multiplicity: impl Into<Self::Expr>,
     ) {
         self.receive(
-            AirLookup::new(vec![clk.into(), pc.into(), next_pc.into()], multiplicity.into(), LookupKind::State),
+            AirLookup::new(
+                vec![clk_high.into(), clk_low.into(), pc.into(), next_pc.into()],
+                multiplicity.into(),
+                LookupKind::State,
+            ),
             LookupScope::Local,
         );
     }
@@ -445,8 +463,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     #[allow(clippy::too_many_arguments)]
     fn send_syscall(
         &mut self,
-        shard: impl Into<Self::Expr> + Clone,
-        clk: impl Into<Self::Expr> + Clone,
+        clk_high: impl Into<Self::Expr> + Clone,
+        clk_low: impl Into<Self::Expr> + Clone,
         syscall_id: impl Into<Self::Expr> + Clone,
         arg1: impl Into<Self::Expr> + Clone,
         arg2: impl Into<Self::Expr> + Clone,
@@ -455,7 +473,7 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     ) {
         self.send(
             AirLookup::new(
-                vec![shard.clone().into(), clk.clone().into(), syscall_id.clone().into(), arg1.clone().into(), arg2.clone().into()],
+                vec![clk_high.clone().into(), clk_low.clone().into(), syscall_id.clone().into(), arg1.clone().into(), arg2.clone().into()],
                 multiplicity.into(),
                 LookupKind::Syscall,
             ),
@@ -466,8 +484,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     #[allow(clippy::too_many_arguments)]
     fn receive_syscall(
         &mut self,
-        shard: impl Into<Self::Expr> + Clone,
-        clk: impl Into<Self::Expr> + Clone,
+        clk_high: impl Into<Self::Expr> + Clone,
+        clk_low: impl Into<Self::Expr> + Clone,
         syscall_id: impl Into<Self::Expr> + Clone,
         arg1: impl Into<Self::Expr> + Clone,
         arg2: impl Into<Self::Expr> + Clone,
@@ -476,7 +494,7 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     ) {
         self.receive(
             AirLookup::new(
-                vec![shard.clone().into(), clk.clone().into(), syscall_id.clone().into(), arg1.clone().into(), arg2.clone().into()],
+                vec![clk_high.clone().into(), clk_low.clone().into(), syscall_id.clone().into(), arg1.clone().into(), arg2.clone().into()],
                 multiplicity.into(),
                 LookupKind::Syscall,
             ),
@@ -492,8 +510,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     #[allow(clippy::too_many_arguments)]
     fn send_syscall_result(
         &mut self,
-        shard: impl Into<Self::Expr> + Clone,
-        clk: impl Into<Self::Expr> + Clone,
+        clk_high: impl Into<Self::Expr> + Clone,
+        clk_low: impl Into<Self::Expr> + Clone,
         result_word: Word<impl Into<Self::Expr> + Copy>,
         arg1_word: Word<impl Into<Self::Expr> + Copy>,
         arg2_word: Word<impl Into<Self::Expr> + Copy>,
@@ -503,15 +521,15 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         let [r_lo, r_hi] = Self::word_to_halves(result_word);
         let [a0_lo, a0_hi] = Self::word_to_halves(arg1_word);
         let [a1_lo, a1_hi] = Self::word_to_halves(arg2_word);
-        let values: Vec<Self::Expr> = vec![shard.into(), clk.into(), r_lo, r_hi, a0_lo, a0_hi, a1_lo, a1_hi];
+        let values: Vec<Self::Expr> = vec![clk_high.into(), clk_low.into(), r_lo, r_hi, a0_lo, a0_hi, a1_lo, a1_hi];
         self.send(AirLookup::new(values, multiplicity.into(), LookupKind::SyscallResult), scope);
     }
 
     #[allow(clippy::too_many_arguments)]
     fn receive_syscall_result(
         &mut self,
-        shard: impl Into<Self::Expr> + Clone,
-        clk: impl Into<Self::Expr> + Clone,
+        clk_high: impl Into<Self::Expr> + Clone,
+        clk_low: impl Into<Self::Expr> + Clone,
         result_word: Word<impl Into<Self::Expr> + Copy>,
         arg1_word: Word<impl Into<Self::Expr> + Copy>,
         arg2_word: Word<impl Into<Self::Expr> + Copy>,
@@ -521,15 +539,15 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         let [r_lo, r_hi] = Self::word_to_halves(result_word);
         let [a0_lo, a0_hi] = Self::word_to_halves(arg1_word);
         let [a1_lo, a1_hi] = Self::word_to_halves(arg2_word);
-        let values: Vec<Self::Expr> = vec![shard.into(), clk.into(), r_lo, r_hi, a0_lo, a0_hi, a1_lo, a1_hi];
+        let values: Vec<Self::Expr> = vec![clk_high.into(), clk_low.into(), r_lo, r_hi, a0_lo, a0_hi, a1_lo, a1_hi];
         self.receive(AirLookup::new(values, multiplicity.into(), LookupKind::SyscallResult), scope);
     }
 
     #[allow(clippy::too_many_arguments)]
     fn send_syscall_result_packed(
         &mut self,
-        shard: impl Into<Self::Expr>,
-        clk: impl Into<Self::Expr>,
+        clk_high: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
         result_lo: impl Into<Self::Expr>,
         result_hi: impl Into<Self::Expr>,
         arg1_lo: impl Into<Self::Expr>,
@@ -540,8 +558,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         scope: LookupScope,
     ) {
         let values: Vec<Self::Expr> = vec![
-            shard.into(),
-            clk.into(),
+            clk_high.into(),
+            clk_low.into(),
             result_lo.into(),
             result_hi.into(),
             arg1_lo.into(),
@@ -555,8 +573,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
     #[allow(clippy::too_many_arguments)]
     fn receive_syscall_result_packed(
         &mut self,
-        shard: impl Into<Self::Expr>,
-        clk: impl Into<Self::Expr>,
+        clk_high: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
         result_lo: impl Into<Self::Expr>,
         result_hi: impl Into<Self::Expr>,
         arg1_lo: impl Into<Self::Expr>,
@@ -567,8 +585,8 @@ pub trait InstructionAirBuilder: BaseAirBuilder {
         scope: LookupScope,
     ) {
         let values: Vec<Self::Expr> = vec![
-            shard.into(),
-            clk.into(),
+            clk_high.into(),
+            clk_low.into(),
             result_lo.into(),
             result_hi.into(),
             arg1_lo.into(),

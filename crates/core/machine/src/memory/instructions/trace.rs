@@ -110,8 +110,7 @@ impl MemoryInstructionsChip {
     ) {
         // Every `memory_instr_events` row is a real, retired instruction -- nothing ever
         // produces a synthetic dependency row here.
-        cols.state.populate(blu, event.shard, event.clk);
-        assert!(cols.state.shard != F::ZERO);
+        cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
         cols.instruction.populate(&instruction);

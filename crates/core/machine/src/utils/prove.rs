@@ -252,9 +252,11 @@ pub fn prove_with_context(
                                 if let Some(first_pc) = record.first_instruction_pc {
                                     state.start_pc = first_pc;
                                     state.next_pc = record.last_next_pc;
-                                    state.initial_timestamp =
-                                        record.first_instruction_clk.unwrap();
-                                    state.last_timestamp = record.last_timestamp;
+                                    let first_clk = record.first_instruction_clk.unwrap();
+                                    state.initial_clk_high = (first_clk >> 24) as u32;
+                                    state.initial_clk_low = (first_clk & 0xFFFFFF) as u32;
+                                    state.last_clk_high = (record.last_timestamp >> 24) as u32;
+                                    state.last_clk_low = (record.last_timestamp & 0xFFFFFF) as u32;
                                 }
                                 state.committed_value_digest =
                                     record.public_values.committed_value_digest;
@@ -303,7 +305,8 @@ pub fn prove_with_context(
                                     state.last_finalize_addr_bits =
                                         record.public_values.last_finalize_addr_bits;
                                     state.start_pc = state.next_pc;
-                                    state.initial_timestamp = state.last_timestamp;
+                                    state.initial_clk_high = state.last_clk_high;
+                                    state.initial_clk_low = state.last_clk_low;
                                     record.public_values = *state;
                                 }
                                 records_clone.append(&mut deferred);
@@ -357,7 +360,8 @@ pub fn prove_with_context(
                                     state.last_finalize_addr_bits =
                                         record.public_values.last_finalize_addr_bits;
                                     state.start_pc = state.next_pc;
-                                    state.initial_timestamp = state.last_timestamp;
+                                    state.initial_clk_high = state.last_clk_high;
+                                    state.initial_clk_low = state.last_clk_low;
                                     record.public_values = *state;
                                 }
                                 records.append(&mut deferred);

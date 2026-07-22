@@ -15,10 +15,10 @@ use zkm_core_executor::{
     ByteOpcode, ExecutionRecord, Opcode, Program, NUM_REGISTERS,
 };
 use zkm_derive::AlignedBorrow;
-use zkm_hypercube::air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS};
+use zkm_hypercube::air::MachineAir;
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
+    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::{MemoryCols, MemoryReadCols, MemoryReadWriteCols},
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
@@ -146,7 +146,7 @@ impl StoreWordChip {
         blu: &mut HashMap<ByteLookupEvent, usize>,
         program: &Program,
     ) {
-        cols.state.populate(blu, event.shard, event.clk);
+        cols.state.populate(blu, event.clk);
         cols.is_real = F::ONE;
 
         let instruction = program.fetch(event.pc);
@@ -215,10 +215,6 @@ where
         let local = main.row_slice(0);
         let local: &StoreWordCols<AB::Var> = (*local).borrow();
 
-        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
-            core::array::from_fn(|i| builder.public_values()[i]);
-        let public_values: &PublicValues<zkm_hypercube::word::Word<AB::PublicVar>, AB::PublicVar> =
-            public_values_slice.as_slice().borrow();
 
         builder.assert_bool(local.is_real);
 
@@ -272,13 +268,14 @@ where
             local.is_real,
         );
 
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, local.is_real);
 
         builder.eval_memory_access(
-            local.state.shard,
-            clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::B as u32),
+            clk_high.clone(),
+            clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::B as u32),
             local.instruction.op_b[0],
             &local.op_b_access,
             local.is_real,
@@ -287,8 +284,8 @@ where
         // `op_a` is a plain, immutable register read -- no register-0 write-zeroing needed since
         // nothing is ever written back.
         builder.eval_memory_access(
-            local.state.shard,
-            clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::A as u32),
+            clk_high.clone(),
+            clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::A as u32),
             local.instruction.op_a,
             &local.op_a_access,
             local.is_real,
@@ -300,25 +297,20 @@ where
             local.op_a_access.value().map(Into::into),
         );
         builder.eval_memory_access(
-            local.state.shard,
-            clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::Memory as u32),
+            clk_high.clone(),
+            clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::Memory as u32),
             local.addr_word.reduce::<AB>(),
             &local.memory_access,
             local.is_real,
         );
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            local.is_real.into(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
-            clk,
+            clk_high,
+            clk_low,
             local.pc.into(),
             local.next_pc.into(),
             local.next_pc.into(),
@@ -360,7 +352,6 @@ mod tests {
         };
         let mut shard = ExecutionRecord { program: program.into(), ..Default::default() };
         shard.store_word_events = vec![MemInstrEvent {
-            shard: 1,
             clk: 0,
             pc: 0,
             next_pc: 4,
@@ -368,7 +359,7 @@ mod tests {
             a: 42,
             b: 100,
             c: 4,
-            mem_access: MemoryWriteRecord::new(42, 1, 5, 0, 0, 0).into(),
+            mem_access: MemoryWriteRecord::new(42, 5, 0, 0).into(),
             prev_a_val: 0,
             a_record: None,
             b_record: None,

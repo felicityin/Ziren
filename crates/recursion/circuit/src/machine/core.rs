@@ -621,15 +621,18 @@ mod tests {
         record.public_values.shard = 1;
         // `Executor::execute` never back-fills `initial_timestamp`/`last_timestamp` either
         // (unlike `start_pc`/`next_pc`, which it does set from the same events) -- mirrors the
-        // `state.initial_timestamp`/`state.last_timestamp` computation in
+        // `state.initial_clk_low`/`state.last_clk_low` computation in
         // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. These anchor the
         // CPU chip's `LookupKind::State` chain boundary in `eval_public_values`.
         //
         // Uses the migration-safe `first_instruction_clk`/`last_timestamp` bookkeeping (tracked
         // independent of which chip retires an instruction) rather than `cpu_events`, since
         // `cpu_events` is permanently empty once every opcode has migrated off `CpuChip`.
-        record.public_values.initial_timestamp = record.first_instruction_clk.unwrap();
-        record.public_values.last_timestamp = record.last_timestamp;
+        let first_clk = record.first_instruction_clk.unwrap();
+        record.public_values.initial_clk_high = (first_clk >> 24) as u32;
+        record.public_values.initial_clk_low = (first_clk & 0xffffff) as u32;
+        record.public_values.last_clk_high = (record.last_timestamp >> 24) as u32;
+        record.public_values.last_clk_low = (record.last_timestamp & 0xffffff) as u32;
         // `Executor::run`/`execute` never calls chip-level `generate_dependencies`, so
         // cross-chip-derived public values that depend on the actual event contents --
         // `GlobalChip`'s `global_count`/`global_cumulative_sum_{x,y}` and

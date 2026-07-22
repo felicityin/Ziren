@@ -90,12 +90,12 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
         memory_events.sort_by_key(|event| event.addr);
 
         let events = memory_events.into_iter().map(|event| {
-            let lookup_shard = if is_receive { event.shard } else { 0 };
-            let lookup_clk = if is_receive { event.timestamp } else { 0 };
+            let lookup_clk_high = if is_receive { (event.timestamp >> 24) as u32 } else { 0 };
+            let lookup_clk_low = if is_receive { (event.timestamp & 0xffffff) as u32 } else { 0 };
             GlobalLookupEvent {
                 message: [
-                    lookup_shard,
-                    lookup_clk,
+                    lookup_clk_high,
+                    lookup_clk_low,
                     event.addr,
                     (event.value & 255) as u32,
                     ((event.value >> 8) & 255) as u32,
@@ -144,15 +144,14 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
         let mut rows: Vec<[F; NUM_MEMORY_INIT_COLS]> = memory_events
             .par_iter()
             .map(|event| {
-                let MemoryInitializeFinalizeEvent { addr, value, shard, timestamp } =
-                    event.to_owned();
+                let MemoryInitializeFinalizeEvent { addr, value, timestamp } = event.to_owned();
 
                 let mut row = [F::ZERO; NUM_MEMORY_INIT_COLS];
                 let cols: &mut MemoryInitCols<F> = row.as_mut_slice().borrow_mut();
                 cols.addr = F::from_canonical_u32(addr);
                 cols.addr_bits.populate(addr);
-                cols.shard = F::from_canonical_u32(shard);
-                cols.timestamp = F::from_canonical_u32(timestamp);
+                cols.clk_high = F::from_canonical_u64(timestamp >> 24);
+                cols.low = F::from_canonical_u64(timestamp & 0xffffff);
                 cols.value = array::from_fn(|i| F::from_canonical_u32((value >> i) & 1));
                 cols.is_real = F::one();
 
@@ -217,13 +216,13 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct MemoryInitCols<T: Copy> {
-    /// The shard number of the memory access.
+    /// The `clk_high` of the memory access.
     #[cfg_attr(feature = "picus", picus(input, transition_input))]
-    pub shard: T,
+    pub clk_high: T,
 
-    /// The timestamp of the memory access.
+    /// The `clk_low` of the memory access.
     #[cfg_attr(feature = "picus", picus(input, transition_input))]
-    pub timestamp: T,
+    pub low: T,
 
     /// The address of the memory access.
     #[cfg_attr(feature = "picus", picus(input, transition_input))]
@@ -292,8 +291,8 @@ where
         }
         // Canonicalize padded rows to the default zero trace shape so witness columns cannot
         // drift in extraction modules.
-        builder.when_not(local.is_real).assert_zero(local.shard);
-        builder.when_not(local.is_real).assert_zero(local.timestamp);
+        builder.when_not(local.is_real).assert_zero(local.clk_high);
+        builder.when_not(local.is_real).assert_zero(local.low);
         builder.when_not(local.is_real).assert_zero(local.addr);
         for i in 0..32 {
             builder.when_not(local.is_real).assert_zero(local.value[i]);
@@ -357,8 +356,8 @@ where
             builder.send(
                 AirLookup::new(
                     vec![
-                        local.shard.into(),
-                        local.timestamp.into(),
+                        local.clk_high.into(),
+                        local.low.into(),
                         local.addr.into(),
                         value[0].clone(),
                         value[1].clone(),
@@ -476,8 +475,8 @@ where
 
         // Make assertions for specific types of memory chips.
         if self.kind == MemoryChipType::Initialize {
-            builder.when(local.is_real).assert_eq(local.timestamp, AB::F::ONE);
-            builder.when(local.is_real).assert_eq(local.shard, AB::F::ONE);
+            builder.when(local.is_real).assert_eq(local.low, AB::F::ONE);
+            builder.when(local.is_real).assert_zero(local.clk_high);
         }
 
         // Constraints related to register %x0.

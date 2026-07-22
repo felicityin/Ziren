@@ -14,6 +14,7 @@ use super::{
     SysLinuxChip,
 };
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state},
     air::{MemoryAirBuilder, WordAirBuilder},
     memory::MemoryCols,
     operations::{AddOperation, GtColsBytes, IsZeroOperation},
@@ -160,6 +161,10 @@ where
             .when(is_brk + is_write)
             .assert_word_eq(*local.inorout.value(), local.inorout.prev_value);
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         // ── Branch evaluations ─────────────────────────────────────────
         self.eval_brk(builder, local, is_brk);
         self.eval_clone(builder, local, is_clone);
@@ -172,8 +177,8 @@ where
 
         // ── A3 output ──────────────────────────────────────────────────
         builder.eval_memory_access(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low.clone(),
             AB::Expr::from_canonical_u32(Register::A3 as u32),
             &local.output,
             local.is_real,
@@ -181,8 +186,8 @@ where
 
         // ── Cross-chip interactions ────────────────────────────────────
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low.clone(),
             local.syscall_id,
             local.a0.reduce::<AB>(),
             local.a1.reduce::<AB>(),
@@ -190,8 +195,8 @@ where
             LookupScope::Local,
         );
         builder.receive_syscall_result(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             local.result,
             local.a0,
             local.a1,
@@ -208,9 +213,11 @@ impl SysLinuxChip {
         local: &SysLinuxCols<AB::Var>,
         is_brk: AB::Var,
     ) {
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
         builder.eval_memory_access(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             AB::Expr::from_canonical_u32(Register::BRK as u32),
             &local.inorout,
             is_brk,
@@ -352,9 +359,11 @@ impl SysLinuxChip {
             .when(local.is_mmap_a0_0)
             .assert_word_eq(*local.inorout.value(), local.heap_add.value);
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
         builder.eval_memory_access(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             AB::Expr::from_canonical_u32(Register::HEAP as u32),
             &local.inorout,
             local.is_mmap_a0_0,
@@ -454,9 +463,11 @@ impl SysLinuxChip {
         local: &SysLinuxCols<AB::Var>,
         is_write: AB::Var,
     ) {
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
         builder.eval_memory_access(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             AB::Expr::from_canonical_u32(Register::A2 as u32),
             &local.inorout,
             is_write,

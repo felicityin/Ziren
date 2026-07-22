@@ -82,7 +82,7 @@ use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{
-    air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
+    air::MachineAir,
     word::Word,
 };
 use zkm_primitives::consts::WORD_SIZE;
@@ -90,7 +90,8 @@ use zkm_primitives::consts::WORD_SIZE;
 use crate::{
     adapter::InstructionCols,
     adapter::{
-        clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState, RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
+        RegisterReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
@@ -279,7 +280,7 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                 cols.is_mod = F::from_bool(event.opcode == Opcode::MOD);
                 cols.is_c_0.populate(event.c);
 
-                cols.state.populate(output, event.shard, event.clk);
+                cols.state.populate(output, event.clk);
 
                 let instruction = input.program.fetch(event.pc);
                 cols.instruction.populate(&instruction);
@@ -449,10 +450,6 @@ where
         let one: AB::Expr = AB::F::ONE.into();
         let zero: AB::Expr = AB::F::ZERO.into();
 
-        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
-            core::array::from_fn(|i| builder.public_values()[i]);
-        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
-            public_values_slice.as_slice().borrow();
 
         let is_real = local.is_div + local.is_divu + local.is_mod + local.is_modu;
         // Calculate whether b, remainder, and c are negative.
@@ -760,7 +757,8 @@ where
         // No `AddChip`/`MulChip`-style synthetic-row split is needed here: nothing ever
         // produces a synthetic `divrem_events` row (see this chip's doc comment), so `is_real`
         // already means "real instruction".
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, is_real.clone());
 
@@ -777,8 +775,8 @@ where
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             &local.instruction,
             op_a_value,
             Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
@@ -787,18 +785,13 @@ where
             is_real.clone(),
         );
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            is_real.clone(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             local.pc.into(),
             local.next_pc.into(),
             local.next_pc.into(),
@@ -831,8 +824,8 @@ where
 
         // Write the HI register, the register can only be Register::HI（33）.
         builder.eval_memory_access(
-            local.state.shard,
-            clk + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
+            clk_high,
+            clk_low + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
             AB::F::from_canonical_u32(33),
             &local.op_hi_access,
             local.is_div + local.is_divu,

@@ -29,6 +29,7 @@ use zkm_hypercube::air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder}
 use zkm_stark::air::Polynomial;
 
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
     memory::{value_as_limbs, MemoryReadCols, MemoryWriteCols},
     operations::field::field_op::FieldOpCols,
     utils::{limbs_from_prev_access, pad_rows_fixed, words_to_bytes_le_vec},
@@ -46,10 +47,9 @@ pub struct FpOpChip<P> {
 #[derive(Debug, Clone, AlignedBorrow)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct FpOpCols<T, P: FpOpField> {
+pub struct FpOpCols<T: Copy, P: FpOpField> {
     pub is_real: T,
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_add: T,
     #[cfg_attr(feature = "picus", picus(selector))]
@@ -136,8 +136,7 @@ impl<F: PrimeField32, P: FpOpField> MachineAir<F> for FpOpChip<P> {
             cols.is_sub = F::from_canonical_u8((event.op == FieldOperation::Sub) as u8);
             cols.is_mul = F::from_canonical_u8((event.op == FieldOperation::Mul) as u8);
             cols.is_real = F::ONE;
-            cols.shard = F::from_canonical_u32(event.shard);
-            cols.clk = F::from_canonical_u32(event.clk);
+            cols.state.populate(&mut new_byte_lookup_events, event.clk);
             cols.x_ptr = F::from_canonical_u32(event.x_ptr);
             cols.y_ptr = F::from_canonical_u32(event.y_ptr);
 
@@ -250,16 +249,20 @@ where
             .when(local.is_real)
             .assert_all_eq(local.output.result, value_as_limbs(&local.x_access));
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             local.y_ptr,
             &local.y_access,
             local.is_real,
         );
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk + AB::F::from_canonical_u32(1), /* We read p at +1 since p, q could be the
+            clk_high,
+            clk_low.clone() + AB::F::from_canonical_u32(1), /* We read p at +1 since p, q could be the
                                                        * same. */
             local.x_ptr,
             &local.x_access,
@@ -286,8 +289,8 @@ where
             + local.is_mul * mul_syscall_id;
 
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             syscall_id_felt,
             local.x_ptr,
             local.y_ptr,

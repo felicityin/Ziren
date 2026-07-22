@@ -1,5 +1,6 @@
 use core::mem::size_of;
 
+use crate::adapter::CpuState;
 use crate::memory::MemoryWriteCols;
 use crate::operations::poseidon2::{Poseidon2Operation, WIDTH};
 use crate::operations::KoalaBearWordRangeChecker;
@@ -14,8 +15,7 @@ use zkm_derive::PicusAnnotations;
 pub(crate) struct Poseidon2MemCols<T: Copy> {
     pub poseidon2: Poseidon2Operation<T>,
 
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     pub state_addr: T,
 
     /// Memory columns for the state

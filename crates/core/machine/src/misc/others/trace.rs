@@ -110,7 +110,7 @@ impl MiscInstrsChip {
         // Every `misc_events` row is a real, retired instruction -- nothing ever produces a
         // synthetic dependency row here (this chip is itself a dependency *producer*, see
         // `MiscInstrsChip::eval`'s `send_alu`/`send_alu_with_hi` calls).
-        cols.state.populate(blu, event.shard, event.clk);
+        cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
         cols.instruction.populate(&instruction);

@@ -60,13 +60,21 @@ pub struct PublicValues<W, T> {
     /// The bits of the largest address that is witnessed for finalization in the current shard.
     pub last_finalize_addr_bits: [T; 32],
 
-    /// The clk of the shard's first real CPU row. Anchors the `LookupKind::State` local
-    /// interaction chain at the shard's start, mirroring `start_pc`.
-    pub initial_timestamp: T,
+    /// The `clk_high` of the shard's first real CPU row.
+    pub initial_clk_high: T,
 
-    /// The expected clk of the next shard's first real CPU row. Anchors the `LookupKind::State`
-    /// local interaction chain at the shard's end, mirroring `next_pc`.
-    pub last_timestamp: T,
+    /// The `clk_low` of the shard's first real CPU row. Anchors the `LookupKind::State` local
+    /// interaction chain at the shard's start, mirroring `start_pc`, together with
+    /// `initial_clk_high`.
+    pub initial_clk_low: T,
+
+    /// The expected `clk_high` of the next shard's first real CPU row.
+    pub last_clk_high: T,
+
+    /// The expected `clk_low` of the next shard's first real CPU row. Anchors the
+    /// `LookupKind::State` local interaction chain at the shard's end, mirroring `next_pc`,
+    /// together with `last_clk_high`.
+    pub last_clk_low: T,
 
     /// The number of memory-initialize events in this shard. The upper bound of the shard's own
     /// `LookupKind::MemoryGlobalInitControl` chain (indices `0..global_init_count`).
@@ -115,8 +123,10 @@ impl PublicValues<u32, u32> {
         copy.is_execution_shard = 0;
         copy.start_pc = 0;
         copy.next_pc = 0;
-        copy.initial_timestamp = 0;
-        copy.last_timestamp = 0;
+        copy.initial_clk_high = 0;
+        copy.initial_clk_low = 0;
+        copy.last_clk_high = 0;
+        copy.last_clk_low = 0;
         copy.previous_init_addr_bits = [0; 32];
         copy.last_init_addr_bits = [0; 32];
         copy.previous_finalize_addr_bits = [0; 32];
@@ -171,8 +181,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_init_addr_bits,
             previous_finalize_addr_bits,
             last_finalize_addr_bits,
-            initial_timestamp,
-            last_timestamp,
+            initial_clk_high,
+            initial_clk_low,
+            last_clk_high,
+            last_clk_low,
             global_init_count,
             global_finalize_count,
             global_count,
@@ -197,8 +209,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let last_init_addr_bits = last_init_addr_bits.map(F::from_canonical_u32);
         let previous_finalize_addr_bits = previous_finalize_addr_bits.map(F::from_canonical_u32);
         let last_finalize_addr_bits = last_finalize_addr_bits.map(F::from_canonical_u32);
-        let initial_timestamp = F::from_canonical_u32(initial_timestamp);
-        let last_timestamp = F::from_canonical_u32(last_timestamp);
+        let initial_clk_high = F::from_canonical_u32(initial_clk_high);
+        let initial_clk_low = F::from_canonical_u32(initial_clk_low);
+        let last_clk_high = F::from_canonical_u32(last_clk_high);
+        let last_clk_low = F::from_canonical_u32(last_clk_low);
         let global_init_count = F::from_canonical_u32(global_init_count);
         let global_finalize_count = F::from_canonical_u32(global_finalize_count);
         let global_count = F::from_canonical_u32(global_count);
@@ -218,8 +232,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             last_init_addr_bits,
             previous_finalize_addr_bits,
             last_finalize_addr_bits,
-            initial_timestamp,
-            last_timestamp,
+            initial_clk_high,
+            initial_clk_low,
+            last_clk_high,
+            last_clk_low,
             global_init_count,
             global_finalize_count,
             global_count,

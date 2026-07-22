@@ -13,7 +13,7 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
     air::{ProgramAirBuilder, WordAirBuilder},
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
 };
@@ -44,7 +44,8 @@ where
         // Verify that local.is_halt is correct.
         self.eval_is_halt_syscall(builder, local);
 
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, is_real.clone());
 
@@ -53,8 +54,8 @@ where
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             &local.instruction,
             local.op_a_value.map(Into::into),
             local.prev_a_value.map(Into::into),
@@ -63,13 +64,7 @@ where
             is_real.clone(),
         );
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            is_real.clone(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         // `next_pc` is overwritten to the public sentinel `0` when halting (see
         // `eval_halt_unimpl`), so the state chain's incoming value must substitute `pc + 4`
@@ -89,7 +84,8 @@ where
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
-            clk,
+            clk_high,
+            clk_low,
             local.pc.into(),
             local.state_chain_next_pc.into(),
             local.next_pc.into(),
@@ -231,8 +227,8 @@ impl SyscallInstrsChip {
         );
 
         builder.send_syscall(
-            local.state.shard,
-            clk_expr::<AB>(&local.state),
+            local.state.clk_high,
+            clk_low_expr::<AB>(&local.state),
             syscall_id.clone(),
             local.op_b_value.reduce::<AB>(),
             local.op_c_value.reduce::<AB>(),
@@ -243,8 +239,8 @@ impl SyscallInstrsChip {
         // Send full Word bytes for linux syscalls to link op_a (result), op_b (a0), op_c (a1)
         // with SysLinuxChip via SyscallChip bridge.
         builder.send_syscall_result(
-            local.state.shard,
-            clk_expr::<AB>(&local.state),
+            local.state.clk_high,
+            clk_low_expr::<AB>(&local.state),
             local.op_a_value,
             local.op_b_value,
             local.op_c_value,

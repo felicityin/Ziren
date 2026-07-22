@@ -12,10 +12,14 @@ use zkm_hypercube::{
     word::Word,
 };
 
-use crate::{utils::next_power_of_two, CoreChipError};
+use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
+    utils::next_power_of_two,
+    CoreChipError,
+};
 
 /// Brackets a `SHA_COMPRESS` syscall's 80-row worker chain (`ShaCompressChip`): receives the
-/// syscall once, then sends the chain's starting `(shard, clk, w_ptr, h_ptr, index = 0, h)` state
+/// syscall once, then sends the chain's starting `(clk_high, clk_low, w_ptr, h_ptr, index = 0, h)` state
 /// (the pre-compression `H` values read from memory) and receives its ending
 /// `(index = 80, compressed)` state (the post-compression register values, before the finalize
 /// phase adds them back onto `H`).
@@ -32,9 +36,8 @@ pub const NUM_SHA_COMPRESS_CONTROL_COLS: usize = size_of::<ShaCompressControlCol
 
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[repr(C)]
-pub struct ShaCompressControlCols<T> {
-    pub shard: T,
-    pub clk: T,
+pub struct ShaCompressControlCols<T: Copy> {
+    pub state: CpuState<T>,
     pub w_ptr: T,
     pub h_ptr: T,
     pub initial_state: [Word<T>; 8],
@@ -62,7 +65,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaCompressControlChip {
     fn generate_trace(
         &self,
         input: &ExecutionRecord,
-        _output: &mut ExecutionRecord,
+        output: &mut ExecutionRecord,
     ) -> Result<RowMajorMatrix<F>, Self::Error> {
         let events = input.get_precompile_events(SyscallCode::SHA_COMPRESS);
 
@@ -76,8 +79,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaCompressControlChip {
                 };
                 let mut row = [F::ZERO; NUM_SHA_COMPRESS_CONTROL_COLS];
                 let cols: &mut ShaCompressControlCols<F> = row.as_mut_slice().borrow_mut();
-                cols.shard = F::from_canonical_u32(event.shard);
-                cols.clk = F::from_canonical_u32(event.clk);
+                cols.state.populate(output, event.clk);
                 cols.w_ptr = F::from_canonical_u32(event.w_ptr);
                 cols.h_ptr = F::from_canonical_u32(event.h_ptr);
                 for i in 0..8 {
@@ -126,9 +128,13 @@ where
 
         builder.assert_bool(local.is_real);
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low.clone(),
             AB::F::from_canonical_u32(SyscallCode::SHA_COMPRESS.syscall_id()),
             local.w_ptr,
             local.h_ptr,
@@ -136,7 +142,7 @@ where
             LookupScope::Local,
         );
 
-        let base = [local.shard.into(), local.clk.into(), local.w_ptr.into(), local.h_ptr.into()];
+        let base = [clk_high.into(), clk_low.clone(), local.w_ptr.into(), local.h_ptr.into()];
 
         // Send the chain's starting state (index = 0): the pre-compression `H` values. Each
         // field is independently verified against genuine memory reads transitively, by whichever

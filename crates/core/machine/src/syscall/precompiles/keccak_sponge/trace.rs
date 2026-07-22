@@ -124,8 +124,7 @@ impl KeccakSpongeChip {
 
                 let cols: &mut KeccakSpongeCols<F> = row.as_mut_slice().borrow_mut();
 
-                cols.shard = F::from_canonical_u32(event.shard);
-                cols.clk = F::from_canonical_u32(event.clk);
+                cols.state.populate(blu, event.clk);
                 cols.is_real = F::ONE;
                 // Keep `input_len` consistent with the dedicated memory read
                 // (`input_length_record`) used by the AIR constraints.
@@ -229,13 +228,13 @@ mod tests {
         let input_len_u32s = (blocks * KECCAK_GENERAL_RATE_U32S) as u32;
         let input = vec![0u32; input_len_u32s as usize];
         let output = [0u32; KECCAK_GENERAL_OUTPUT_U32S];
-        let input_length_record = MemoryReadRecord::new(input_len_u32s, shard, 1, 0, 0);
+        let input_length_record = MemoryReadRecord::new(input_len_u32s, 1, 0);
 
-        let mut timestamp = 2u32;
+        let mut timestamp = 2u64;
         let input_read_records = input
             .iter()
             .map(|&value| {
-                let record = MemoryReadRecord::new(value, shard, timestamp, 0, 0);
+                let record = MemoryReadRecord::new(value, timestamp, 0);
                 timestamp += 1;
                 record
             })
@@ -244,7 +243,7 @@ mod tests {
         let output_write_records = output
             .iter()
             .map(|&value| {
-                let record = MemoryWriteRecord::new(value, shard, timestamp, 0, 0, 0);
+                let record = MemoryWriteRecord::new(value, timestamp, 0, 0);
                 timestamp += 1;
                 record
             })

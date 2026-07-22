@@ -107,7 +107,7 @@ impl SyscallInstrsChip {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
 
-        cols.state.populate(blu, event.shard, event.clk);
+        cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
         cols.instruction.populate(&instruction);

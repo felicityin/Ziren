@@ -8,12 +8,12 @@ use slop_air::{Air, AirBuilderWithPublicValues};
 use zkm_core_executor::{events::MemoryAccessPosition, ByteOpcode, Opcode};
 use zkm_primitives::consts::WORD_SIZE;
 use zkm_hypercube::{
-    air::{PublicValues, ZKMAirBuilder, ZKM_PROOF_NUM_PV_ELTS},
+    air::ZKMAirBuilder,
     word::Word,
 };
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
+    adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
     air::{MemoryAirBuilder, WordAirBuilder, ZKMCoreAirBuilder},
     operations::AddDoubleOperation,
 };
@@ -31,10 +31,6 @@ where
         let local = main.row_slice(0);
         let local: &MiscInstrColumns<AB::Var> = (*local).borrow();
 
-        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
-            core::array::from_fn(|i| builder.public_values()[i]);
-        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
-            public_values_slice.as_slice().borrow();
 
         let is_real = local.is_sext
             + local.is_ins
@@ -59,7 +55,8 @@ where
             local.is_maddu + local.is_msubu + local.is_madd + local.is_msub + local.is_ins;
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, is_real.clone());
 
@@ -69,8 +66,8 @@ where
         eval_register_reader(
             builder,
             &local.reader,
-            local.state.shard,
-            clk.clone(),
+            clk_high.clone(),
+            clk_low.clone(),
             &local.instruction,
             local.op_a_value.map(Into::into),
             local.prev_a_value.map(Into::into),
@@ -79,18 +76,13 @@ where
             is_real.clone(),
         );
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            is_real.clone(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
-            clk,
+            clk_high,
+            clk_low,
             local.pc.into(),
             local.next_pc.into(),
             local.next_pc.into(),
@@ -276,8 +268,8 @@ impl MiscInstrsChip {
         );
 
         builder.eval_memory_access(
-            local.state.shard,
-            clk_expr::<AB>(&local.state)
+            local.state.clk_high.into(),
+            clk_low_expr::<AB>(&local.state)
                 + AB::F::from_canonical_u32(MemoryAccessPosition::HI as u32),
             AB::F::from_canonical_u32(33),
             &maddsub_cols.op_hi_access,

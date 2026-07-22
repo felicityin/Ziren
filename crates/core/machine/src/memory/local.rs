@@ -4,7 +4,7 @@ use std::{
 };
 
 use hashbrown::HashMap;
-use p3_air::{Air, AirBuilder, BaseAir};
+use p3_air::{Air, BaseAir};
 use p3_field::FieldAlgebra;
 use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
@@ -35,33 +35,37 @@ pub struct SingleMemoryLocal<T: Copy> {
     /// The address of the memory access.
     pub addr: T,
 
-    /// The initial shard of the memory access.
-    pub initial_shard: T,
+    /// The initial `clk_high` of the memory access.
+    pub initial_clk_high: T,
 
-    /// The final shard of the memory access.
-    pub final_shard: T,
+    /// The final `clk_high` of the memory access.
+    pub final_clk_high: T,
 
-    /// The initial clk of the memory access.
-    pub initial_clk: T,
+    /// The initial `clk_low` of the memory access.
+    pub initial_low: T,
 
-    /// The final clk of the memory access.
-    pub final_clk: T,
+    /// The final `clk_low` of the memory access.
+    pub final_low: T,
 
-    /// The 16-bit limb of `initial_shard`, used for its 16-bit range check.
-    pub initial_shard_16bit_limb: T,
+    /// The 16-bit limb of `initial_clk_high`, used for its 24-bit range check.
+    pub initial_clk_high_16bit_limb: T,
+    /// The 8-bit limb of `initial_clk_high`, used for its 24-bit range check.
+    pub initial_clk_high_8bit_limb: T,
 
-    /// The 16-bit limb of `final_shard`, used for its 16-bit range check.
-    pub final_shard_16bit_limb: T,
+    /// The 16-bit limb of `final_clk_high`, used for its 24-bit range check.
+    pub final_clk_high_16bit_limb: T,
+    /// The 8-bit limb of `final_clk_high`, used for its 24-bit range check.
+    pub final_clk_high_8bit_limb: T,
 
-    /// The 16-bit limb of `initial_clk`, used for its 24-bit range check.
-    pub initial_clk_16bit_limb: T,
-    /// The 8-bit limb of `initial_clk`, used for its 24-bit range check.
-    pub initial_clk_8bit_limb: T,
+    /// The 16-bit limb of `initial_low`, used for its 24-bit range check.
+    pub initial_low_16bit_limb: T,
+    /// The 8-bit limb of `initial_low`, used for its 24-bit range check.
+    pub initial_low_8bit_limb: T,
 
-    /// The 16-bit limb of `final_clk`, used for its 24-bit range check.
-    pub final_clk_16bit_limb: T,
-    /// The 8-bit limb of `final_clk`, used for its 24-bit range check.
-    pub final_clk_8bit_limb: T,
+    /// The 16-bit limb of `final_low`, used for its 24-bit range check.
+    pub final_low_16bit_limb: T,
+    /// The 8-bit limb of `final_low`, used for its 24-bit range check.
+    pub final_low_8bit_limb: T,
 
     /// The initial value of the memory access.
     pub initial_value: Word<T>,
@@ -123,10 +127,15 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
         let mut blu: HashMap<ByteLookupEvent, usize> = HashMap::new();
 
         input.get_local_mem_events().for_each(|mem_event| {
+            let initial_high = (mem_event.initial_mem_access.timestamp >> 24) as u32;
+            let initial_low = (mem_event.initial_mem_access.timestamp & 0xffffff) as u32;
+            let final_high = (mem_event.final_mem_access.timestamp >> 24) as u32;
+            let final_low = (mem_event.final_mem_access.timestamp & 0xffffff) as u32;
+
             events.push(GlobalLookupEvent {
                 message: [
-                    mem_event.initial_mem_access.shard,
-                    mem_event.initial_mem_access.timestamp,
+                    initial_high,
+                    initial_low,
                     mem_event.addr,
                     mem_event.initial_mem_access.value & 255,
                     (mem_event.initial_mem_access.value >> 8) & 255,
@@ -138,8 +147,8 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
             });
             events.push(GlobalLookupEvent {
                 message: [
-                    mem_event.final_mem_access.shard,
-                    mem_event.final_mem_access.timestamp,
+                    final_high,
+                    final_low,
                     mem_event.addr,
                     mem_event.final_mem_access.value & 255,
                     (mem_event.final_mem_access.value >> 8) & 255,
@@ -154,15 +163,8 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
             blu.add_u8_range_checks(&mem_event.initial_mem_access.value.to_le_bytes());
             blu.add_u8_range_checks(&mem_event.final_mem_access.value.to_le_bytes());
 
-            // 16-bit range checks for shards.
-            for value in [mem_event.initial_mem_access.shard, mem_event.final_mem_access.shard] {
-                blu.add_u16_range_check(value as u16);
-            }
-
-            // 24-bit range checks (16-bit + 8-bit limbs) for the clk fields.
-            for value in
-                [mem_event.initial_mem_access.timestamp, mem_event.final_mem_access.timestamp]
-            {
+            // 24-bit range checks (16-bit + 8-bit limbs) for the clk_high and clk_low fields.
+            for value in [initial_high, final_high, initial_low, final_low] {
                 blu.add_u16_range_check((value & 0xffff) as u16);
                 blu.add_u8_range_check(0, ((value >> 16) & 0xff) as u8);
             }
@@ -209,35 +211,43 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
                     let cols = &mut cols.memory_local_entries[k];
                     if idx + k < events.len() {
                         let event: &&MemoryLocalEvent = &events[idx + k];
-                        let initial_shard = event.initial_mem_access.shard;
-                        let final_shard = event.final_mem_access.shard;
-                        let initial_clk = event.initial_mem_access.timestamp;
-                        let final_clk = event.final_mem_access.timestamp;
+                        let initial_high = event.initial_mem_access.timestamp >> 24;
+                        let final_high = event.final_mem_access.timestamp >> 24;
+                        let initial_low = event.initial_mem_access.timestamp & 0xffffff;
+                        let final_low = event.final_mem_access.timestamp & 0xffffff;
 
                         cols.addr = F::from_canonical_u32(event.addr);
-                        cols.initial_shard = F::from_canonical_u32(initial_shard);
-                        cols.final_shard = F::from_canonical_u32(final_shard);
-                        cols.initial_clk = F::from_canonical_u32(initial_clk);
-                        cols.final_clk = F::from_canonical_u32(final_clk);
+                        cols.initial_clk_high = F::from_canonical_u64(initial_high);
+                        cols.final_clk_high = F::from_canonical_u64(final_high);
+                        cols.initial_low = F::from_canonical_u64(initial_low);
+                        cols.final_low = F::from_canonical_u64(final_low);
 
                         // Populate the limbs backing the defense-in-depth range checks.
                         for (value, limb_16, limb_8) in [
                             (
-                                initial_clk,
-                                &mut cols.initial_clk_16bit_limb,
-                                &mut cols.initial_clk_8bit_limb,
+                                initial_high,
+                                &mut cols.initial_clk_high_16bit_limb,
+                                &mut cols.initial_clk_high_8bit_limb,
                             ),
                             (
-                                final_clk,
-                                &mut cols.final_clk_16bit_limb,
-                                &mut cols.final_clk_8bit_limb,
+                                final_high,
+                                &mut cols.final_clk_high_16bit_limb,
+                                &mut cols.final_clk_high_8bit_limb,
+                            ),
+                            (
+                                initial_low,
+                                &mut cols.initial_low_16bit_limb,
+                                &mut cols.initial_low_8bit_limb,
+                            ),
+                            (
+                                final_low,
+                                &mut cols.final_low_16bit_limb,
+                                &mut cols.final_low_8bit_limb,
                             ),
                         ] {
-                            *limb_16 = F::from_canonical_u32(value & 0xffff);
-                            *limb_8 = F::from_canonical_u32((value >> 16) & 0xff);
+                            *limb_16 = F::from_canonical_u64(value & 0xffff);
+                            *limb_8 = F::from_canonical_u64((value >> 16) & 0xff);
                         }
-                        cols.initial_shard_16bit_limb = F::from_canonical_u32(initial_shard);
-                        cols.final_shard_16bit_limb = F::from_canonical_u32(final_shard);
 
                         cols.initial_value = event.initial_mem_access.value.into();
                         cols.final_value = event.final_mem_access.value.into();
@@ -276,30 +286,34 @@ where
             builder.slice_range_check_u8(&local.initial_value.0, local.is_real);
             builder.slice_range_check_u8(&local.final_value.0, local.is_real);
 
-            // Defense-in-depth: range check shards to 16 bits and clocks to 24 bits.
-            builder
-                .when(local.is_real)
-                .assert_eq(local.initial_shard, local.initial_shard_16bit_limb);
-            builder.when(local.is_real).assert_eq(local.final_shard, local.final_shard_16bit_limb);
-            builder.slice_range_check_u16(
-                &[local.initial_shard_16bit_limb, local.final_shard_16bit_limb],
+            // Defense-in-depth: range check clk_high and clk_low to 24 bits each.
+            builder.eval_range_check_24bits(
+                local.initial_clk_high,
+                local.initial_clk_high_16bit_limb,
+                local.initial_clk_high_8bit_limb,
                 local.is_real,
             );
             builder.eval_range_check_24bits(
-                local.initial_clk,
-                local.initial_clk_16bit_limb,
-                local.initial_clk_8bit_limb,
+                local.final_clk_high,
+                local.final_clk_high_16bit_limb,
+                local.final_clk_high_8bit_limb,
                 local.is_real,
             );
             builder.eval_range_check_24bits(
-                local.final_clk,
-                local.final_clk_16bit_limb,
-                local.final_clk_8bit_limb,
+                local.initial_low,
+                local.initial_low_16bit_limb,
+                local.initial_low_8bit_limb,
+                local.is_real,
+            );
+            builder.eval_range_check_24bits(
+                local.final_low,
+                local.final_low_16bit_limb,
+                local.final_low_8bit_limb,
                 local.is_real,
             );
 
             let mut values =
-                vec![local.initial_shard.into(), local.initial_clk.into(), local.addr.into()];
+                vec![local.initial_clk_high.into(), local.initial_low.into(), local.addr.into()];
             values.extend(local.initial_value.map(Into::into));
             builder.receive(
                 AirLookup::new(values.clone(), local.is_real.into(), LookupKind::Memory),
@@ -310,8 +324,8 @@ where
             builder.send(
                 AirLookup::new(
                     vec![
-                        local.initial_shard.into(),
-                        local.initial_clk.into(),
+                        local.initial_clk_high.into(),
+                        local.initial_low.into(),
                         local.addr.into(),
                         local.initial_value[0].into(),
                         local.initial_value[1].into(),
@@ -331,8 +345,8 @@ where
             builder.send(
                 AirLookup::new(
                     vec![
-                        local.final_shard.into(),
-                        local.final_clk.into(),
+                        local.final_clk_high.into(),
+                        local.final_low.into(),
                         local.addr.into(),
                         local.final_value[0].into(),
                         local.final_value[1].into(),
@@ -349,7 +363,7 @@ where
             );
 
             let mut values =
-                vec![local.final_shard.into(), local.final_clk.into(), local.addr.into()];
+                vec![local.final_clk_high.into(), local.final_low.into(), local.addr.into()];
             values.extend(local.final_value.map(Into::into));
             builder.send(
                 AirLookup::new(values.clone(), local.is_real.into(), LookupKind::Memory),
@@ -520,20 +534,16 @@ mod tests {
                 [{
                     let addr = thread_rng().gen_range(0..KoalaBear::ORDER_U32);
                     let init_value = thread_rng().gen_range(0..u32::MAX);
-                    let init_shard = thread_rng().gen_range(0..(1u32 << 16));
-                    let init_timestamp = thread_rng().gen_range(0..(1u32 << 24));
+                    let init_timestamp = thread_rng().gen_range(0..(1u64 << 48));
                     let final_value = thread_rng().gen_range(0..u32::MAX);
-                    let final_timestamp = thread_rng().gen_range(0..(1u32 << 24));
-                    let final_shard = thread_rng().gen_range(0..(1u32 << 16));
+                    let final_timestamp = thread_rng().gen_range(0..(1u64 << 48));
                     MemoryLocalEvent {
                         addr,
                         initial_mem_access: MemoryRecord {
-                            shard: init_shard,
                             timestamp: init_timestamp,
                             value: init_value,
                         },
                         final_mem_access: MemoryRecord {
-                            shard: final_shard,
                             timestamp: final_timestamp,
                             value: final_value,
                         },

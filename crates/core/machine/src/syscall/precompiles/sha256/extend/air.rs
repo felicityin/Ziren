@@ -7,6 +7,7 @@ use zkm_hypercube::lookup::LookupKind;
 
 use super::{ShaExtendChip, ShaExtendCols, NUM_SHA_EXTEND_COLS};
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state},
     air::{MemoryAirBuilder, WordAirBuilder},
     memory::MemoryCols,
     operations::{
@@ -37,6 +38,10 @@ where
 
         builder.assert_bool(local.is_real);
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         // Bound `16 <= i < 64` so the `AddrAddOperation`-style pointer arithmetic below is safe.
         builder.send_byte(
             AB::Expr::from_canonical_u32(ByteOpcode::LTU as u32),
@@ -46,12 +51,13 @@ where
             local.is_real,
         );
 
-        // Receive this row's own incoming `(shard, clk, w_ptr, i)`, and send the successor's --
-        // replacing the old row-adjacency chaining. The genuinely first (`i == 16`) and last
-        // (`i == 64`) links are closed by `ShaExtendControlChip`, which brackets the syscall.
+        // Receive this row's own incoming `(clk_high, clk_low, w_ptr, i)`, and send the
+        // successor's -- replacing the old row-adjacency chaining. The genuinely first (`i == 16`)
+        // and last (`i == 64`) links are closed by `ShaExtendControlChip`, which brackets the
+        // syscall.
         builder.receive(
             AirLookup::new(
-                vec![local.shard.into(), local.clk.into(), local.w_ptr.into(), local.i.into()],
+                vec![clk_high.into(), clk_low.clone(), local.w_ptr.into(), local.i.into()],
                 local.is_real.into(),
                 LookupKind::ShaExtend,
             ),
@@ -60,8 +66,8 @@ where
         builder.send(
             AirLookup::new(
                 vec![
-                    local.shard.into(),
-                    local.clk.into(),
+                    clk_high.into(),
+                    clk_low.clone(),
                     local.w_ptr.into(),
                     local.i.into() + AB::Expr::one(),
                 ],
@@ -73,8 +79,8 @@ where
 
         // Read w[i-15].
         builder.eval_memory_access(
-            local.shard,
-            local.clk + (local.i - i_start),
+            clk_high,
+            clk_low.clone() + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(15)) * nb_bytes_in_word,
             &local.w_i_minus_15,
             local.is_real,
@@ -82,8 +88,8 @@ where
 
         // Read w[i-2].
         builder.eval_memory_access(
-            local.shard,
-            local.clk + (local.i - i_start),
+            clk_high,
+            clk_low.clone() + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(2)) * nb_bytes_in_word,
             &local.w_i_minus_2,
             local.is_real,
@@ -91,8 +97,8 @@ where
 
         // Read w[i-16].
         builder.eval_memory_access(
-            local.shard,
-            local.clk + (local.i - i_start),
+            clk_high,
+            clk_low.clone() + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(16)) * nb_bytes_in_word,
             &local.w_i_minus_16,
             local.is_real,
@@ -100,8 +106,8 @@ where
 
         // Read w[i-7].
         builder.eval_memory_access(
-            local.shard,
-            local.clk + (local.i - i_start),
+            clk_high,
+            clk_low.clone() + (local.i - i_start),
             local.w_ptr + (local.i - AB::F::from_canonical_u32(7)) * nb_bytes_in_word,
             &local.w_i_minus_7,
             local.is_real,
@@ -204,8 +210,8 @@ where
 
         // Write `s2` to `w[i]`.
         builder.eval_memory_access(
-            local.shard,
-            local.clk + (local.i - i_start),
+            clk_high,
+            clk_low + (local.i - i_start),
             local.w_ptr + local.i * nb_bytes_in_word,
             &local.w_i,
             local.is_real,

@@ -13,6 +13,7 @@ use crate::syscall::precompiles::poseidon2::{
     columns::{Poseidon2MemCols, NUM_COLS},
     Poseidon2PermuteChip,
 };
+use crate::adapter::{clk_low_expr, eval_cpu_state};
 use crate::{air::MemoryAirBuilder, memory::MemoryCols};
 use zkm_core_executor::syscalls::SyscallCode;
 use zkm_hypercube::air::{LookupScope, ZKMAirBuilder};
@@ -113,10 +114,14 @@ where
                 .assert_eq(local.poseidon2.permutation.perm_output()[i].into(), post_state);
         }
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         // Read and write the state memory.
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             local.state_addr,
             &local.state_mem,
             local.is_real,
@@ -124,8 +129,8 @@ where
 
         // Receive the arguments.
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             AB::F::from_canonical_u32(SyscallCode::POSEIDON2_PERMUTE.syscall_id()),
             local.state_addr,
             AB::Expr::zero(),

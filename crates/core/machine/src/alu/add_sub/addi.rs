@@ -15,13 +15,10 @@ use zkm_core_executor::{
     ByteOpcode, ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
-use zkm_hypercube::{
-    air::{MachineAir, PublicValues, ZKM_PROOF_NUM_PV_ELTS},
-    word::Word,
-};
+use zkm_hypercube::air::MachineAir;
 
 use crate::{
-    adapter::{clk_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
+    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::{MemoryCols, MemoryReadCols, MemoryReadWriteCols},
     operations::AddOperation,
@@ -167,7 +164,7 @@ impl AddiChip {
 
         cols.add_operation.populate(blu, event.b, event.c);
 
-        cols.state.populate(blu, event.shard, event.clk);
+        cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
         cols.instruction.populate(&instruction);
@@ -212,10 +209,6 @@ where
         let local = main.row_slice(0);
         let local: &AddiCols<AB::Var> = (*local).borrow();
 
-        let public_values_slice: [AB::PublicVar; ZKM_PROOF_NUM_PV_ELTS] =
-            core::array::from_fn(|i| builder.public_values()[i]);
-        let public_values: &PublicValues<Word<AB::PublicVar>, AB::PublicVar> =
-            public_values_slice.as_slice().borrow();
 
         builder.assert_bool(local.is_real);
 
@@ -238,13 +231,14 @@ where
             local.is_real.into(),
         );
 
-        let clk = clk_expr::<AB>(&local.state);
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        let clk_high: AB::Expr = local.state.clk_high.into();
 
         builder.send_program(local.pc, local.instruction, local.is_real);
 
         builder.eval_memory_access(
-            local.state.shard,
-            clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::B as u32),
+            clk_high.clone(),
+            clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::B as u32),
             local.instruction.op_b[0],
             &local.op_b_access,
             local.is_real,
@@ -258,8 +252,8 @@ where
             .assert_word_eq(local.add_operation.value, *local.op_a_access.value());
 
         builder.eval_memory_access(
-            local.state.shard,
-            clk.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::A as u32),
+            clk_high.clone(),
+            clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::A as u32),
             local.instruction.op_a,
             &local.op_a_access,
             local.is_real,
@@ -267,18 +261,13 @@ where
 
         builder.slice_range_check_u8(&local.op_a_access.access.value.0, local.is_real);
 
-        eval_cpu_state(
-            builder,
-            &local.state,
-            public_values.execution_shard,
-            clk.clone(),
-            local.is_real.into(),
-        );
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
             builder,
-            clk,
+            clk_high,
+            clk_low,
             local.pc.into(),
             local.next_pc.into(),
             local.next_pc.into(),

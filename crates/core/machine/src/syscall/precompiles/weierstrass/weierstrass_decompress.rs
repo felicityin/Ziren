@@ -38,6 +38,7 @@ use zkm_hypercube::air::{BaseAirBuilder, LookupScope, MachineAir, ZKMAirBuilder}
 use zkm_stark::air::Polynomial;
 
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
     memory::{MemoryReadCols, MemoryReadWriteCols},
     operations::field::{
         field_inner_product::FieldInnerProductCols, field_op::FieldOpCols,
@@ -55,10 +56,9 @@ pub const fn num_weierstrass_decompress_cols<P: FieldParameters + NumWords>() ->
 #[derive(Debug, Clone, AlignedBorrow)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct WeierstrassDecompressCols<T, P: FieldParameters + NumWords> {
+pub struct WeierstrassDecompressCols<T: Copy, P: FieldParameters + NumWords> {
     pub is_real: T,
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     pub ptr: T,
     pub sign_bit: T,
     pub x_access: GenericArray<MemoryReadCols<T>, P::WordsFieldElement>,
@@ -202,8 +202,7 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
                 row[0..weierstrass_width].borrow_mut();
 
             cols.is_real = F::from_bool(true);
-            cols.shard = F::from_canonical_u32(event.shard);
-            cols.clk = F::from_canonical_u32(event.clk);
+            cols.state.populate(&mut new_byte_lookup_events, event.clk);
             cols.ptr = F::from_canonical_u32(event.ptr);
             cols.sign_bit = F::from_bool(event.sign_bit);
 
@@ -490,10 +489,14 @@ where
             }
         }
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         for i in 0..num_words_field_element {
             builder.eval_memory_access(
-                local.shard,
-                local.clk,
+                clk_high,
+                clk_low.clone(),
                 local.ptr.into() + AB::F::from_canonical_u32((i as u32) * 4 + num_limbs as u32),
                 &local.x_access[i],
                 local.is_real,
@@ -501,8 +504,8 @@ where
         }
         for i in 0..num_words_field_element {
             builder.eval_memory_access(
-                local.shard,
-                local.clk,
+                clk_high,
+                clk_low.clone(),
                 local.ptr.into() + AB::F::from_canonical_u32((i as u32) * 4),
                 &local.y_access[i],
                 local.is_real,
@@ -523,8 +526,8 @@ where
         };
 
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             syscall_id,
             local.ptr,
             local.sign_bit,

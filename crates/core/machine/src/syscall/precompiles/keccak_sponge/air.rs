@@ -1,3 +1,4 @@
+use crate::adapter::{clk_low_expr, eval_cpu_state};
 use crate::air::{MemoryAirBuilder, WordAirBuilder};
 use crate::memory::MemoryCols;
 use crate::operations::{IsZeroOperation, XorOperation};
@@ -35,6 +36,10 @@ where
         let local = main.row_slice(0);
         let local: &KeccakSpongeCols<AB::Var> = (*local).borrow();
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         // Constrain flags
         self.eval_flags(builder, local);
         // Constrain memory
@@ -51,8 +56,8 @@ where
 
         // Receive syscall
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             AB::F::from_canonical_u32(SyscallCode::KECCAK_SPONGE.syscall_id()),
             local.input_address,
             local.output_address,
@@ -198,10 +203,13 @@ impl KeccakSpongeChip {
         builder: &mut AB,
         local: &KeccakSpongeCols<AB::Var>,
     ) {
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+
         // if this is the first row, populate reading input length
         builder.eval_memory_access(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low.clone(),
             local.output_address + AB::Expr::from_canonical_u32(64),
             &local.input_length_mem,
             local.receive_syscall,
@@ -219,8 +227,8 @@ impl KeccakSpongeChip {
         // Read the input block
         for i in 0..KECCAK_GENERAL_RATE_U32S as u32 {
             builder.eval_memory_access(
-                local.shard,
-                local.clk,
+                clk_high,
+                clk_low.clone(),
                 local.input_address + AB::Expr::from_canonical_u32(i * 4),
                 &local.block_mem[i as usize],
                 local.read_block,
@@ -236,8 +244,8 @@ impl KeccakSpongeChip {
         // If this is the final round of the final block, write the output
         for i in 0..KECCAK_GENERAL_OUTPUT_U32S as u32 {
             builder.eval_memory_access(
-                local.shard,
-                local.clk + AB::Expr::one(),
+                clk_high,
+                clk_low.clone() + AB::Expr::one(),
                 local.output_address + AB::Expr::from_canonical_u32(i * 4),
                 &local.output_mem[i as usize],
                 local.write_output,
@@ -462,9 +470,11 @@ impl KeccakSpongeChip {
             builder.assert_eq(computed_a_prime_prime_prime_0_0_limb, a_prime_prime_prime_0_0_limb);
         }
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
         let base = [
-            local.shard.into(),
-            local.clk.into(),
+            clk_high.into(),
+            clk_low,
             local.output_address.into(),
             local.input_len.into(),
             local.already_absorbed_u32s.into(),
@@ -530,9 +540,11 @@ impl KeccakSpongeChip {
         local: &KeccakSpongeCols<AB::Var>,
     ) {
         let expr_2_pow_8 = AB::Expr::from_canonical_u32(2u32.pow(8));
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
         let base = [
-            local.shard.into(),
-            local.clk.into(),
+            clk_high.into(),
+            clk_low,
             local.output_address.into(),
             local.input_len.into(),
         ];

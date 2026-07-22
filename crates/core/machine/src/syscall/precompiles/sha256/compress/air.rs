@@ -14,6 +14,7 @@ use super::{
     ShaCompressChip, SHA_COMPRESS_K,
 };
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state},
     air::{MemoryAirBuilder, WordAirBuilder},
     memory::MemoryCols,
     operations::{
@@ -99,13 +100,17 @@ impl ShaCompressChip {
         // Assert that the is_finalize flag is correct.
         builder.assert_eq(local.is_finalize, local.octet_num[9] * local.is_real);
 
-        // Chain this row's own `(shard, clk, w_ptr, h_ptr, index, a..h)` state against whichever
-        // row (or `ShaCompressControlChip`, which brackets the syscall at index 0 and 80) sent
-        // it, and this row's own successor state against whichever row (or the control chip)
-        // receives it -- replacing the old row-adjacency chaining of octet/octet_num, the A-H
-        // registers, and shard/clk/w_ptr/h_ptr invariance all at once.
+        // Chain this row's own `(clk_high, clk_low, w_ptr, h_ptr, index, a..h)` state against
+        // whichever row (or `ShaCompressControlChip`, which brackets the syscall at index 0 and
+        // 80) sent it, and this row's own successor state against whichever row (or the control
+        // chip) receives it -- replacing the old row-adjacency chaining of octet/octet_num, the
+        // A-H registers, and clk_high/clk_low/w_ptr/h_ptr invariance all at once.
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         let state = [local.a, local.b, local.c, local.d, local.e, local.f, local.g, local.h];
-        let receive_values = [local.shard.into(), local.clk.into(), local.w_ptr.into(), local.h_ptr.into(), local.index.into()]
+        let receive_values = [clk_high.into(), clk_low.clone(), local.w_ptr.into(), local.h_ptr.into(), local.index.into()]
             .into_iter()
             .chain(state.iter().flat_map(|word| word.0.iter().map(|&e| e.into())))
             .collect::<Vec<_>>();
@@ -116,7 +121,7 @@ impl ShaCompressChip {
 
         // During initialize and finalize, the state passes through unchanged.
         let pass_through_send_values =
-            [local.shard.into(), local.clk.into(), local.w_ptr.into(), local.h_ptr.into(), local.index.into() + AB::Expr::one()]
+            [clk_high.into(), clk_low.clone(), local.w_ptr.into(), local.h_ptr.into(), local.index.into() + AB::Expr::one()]
                 .into_iter()
                 .chain(state.iter().flat_map(|word| word.0.iter().map(|&e| e.into())))
                 .collect::<Vec<_>>();
@@ -134,7 +139,7 @@ impl ShaCompressChip {
         let rotated_state =
             [local.temp1_add_temp2.value, local.a, local.b, local.c, local.d_add_temp1.value, local.e, local.f, local.g];
         let compression_send_values =
-            [local.shard.into(), local.clk.into(), local.w_ptr.into(), local.h_ptr.into(), local.index.into() + AB::Expr::one()]
+            [clk_high.into(), clk_low, local.w_ptr.into(), local.h_ptr.into(), local.index.into() + AB::Expr::one()]
                 .into_iter()
                 .chain(rotated_state.iter().flat_map(|word| word.0.iter().map(|&e| e.into())))
                 .collect::<Vec<_>>();
@@ -146,9 +151,11 @@ impl ShaCompressChip {
 
     /// Constrains that memory address is correct and that memory is correctly written/read.
     fn eval_memory<AB: ZKMAirBuilder>(&self, builder: &mut AB, local: &ShaCompressCols<AB::Var>) {
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
         builder.eval_memory_access(
-            local.shard,
-            local.clk + local.is_finalize,
+            clk_high,
+            clk_low + local.is_finalize.into(),
             local.mem_addr,
             &local.mem,
             local.is_initialize + local.is_compression + local.is_finalize,

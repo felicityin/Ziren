@@ -108,7 +108,7 @@ impl BranchChip {
 
         // Every `branch_events` row is a real, retired instruction -- nothing ever produces a
         // synthetic dependency row here (see this chip's `Air::eval` doc comment).
-        cols.state.populate(blu, event.shard, event.clk);
+        cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
         cols.instruction.populate(&instruction);

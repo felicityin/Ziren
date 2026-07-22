@@ -6,6 +6,7 @@ use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
 use crate::{
+    adapter::CpuState,
     memory::MemoryReadWriteCols,
     operations::{AddOperation, GtColsBytes, IsZeroOperation},
 };
@@ -16,10 +17,9 @@ pub const NUM_SYS_LINUX_COLS: usize = size_of::<SysLinuxCols<u8>>();
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct SysLinuxCols<T> {
+pub struct SysLinuxCols<T: Copy> {
     // ── Common inputs (15 cols) ────────────────────────────────────────
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     pub syscall_id: T,
     pub a0: Word<T>,
     pub a1: Word<T>,

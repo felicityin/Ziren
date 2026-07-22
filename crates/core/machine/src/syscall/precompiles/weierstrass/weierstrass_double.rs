@@ -32,6 +32,7 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::air::{LookupScope, MachineAir, ZKMAirBuilder};
 
 use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
     memory::{MemoryCols, MemoryWriteCols},
     operations::field::field_op::FieldOpCols,
     utils::limbs_from_prev_access,
@@ -48,10 +49,9 @@ pub const fn num_weierstrass_double_cols<P: FieldParameters + NumWords>() -> usi
 #[derive(Debug, Clone, AlignedBorrow)]
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
-pub struct WeierstrassDoubleAssignCols<T, P: FieldParameters + NumWords> {
+pub struct WeierstrassDoubleAssignCols<T: Copy, P: FieldParameters + NumWords> {
     pub is_real: T,
-    pub shard: T,
-    pub clk: T,
+    pub state: CpuState<T>,
     pub p_ptr: T,
     pub p_access: GenericArray<MemoryWriteCols<T>, P::WordsCurvePoint>,
     pub(crate) slope_denominator: FieldOpCols<T, P>,
@@ -234,10 +234,8 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
             dummy_row.as_mut_slice().borrow_mut();
         let dummy_memory_record = MemoryWriteRecord {
             value: 1,
-            shard: 0,
             timestamp: 1,
             prev_value: 1,
-            prev_shard: 0,
             prev_timestamp: 0,
         };
         let zero = BigUint::ZERO;
@@ -304,8 +302,7 @@ impl<E: EllipticCurve + WeierstrassParameters> WeierstrassDoubleAssignChip<E> {
 
         // Populate basic columns.
         cols.is_real = F::ONE;
-        cols.shard = F::from_canonical_u32(event.shard);
-        cols.clk = F::from_canonical_u32(event.clk);
+        cols.state.populate(new_byte_lookup_events, event.clk);
         cols.p_ptr = F::from_canonical_u32(event.p_ptr);
 
         Self::populate_field_ops(new_byte_lookup_events, cols, p_x, p_y);
@@ -428,9 +425,13 @@ where
             );
         }
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         builder.eval_memory_access_slice(
-            local.shard,
-            local.clk.into(),
+            clk_high,
+            clk_low.clone(),
             local.p_ptr,
             &local.p_access,
             local.is_real,
@@ -452,8 +453,8 @@ where
         };
 
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low,
             syscall_id_felt,
             local.p_ptr,
             AB::Expr::zero(),

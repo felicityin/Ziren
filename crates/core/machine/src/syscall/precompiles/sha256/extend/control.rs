@@ -11,11 +11,15 @@ use zkm_hypercube::{
     lookup::LookupKind,
 };
 
-use crate::{utils::next_power_of_two, CoreChipError};
+use crate::{
+    adapter::{clk_low_expr, eval_cpu_state, CpuState},
+    utils::next_power_of_two,
+    CoreChipError,
+};
 
 /// Brackets a `SHA_EXTEND` syscall's 48-iteration worker chain (`ShaExtendChip`): receives the
-/// syscall once, then sends the chain's starting `(shard, clk, w_ptr, i = 16)` state and receives
-/// its ending `(shard, clk, w_ptr, i = 64)` state.
+/// syscall once, then sends the chain's starting `(clk_high, clk_low, w_ptr, i = 16)` state and
+/// receives its ending `(clk_high, clk_low, w_ptr, i = 64)` state.
 #[derive(Default)]
 pub struct ShaExtendControlChip;
 
@@ -29,9 +33,8 @@ pub const NUM_SHA_EXTEND_CONTROL_COLS: usize = size_of::<ShaExtendControlCols<u8
 
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[repr(C)]
-pub struct ShaExtendControlCols<T> {
-    pub shard: T,
-    pub clk: T,
+pub struct ShaExtendControlCols<T: Copy> {
+    pub state: CpuState<T>,
     pub w_ptr: T,
     pub is_real: T,
 }
@@ -56,7 +59,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
     fn generate_trace(
         &self,
         input: &ExecutionRecord,
-        _output: &mut ExecutionRecord,
+        output: &mut ExecutionRecord,
     ) -> Result<RowMajorMatrix<F>, Self::Error> {
         let events = input.get_precompile_events(SyscallCode::SHA_EXTEND);
 
@@ -70,8 +73,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
                 };
                 let mut row = [F::ZERO; NUM_SHA_EXTEND_CONTROL_COLS];
                 let cols: &mut ShaExtendControlCols<F> = row.as_mut_slice().borrow_mut();
-                cols.shard = F::from_canonical_u32(event.shard);
-                cols.clk = F::from_canonical_u32(event.clk);
+                cols.state.populate(output, event.clk);
                 cols.w_ptr = F::from_canonical_u32(event.w_ptr);
                 cols.is_real = F::ONE;
                 row
@@ -114,9 +116,13 @@ where
 
         builder.assert_bool(local.is_real);
 
+        let clk_high = local.state.clk_high;
+        let clk_low = clk_low_expr::<AB>(&local.state);
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+
         builder.receive_syscall(
-            local.shard,
-            local.clk,
+            clk_high,
+            clk_low.clone(),
             AB::F::from_canonical_u32(SyscallCode::SHA_EXTEND.syscall_id()),
             local.w_ptr,
             AB::Expr::zero(),
@@ -128,8 +134,8 @@ where
         builder.send(
             AirLookup::new(
                 vec![
-                    local.shard.into(),
-                    local.clk.into(),
+                    clk_high.into(),
+                    clk_low.clone(),
                     local.w_ptr.into(),
                     AB::Expr::from_canonical_u32(16),
                 ],
@@ -142,8 +148,8 @@ where
         builder.receive(
             AirLookup::new(
                 vec![
-                    local.shard.into(),
-                    local.clk.into(),
+                    clk_high.into(),
+                    clk_low,
                     local.w_ptr.into(),
                     AB::Expr::from_canonical_u32(64),
                 ],
