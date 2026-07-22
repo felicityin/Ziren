@@ -23,6 +23,7 @@ use crate::{
     executor::LocalCounts,
     program::MAX_MEMORY,
     record::{ExecutionRecord, MemoryAccessRecord},
+    register::NUM_REGISTERS,
     syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     utils::sign_extend as sign_extend_fn,
     ExecutionError, Instruction, Opcode, Program, Register,
@@ -110,12 +111,15 @@ impl MemSource for Oracle {
     }
 }
 
-/// Snapshot taken on entering an unconstrained block, restored on exit.
+/// Snapshot taken on entering an unconstrained block, restored on exit. `registers` is a full
+/// snapshot rather than a sparse diff (unlike `MinimalExecutor`'s `unconstrained_reg_diff`) --
+/// the array is small and `Copy`, so there's no real cost to simplicity here.
 #[derive(Debug, Clone, Copy)]
 struct UnconstrainedCtx {
     pc: u32,
     clk: u64,
     global_clk: u64,
+    registers: [MemValue; NUM_REGISTERS],
 }
 
 /// Everything [`CoreVM::step`] produces about one retired instruction, for a caller to turn into
@@ -144,6 +148,12 @@ pub struct StepOutcome {
 pub struct CoreVM<M: MemSource> {
     pub program: Arc<Program>,
     pub mem: M,
+    /// Registers, kept separate from `mem`/`oracle_out`: a register's value is always a
+    /// deterministic function of the instruction stream and already-oracle-buffered memory
+    /// reads, so both `SplicingVM` (continuous across the whole execution) and `TracingVM`
+    /// (fresh per shard, seeded from `SplicedChunk::registers_start`) recompute registers
+    /// locally instead of needing them pre-recorded in the oracle.
+    pub registers: [MemValue; NUM_REGISTERS],
 
     pub pc: u32,
     pub next_pc: u32,
@@ -200,9 +210,21 @@ impl<M: MemSource> CoreVM<M> {
         let next_pc = program.next_pc;
         let record = ExecutionRecord::new(program.clone());
         let syscall_map = default_syscall_map::<Self>();
+        // Seed registers from the program's initial image (e.g. `$sp`/`$brk`/`$heap`) --
+        // deterministic and identical regardless of who's asking, so `SplicingVM` (which starts
+        // truly at the beginning) gets the real values for free; `TracingVM` overwrites this
+        // right after construction from `SplicedChunk::registers_start` since it doesn't start
+        // at the beginning.
+        let mut registers = [MemValue::default(); NUM_REGISTERS];
+        for (&addr, &value) in &program.image {
+            if addr < NUM_REGISTERS as u32 {
+                registers[addr as usize] = MemValue { clk: 0, value };
+            }
+        }
         Self {
             program,
             mem,
+            registers,
             pc,
             next_pc,
             // 1, not 0: `0` is the "never touched" sentinel `MemoryRecord::timestamp` (mirrors
@@ -259,14 +281,23 @@ impl<M: MemSource> CoreVM<M> {
         timestamp: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        let prev_record = self.mem.access(addr);
+        let is_register = addr < NUM_REGISTERS as u32;
+        let prev_record: MemoryRecord = if is_register {
+            self.registers[addr as usize].into()
+        } else {
+            self.mem.access(addr)
+        };
         if !self.unconstrained
             && (prev_record.timestamp < self.initial_timestamp || external)
         {
             self.local_counts.local_mem += 1;
         }
         let record = MemoryRecord { value: prev_record.value, timestamp };
-        self.mem.commit(addr, record);
+        if is_register {
+            self.registers[addr as usize] = MemValue { clk: record.timestamp, value: record.value };
+        } else {
+            self.mem.commit(addr, record);
+        }
         if !self.unconstrained {
             let local_memory_access =
                 local_memory_access.unwrap_or(&mut self.local_memory_access);
@@ -287,14 +318,20 @@ impl<M: MemSource> CoreVM<M> {
         timestamp: u64,
         local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
-        let prev_record = self.mem.access(addr);
+        let is_register = addr < NUM_REGISTERS as u32;
+        let prev_record: MemoryRecord =
+            if is_register { self.registers[addr as usize].into() } else { self.mem.access(addr) };
         if !self.unconstrained
             && (prev_record.timestamp < self.initial_timestamp || external)
         {
             self.local_counts.local_mem += 1;
         }
         let record = MemoryRecord { value, timestamp };
-        self.mem.commit(addr, record);
+        if is_register {
+            self.registers[addr as usize] = MemValue { clk: record.timestamp, value: record.value };
+        } else {
+            self.mem.commit(addr, record);
+        }
         if !self.unconstrained {
             let local_memory_access =
                 local_memory_access.unwrap_or(&mut self.local_memory_access);
@@ -307,7 +344,7 @@ impl<M: MemSource> CoreVM<M> {
     }
 
     /// Read a register and create an access record (same shape as `mr`, registers are just
-    /// addresses `< NUM_REGISTERS` in the same `Memory`).
+    /// addresses `< NUM_REGISTERS`, routed to `self.registers` instead of `self.mem`).
     pub fn rr_traced(
         &mut self,
         register: Register,
@@ -331,11 +368,11 @@ impl<M: MemSource> CoreVM<M> {
         self.mw(register as u32, value, external, timestamp, local_memory_access)
     }
 
-    /// Get the current value of a register, without creating an access record. Still consumes an
-    /// oracle entry for `Oracle` sources (there is no other way to know the value), but does not
-    /// participate in local-memory-access/cost bookkeeping.
+    /// Get the current value of a register, without creating an access record. Doesn't consume
+    /// an oracle entry (see `registers`'s doc comment) or participate in local-memory-access/cost
+    /// bookkeeping.
     pub fn register(&mut self, register: Register) -> u32 {
-        self.mem.access(register as u32).value
+        self.registers[register as u32 as usize].value
     }
 
     /// Get the current value of a word, without creating an access record.
@@ -1141,8 +1178,12 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
     fn enter_unconstrained(&mut self) {
         assert!(!self.unconstrained, "Unconstrained block is already active.");
         self.unconstrained = true;
-        self.unconstrained_ctx =
-            Some(UnconstrainedCtx { pc: self.pc, clk: self.clk, global_clk: self.global_clk });
+        self.unconstrained_ctx = Some(UnconstrainedCtx {
+            pc: self.pc,
+            clk: self.clk,
+            global_clk: self.global_clk,
+            registers: self.registers,
+        });
         self.mem.enter_unconstrained();
     }
 
@@ -1151,6 +1192,7 @@ impl<M: MemSource> SyscallRuntime for CoreVM<M> {
             self.pc = ctx.pc;
             self.clk = ctx.clk;
             self.global_clk = ctx.global_clk;
+            self.registers = ctx.registers;
             self.mem.exit_unconstrained();
             self.unconstrained = false;
         }

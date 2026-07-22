@@ -192,7 +192,9 @@ pub fn prove_with_context(
                             let done = traced.done;
 
                             if done {
-                                tracing_chunk::emit_globals(
+                tracing_chunk::emit_globals(
+                                    minimal_runner.registers(),
+                                    minimal_runner.registers_touched(),
                                     minimal_runner.memory(),
                                     minimal_runner.uninitialized_memory(),
                                     minimal_runner.program(),
@@ -587,6 +589,8 @@ mod tests {
 
                 if done {
                     tracing_chunk::emit_globals(
+                        minimal_runner.registers(),
+                        minimal_runner.registers_touched(),
                         minimal_runner.memory(),
                         minimal_runner.uninitialized_memory(),
                         minimal_runner.program(),

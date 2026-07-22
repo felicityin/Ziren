@@ -8,7 +8,12 @@ use std::sync::Arc;
 
 use executor::MinimalExecutor;
 
-use crate::{memory::Memory, vm::MemValue, ExecutionError, Program};
+use crate::{
+    memory::{Memory, PagedMemory},
+    register::NUM_REGISTERS,
+    vm::MemValue,
+    ExecutionError, Program,
+};
 
 mod executor;
 
@@ -22,6 +27,13 @@ pub struct Chunk {
     pub next_pc_start: u32,
     pub clk_start: u64,
     pub global_clk_start: u64,
+    /// The `global_clk` value immediately after this chunk's last instruction. `SplicingVM`
+    /// replays exactly `global_clk_end - global_clk_start` instructions before treating this
+    /// chunk as exhausted -- unlike before registers were split out of the oracle (see
+    /// `CoreVM::registers`'s doc comment), oracle exhaustion (`Oracle::remaining() == 0`) is no
+    /// longer a reliable proxy for "done with this chunk": a run of register-only instructions
+    /// (e.g. plain ALU ops) consumes zero oracle entries yet still needs replaying.
+    pub global_clk_end: u64,
     /// True if the program halted during this chunk (it is therefore the last one).
     pub done: bool,
 }
@@ -70,16 +82,29 @@ impl MinimalRunner {
         &self.core.public_values_stream
     }
 
-    /// This runner's still-live memory, for a caller (`tracing_chunk::emit_globals`) to read the
-    /// final state of every address ever touched from, after the final chunk (`done`). Read-only:
-    /// `MinimalRunner` itself never builds `MemoryInitializeFinalizeEvent`s or any other typed
-    /// event/record content.
+    /// This runner's still-live registers/memory, for a caller (`tracing_chunk::emit_globals`) to
+    /// read the final state of every address ever touched from, after the final chunk (`done`).
+    /// Read-only: `MinimalRunner` itself never builds `MemoryInitializeFinalizeEvent`s or any
+    /// other typed event/record content.
     #[must_use]
-    pub fn memory(&self) -> &Memory<MemValue> {
+    pub fn registers(&self) -> &[MemValue; NUM_REGISTERS] {
+        &self.core.registers
+    }
+
+    /// Whether each register has ever been touched -- see `MinimalExecutor::registers_touched`'s
+    /// doc comment.
+    #[must_use]
+    pub fn registers_touched(&self) -> &[bool; NUM_REGISTERS] {
+        &self.core.registers_touched
+    }
+
+    /// See [`Self::registers`].
+    #[must_use]
+    pub fn memory(&self) -> &PagedMemory<MemValue> {
         &self.core.memory
     }
 
-    /// See [`Self::memory`].
+    /// See [`Self::registers`].
     #[must_use]
     pub fn uninitialized_memory(&self) -> &Memory<u32> {
         &self.core.uninitialized_memory
@@ -111,6 +136,7 @@ impl MinimalRunner {
                     next_pc_start,
                     clk_start,
                     global_clk_start,
+                    global_clk_end: self.core.global_clk,
                     done,
                 }));
             }

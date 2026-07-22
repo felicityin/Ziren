@@ -22,7 +22,7 @@ use crate::{
         MiscEvent, MovCondEvent,
     },
     executor::LocalCounts,
-    memory::Memory,
+    memory::{Memory, PagedMemory},
     record::{ExecutionRecord, MemoryAccessRecord},
     register::NUM_REGISTERS,
     splicing::SplicedChunk,
@@ -32,41 +32,40 @@ use crate::{
 
 /// Emit the program's global memory initialize/finalize events into `record`, for every address
 /// ever touched. Must only be called once, after the final shard's `TracingVM` finishes -- reads
-/// `MinimalRunner`'s still-live final memory (`MinimalRunner::memory`/`uninitialized_memory`),
-/// since that's the only place the full, final state of every touched address exists (an
-/// `Oracle`-sourced `CoreVM` only ever sees a sequential replay, never a full memory map).
-/// Mirrors `Executor::postprocess`'s memory-events section.
+/// `MinimalRunner`'s still-live final registers/memory (`MinimalRunner::registers`/`memory`/
+/// `uninitialized_memory`), since that's the only place the full, final state of every touched
+/// address exists (an `Oracle`-sourced `CoreVM` only ever sees a sequential replay, never a full
+/// memory map). Mirrors `Executor::postprocess`'s memory-events section.
 pub fn emit_globals(
-    memory: &Memory<MemValue>,
+    registers: &[MemValue; NUM_REGISTERS],
+    registers_touched: &[bool; NUM_REGISTERS],
+    memory: &PagedMemory<MemValue>,
     uninitialized_memory: &Memory<u32>,
     program: &Program,
     record: &mut ExecutionRecord,
 ) {
-    let addr_0_final_record: MemoryRecord = match memory.get(0) {
-        Some(record) => (*record).into(),
-        None => MemoryRecord { value: 0, timestamp: 1 },
-    };
+    let addr_0_final_record: MemoryRecord = registers[0].into();
     record
         .global_memory_finalize_events
         .push(MemoryInitializeFinalizeEvent::finalize_from_record(0, &addr_0_final_record));
     record.global_memory_initialize_events.push(MemoryInitializeFinalizeEvent::initialize(0, 0));
 
     for addr in 1..NUM_REGISTERS as u32 {
-        if let Some(reg_record) = memory.registers.get(addr) {
+        if registers_touched[addr as usize] {
             if !program.image.contains_key(&addr) {
                 let initial_value = uninitialized_memory.registers.get(addr).copied().unwrap_or(0);
                 record
                     .global_memory_initialize_events
                     .push(MemoryInitializeFinalizeEvent::initialize(addr, initial_value));
             }
-            let reg_record: MemoryRecord = (*reg_record).into();
+            let reg_record: MemoryRecord = registers[addr as usize].into();
             record
                 .global_memory_finalize_events
                 .push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, &reg_record));
         }
     }
 
-    for addr in memory.page_table.keys() {
+    for addr in memory.keys() {
         if addr == 0 {
             continue;
         }
@@ -106,6 +105,11 @@ impl TracingVM {
         core.clk = chunk.initial_timestamp;
         core.initial_timestamp = chunk.initial_timestamp;
         core.global_clk = chunk.global_clk_start;
+        // `CoreVM::new()` only seeded registers from the program's initial image, correct for
+        // the first-ever shard but not any later one -- `TracingVM` doesn't run continuously
+        // across shards the way `SplicingVM` does, so it needs the real mid-execution snapshot
+        // `SplicingVM` captured at this shard's cut point.
+        core.registers = chunk.registers_start;
         core.current_shard = chunk.shard;
         core.record.public_values.shard = chunk.shard;
         core.input_stream = input_stream;

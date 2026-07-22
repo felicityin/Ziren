@@ -13,6 +13,7 @@ use crate::{
     cost::{estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts},
     executor::{CORE_SHARD_CLK_LIMIT, CORE_SHARD_HEIGHT_THRESHOLD},
     minimal::Chunk,
+    register::NUM_REGISTERS,
     vm::{CoreVM, MemValue, Oracle},
     ExecutionError, MipsAirId, Program,
 };
@@ -27,6 +28,12 @@ pub struct SplicedChunk {
     /// The global, never-resetting memory-access timestamp value this shard's local `clk == 0`
     /// corresponds to. See `ExecutionState::initial_timestamp`'s doc comment.
     pub initial_timestamp: u64,
+    /// This shard's starting register state -- `TracingVM` is reconstructed fresh per shard (no
+    /// continuity across shards, unlike `SplicingVM`), so unlike `pc_start`/`clk_start` it can't
+    /// fall back on `CoreVM::new()`'s own (program-image-only) seeding once execution has moved
+    /// past the first shard. See `CoreVM::registers`'s doc comment for why registers need this
+    /// threading at all instead of flowing through `oracle` like general memory.
+    pub registers_start: [MemValue; NUM_REGISTERS],
     pub shard: u32,
     /// True if the program halted at the end of this piece.
     pub done: bool,
@@ -42,6 +49,7 @@ pub struct SplicingVM {
     pending_next_pc_start: u32,
     pending_global_clk_start: u64,
     pending_initial_timestamp: u64,
+    pending_registers_start: [MemValue; NUM_REGISTERS],
 
     max_syscall_cycles: u32,
     shard_size: u32,
@@ -65,6 +73,7 @@ impl SplicingVM {
         let pc_start = program.pc_start;
         let next_pc_start = program.next_pc;
         let core = CoreVM::new(program, Oracle::new(Vec::new()));
+        let pending_registers_start = core.registers;
         Self {
             core,
             pending_oracle: Vec::new(),
@@ -74,6 +83,7 @@ impl SplicingVM {
             // 1, not 0: matches `ExecutionState::new`'s convention (`0` is the "never touched"
             // `MemoryRecord::timestamp` sentinel).
             pending_initial_timestamp: 1,
+            pending_registers_start,
             max_syscall_cycles,
             shard_size,
             shape_check_frequency,
@@ -164,6 +174,7 @@ impl SplicingVM {
                     next_pc_start: self.pending_next_pc_start,
                     global_clk_start: self.pending_global_clk_start,
                     initial_timestamp: self.pending_initial_timestamp,
+                    registers_start: self.pending_registers_start,
                     shard: self.core.current_shard,
                     done: true,
                 });
@@ -180,6 +191,7 @@ impl SplicingVM {
                     next_pc_start: self.pending_next_pc_start,
                     global_clk_start: self.pending_global_clk_start,
                     initial_timestamp: self.pending_initial_timestamp,
+                    registers_start: self.pending_registers_start,
                     shard: self.core.current_shard,
                     done: false,
                 });
@@ -192,11 +204,15 @@ impl SplicingVM {
                 self.pending_next_pc_start = self.core.next_pc;
                 self.pending_global_clk_start = self.core.global_clk;
                 self.pending_initial_timestamp = self.core.initial_timestamp;
+                self.pending_registers_start = self.core.registers;
             }
 
-            if self.core.mem.remaining() == 0 {
+            if self.core.global_clk >= chunk.global_clk_end {
                 // Chunk exhausted without closing the in-progress shard -- carry it into the
-                // next chunk.
+                // next chunk. Checked against `global_clk`, not oracle exhaustion (`Oracle`'s
+                // `remaining() == 0` can go true well before the chunk's real instruction stream
+                // does, e.g. after a run of register-only instructions that touch no oracle
+                // entries at all -- see `Chunk::global_clk_end`'s doc comment).
                 self.pending_oracle.extend_from_slice(&chunk_values[consumed_before..consumed_now]);
                 return Ok(result);
             }

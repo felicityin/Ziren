@@ -17,9 +17,10 @@ use crate::{
         MemoryAccessPosition, MemoryLocalEvent, MemoryReadRecord, MemoryRecordEnum,
         MemoryWriteRecord, SyscallEvent,
     },
-    memory::{Entry, Memory},
+    memory::{Entry, PagedMemory},
     program::MAX_MEMORY,
     record::ExecutionRecord,
+    register::NUM_REGISTERS,
     syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext, SyscallRuntime},
     utils::sign_extend as sign_extend_fn,
     vm::MemValue,
@@ -36,10 +37,24 @@ struct UnconstrainedCtx {
 
 pub struct MinimalExecutor {
     pub program: Arc<Program>,
-    pub(crate) memory: Memory<MemValue>,
-    pub(crate) uninitialized_memory: Memory<u32>,
+    /// Registers -- kept out of `oracle_out` entirely, unlike `memory`: a register's value is
+    /// always a deterministic function of the instruction stream and already-oracle-buffered
+    /// memory reads, so a replay pass (`CoreVM<Oracle>`, see `vm.rs`) can recompute it locally
+    /// instead of needing it pre-recorded.
+    pub(crate) registers: [MemValue; NUM_REGISTERS],
+    /// Whether each register has ever been set (via `load_image` or a real access), mirroring
+    /// `memory`'s vacant/occupied distinction -- `registers` itself has no such concept, since
+    /// every slot is always populated. Read by `tracing_chunk::emit_globals` to decide which
+    /// registers need a global finalize event at all.
+    pub(crate) registers_touched: [bool; NUM_REGISTERS],
+    pub(crate) memory: PagedMemory<MemValue>,
+    pub(crate) uninitialized_memory: crate::memory::Memory<u32>,
     /// Memory diff since the matching `enter_unconstrained`, reverted on exit.
-    unconstrained_diff: Option<HashMap<u32, Option<MemValue>>>,
+    unconstrained_mem_diff: Option<HashMap<u32, Option<MemValue>>>,
+    /// Register diff since the matching `enter_unconstrained`, reverted on exit. Registers are
+    /// always populated (no vacant/occupied distinction), so unlike the memory diff this only
+    /// ever holds the previous `MemValue`, never `None`.
+    unconstrained_reg_diff: Option<HashMap<u32, MemValue>>,
 
     pub pc: u32,
     pub next_pc: u32,
@@ -50,8 +65,8 @@ pub struct MinimalExecutor {
     unconstrained_ctx: Option<UnconstrainedCtx>,
     next_is_delayslot: bool,
 
-    /// The value+timestamp stream being produced. `MinimalRunner` drains this into a `Chunk`
-    /// once it's full or the program halts.
+    /// The value+timestamp stream being produced, for general memory only (see `registers`).
+    /// `MinimalRunner` drains this into a `Chunk` once it's full or the program halts.
     pub oracle_out: Vec<MemValue>,
 
     syscall_map: HashMap<SyscallCode, Arc<dyn Syscall<Self>>>,
@@ -72,9 +87,12 @@ impl MinimalExecutor {
         let syscall_map = default_syscall_map::<Self>();
         Self {
             program,
-            memory: Memory::new_preallocated(),
-            uninitialized_memory: Memory::new_preallocated(),
-            unconstrained_diff: None,
+            registers: [MemValue::default(); NUM_REGISTERS],
+            registers_touched: [false; NUM_REGISTERS],
+            memory: PagedMemory::new_preallocated(),
+            uninitialized_memory: crate::memory::Memory::new_preallocated(),
+            unconstrained_mem_diff: None,
+            unconstrained_reg_diff: None,
             pc,
             next_pc,
             // 1, not 0: `0` is the "never touched" sentinel `MemoryRecord::timestamp`, matching
@@ -97,7 +115,12 @@ impl MinimalExecutor {
 
     pub fn load_image(&mut self) {
         for (&addr, value) in &self.program.image.clone() {
-            self.memory.insert(addr, MemValue { clk: 0, value: *value });
+            if addr < NUM_REGISTERS as u32 {
+                self.registers[addr as usize] = MemValue { clk: 0, value: *value };
+                self.registers_touched[addr as usize] = true;
+            } else {
+                self.memory.insert(addr, MemValue { clk: 0, value: *value });
+            }
         }
     }
 
@@ -112,9 +135,11 @@ impl MinimalExecutor {
 
     // ---- primitive accessors ----
 
-    fn access(&mut self, addr: u32) -> MemValue {
+    /// General-memory access -- pushes into `oracle_out` (see the `registers` field's doc
+    /// comment for why registers don't).
+    fn mem_access(&mut self, addr: u32) -> MemValue {
         let entry = self.memory.entry(addr);
-        if let Some(diff) = self.unconstrained_diff.as_mut() {
+        if let Some(diff) = self.unconstrained_mem_diff.as_mut() {
             let existing = match &entry {
                 Entry::Occupied(entry) => Some(*entry.get()),
                 Entry::Vacant(_) => None,
@@ -133,40 +158,57 @@ impl MinimalExecutor {
         prev_record
     }
 
-    fn commit(&mut self, addr: u32, record: MemValue) {
+    fn mem_commit(&mut self, addr: u32, record: MemValue) {
         self.memory.insert(addr, record);
     }
 
     fn mr(&mut self, addr: u32, timestamp: u64) -> u32 {
-        let prev_record = self.access(addr);
-        self.commit(addr, MemValue { clk: timestamp, value: prev_record.value });
+        let prev_record = self.mem_access(addr);
+        self.mem_commit(addr, MemValue { clk: timestamp, value: prev_record.value });
         prev_record.value
     }
 
     fn mw(&mut self, addr: u32, value: u32, timestamp: u64) {
-        let _prev_record = self.access(addr);
-        self.commit(addr, MemValue { clk: timestamp, value });
+        let _prev_record = self.mem_access(addr);
+        self.mem_commit(addr, MemValue { clk: timestamp, value });
+    }
+
+    /// Register access -- never pushed into `oracle_out`.
+    fn reg_access(&mut self, register: Register) -> MemValue {
+        let idx = register as u32 as usize;
+        if let Some(diff) = self.unconstrained_reg_diff.as_mut() {
+            diff.entry(idx as u32).or_insert(self.registers[idx]);
+        }
+        self.registers_touched[idx] = true;
+        self.registers[idx]
+    }
+
+    fn reg_commit(&mut self, register: Register, record: MemValue) {
+        self.registers[register as u32 as usize] = record;
     }
 
     fn rr(&mut self, register: Register, position: MemoryAccessPosition) -> u32 {
+        let prev_record = self.reg_access(register);
         let timestamp = self.timestamp(position);
-        self.mr(register as u32, timestamp)
+        self.reg_commit(register, MemValue { clk: timestamp, value: prev_record.value });
+        prev_record.value
     }
 
     fn rw(&mut self, register: Register, value: u32, position: MemoryAccessPosition) {
         let value = if register == Register::ZERO { 0 } else { value };
+        let _prev_record = self.reg_access(register);
         let timestamp = self.timestamp(position);
-        self.mw(register as u32, value, timestamp);
+        self.reg_commit(register, MemValue { clk: timestamp, value });
     }
 
     /// Get the current value of a register, without creating an access record.
     fn register(&mut self, register: Register) -> u32 {
-        self.access(register as u32).value
+        self.reg_access(register).value
     }
 
     /// Get the current value of a word, without creating an access record.
     fn word(&mut self, addr: u32) -> u32 {
-        self.access(addr).value
+        self.mem_access(addr).value
     }
 
     /// Get the current value of a byte, without creating an access record.
@@ -776,8 +818,15 @@ impl SyscallRuntime for MinimalExecutor {
         clk: u64,
         _local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        let prev_record = self.access(addr);
-        self.commit(addr, MemValue { clk, value: prev_record.value });
+        // Syscalls always address data buffers, never registers directly, but branch here for
+        // parity with `CoreVM::mr`'s equivalent guard rather than assuming that's never hit.
+        if addr < NUM_REGISTERS as u32 {
+            let prev_record = self.reg_access((addr as u8).into());
+            self.reg_commit((addr as u8).into(), MemValue { clk, value: prev_record.value });
+            return MemoryReadRecord::new(prev_record.value, clk, prev_record.clk);
+        }
+        let prev_record = self.mem_access(addr);
+        self.mem_commit(addr, MemValue { clk, value: prev_record.value });
         MemoryReadRecord::new(prev_record.value, clk, prev_record.clk)
     }
 
@@ -789,8 +838,13 @@ impl SyscallRuntime for MinimalExecutor {
         clk: u64,
         _local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
-        let prev_record = self.access(addr);
-        self.commit(addr, MemValue { clk, value });
+        if addr < NUM_REGISTERS as u32 {
+            let prev_record = self.reg_access((addr as u8).into());
+            self.reg_commit((addr as u8).into(), MemValue { clk, value });
+            return MemoryWriteRecord::new(value, clk, prev_record.value, prev_record.clk);
+        }
+        let prev_record = self.mem_access(addr);
+        self.mem_commit(addr, MemValue { clk, value });
         MemoryWriteRecord::new(value, clk, prev_record.value, prev_record.clk)
     }
 
@@ -798,9 +852,11 @@ impl SyscallRuntime for MinimalExecutor {
         &mut self,
         register: Register,
         clk: u64,
-        local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
+        _local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryReadRecord {
-        SyscallRuntime::mr(self, register as u32, true, clk, local_memory_access)
+        let prev_record = self.reg_access(register);
+        self.reg_commit(register, MemValue { clk, value: prev_record.value });
+        MemoryReadRecord::new(prev_record.value, clk, prev_record.clk)
     }
 
     fn rw_traced(
@@ -808,10 +864,12 @@ impl SyscallRuntime for MinimalExecutor {
         register: Register,
         value: u32,
         clk: u64,
-        local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
+        _local_memory_access: Option<&mut HashMap<u32, MemoryLocalEvent>>,
     ) -> MemoryWriteRecord {
         let value = if register == Register::ZERO { 0 } else { value };
-        SyscallRuntime::mw(self, register as u32, value, true, clk, local_memory_access)
+        let prev_record = self.reg_access(register);
+        self.reg_commit(register, MemValue { clk, value });
+        MemoryWriteRecord::new(value, clk, prev_record.value, prev_record.clk)
     }
 
     fn register(&mut self, register: Register) -> u32 {
@@ -874,8 +932,12 @@ impl SyscallRuntime for MinimalExecutor {
         self.unconstrained = true;
         self.unconstrained_ctx =
             Some(UnconstrainedCtx { pc: self.pc, clk: self.clk, global_clk: self.global_clk });
-        assert!(self.unconstrained_diff.is_none(), "Unconstrained block is already active.");
-        self.unconstrained_diff = Some(HashMap::default());
+        assert!(
+            self.unconstrained_mem_diff.is_none() && self.unconstrained_reg_diff.is_none(),
+            "Unconstrained block is already active."
+        );
+        self.unconstrained_mem_diff = Some(HashMap::default());
+        self.unconstrained_reg_diff = Some(HashMap::default());
     }
 
     fn exit_unconstrained(&mut self) {
@@ -883,7 +945,7 @@ impl SyscallRuntime for MinimalExecutor {
             self.pc = ctx.pc;
             self.clk = ctx.clk;
             self.global_clk = ctx.global_clk;
-            if let Some(diff) = self.unconstrained_diff.take() {
+            if let Some(diff) = self.unconstrained_mem_diff.take() {
                 for (addr, value) in diff {
                     match value {
                         Some(record) => {
@@ -893,6 +955,11 @@ impl SyscallRuntime for MinimalExecutor {
                             self.memory.remove(addr);
                         }
                     }
+                }
+            }
+            if let Some(diff) = self.unconstrained_reg_diff.take() {
+                for (addr, record) in diff {
+                    self.registers[addr as usize] = record;
                 }
             }
             self.unconstrained = false;
