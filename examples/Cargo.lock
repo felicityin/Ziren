@@ -2876,6 +2876,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "goat-host"
+version = "1.1.0"
+dependencies = [
+ "bincode",
+ "zkm-sdk",
+]
+
+[[package]]
 name = "groth16-verifier"
 version = "1.1.0"
 dependencies = [
