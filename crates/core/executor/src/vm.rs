@@ -17,10 +17,10 @@ use std::sync::Arc;
 use hashbrown::HashMap;
 
 use crate::{
+    cost::ShapeChecker,
     events::{
         MemoryAccessPosition, MemoryLocalEvent, MemoryReadRecord, MemoryRecord, MemoryWriteRecord,
     },
-    executor::LocalCounts,
     program::MAX_MEMORY,
     record::{ExecutionRecord, MemoryAccessRecord},
     register::NUM_REGISTERS,
@@ -194,10 +194,13 @@ pub struct CoreVM<M: MemSource> {
     /// Local-memory-access bookkeeping for the shard currently being stepped through. Consumed by
     /// `TracingVM`; ignored (but harmlessly maintained) by `MinimalRunner`/`SplicingVM`.
     pub local_memory_access: HashMap<u32, MemoryLocalEvent>,
-    /// Event-count/cost bookkeeping for the shard currently being stepped through. Consumed by
-    /// `SplicingVM`'s shard-cut decision; ignored by `MinimalRunner`/`TracingVM` (`TracingVM`
-    /// already knows its shard boundaries from `SplicedChunk`).
-    pub local_counts: LocalCounts,
+    /// Incremental shard-cut cost tracking for the shard currently being stepped through.
+    /// Consumed by `SplicingVM`'s shard-cut decision; ignored by `MinimalRunner`/`TracingVM`
+    /// (`TracingVM` already knows its shard boundaries from `SplicedChunk`). Starts as a cheap
+    /// placeholder (see `ShapeChecker`'s `Default` impl) -- `SplicingVM::splice_chunk` overwrites
+    /// it with a real one right after constructing `CoreVM`, the same way it overwrites
+    /// `registers`/`pc`/`clk`.
+    pub shape_checker: ShapeChecker,
 
     /// Scratch/real execution record: `TracingVM` uses this for real (its per-shard
     /// `ExecutionRecord`); `MinimalRunner`/`SplicingVM` still need it to satisfy syscalls like
@@ -256,7 +259,7 @@ impl<M: MemSource> CoreVM<M> {
             unconstrained_ctx: None,
             is_tracing: false,
             local_memory_access: HashMap::new(),
-            local_counts: LocalCounts::default(),
+            shape_checker: ShapeChecker::default(),
             record,
             memory_accesses: MemoryAccessRecord::default(),
             syscall_map,
@@ -301,7 +304,7 @@ impl<M: MemSource> CoreVM<M> {
         if !self.unconstrained
             && (prev_record.timestamp < self.initial_timestamp || external)
         {
-            self.local_counts.local_mem += 1;
+            self.shape_checker.handle_local_mem_event();
         }
         let record = MemoryRecord { value: prev_record.value, timestamp };
         if is_register {
@@ -335,7 +338,7 @@ impl<M: MemSource> CoreVM<M> {
         if !self.unconstrained
             && (prev_record.timestamp < self.initial_timestamp || external)
         {
-            self.local_counts.local_mem += 1;
+            self.shape_checker.handle_local_mem_event();
         }
         let record = MemoryRecord { value, timestamp };
         if is_register {
@@ -899,41 +902,42 @@ impl<M: MemSource> CoreVM<M> {
         self.memory_accesses = MemoryAccessRecord::default();
 
         if !self.unconstrained {
-            self.local_counts.event_counts[instruction.opcode] += 1;
-            if instruction.opcode == Opcode::ADD && instruction.imm_c && !instruction.imm_b {
-                self.local_counts.addi_events += 1;
-            }
+            // MIPS decodes ADDI/ADDIU as an ADD-opcode instruction with immediate operand flags
+            // -- disambiguated here once, matching `estimate_mips_event_counts`'s own `ADD -
+            // addi_events` split (see `ShapeChecker::handle_opcode`'s doc comment).
+            let is_addi = instruction.opcode == Opcode::ADD && instruction.imm_c && !instruction.imm_b;
+            self.shape_checker.handle_opcode(instruction.opcode, is_addi);
             if instruction.is_memory_load_instruction() {
-                self.local_counts.event_counts[Opcode::ADD] += 2;
+                self.shape_checker.handle_dependency(Opcode::ADD, 2);
             } else if instruction.is_branch_cmp_instruction() {
-                self.local_counts.event_counts[Opcode::ADD] += 1;
-                self.local_counts.event_counts[Opcode::SLT] += 2;
+                self.shape_checker.handle_dependency(Opcode::ADD, 1);
+                self.shape_checker.handle_dependency(Opcode::SLT, 2);
             } else if instruction.is_mov_cond_instruction() {
-                self.local_counts.event_counts[Opcode::ADD] += 1;
+                self.shape_checker.handle_dependency(Opcode::ADD, 1);
             } else if instruction.opcode == Opcode::EXT {
-                self.local_counts.event_counts[Opcode::SLL] += 1;
-                self.local_counts.event_counts[Opcode::SRL] += 1;
+                self.shape_checker.handle_dependency(Opcode::SLL, 1);
+                self.shape_checker.handle_dependency(Opcode::SRL, 1);
             } else if instruction.is_cloclz_instruction() {
-                self.local_counts.event_counts[Opcode::SRL] += 1;
+                self.shape_checker.handle_dependency(Opcode::SRL, 1);
             } else if instruction.is_maddsubu_instruction() {
-                self.local_counts.event_counts[Opcode::MULTU] += 1;
+                self.shape_checker.handle_dependency(Opcode::MULTU, 1);
             } else if instruction.opcode == Opcode::INS {
-                self.local_counts.event_counts[Opcode::ROR] += 2;
-                self.local_counts.event_counts[Opcode::SLL] += 1;
-                self.local_counts.event_counts[Opcode::SRL] += 2;
-                self.local_counts.event_counts[Opcode::ADD] += 1;
+                self.shape_checker.handle_dependency(Opcode::ROR, 2);
+                self.shape_checker.handle_dependency(Opcode::SLL, 1);
+                self.shape_checker.handle_dependency(Opcode::SRL, 2);
+                self.shape_checker.handle_dependency(Opcode::ADD, 1);
             } else if instruction.opcode == Opcode::DIV {
-                self.local_counts.event_counts[Opcode::MULT] += 2;
-                self.local_counts.event_counts[Opcode::ADD] += 2;
-                self.local_counts.event_counts[Opcode::SLTU] += 1;
+                self.shape_checker.handle_dependency(Opcode::MULT, 2);
+                self.shape_checker.handle_dependency(Opcode::ADD, 2);
+                self.shape_checker.handle_dependency(Opcode::SLTU, 1);
             } else if instruction.opcode == Opcode::DIVU {
-                self.local_counts.event_counts[Opcode::MULTU] += 2;
-                self.local_counts.event_counts[Opcode::ADD] += 2;
-                self.local_counts.event_counts[Opcode::SLTU] += 1;
+                self.shape_checker.handle_dependency(Opcode::MULTU, 2);
+                self.shape_checker.handle_dependency(Opcode::ADD, 2);
+                self.shape_checker.handle_dependency(Opcode::SLTU, 1);
             } else if instruction.is_maddsub_instruction() {
-                self.local_counts.event_counts[Opcode::MULT] += 1;
+                self.shape_checker.handle_dependency(Opcode::MULT, 1);
             } else if instruction.opcode == Opcode::JumpDirect {
-                self.local_counts.event_counts[Opcode::ADD] += 1;
+                self.shape_checker.handle_dependency(Opcode::ADD, 1);
             }
         }
 
@@ -995,6 +999,14 @@ impl<M: MemSource> CoreVM<M> {
             let mut precompile_rt = SyscallContext::new(self);
             let (precompile_next_pc, precompile_cycles, returned_exit_code) =
                 if let Some(syscall_impl) = syscall_impl {
+                    if !precompile_rt.rt.unconstrained {
+                        precompile_rt.rt.shape_checker.handle_syscall_dispatched();
+                        if syscall == SyscallCode::COMMIT
+                            || syscall == SyscallCode::COMMIT_DEFERRED_PROOFS
+                        {
+                            precompile_rt.rt.shape_checker.handle_commit();
+                        }
+                    }
                     let res = syscall_impl.execute(&mut precompile_rt, syscall, b, c)?;
                     a = res.unwrap_or(syscall_id);
 

@@ -1,19 +1,20 @@
 //! `SplicingVM` owns the *real*, cost-model-based shard-cut decision -- deliberately kept out of
 //! `MinimalRunner` so that module's contract stays minimal enough for a different execution
 //! engine to implement in its place later. It walks a [`Chunk`]'s value stream forward through a
-//! fresh `CoreVM<Oracle>` (reusing the same cost model `Executor::inc_shard_if_need` uses:
-//! `cpu_exit`/`clk_exit`/shape-check against
-//! `estimate_mips_event_counts`/`estimate_mips_lde_size`), and cuts it into shard-sized
-//! [`SplicedChunk`] pieces. Each `Chunk` is spliced independently -- if a shard's cost threshold
-//! hasn't been reached by the time the chunk's own instruction stream runs out, the in-progress
-//! shard is force-closed there rather than carried into a later call, so different `Chunk`s can
-//! be spliced concurrently by a worker pool instead of needing one continuous sequential walk.
+//! fresh `CoreVM<Oracle>` (reusing the same `cpu_exit`/`clk_exit` checks `Executor::
+//! inc_shard_if_need` uses, plus an incremental [`crate::cost::ShapeChecker`] instead of that
+//! function's own periodic-estimate cost model -- see `ShapeChecker`'s doc comment for why), and
+//! cuts it into shard-sized [`SplicedChunk`] pieces. Each `Chunk` is spliced independently -- if a
+//! shard's cost threshold hasn't been reached by the time the chunk's own instruction stream runs
+//! out, the in-progress shard is force-closed there rather than carried into a later call, so
+//! different `Chunk`s can be spliced concurrently by a worker pool instead of needing one
+//! continuous sequential walk.
 
 use hashbrown::HashMap;
 
 use crate::{
-    cost::{estimate_mips_event_counts, estimate_mips_lde_size, pad_mips_event_counts},
-    executor::{LocalCounts, CORE_SHARD_CLK_LIMIT, CORE_SHARD_HEIGHT_THRESHOLD},
+    cost::ShapeChecker,
+    executor::{CORE_SHARD_CLK_LIMIT, CORE_SHARD_HEIGHT_THRESHOLD},
     minimal::Chunk,
     register::NUM_REGISTERS,
     vm::{CoreVM, MemValue, Oracle},
@@ -52,7 +53,6 @@ pub struct SplicingVM {
     program: std::sync::Arc<Program>,
     max_syscall_cycles: u32,
     shard_size: u32,
-    shape_check_frequency: u64,
     lde_size_threshold: u64,
     costs: HashMap<MipsAirId, u64>,
     program_size: u64,
@@ -64,20 +64,11 @@ impl SplicingVM {
         program: std::sync::Arc<Program>,
         max_syscall_cycles: u32,
         shard_size: u32,
-        shape_check_frequency: u64,
         lde_size_threshold: u64,
         costs: HashMap<MipsAirId, u64>,
     ) -> Self {
         let program_size = (program.instructions.len() as u64).next_power_of_two();
-        Self {
-            program,
-            max_syscall_cycles,
-            shard_size,
-            shape_check_frequency,
-            lde_size_threshold,
-            costs,
-            program_size,
-        }
+        Self { program, max_syscall_cycles, shard_size, lde_size_threshold, costs, program_size }
     }
 
     fn should_cut_shard(&self, core: &CoreVM<Oracle>) -> bool {
@@ -94,29 +85,15 @@ impl SplicingVM {
         // never needs to reason about it changing mid-shard.
         let window_exit = (core.clk >> 28) != (core.initial_timestamp >> 28);
 
-        let mut shape_match_found = true;
-        if core.global_clk.is_multiple_of(self.shape_check_frequency) {
-            let event_counts = estimate_mips_event_counts(
-                core.local_counts.local_mem as u64,
-                core.local_counts.syscalls_sent as u64,
-                core.local_counts.addi_events,
-                *core.local_counts.event_counts,
-            );
-            let padded_event_counts =
-                pad_mips_event_counts(event_counts, self.shape_check_frequency);
-            let padded_lde_size =
-                estimate_mips_lde_size(padded_event_counts, &self.costs, self.program_size);
-            if padded_lde_size > self.lde_size_threshold {
-                shape_match_found = false;
-            }
-            if let Some(max_chip_height) = padded_event_counts.iter().map(|(_, h)| *h).max() {
-                if max_chip_height >= CORE_SHARD_HEIGHT_THRESHOLD {
-                    shape_match_found = false;
-                }
-            }
-        }
+        // `ShapeChecker` maintains `trace_area`/`max_height` incrementally (see its doc comment),
+        // so this check is exact and O(1) every cycle -- no periodic re-estimation, no worst-case
+        // padding margin for staleness between checks. `is_commit_on` blocks a cut once a
+        // `COMMIT`/`COMMIT_DEFERRED_PROOFS` syscall has fired within this shard-in-progress.
+        let shape_exit = !core.shape_checker.is_commit_on
+            && (core.shape_checker.trace_area >= self.lde_size_threshold
+                || core.shape_checker.max_height >= CORE_SHARD_HEIGHT_THRESHOLD);
 
-        cpu_exit || clk_exit || window_exit || !shape_match_found
+        cpu_exit || clk_exit || window_exit || shape_exit
     }
 
     /// Splice a `Chunk` into shard-sized `SplicedChunk` pieces. May return zero pieces (if the
@@ -144,6 +121,9 @@ impl SplicingVM {
         // the first starts partway through the execution, at whatever clk this chunk's own
         // (already force-closed, per this module's doc comment) predecessor shard ended at.
         core.initial_timestamp = chunk.clk_start;
+        // `CoreVM::new()` defaults this to a cheap placeholder with no real cost data (see
+        // `ShapeChecker`'s `Default` impl) -- seed it for real here.
+        core.shape_checker = ShapeChecker::new(self.costs.clone(), self.program_size);
 
         let mut pending_oracle = Vec::new();
         let mut pending_pc_start = chunk.pc_start;
@@ -193,7 +173,7 @@ impl SplicingVM {
 
                 local_shard += 1;
                 core.initial_timestamp = core.clk;
-                core.local_counts = LocalCounts::default();
+                core.shape_checker = ShapeChecker::new(self.costs.clone(), self.program_size);
                 pending_pc_start = core.pc;
                 pending_next_pc_start = core.next_pc;
                 pending_global_clk_start = core.global_clk;

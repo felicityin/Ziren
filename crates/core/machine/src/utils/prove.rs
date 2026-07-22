@@ -184,7 +184,6 @@ pub fn prove_with_context(
             let splicing_trace_byte_costs = Arc::clone(&trace_byte_costs);
             let max_syscall_cycles = 0; // see `ZKMCoreOpts::minimal_trace_chunk_threshold`'s doc comment
             let shard_size = (opts.shard_size as u32) * 4;
-            let shape_check_frequency = opts.shape_check_frequency;
             let lde_size_threshold = opts.lde_size_threshold;
             let handle: ScopedJoinHandle<Result<(), ZKMCoreProverError>> = s.spawn(move || {
                 let _span = span.enter();
@@ -193,7 +192,6 @@ pub fn prove_with_context(
                         splicing_program,
                         max_syscall_cycles,
                         shard_size,
-                        shape_check_frequency,
                         lde_size_threshold,
                         (*splicing_trace_byte_costs).clone(),
                     );
@@ -694,7 +692,6 @@ mod tests {
             program.clone(),
             0,
             (opts.shard_size as u32) * 4,
-            opts.shape_check_frequency,
             opts.lde_size_threshold,
             mips_costs().into_iter().map(|(k, v)| (k, v as u64)).collect(),
         );

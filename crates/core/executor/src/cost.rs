@@ -6,6 +6,222 @@ use crate::{events::NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC, MipsAirId, Opcode};
 
 const BYTE_NUM_ROWS: u64 = 1 << 16;
 
+/// The `MipsAirId`s whose contribution to a shard's estimated trace area is
+/// `count.next_power_of_two() * cost` -- every chip `estimate_mips_lde_size` sums this way,
+/// excluding `Byte`/`Program` (fixed-size, not event-count-derived). `ShapeChecker::new` seeds
+/// each of these with its own `1 * cost` baseline up front, matching what `estimate_mips_lde_size`
+/// computes for an all-zero input (`0u64.next_power_of_two() == 1`) -- so the incremental
+/// per-event bumps only ever need to account for the *change* in padded contribution, never
+/// re-derive this floor.
+const PADDED_COST_AIRS: [MipsAirId; 21] = [
+    MipsAirId::Add,
+    MipsAirId::Addi,
+    MipsAirId::Sub,
+    MipsAirId::Mul,
+    MipsAirId::Bitwise,
+    MipsAirId::ShiftLeft,
+    MipsAirId::ShiftRight,
+    MipsAirId::DivRem,
+    MipsAirId::Lt,
+    MipsAirId::MemoryLocal,
+    MipsAirId::Branch,
+    MipsAirId::Jump,
+    MipsAirId::SyscallInstrs,
+    MipsAirId::MemoryInstrs,
+    MipsAirId::LoadWord,
+    MipsAirId::StoreWord,
+    MipsAirId::MiscInstrs,
+    MipsAirId::CloClz,
+    MipsAirId::SyscallCore,
+    MipsAirId::MovCond,
+    MipsAirId::Global,
+];
+
+/// Incrementally tracks a shard-in-progress's estimated padded trace area and max chip height, so
+/// `SplicingVM::should_cut_shard` can check the shard-cut condition in O(1) on every cycle instead
+/// of periodically re-deriving it from scratch via `estimate_mips_event_counts`/
+/// `pad_mips_event_counts`/`estimate_mips_lde_size` (still used, unchanged, by `Executor::
+/// inc_shard_if_need`'s own separate copy of this cost model) -- eliminating both the staleness
+/// between periodic checks and the worst-case padding margin that covered it. Mirrors SP1's real
+/// `ShapeChecker` architecture, adapted to Ziren's own `MipsAirId` set and (already more unified)
+/// accessor structure; SP1-specific machinery Ziren has no equivalent of (page-protection
+/// tracking, untrusted-instruction-fetch verification -- both part of SP1's "untrusted guest
+/// programs" security feature) is intentionally not ported.
+pub struct ShapeChecker {
+    pub trace_area: u64,
+    pub max_height: u64,
+    heights: EnumMap<MipsAirId, u64>,
+    costs: HashMap<MipsAirId, u64>,
+    /// Raw count backing `MipsAirId::MemoryLocal`'s height, which packs
+    /// `NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC` touches per row rather than being 1:1 with touch
+    /// count -- see `handle_local_mem_event`.
+    touched_addresses: u64,
+    /// Blocks any further shard cut once a `COMMIT`/`COMMIT_DEFERRED_PROOFS` syscall has fired
+    /// within the current shard-in-progress, mirroring SP1's `ShapeChecker::handle_commit`/
+    /// `check_shard_limit`'s `!is_commit_on` guard. Ziren's own `should_cut_shard` has no
+    /// equivalent guard today; included here as part of faithfully porting `ShapeChecker`'s real,
+    /// shipped behavior even though SP1's own source doesn't explain the underlying reason.
+    pub is_commit_on: bool,
+}
+
+impl ShapeChecker {
+    #[must_use]
+    pub fn new(costs: HashMap<MipsAirId, u64>, program_size: u64) -> Self {
+        let mut trace_area = BYTE_NUM_ROWS * costs.get(&MipsAirId::Byte).copied().unwrap_or(0)
+            + program_size * costs.get(&MipsAirId::Program).copied().unwrap_or(0);
+        for air in PADDED_COST_AIRS {
+            trace_area += costs.get(&air).copied().unwrap_or(0);
+        }
+        Self {
+            trace_area,
+            max_height: 0,
+            heights: EnumMap::default(),
+            costs,
+            touched_addresses: 0,
+            is_commit_on: false,
+        }
+    }
+
+    /// Bump `air`'s height by `delta`, adjusting the running padded `trace_area`/`max_height` for
+    /// whatever power-of-two boundary this crosses. A no-op for `delta == 0`. Missing cost data
+    /// (`Default`'s empty placeholder, which `TracingVM`'s own `CoreVM` never overwrites since it
+    /// ignores this tracking entirely -- see `shape_checker`'s field doc comment -- but still
+    /// executes the same `step()`/`mr`/`mw` this is hooked into) contributes 0 rather than
+    /// panicking, matching `LocalCounts`'s old "harmlessly maintained but unused" behavior.
+    fn bump(&mut self, air: MipsAirId, delta: u64) {
+        if delta == 0 {
+            return;
+        }
+        let old_height = self.heights[air];
+        let new_height = old_height + delta;
+        self.heights[air] = new_height;
+        let delta_padded = new_height.next_power_of_two() - old_height.next_power_of_two();
+        if delta_padded != 0 {
+            self.trace_area += delta_padded * self.costs.get(&air).copied().unwrap_or(0);
+        }
+        self.max_height = self.max_height.max(new_height);
+    }
+
+    /// A general-memory or register access touched an address for the first time this shard (see
+    /// `CoreVM::mr`/`mw`'s own "first touch" condition) -- bumps `MemoryLocal`/`Global`.
+    /// `MemoryLocal`'s height packs `NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC` touches per row
+    /// (mirrors `estimate_mips_event_counts`'s `touched_addresses.div_ceil(..)`), so it only
+    /// actually grows once every `NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC`th touch.
+    pub fn handle_local_mem_event(&mut self) {
+        let old_rows =
+            self.touched_addresses.div_ceil(NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC as u64);
+        self.touched_addresses += 1;
+        let new_rows =
+            self.touched_addresses.div_ceil(NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC as u64);
+        self.bump(MipsAirId::MemoryLocal, new_rows - old_rows);
+        self.bump(MipsAirId::Global, 2);
+    }
+
+    /// A real syscall was dispatched -- bumps `SyscallCore`/`Global`. `SyscallInstrs` (the
+    /// `SYSCALL` opcode's own CPU-level retirement) is handled by `handle_opcode` instead, exactly
+    /// like every other opcode.
+    pub fn handle_syscall_dispatched(&mut self) {
+        self.bump(MipsAirId::SyscallCore, 1);
+        self.bump(MipsAirId::Global, 1);
+    }
+
+    /// A `COMMIT`/`COMMIT_DEFERRED_PROOFS` syscall fired -- see `is_commit_on`'s doc comment.
+    pub fn handle_commit(&mut self) {
+        self.is_commit_on = true;
+    }
+
+    /// Bump the `MipsAirId` a real, retired instruction of this opcode belongs to (its "base"
+    /// contribution -- see `estimate_mips_event_counts`'s per-opcode sums, which this mirrors in
+    /// incremental form). `is_addi` disambiguates `Opcode::ADD`'s two possible chips (MIPS decodes
+    /// ADDI as an ADD-opcode instruction with immediate operand flags -- see `CoreVM::step`'s own
+    /// `instruction.imm_c && !instruction.imm_b` check).
+    pub fn handle_opcode(&mut self, opcode: Opcode, is_addi: bool) {
+        if let Some(air) = base_air_id_for_opcode(opcode, is_addi) {
+            self.bump(air, 1);
+        }
+    }
+
+    /// Bump a dependency-row producer's target chip directly, by `delta` -- mirrors one of
+    /// `CoreVM::step`'s existing per-instruction dependency-row bumps (see that function's
+    /// dispatch block), just landing in the equivalent `MipsAirId` instead of an intermediate
+    /// `Opcode` count.
+    pub fn handle_dependency(&mut self, opcode: Opcode, delta: u64) {
+        if let Some(air) = base_air_id_for_opcode(opcode, false) {
+            self.bump(air, delta);
+        }
+    }
+}
+
+/// The `MipsAirId` a real, retired instruction of `opcode` belongs to, for the "base"
+/// (non-dependency-row) contribution `estimate_mips_event_counts`'s per-opcode sums encode.
+/// `is_addi` only matters for `Opcode::ADD` (see `ShapeChecker::handle_opcode`'s doc comment).
+/// Returns `None` for opcodes this cost model doesn't track (mirrors `estimate_mips_event_counts`
+/// silently not reading some `opcode_counts` entries).
+fn base_air_id_for_opcode(opcode: Opcode, is_addi: bool) -> Option<MipsAirId> {
+    Some(match opcode {
+        Opcode::ADD if is_addi => MipsAirId::Addi,
+        Opcode::ADD => MipsAirId::Add,
+        Opcode::SUB => MipsAirId::Sub,
+        Opcode::MUL | Opcode::MULT | Opcode::MULTU => MipsAirId::Mul,
+        Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR => MipsAirId::Bitwise,
+        Opcode::SLL => MipsAirId::ShiftLeft,
+        Opcode::SRL | Opcode::SRA | Opcode::ROR => MipsAirId::ShiftRight,
+        Opcode::DIV | Opcode::DIVU => MipsAirId::DivRem,
+        Opcode::SLT | Opcode::SLTU => MipsAirId::Lt,
+        Opcode::BEQ
+        | Opcode::BNE
+        | Opcode::BGTZ
+        | Opcode::BGEZ
+        | Opcode::BLTZ
+        | Opcode::BLEZ => MipsAirId::Branch,
+        Opcode::Jump | Opcode::Jumpi | Opcode::JumpDirect => MipsAirId::Jump,
+        Opcode::LB
+        | Opcode::LH
+        | Opcode::LBU
+        | Opcode::LHU
+        | Opcode::SB
+        | Opcode::SH
+        | Opcode::LWL
+        | Opcode::LWR
+        | Opcode::LL
+        | Opcode::SWL
+        | Opcode::SWR
+        | Opcode::SC => MipsAirId::MemoryInstrs,
+        Opcode::LW => MipsAirId::LoadWord,
+        Opcode::SW => MipsAirId::StoreWord,
+        Opcode::INS
+        | Opcode::EXT
+        | Opcode::SEXT
+        | Opcode::MADDU
+        | Opcode::MSUBU
+        | Opcode::MADD
+        | Opcode::MSUB
+        | Opcode::TEQ => MipsAirId::MiscInstrs,
+        Opcode::WSBH | Opcode::MNE | Opcode::MEQ => MipsAirId::MovCond,
+        Opcode::CLO | Opcode::CLZ => MipsAirId::CloClz,
+        Opcode::SYSCALL => MipsAirId::SyscallInstrs,
+        _ => return None,
+    })
+}
+
+impl Default for ShapeChecker {
+    /// A placeholder with no real cost data -- `CoreVM::new()` uses this so its own signature
+    /// doesn't need `costs`/`program_size` params that `TracingVM` (which never reads this at
+    /// all) has no natural reason to supply. `SplicingVM::splice_chunk` overwrites it with a real
+    /// `ShapeChecker::new(..)` right after constructing `CoreVM`, mirroring the same
+    /// construct-then-overwrite pattern already used for `CoreVM::registers`/`pc`/`clk`.
+    fn default() -> Self {
+        Self {
+            trace_area: 0,
+            max_height: 0,
+            heights: EnumMap::default(),
+            costs: HashMap::new(),
+            touched_addresses: 0,
+            is_commit_on: false,
+        }
+    }
+}
+
 /// Estimates the LDE area.
 ///
 /// `program_size` is the calling program's real, padded (next-power-of-two) instruction count.

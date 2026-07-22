@@ -21,7 +21,6 @@ use crate::{
         MemoryInitializeFinalizeEvent, MemoryRecord, MemoryRecordEnum, MemoryWriteRecord,
         MiscEvent, MovCondEvent,
     },
-    executor::LocalCounts,
     memory::{Memory, PagedMemory},
     record::{ExecutionRecord, MemoryAccessRecord},
     register::NUM_REGISTERS,
@@ -132,13 +131,6 @@ impl TracingVM {
                 return Ok(TracedShard { record: self.core.record, done });
             }
         }
-    }
-
-    /// Split off the syscalls/precompiles this shard doesn't already own (mirrors
-    /// `crate::state::ExecutionState` bookkeeping); callers use `TracedShard` directly.
-    #[must_use]
-    pub fn local_counts(&self) -> &LocalCounts {
-        &self.core.local_counts
     }
 
     // ---- ported verbatim from Executor::emit_events and its per-opcode-family helpers ----
