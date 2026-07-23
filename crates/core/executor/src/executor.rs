@@ -355,7 +355,7 @@ impl<'a> Executor<'a> {
             state: ExecutionState::new(program.pc_start, program.next_pc),
             program,
             memory_accesses: MemoryAccessRecord::default(),
-            shard_size: (opts.shard_size as u32) * 4,
+            shard_size: (opts.shard_size as u32) * 5,
             shard_batch_size: opts.shard_batch_size as u32,
             cycle_tracker: HashMap::new(),
             io_buf: HashMap::new(),
