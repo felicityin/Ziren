@@ -123,18 +123,17 @@ impl<F: PrimeField32> RegisterWriteAccessCols<F> {
 
 impl<F: PrimeField32> RegisterAccessTimestamp<F> {
     /// Populates the timestamp-consistency columns for a register access, given the previous and
-    /// current access's timestamps. Requires (and debug-asserts) that both timestamps share the
-    /// same `clk_high` -- callers must have gone through [`crate::memory::MemoryBumpChip`]'s
-    /// re-stamping if that isn't already the case.
+    /// current access's timestamps.
+    ///
+    /// When this access is itself the one crossing a `clk_high` boundary (i.e. the executor also
+    /// emitted a `MemoryBumpChip` event for it, re-stamping the register to `(current_high, 0)`
+    /// just before this access, per `Executor::emit_memory_bump_events`), `prev_low` must be
+    /// populated as `0` -- not the true previous low limb -- to match what that bump event
+    /// established as the register's "current" state on the bus. Using the true previous low
+    /// limb here would silently reference a state nothing else ever produced.
     pub fn populate(&mut self, prev_timestamp: u64, current_timestamp: u64, output: &mut impl ByteRecord) {
-        debug_assert_eq!(
-            prev_timestamp >> 24,
-            current_timestamp >> 24,
-            "register access timestamps must share clk_high; the executor should have emitted a \
-             MemoryBumpChip event to re-stamp this register first"
-        );
-
-        let prev_low = prev_timestamp & 0xffffff;
+        let same_epoch = prev_timestamp >> 24 == current_timestamp >> 24;
+        let prev_low = if same_epoch { prev_timestamp & 0xffffff } else { 0 };
         let current_low = current_timestamp & 0xffffff;
         self.prev_low = F::from_canonical_u64(prev_low);
 
