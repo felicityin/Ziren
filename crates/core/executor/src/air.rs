@@ -125,6 +125,8 @@ pub enum MipsAirId {
     MovCond = 49,
     /// The `clk_high`-transition chip.
     StateBump = 55,
+    /// The per-register `clk_high`-realignment chip.
+    MemoryBump = 56,
 }
 
 impl MipsAirId {
@@ -187,6 +189,7 @@ impl MipsAirId {
             Self::MovCond => "MovCond",
             Self::Addi => "Addi",
             Self::StateBump => "StateBump",
+            Self::MemoryBump => "MemoryBump",
         }
     }
 }

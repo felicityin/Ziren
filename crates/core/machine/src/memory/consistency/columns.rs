@@ -148,3 +148,52 @@ impl<T> MemoryCols<T> for MemoryReadWriteCols<T> {
 pub fn value_as_limbs<T: Clone, M: MemoryCols<T>>(memory: &[M]) -> Vec<T> {
     memory.iter().flat_map(|m| m.value().clone().into_iter()).collect()
 }
+
+/// Register access timestamp columns for the cheap register-access scheme: unlike
+/// [`MemoryAccessCols`], which must handle a `clk_high` comparison against an arbitrary previous
+/// access, a register access can assume its previous access shares the same `clk_high` -- an
+/// invariant [`crate::memory::MemoryBumpChip`] maintains globally by re-stamping ("bumping") any
+/// register access that would otherwise cross a `clk_high` boundary. That leaves only the
+/// low-limb comparison to check here, and even the high limb of *that* difference is derived
+/// (not stored) via a field-inverse trick -- see [`crate::air::MemoryAirBuilder::eval_register_access_timestamp`].
+#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct RegisterAccessTimestamp<T> {
+    /// The previous access's `clk_low` (its `clk_high` is assumed equal to this access's).
+    pub prev_low: T,
+    /// The least significant 16 bits of `clk_low - prev_low - 1`.
+    pub diff_low_limb: T,
+}
+
+/// Cheap register *read* access columns, using [`RegisterAccessTimestamp`] in place of the full
+/// [`MemoryAccessCols`] timestamp comparison. 6 bytes total (`prev_value`: 4, `access_timestamp`:
+/// 2), vs. 9 for the general-purpose scheme. A read's value never changes, so `prev_value` alone
+/// (used as both the "previous" and "current" tuple's value in the register-consistency
+/// interaction) is enough -- for a write, see [`RegisterWriteAccessCols`] instead.
+#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct RegisterAccessCols<T> {
+    /// The value of this register before the access.
+    pub prev_value: Word<T>,
+    /// The access's timestamp-consistency columns.
+    pub access_timestamp: RegisterAccessTimestamp<T>,
+}
+
+/// Cheap register *write* access columns. Unlike [`RegisterAccessCols`], a write's post-access
+/// value must be its own witnessed column (`value`), not merely an expression the caller derives
+/// (e.g. an ALU result masked for "writes to register 0 are always discarded to zero") --
+/// interaction values/multiplicities on the register-consistency bus must stay affine in the
+/// trace columns, and a masked expression like `(1 - op_a_0) * alu_result` is degree 2. Storing
+/// `value` as its own column keeps the interaction affine; the caller separately asserts (via an
+/// ordinary, non-interaction constraint) that `value` equals zero or the intended computed
+/// result, as appropriate. 10 bytes total (`prev_value`: 4, `value`: 4, `access_timestamp`: 2).
+#[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
+#[repr(C)]
+pub struct RegisterWriteAccessCols<T> {
+    /// The value of this register before the access.
+    pub prev_value: Word<T>,
+    /// The value of this register after the access.
+    pub value: Word<T>,
+    /// The access's timestamp-consistency columns.
+    pub access_timestamp: RegisterAccessTimestamp<T>,
+}

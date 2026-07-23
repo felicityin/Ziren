@@ -1197,6 +1197,15 @@ impl<'a> Executor<'a> {
         }
 
         if instruction.is_alu_instruction() {
+            // SUB is the only opcode migrated to the cheap register-access timestamp scheme so
+            // far (see `SubChip`'s doc comment); its register accesses are the only ones that
+            // need a `MemoryBumpChip` event when they cross a `clk_high` boundary. Every other
+            // ALU chip still uses the general-purpose scheme, which handles an arbitrary gap on
+            // its own -- emitting a bump event for one of *those* accesses would double-validate
+            // the same transition on the shared memory argument and unbalance it.
+            if instruction.opcode == Opcode::SUB {
+                self.emit_memory_bump_events(instruction, &record);
+            }
             self.emit_alu_event(
                 clk,
                 instruction.opcode,
@@ -1276,6 +1285,36 @@ impl<'a> Executor<'a> {
             exit_code,
             num_extra_cycles,
         });
+    }
+
+    /// Emits a `MemoryBumpChip` event for each of this instruction's register accesses (`a`/`b`/
+    /// `c`) whose own `clk_high` differs from that register's previous access -- i.e. a real
+    /// access that would otherwise violate the cheap register-access scheme's `clk_high`-
+    /// alignment invariant (see `RegisterAccessTimestamp`'s doc comment). Only call this for
+    /// opcodes whose chip has actually been migrated to that cheap scheme.
+    fn emit_memory_bump_events(&mut self, instruction: &Instruction, record: &MemoryAccessRecord) {
+        if self.unconstrained {
+            return;
+        }
+        for (access, addr) in [
+            (record.a, u32::from(instruction.op_a)),
+            (record.b, instruction.op_b),
+            (record.c, instruction.op_c),
+        ] {
+            let Some(access) = access else { continue };
+            let prev = access.previous_record();
+            let current = access.current_record();
+            if prev.timestamp >> 24 != current.timestamp >> 24 {
+                self.record.bump_memory_events.push((
+                    MemoryRecordEnum::Read(MemoryReadRecord::new(
+                        prev.value,
+                        (current.timestamp >> 24) << 24,
+                        prev.timestamp,
+                    )),
+                    addr,
+                ));
+            }
+        }
     }
 
     /// Emit an ALU event.

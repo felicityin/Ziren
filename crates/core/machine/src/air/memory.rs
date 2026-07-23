@@ -1,6 +1,6 @@
 use std::iter::once;
 
-use p3_field::FieldAlgebra;
+use p3_field::{Field, FieldAlgebra};
 use slop_air::AirBuilder;
 use zkm_core_executor::ByteOpcode;
 use zkm_hypercube::{
@@ -10,7 +10,10 @@ use zkm_hypercube::{
 
 use crate::{
     air::WordAirBuilder,
-    memory::{MemoryAccessCols, MemoryCols},
+    memory::{
+        MemoryAccessCols, MemoryCols, RegisterAccessCols, RegisterAccessTimestamp,
+        RegisterWriteAccessCols,
+    },
 };
 
 pub trait MemoryAirBuilder: BaseAirBuilder {
@@ -196,6 +199,146 @@ pub trait MemoryAirBuilder: BaseAirBuilder {
             Self::Expr::zero(),
             Self::Expr::zero(),
             limb_8,
+            do_check,
+        )
+    }
+
+    /// Constrain a register read, using the read value as the write value.
+    ///
+    /// Uses [`RegisterAccessCols`] (the cheap register-only timestamp scheme) in place of the
+    /// general [`MemoryAccessCols`] used by [`Self::eval_memory_access`] -- this assumes (and
+    /// only remains sound because of) the invariant that a register's previous access always
+    /// shares this access's `clk_high`, maintained by [`crate::memory::MemoryBumpChip`].
+    fn eval_register_access_read<E: Into<Self::Expr> + Clone>(
+        &mut self,
+        clk_high: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
+        addr: impl Into<Self::Expr>,
+        reg_access: &RegisterAccessCols<E>,
+        do_check: impl Into<Self::Expr>,
+    ) {
+        let do_check: Self::Expr = do_check.into();
+        let clk_high: Self::Expr = clk_high.into();
+        let clk_low: Self::Expr = clk_low.into();
+
+        self.assert_bool(do_check.clone());
+        self.eval_register_access_timestamp(
+            &reg_access.access_timestamp,
+            do_check.clone(),
+            clk_low.clone(),
+        );
+
+        // Defense-in-depth: register words entering the subsystem must remain byte-shaped even
+        // if an upstream chip forgot to range check them.
+        self.slice_range_check_u8(&reg_access.prev_value.clone().map(Into::into).0, do_check.clone());
+
+        let addr = addr.into();
+        let prev_low = reg_access.access_timestamp.prev_low.clone().into();
+        let prev_values = once(clk_high.clone())
+            .chain(once(prev_low))
+            .chain(once(addr.clone()))
+            .chain(reg_access.prev_value.clone().map(Into::into))
+            .collect();
+        let current_values = once(clk_high)
+            .chain(once(clk_low))
+            .chain(once(addr))
+            .chain(reg_access.prev_value.clone().map(Into::into))
+            .collect();
+
+        self.send(
+            AirLookup::new(prev_values, do_check.clone(), LookupKind::Memory),
+            LookupScope::Local,
+        );
+        self.receive(
+            AirLookup::new(current_values, do_check, LookupKind::Memory),
+            LookupScope::Local,
+        );
+    }
+
+    /// Constrain a register write, using [`RegisterWriteAccessCols`]'s witnessed `value` as the
+    /// write value (see its doc comment for why this can't instead take an arbitrary caller
+    /// expression the way [`Self::eval_memory_access_write`] does: the interaction's value must
+    /// stay affine, but the natural "value" a caller wants to write -- e.g. an ALU result masked
+    /// for "writes to register 0 are discarded" -- is generally degree 2 or higher). The caller
+    /// is responsible for separately asserting `reg_access.value` equals the intended result.
+    ///
+    /// See [`Self::eval_register_access_read`]'s doc comment for the `clk_high` invariant this
+    /// depends on.
+    fn eval_register_access_write<E: Into<Self::Expr> + Clone>(
+        &mut self,
+        clk_high: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
+        addr: impl Into<Self::Expr>,
+        reg_access: &RegisterWriteAccessCols<E>,
+        do_check: impl Into<Self::Expr>,
+    ) {
+        let do_check: Self::Expr = do_check.into();
+        let clk_high: Self::Expr = clk_high.into();
+        let clk_low: Self::Expr = clk_low.into();
+
+        self.assert_bool(do_check.clone());
+        self.eval_register_access_timestamp(
+            &reg_access.access_timestamp,
+            do_check.clone(),
+            clk_low.clone(),
+        );
+
+        self.slice_range_check_u8(&reg_access.prev_value.clone().map(Into::into).0, do_check.clone());
+        self.slice_range_check_u8(&reg_access.value.clone().map(Into::into).0, do_check.clone());
+
+        let addr = addr.into();
+        let prev_low = reg_access.access_timestamp.prev_low.clone().into();
+        let prev_values = once(clk_high.clone())
+            .chain(once(prev_low))
+            .chain(once(addr.clone()))
+            .chain(reg_access.prev_value.clone().map(Into::into))
+            .collect();
+        let current_values = once(clk_high)
+            .chain(once(clk_low))
+            .chain(once(addr))
+            .chain(reg_access.value.clone().map(Into::into))
+            .collect();
+
+        self.send(
+            AirLookup::new(prev_values, do_check.clone(), LookupKind::Memory),
+            LookupScope::Local,
+        );
+        self.receive(
+            AirLookup::new(current_values, do_check, LookupKind::Memory),
+            LookupScope::Local,
+        );
+    }
+
+    /// Verifies a register access's timestamp is later than its previous access's, using only a
+    /// low-limb comparison -- sound only because a register's previous access is guaranteed to
+    /// share this access's `clk_high` (see [`Self::eval_register_access_read`]'s doc comment).
+    /// The high limb of the difference is *derived* here via a field-inverse, rather than stored
+    /// as its own column, saving one more field over the already-cheap 2-column
+    /// [`RegisterAccessTimestamp`].
+    fn eval_register_access_timestamp(
+        &mut self,
+        reg_access: &RegisterAccessTimestamp<impl Into<Self::Expr> + Clone>,
+        do_check: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
+    ) {
+        let do_check: Self::Expr = do_check.into();
+        let diff_minus_one =
+            clk_low.into() - reg_access.prev_low.clone().into() - Self::Expr::one();
+        let diff_high_limb = (diff_minus_one - reg_access.diff_low_limb.clone().into())
+            * Self::F::from_canonical_u32(1 << 16).inverse();
+
+        self.send_byte(
+            Self::Expr::from_canonical_u8(ByteOpcode::U16Range as u8),
+            reg_access.diff_low_limb.clone(),
+            Self::Expr::zero(),
+            Self::Expr::zero(),
+            do_check.clone(),
+        );
+        self.send_byte(
+            Self::Expr::from_canonical_u8(ByteOpcode::U8Range as u8),
+            Self::Expr::zero(),
+            Self::Expr::zero(),
+            diff_high_limb,
             do_check,
         )
     }

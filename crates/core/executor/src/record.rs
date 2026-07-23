@@ -118,6 +118,12 @@ pub struct ExecutionRecord {
     pub global_lookup_events: Vec<GlobalLookupEvent>,
     /// A trace of `clk_high` boundary crossings (see [`BumpClkHighEvent`]'s doc comment).
     pub bump_clk_high_events: Vec<BumpClkHighEvent>,
+    /// Register timestamp re-stamps: `(the record, register address)`, emitted whenever a real
+    /// register access's own `clk_high` differs from that register's previous access. Consumed
+    /// by the `MemoryBumpChip` AIR, which re-validates the access at full cost so that every
+    /// other register access can assume its previous access shares the same `clk_high` (see
+    /// `MemoryBumpChip`'s doc comment).
+    pub bump_memory_events: Vec<(MemoryRecordEnum, u32)>,
     /// The public values.
     pub public_values: PublicValues<u32, u32>,
 }
@@ -436,6 +442,7 @@ impl MachineRecord for ExecutionRecord {
         self.cpu_local_memory_access.append(&mut other.cpu_local_memory_access);
         self.global_lookup_events.append(&mut other.global_lookup_events);
         self.bump_clk_high_events.append(&mut other.bump_clk_high_events);
+        self.bump_memory_events.append(&mut other.bump_memory_events);
 
         // `Machine::generate_dependencies` calls each chip's `generate_dependencies` with a
         // fresh, per-chip `other` record and merges it in via this method -- `MemoryGlobalChip`

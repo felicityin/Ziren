@@ -11,7 +11,7 @@ use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{AluEvent, ByteLookupEvent, ByteRecord, MemoryRecordEnum},
+    events::{AluEvent, ByteLookupEvent, ByteRecord},
     ExecutionRecord, Opcode, Program, UNUSED_PC,
 };
 use zkm_derive::AlignedBorrow;
@@ -19,17 +19,11 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_hypercube::{
-    air::MachineAir,
-    word::Word,
-};
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
     adapter::InstructionCols,
-    adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
-    },
+    adapter::{clk_low_expr, eval_cpu_state, eval_r_type_reader, eval_state_chain, CpuState, RTypeReader},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     operations::AddOperation,
     utils::{next_power_of_two, zeroed_f_vec},
@@ -43,7 +37,9 @@ pub const NUM_SUB_COLS: usize = size_of::<SubCols<u8>>();
 ///
 /// SUB is basically an ADD with a re-arrangement of the operands and result: `a = b - c` is
 /// verified as `b = a + c`. MIPS has no immediate-form SUBI, so every SUB event (real or a
-/// dependency row) lands here.
+/// dependency row) lands here, and every real, retired SUB instruction is register-register --
+/// this is what lets the chip use the narrow [`RTypeReader`] (see its doc comment) instead of the
+/// generic `InstructionCols`+`RegisterReader` pair.
 ///
 /// Not every row corresponds to a real retired instruction: some rows are internal dependency
 /// checks emitted by other chips (currently, only `emit_memory_dependencies`'s LB/LH
@@ -69,13 +65,9 @@ pub struct SubCols<T: Copy> {
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction, used for the program lookup and register resolution. Only
-    /// meaningful when `is_retired == 1`.
-    pub instruction: InstructionCols<T>,
-
     /// Register operand access for `a`/`b`/`c`. Only meaningful when this row is a real
     /// instruction (`is_retired == 1`).
-    pub reader: RegisterReader<T>,
+    pub adapter: RTypeReader<T>,
 
     /// Whether this row is a real, retired SUB instruction (as opposed to an internal
     /// dependency check from another chip, or padding).
@@ -142,14 +134,11 @@ impl<F: PrimeField32> MachineAir<F> for SubChip {
                         let mut byte_lookup_events = Vec::new();
                         let event = &input.sub_events[idx];
                         self.event_to_row(event, cols, &mut byte_lookup_events, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (mirrors a real, non-immediate-operand row's
-                        // `is_retired` also being zero, but without needing an extra degree of
-                        // freedom on the interaction multiplicity itself).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
+                    // A padding row is left all-zero: `is_real`/`is_retired` default to 0, which
+                    // gates every interaction below to zero multiplicity on its own -- unlike the
+                    // generic `RegisterReader`, `RTypeReader` needs no separate "force immediate
+                    // flags" workaround for this.
                 });
             },
         );
@@ -214,12 +203,6 @@ impl SubChip {
         cols.operand_1 = Word::from(operand_1);
         cols.operand_2 = Word::from(operand_2);
 
-        // Default: not a real instruction (matches the padding-row convention below), so the
-        // register reader's b/c memory accesses have zero multiplicity unless overwritten by a
-        // real fetched instruction's actual immediate flags just below.
-        cols.instruction.imm_b = F::ONE;
-        cols.instruction.imm_c = F::ONE;
-
         let is_real_instruction = event.pc != UNUSED_PC;
         if is_real_instruction {
             cols.is_retired = F::ONE;
@@ -227,18 +210,15 @@ impl SubChip {
             cols.state.populate(blu, event.clk);
 
             let instruction = program.fetch(event.pc);
-            cols.instruction.populate(&instruction);
-
-            if let Some(record) = event.a_record {
-                cols.reader.op_a_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-                cols.reader.op_b_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-                cols.reader.op_c_access.populate(record, blu);
-            }
-            cols.reader.populate_op_a_range_checks(blu);
+            cols.adapter.populate(
+                blu,
+                instruction.op_a,
+                event.a_record,
+                instruction.op_b,
+                event.b_record,
+                instruction.op_c,
+                event.c_record,
+            );
         }
     }
 }
@@ -258,7 +238,6 @@ where
         let local = main.row_slice(0);
         let local: &SubCols<AB::Var> = (*local).borrow();
 
-
         builder.assert_bool(local.is_real);
         builder.assert_bool(local.is_retired);
         // `is_retired` can only be set alongside `is_real` -- kept as its own witnessed column
@@ -277,15 +256,7 @@ where
         );
 
         // Register `a` holds `operand_1`, register `b` is written `add_operation.value`, and
-        // register `c` always holds `operand_2`. `op_a_value` must still be weighted by
-        // `is_retired` (zero on synthetic dependency/padding rows): `eval_register_reader`
-        // asserts `op_a_value == reader.op_a_val()` unconditionally (not gated by `is_real`) for
-        // any row where the unpopulated `instruction.op_a_0` reads as zero, i.e. every synthetic
-        // row -- since `reader.op_a_access` is never populated for those rows either, `op_a_val()`
-        // is zero there too, so this mux is what makes the two sides match.
-        let op_a_value: Word<AB::Expr> = Word(core::array::from_fn(|i| {
-            local.is_retired.into() * local.operand_1[i].into()
-        }));
+        // register `c` always holds `operand_2`.
         let op_b_role = local.add_operation.value;
         let op_c_role = local.operand_2;
 
@@ -293,18 +264,29 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, local.is_retired.into());
+        // The instruction word is reconstructed here rather than stored: opcode/`imm_b`/`imm_c`
+        // are compile-time constants (SUB is always register-register), and `op_b`/`op_c` are
+        // zero-extended from the adapter's register-index columns. `send_program`'s lookup
+        // against `ProgramChip`'s preprocessed ROM is what makes `op_a_0`/`op_a`/`op_b`/`op_c`
+        // trustworthy -- there's no separate opcode-binding check needed, since the opcode here
+        // is never a variable a malicious prover could substitute.
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: Opcode::SUB.as_field::<AB::F>().into(),
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: Word::extend_var::<AB>(local.adapter.op_c),
+            op_a_0: local.adapter.op_a_0.into(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::zero(),
+        };
+        builder.send_program(local.pc, instruction, local.is_retired.into());
 
-        eval_register_reader(
+        eval_r_type_reader(
             builder,
-            &local.reader,
+            &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            &local.instruction,
-            op_a_value,
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
+            local.operand_1.map(Into::into),
             local.is_retired.into(),
         );
 
@@ -325,16 +307,10 @@ where
 
         builder
             .when(local.is_retired)
-            .assert_word_eq(local.reader.op_b_val(), op_b_role.map(Into::into));
+            .assert_word_eq(local.adapter.op_b_val(), op_b_role.map(Into::into));
         builder
             .when(local.is_retired)
-            .assert_word_eq(local.reader.op_c_val(), op_c_role.map(Into::into));
-
-        // Bind `is_retired` to the row's actual fetched opcode, so a real-instruction row can't
-        // claim to be SUB while still passing the program lookup for a different opcode.
-        builder
-            .when(local.is_retired)
-            .assert_eq(local.instruction.opcode, Opcode::SUB.as_field::<AB::F>());
+            .assert_word_eq(local.adapter.op_c_val(), op_c_role.map(Into::into));
 
         // ---- Synthetic dependency path: matches whichever chip generated this internal check via
         // `send_alu`/`send_alu_with_hi` (always at the `UNUSED_PC` sentinel, shard/clk zero).

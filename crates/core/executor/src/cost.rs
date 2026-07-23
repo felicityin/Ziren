@@ -5,7 +5,7 @@ use p3_koala_bear::KoalaBear;
 use crate::{
     events::{PrecompileEvents, NUM_LOCAL_MEMORY_ENTRIES_PER_ROW_EXEC},
     syscalls::SyscallCode,
-    ExecutionRecord, MipsAirId, Opcode,
+    ExecutionRecord, MipsAirId, Opcode, NUM_REGISTERS,
 };
 
 const BYTE_NUM_ROWS: u64 = 1 << 16;
@@ -128,6 +128,7 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::Byte
             | MipsAirId::MovCond
             | MipsAirId::StateBump
+            | MipsAirId::MemoryBump
     )
 }
 
@@ -184,6 +185,7 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::SyscallCore, record.syscall_events.len());
     add_chip_cells(MipsAirId::Global, record.global_lookup_events.len());
     add_chip_cells(MipsAirId::StateBump, record.bump_clk_high_events.len());
+    add_chip_cells(MipsAirId::MemoryBump, record.bump_memory_events.len());
 
     let precompile_event_count: usize =
         record.precompile_events.iter().map(|(_, events)| events.len()).sum();
@@ -323,6 +325,10 @@ pub fn estimate_mips_lde_size(
     // Compute the state bump chip contribution.
     cells += (num_events_per_air[MipsAirId::StateBump]).next_power_of_two()
         * costs_per_air[&MipsAirId::StateBump];
+
+    // Compute the memory bump chip contribution.
+    cells += (num_events_per_air[MipsAirId::MemoryBump]).next_power_of_two()
+        * costs_per_air[&MipsAirId::MemoryBump];
 
     // Compute every precompile/syscall-family chip's contribution (SHA/Keccak/Poseidon2/
     // Edwards/Weierstrass/BN254/BLS12-381/Uint256/SysLinux/...) -- see `add_precompile_cells`'s
@@ -497,6 +503,10 @@ pub fn pad_mips_event_counts(
         // 5 or more per cycle); dividing by `1 << 20` instead of the real `1 << 24`-ish rate
         // keeps this a safe overestimate.
         MipsAirId::StateBump => *v += num_cycles.div_ceil(1 << 20),
+        // A shard boundary refreshes up to `NUM_REGISTERS` registers once; reactive re-stamps
+        // (currently only possible for SUB's register accesses -- see `SubChip`'s doc comment)
+        // are conservatively estimated at the same rate as a `clk_high` crossing.
+        MipsAirId::MemoryBump => *v += NUM_REGISTERS as u64 + num_cycles.div_ceil(1 << 20),
         _ => (),
     });
     event_counts

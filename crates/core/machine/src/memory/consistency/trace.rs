@@ -3,7 +3,10 @@ use zkm_core_executor::events::{
     ByteRecord, MemoryReadRecord, MemoryRecord, MemoryRecordEnum, MemoryWriteRecord,
 };
 
-use super::{MemoryAccessCols, MemoryReadCols, MemoryReadWriteCols, MemoryWriteCols};
+use super::{
+    MemoryAccessCols, MemoryReadCols, MemoryReadWriteCols, MemoryWriteCols, RegisterAccessCols,
+    RegisterAccessTimestamp, RegisterWriteAccessCols,
+};
 
 impl<F: PrimeField32> MemoryWriteCols<F> {
     pub fn populate(&mut self, record: MemoryWriteRecord, output: &mut impl ByteRecord) {
@@ -87,5 +90,63 @@ impl<F: PrimeField32> MemoryAccessCols<F> {
 
         // Add a byte table lookup with the U8Range op.
         output.add_u8_range_check(0, diff_8bit_limb as u8);
+    }
+}
+
+impl<F: PrimeField32> RegisterAccessCols<F> {
+    pub fn populate(&mut self, record: MemoryRecordEnum, output: &mut impl ByteRecord) {
+        let prev_record = record.previous_record();
+        let current_record = record.current_record();
+        self.prev_value = prev_record.value.into();
+        self.access_timestamp.populate(prev_record.timestamp, current_record.timestamp, output);
+
+        // Match the byte range checks emitted by `eval_register_access_read`'s defense-in-depth
+        // check (a read's `value` is the same as `prev_value`, so only one is needed).
+        output.add_u8_range_checks(&prev_record.value.to_le_bytes());
+    }
+}
+
+impl<F: PrimeField32> RegisterWriteAccessCols<F> {
+    pub fn populate(&mut self, record: MemoryRecordEnum, output: &mut impl ByteRecord) {
+        let prev_record = record.previous_record();
+        let current_record = record.current_record();
+        self.prev_value = prev_record.value.into();
+        self.value = current_record.value.into();
+
+        // Match the byte range checks emitted by `eval_register_access_write`'s defense-in-depth
+        // check, for both the previous and new values.
+        output.add_u8_range_checks(&prev_record.value.to_le_bytes());
+        output.add_u8_range_checks(&current_record.value.to_le_bytes());
+        self.access_timestamp.populate(prev_record.timestamp, current_record.timestamp, output);
+    }
+}
+
+impl<F: PrimeField32> RegisterAccessTimestamp<F> {
+    /// Populates the timestamp-consistency columns for a register access, given the previous and
+    /// current access's timestamps. Requires (and debug-asserts) that both timestamps share the
+    /// same `clk_high` -- callers must have gone through [`crate::memory::MemoryBumpChip`]'s
+    /// re-stamping if that isn't already the case.
+    pub fn populate(&mut self, prev_timestamp: u64, current_timestamp: u64, output: &mut impl ByteRecord) {
+        debug_assert_eq!(
+            prev_timestamp >> 24,
+            current_timestamp >> 24,
+            "register access timestamps must share clk_high; the executor should have emitted a \
+             MemoryBumpChip event to re-stamp this register first"
+        );
+
+        let prev_low = prev_timestamp & 0xffffff;
+        let current_low = current_timestamp & 0xffffff;
+        self.prev_low = F::from_canonical_u64(prev_low);
+
+        let diff_minus_one = (current_low - prev_low) - 1;
+        let diff_low_limb = (diff_minus_one & 0xffff) as u16;
+        self.diff_low_limb = F::from_canonical_u16(diff_low_limb);
+        let diff_high_limb = (diff_minus_one >> 16) & 0xff;
+
+        // Add byte table lookups matching what `eval_register_access_timestamp` sends: the
+        // stored `diff_low_limb` is range-checked directly, and the *derived* `diff_high_limb`
+        // (recomputed in-circuit via a field-inverse, not stored) is range-checked too.
+        output.add_u16_range_check(diff_low_limb);
+        output.add_u8_range_check(0, diff_high_limb as u8);
     }
 }

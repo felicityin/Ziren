@@ -1,7 +1,7 @@
 use crate::{
     adapter::StateBumpChip,
     global::GlobalChip,
-    memory::{MemoryChipType, MemoryLocalChip},
+    memory::{MemoryBumpChip, MemoryChipType, MemoryLocalChip},
     syscall::precompiles::{
         fptower::{Fp2AddSubAssignChip, Fp2MulAssignChip, FpOpChip},
         poseidon2::Poseidon2PermuteChip,
@@ -116,6 +116,8 @@ pub enum MipsAir<F: PrimeField32> {
     MiscInstrs(MiscInstrsChip),
     /// An AIR proving `clk_high` transitions (see [`StateBumpChip`]'s doc comment).
     StateBump(StateBumpChip),
+    /// An AIR proving per-register `clk_high` realignment (see [`MemoryBumpChip`]'s doc comment).
+    MemoryBump(MemoryBumpChip),
     /// An AIR for MIPS syscall instructions.
     SyscallInstrs(SyscallInstrsChip),
     /// A table for initializing the global memory state.
@@ -281,6 +283,7 @@ impl<F: PrimeField32> MipsAir<F> {
             MiscInstrs,
             MovCond,
             StateBump,
+            MemoryBump,
             MemoryInstrs,
             LoadWord,
             StoreWord,
@@ -655,6 +658,10 @@ impl<F: PrimeField32> MipsAir<F> {
         let state_bump = Chip::new(MipsAir::StateBump(StateBumpChip::new()));
         costs.insert(state_bump.name(), state_bump.cost());
         chips.push(state_bump);
+
+        let memory_bump = Chip::new(MipsAir::MemoryBump(MemoryBumpChip::new()));
+        costs.insert(memory_bump.name(), memory_bump.cost());
+        chips.push(memory_bump);
 
         (chips, costs)
     }

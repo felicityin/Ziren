@@ -1,4 +1,5 @@
 {
+  "MemoryBump": 15,
   "U256XU2048Mul": 3158,
   "StoreWord": 70,
   "Bn254Fp2MulAssign": 1486,
@@ -10,7 +11,7 @@
   "Add": 66,
   "Secp256r1Decompress": 1379,
   "ShiftRight": 117,
-  "Sub": 66,
+  "Sub": 48,
   "Secp256k1Decompress": 1379,
   "KeccakSponge": 84888,
   "Bn254AddAssign": 2050,
