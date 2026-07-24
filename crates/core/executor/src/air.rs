@@ -81,6 +81,8 @@ pub enum MipsAirId {
     Add = 29,
     /// The immediate-form add chip (ADDI, ADDIU).
     Addi = 51,
+    /// The fully-immediate ADD chip (SYNC/Pref).
+    AddNoop = 57,
     /// The sub chip (SUB, SUBU).
     Sub = 52,
     /// The bitwise chip.
@@ -190,6 +192,7 @@ impl MipsAirId {
             Self::Addi => "Addi",
             Self::StateBump => "StateBump",
             Self::MemoryBump => "MemoryBump",
+            Self::AddNoop => "AddNoop",
         }
     }
 }

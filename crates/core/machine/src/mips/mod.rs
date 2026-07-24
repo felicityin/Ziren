@@ -26,8 +26,8 @@ use zkm_hypercube::{
 pub(crate) mod mips_chips {
     pub use crate::{
         alu::{
-            AddChip, AddiChip, BitwiseChip, CloClzChip, DivRemChip, LtChip, MulChip, ShiftLeft,
-            ShiftRightChip, SubChip,
+            AddChip, AddNoopChip, AddiChip, BitwiseChip, CloClzChip, DivRemChip, LtChip, MulChip,
+            ShiftLeft, ShiftRightChip, SubChip,
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
@@ -82,6 +82,8 @@ pub enum MipsAir<F: PrimeField32> {
     Add(AddChip),
     /// An AIR for the immediate-form MIPS ADDI/ADDIU instruction.
     Addi(AddiChip),
+    /// An AIR for the fully-immediate MIPS ADD shape (SYNC/Pref).
+    AddNoop(AddNoopChip),
     /// An AIR for the MIPS SUB instruction.
     Sub(SubChip),
     /// An AIR for MIPS Bitwise instructions.
@@ -270,6 +272,7 @@ impl<F: PrimeField32> MipsAir<F> {
             Global,
             Add,
             Addi,
+            AddNoop,
             Sub,
             Bitwise,
             Mul,
@@ -567,6 +570,10 @@ impl<F: PrimeField32> MipsAir<F> {
         let addi = Chip::new(MipsAir::Addi(AddiChip));
         costs.insert(addi.name(), addi.cost());
         chips.push(addi);
+
+        let add_noop = Chip::new(MipsAir::AddNoop(AddNoopChip::default()));
+        costs.insert(add_noop.name(), add_noop.cost());
+        chips.push(add_noop);
 
         let sub = Chip::new(MipsAir::Sub(SubChip::default()));
         costs.insert(sub.name(), sub.cost());

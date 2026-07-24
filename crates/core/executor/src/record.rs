@@ -70,6 +70,9 @@ pub struct ExecutionRecord {
     /// A trace of the immediate-form ADDI and ADDIU events (register `b` plus an encoded
     /// immediate `c`, no register read for `c`).
     pub addi_events: Vec<AluEvent>,
+    /// A trace of the SYNC and Pref events: compile-time-constant `op_a=0, op_b=0, op_c=0`, no
+    /// register read for `b`/`c` at all (see `AddNoopChip`'s doc comment).
+    pub add_noop_events: Vec<AluEvent>,
     /// A trace of the SUB and SUBU events (plus internal dependency-check rows from other chips
     /// reusing this arithmetic circuit).
     pub sub_events: Vec<AluEvent>,
@@ -375,6 +378,7 @@ impl MachineRecord for ExecutionRecord {
         stats.insert("cpu_events".to_string(), self.cpu_events.len());
         stats.insert("add_events".to_string(), self.add_events.len());
         stats.insert("addi_events".to_string(), self.addi_events.len());
+        stats.insert("add_noop_events".to_string(), self.add_noop_events.len());
         stats.insert("sub_events".to_string(), self.sub_events.len());
         stats.insert("mul_events".to_string(), self.mul_events.len());
         stats.insert("bitwise_events".to_string(), self.bitwise_events.len());
@@ -413,6 +417,7 @@ impl MachineRecord for ExecutionRecord {
         self.cpu_events.append(&mut other.cpu_events);
         self.add_events.append(&mut other.add_events);
         self.addi_events.append(&mut other.addi_events);
+        self.add_noop_events.append(&mut other.add_noop_events);
         self.sub_events.append(&mut other.sub_events);
         self.mul_events.append(&mut other.mul_events);
         self.bitwise_events.append(&mut other.bitwise_events);
