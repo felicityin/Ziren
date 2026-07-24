@@ -6,6 +6,7 @@ use zkm_core_executor::ByteOpcode;
 use zkm_hypercube::{
     air::{AirLookup, BaseAirBuilder, ByteAirBuilder, LookupScope, OperationSummaryAirBuilder},
     lookup::LookupKind,
+    word::Word,
 };
 
 use crate::{
@@ -255,12 +256,72 @@ pub trait MemoryAirBuilder: BaseAirBuilder {
         );
     }
 
+    /// Constrain a register write whose value the caller can supply directly as an expression,
+    /// using the cheap [`RegisterAccessCols`] (6 bytes, no separately witnessed `value`) rather
+    /// than [`RegisterWriteAccessCols`] (10 bytes). Sound only when the caller doesn't need to
+    /// *mask* the value per-row (e.g. "discard the result when writing to register 0") -- a
+    /// masked expression would generally be degree 2+ and unfit for the interaction argument (see
+    /// [`RegisterWriteAccessCols`]'s doc comment); this is for chips that don't have that problem,
+    /// either because the value is always a known constant (e.g. writing 0 to `$zero`) or because
+    /// the masking case has been routed to a different chip entirely (e.g. `AluX0Chip`).
+    ///
+    /// See [`Self::eval_register_access_read`]'s doc comment for the `clk_high` invariant this
+    /// depends on.
+    fn eval_register_access_write_value<E: Into<Self::Expr> + Clone>(
+        &mut self,
+        clk_high: impl Into<Self::Expr>,
+        clk_low: impl Into<Self::Expr>,
+        addr: impl Into<Self::Expr>,
+        write_value: Word<Self::Expr>,
+        reg_access: &RegisterAccessCols<E>,
+        do_check: impl Into<Self::Expr>,
+    ) {
+        let do_check: Self::Expr = do_check.into();
+        let clk_high: Self::Expr = clk_high.into();
+        let clk_low: Self::Expr = clk_low.into();
+
+        self.assert_bool(do_check.clone());
+        self.eval_register_access_timestamp(
+            &reg_access.access_timestamp,
+            do_check.clone(),
+            clk_low.clone(),
+        );
+
+        // Defense-in-depth: register words entering the subsystem must remain byte-shaped even
+        // if an upstream chip forgot to range check them.
+        self.slice_range_check_u8(&reg_access.prev_value.clone().map(Into::into).0, do_check.clone());
+        self.slice_range_check_u8(&write_value.0, do_check.clone());
+
+        let addr = addr.into();
+        let prev_low = reg_access.access_timestamp.prev_low.clone().into();
+        let prev_values = once(clk_high.clone())
+            .chain(once(prev_low))
+            .chain(once(addr.clone()))
+            .chain(reg_access.prev_value.clone().map(Into::into))
+            .collect();
+        let current_values = once(clk_high)
+            .chain(once(clk_low))
+            .chain(once(addr))
+            .chain(write_value.0)
+            .collect();
+
+        self.send(
+            AirLookup::new(prev_values, do_check.clone(), LookupKind::Memory),
+            LookupScope::Local,
+        );
+        self.receive(
+            AirLookup::new(current_values, do_check, LookupKind::Memory),
+            LookupScope::Local,
+        );
+    }
+
     /// Constrain a register write, using [`RegisterWriteAccessCols`]'s witnessed `value` as the
     /// write value (see its doc comment for why this can't instead take an arbitrary caller
-    /// expression the way [`Self::eval_memory_access_write`] does: the interaction's value must
-    /// stay affine, but the natural "value" a caller wants to write -- e.g. an ALU result masked
-    /// for "writes to register 0 are discarded" -- is generally degree 2 or higher). The caller
-    /// is responsible for separately asserting `reg_access.value` equals the intended result.
+    /// expression the way [`Self::eval_register_access_write_value`] does: the interaction's value
+    /// must stay affine, but the natural "value" a caller wants to write -- e.g. an ALU result
+    /// masked for "writes to register 0 are discarded" -- is generally degree 2 or higher). The
+    /// caller is responsible for separately asserting `reg_access.value` equals the intended
+    /// result.
     ///
     /// See [`Self::eval_register_access_read`]'s doc comment for the `clk_high` invariant this
     /// depends on.

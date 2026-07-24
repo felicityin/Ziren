@@ -1,40 +1,35 @@
-use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use zkm_core_executor::{
     events::{ByteRecord, MemoryAccessPosition, MemoryRecordEnum},
     Register,
 };
 use zkm_derive::AlignedBorrow;
-use zkm_hypercube::{
-    air::{BaseAirBuilder, ZKMAirBuilder},
-    word::Word,
-};
+use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
 
-use crate::{
-    air::{MemoryAirBuilder, WordAirBuilder},
-    memory::{RegisterAccessCols, RegisterWriteAccessCols},
-};
+use crate::{air::MemoryAirBuilder, memory::RegisterAccessCols};
 
 /// Register-register (pure R-type) operand access for `a`/`b`/`c`: unlike [`super::RegisterReader`],
 /// this shape guarantees `op_b`/`op_c` are *always* registers, never immediates, so:
 /// - `op_b`/`op_c` need only store the register index (1 field each), not a full `Word` -- the
 ///   `send_program` lookup argument's word-shaped operand is reconstructed via
 ///   [`zkm_hypercube::word::Word::extend_var`] at zero extra column cost.
-/// - every access can use the cheap [`RegisterAccessCols`]/[`RegisterWriteAccessCols`] timestamp
-///   scheme in place of the general-purpose one (see their doc comments for the
-///   `clk_high`-alignment invariant this depends on, maintained by
-///   [`crate::memory::MemoryBumpChip`]).
+/// - every access can use the cheap [`RegisterAccessCols`] timestamp scheme in place of the
+///   general-purpose one (see its doc comment for the `clk_high`-alignment invariant this depends
+///   on, maintained by [`crate::memory::MemoryBumpChip`]).
 ///
 /// Only suitable for chips whose AIR never needs an immediate variant of any operand (e.g.
-/// `SubChip`; MIPS has no SUBI) and which always *write* `op_a` (never read it immutably).
+/// `SubChip`; MIPS has no SUBI), which always *write* `op_a` (never read it immutably), and whose
+/// `op_a` is guaranteed to never be register 0 -- any row that would write to `$zero` must be
+/// routed to `AluX0Chip` instead (see its doc comment), since a masked write-value expression
+/// would be unsound for the register-consistency interaction. This is why `op_a_access` uses the
+/// plain [`RegisterAccessCols`] (6 bytes) rather than a write-shaped column with its own witnessed
+/// value: the write value is always the caller's raw computed result, never masked.
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct RTypeReader<T: Copy> {
-    /// The register index of `op_a` (written).
+    /// The register index of `op_a` (written, never register 0).
     pub op_a: T,
-    pub op_a_access: RegisterWriteAccessCols<T>,
-    /// Whether `op_a` is register 0.
-    pub op_a_0: T,
+    pub op_a_access: RegisterAccessCols<T>,
     /// The register index of `op_b` (read).
     pub op_b: T,
     pub op_b_access: RegisterAccessCols<T>,
@@ -66,9 +61,14 @@ impl<F: PrimeField32> RTypeReader<F> {
         c_record: Option<MemoryRecordEnum>,
     ) {
         self.op_a = F::from_canonical_u8(op_a);
-        self.op_a_0 = F::from_bool(op_a == Register::ZERO as u8);
+        debug_assert_ne!(op_a, Register::ZERO as u8, "op_a==0 rows must be routed to AluX0Chip");
         if let Some(record) = a_record {
             self.op_a_access.populate(record, blu);
+            // Unlike a plain read (where the current value is the same as `prev_value`, already
+            // range-checked by `populate` above), a write's current value is a *different* word
+            // that `eval_register_access_write_value`'s defense-in-depth check also range-checks
+            // -- so it needs its own byte-lookup event here too.
+            blu.add_u8_range_checks(&record.current_record().value.to_le_bytes());
         }
 
         self.op_b = F::from_canonical_u32(op_b);
@@ -84,11 +84,10 @@ impl<F: PrimeField32> RTypeReader<F> {
 }
 
 /// Evaluates a chip's register operand access (a/b/c) via an [`RTypeReader`]. `op_a_computed_value`
-/// is the chip's own computed result (e.g. an ALU operation's output): it's asserted equal to the
-/// witnessed `op_a_access.value` when not writing to register 0, and ignored (`op_a_access.value`
-/// is independently asserted zero instead) when writing to register 0 -- see
-/// [`RegisterWriteAccessCols`]'s doc comment for why the write can't just use a masked expression
-/// of `op_a_computed_value` directly as the interaction value.
+/// is the chip's own computed result (e.g. an ALU operation's output): it's sent directly, unmasked,
+/// as `op_a`'s write value -- sound because `RTypeReader` is only for chips whose `op_a` is
+/// guaranteed to never be register 0 (that case is routed to `AluX0Chip` instead; see
+/// [`RTypeReader`]'s doc comment).
 pub fn eval_r_type_reader<AB: ZKMAirBuilder>(
     builder: &mut AB,
     reader: &RTypeReader<AB::Var>,
@@ -97,18 +96,6 @@ pub fn eval_r_type_reader<AB: ZKMAirBuilder>(
     op_a_computed_value: Word<AB::Expr>,
     do_check: AB::Expr,
 ) {
-    builder.when(do_check.clone()).assert_bool(reader.op_a_0);
-
-    let written_value: Word<AB::Expr> = reader.op_a_access.value.map(Into::into);
-    builder
-        .when(do_check.clone())
-        .when(reader.op_a_0)
-        .assert_word_zero(written_value.clone());
-    builder
-        .when(do_check.clone())
-        .when_not(reader.op_a_0)
-        .assert_word_eq(op_a_computed_value, written_value);
-
     // Register positions must be read/written in the order C, B, A (see
     // `MemoryAccessPosition`'s doc comment); each gets its own `clk_low` offset, matching the
     // executor's own `rr_traced`/`rw_traced` timestamps for these accesses.
@@ -126,10 +113,11 @@ pub fn eval_r_type_reader<AB: ZKMAirBuilder>(
         &reader.op_b_access,
         do_check.clone(),
     );
-    builder.eval_register_access_write(
+    builder.eval_register_access_write_value(
         clk_high,
         clk_low + AB::Expr::from_canonical_u32(MemoryAccessPosition::A as u32),
         reader.op_a.into(),
+        op_a_computed_value,
         &reader.op_a_access,
         do_check,
     );

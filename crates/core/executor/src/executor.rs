@@ -218,6 +218,12 @@ pub struct LocalCounts {
     /// The number of real, retired fully-immediate ADD (SYNC/Pref) instructions -- a subset of
     /// `event_counts[Opcode::ADD]`, needed to split `AddSub`'s estimate from `AddNoop`'s.
     pub add_noop_events: u64,
+    /// The number of real, retired register-form ADD/ADDU instructions with `op_a==0` -- a subset
+    /// of `event_counts[Opcode::ADD]`, needed to split `AddSub`'s estimate from `AluX0`'s.
+    pub add_x0_events: u64,
+    /// The number of real, retired SUB/SUBU instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::SUB]`, needed to split `Sub`'s estimate from `AluX0`'s.
+    pub sub_x0_events: u64,
 }
 
 /// Errors that the [``Executor``] can throw.
@@ -1212,7 +1218,7 @@ impl<'a> Executor<'a> {
             // exactly.
             let uses_cheap_register_scheme = match instruction.opcode {
                 Opcode::SUB => true,
-                Opcode::ADD => !(record.c.is_none() && !instruction.imm_b),
+                Opcode::ADD => record.c.is_some() || instruction.imm_b,
                 _ => false,
             };
             if uses_cheap_register_scheme {
@@ -1222,6 +1228,7 @@ impl<'a> Executor<'a> {
                 clk,
                 instruction.opcode,
                 instruction.imm_b,
+                instruction.op_a == Register::ZERO as u8,
                 hi_or_prev_a,
                 a,
                 b,
@@ -1336,6 +1343,7 @@ impl<'a> Executor<'a> {
         clk: u64,
         opcode: Opcode,
         imm_b: bool,
+        op_a_is_zero: bool,
         hi_or_prev_a: Option<u32>,
         a: u32,
         b: u32,
@@ -1387,16 +1395,25 @@ impl<'a> Executor<'a> {
             // `record.c.is_none()` but never reads `b` from a register either -- that shape goes
             // to `add_noop_events` instead (see `AddNoopChip`'s doc comment), identified by
             // `imm_b` alone since SYNC/Pref/the like always decode with `imm_b == imm_c == true`
-            // together. MIPS has no SUBI, so every SUB (real or a dependency row) goes to
-            // `sub_events` unconditionally.
+            // together. A real register-form ADD/SUB whose destination is register 0 goes to the
+            // shared `alu_x0_events` instead (see `AluX0Chip`'s doc comment) -- its result is
+            // discarded and unobservable, so it needs a different (cheaper) register-write scheme
+            // than `AddChip`/`SubChip` use for a real result. MIPS has no SUBI, so every other SUB
+            // (real or a dependency row) goes to `sub_events` unconditionally.
             Opcode::ADD if record.c.is_none() && !imm_b => {
                 self.record.addi_events.push(event);
             }
             Opcode::ADD if imm_b => {
                 self.record.add_noop_events.push(event);
             }
+            Opcode::ADD if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
+            }
             Opcode::ADD => {
                 self.record.add_events.push(event);
+            }
+            Opcode::SUB if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
             }
             Opcode::SUB => {
                 self.record.sub_events.push(event);
@@ -1733,6 +1750,21 @@ impl<'a> Executor<'a> {
             // `emit_alu_event`'s `Opcode::ADD if imm_b` routing condition exactly.
             if instruction.opcode == Opcode::ADD && instruction.imm_b {
                 self.local_counts.add_noop_events += 1;
+            }
+            // Same idea for real register-form ADD/SUB with `op_a==0` (routed to `alu_x0_events`
+            // -- see `AluX0Chip`'s doc comment). For ADD, this only applies once the addi-shaped
+            // and add_noop-shaped carve-outs above have already been ruled out (`!imm_b && !imm_c`
+            // is exactly the plain register-form shape), matching `emit_alu_event`'s arm order;
+            // SUB has no such carve-outs (MIPS has no SUBI).
+            if instruction.opcode == Opcode::ADD
+                && !instruction.imm_b
+                && !instruction.imm_c
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.add_x0_events += 1;
+            }
+            if instruction.opcode == Opcode::SUB && instruction.op_a == Register::ZERO as u8 {
+                self.local_counts.sub_x0_events += 1;
             }
             if instruction.is_memory_load_instruction() {
                 self.local_counts.event_counts[Opcode::ADD] += 2;
@@ -2755,6 +2787,8 @@ impl<'a> Executor<'a> {
                 self.local_counts.syscalls_sent as u64,
                 self.local_counts.addi_events,
                 self.local_counts.add_noop_events,
+                self.local_counts.add_x0_events,
+                self.local_counts.sub_x0_events,
                 *self.local_counts.event_counts,
             );
 
@@ -2981,7 +3015,7 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
 
-        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, opcode_counts);
+        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
@@ -3003,7 +3037,7 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = 1_000;
 
-        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, opcode_counts);
+        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 

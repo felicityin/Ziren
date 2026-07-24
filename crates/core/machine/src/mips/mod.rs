@@ -26,8 +26,8 @@ use zkm_hypercube::{
 pub(crate) mod mips_chips {
     pub use crate::{
         alu::{
-            AddChip, AddNoopChip, AddiChip, BitwiseChip, CloClzChip, DivRemChip, LtChip, MulChip,
-            ShiftLeft, ShiftRightChip, SubChip,
+            AddChip, AddNoopChip, AddiChip, AluX0Chip, BitwiseChip, CloClzChip, DivRemChip,
+            LtChip, MulChip, ShiftLeft, ShiftRightChip, SubChip,
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
@@ -86,6 +86,8 @@ pub enum MipsAir<F: PrimeField32> {
     AddNoop(AddNoopChip),
     /// An AIR for the MIPS SUB instruction.
     Sub(SubChip),
+    /// An AIR for the shared add/sub-to-register-0 shape (see `AluX0Chip`'s doc comment).
+    AluX0(AluX0Chip),
     /// An AIR for MIPS Bitwise instructions.
     Bitwise(BitwiseChip),
     /// An AIR for MIPS Mul instruction.
@@ -274,6 +276,7 @@ impl<F: PrimeField32> MipsAir<F> {
             Addi,
             AddNoop,
             Sub,
+            AluX0,
             Bitwise,
             Mul,
             ShiftRight,
@@ -579,6 +582,10 @@ impl<F: PrimeField32> MipsAir<F> {
         costs.insert(sub.name(), sub.cost());
         chips.push(sub);
 
+        let alu_x0 = Chip::new(MipsAir::AluX0(AluX0Chip));
+        costs.insert(alu_x0.name(), alu_x0.cost());
+        chips.push(alu_x0);
+
         let bitwise = Chip::new(MipsAir::Bitwise(BitwiseChip::default()));
         costs.insert(bitwise.name(), bitwise.cost());
         chips.push(bitwise);
@@ -698,6 +705,7 @@ impl<F: PrimeField32> core::hash::Hash for MipsAir<F> {
 #[allow(non_snake_case)]
 pub mod tests {
     use crate::programs::tests::other_memory_program;
+    use crate::programs::tests::add_sub_x0_program;
     use crate::programs::tests::simple_program;
     use crate::programs::tests::{
         fibonacci_program, hello_world_program, max_memory_program, sha3_chain_program,
@@ -940,6 +948,13 @@ pub mod tests {
     fn test_simple_prove() {
         setup_logger();
         let program = simple_program();
+        run_test(program).unwrap();
+    }
+
+    #[test]
+    fn test_add_sub_x0_prove() {
+        setup_logger();
+        let program = add_sub_x0_program();
         run_test(program).unwrap();
     }
 

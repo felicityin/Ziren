@@ -46,10 +46,13 @@ pub const NUM_ADD_COLS: usize = size_of::<AddCols<u8>>();
 ///
 /// `Opcode::ADD` also covers two other shapes, both split into their own chips: ADDI/ADDIU
 /// (register `b` + an encoded immediate `c`, see `AddiChip`) and SYNC/Pref (fully-immediate,
-/// `op_a=0` constant, no register read for `b`/`c` at all, see `AddNoopChip`) -- every real row
-/// reaching *this* chip is therefore genuine register-register ADD/ADDU, which is what lets it
-/// use the narrow `RTypeReader` (see its doc comment) instead of the generic
-/// `InstructionCols`+`RegisterReader` pair.
+/// `op_a=0` constant, no register read for `b`/`c` at all, see `AddNoopChip`). Additionally, a
+/// real register-register ADD/ADDU whose destination happens to be register 0 (`add $zero, ...`)
+/// is routed to `AluX0Chip` instead, since its result is unobservable and discarding it soundly
+/// requires a different (cheaper) register-write scheme than a real result does -- see
+/// `RTypeReader`'s doc comment. Every real row reaching *this* chip therefore has a genuine,
+/// non-zero destination register, which is what lets it use the narrow `RTypeReader` (see its doc
+/// comment) instead of the generic `InstructionCols`+`RegisterReader` pair.
 #[derive(Default)]
 pub struct AddChip;
 
@@ -263,18 +266,20 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        // The instruction word is reconstructed here rather than stored: opcode/`imm_b`/`imm_c`
-        // are compile-time constants (this chip only ever sees register-register ADD/ADDU), and
-        // `op_b`/`op_c` are zero-extended from the adapter's register-index columns.
-        // `send_program`'s lookup against `ProgramChip`'s preprocessed ROM is what makes
-        // `op_a_0`/`op_a`/`op_b`/`op_c` trustworthy -- there's no separate opcode-binding check
-        // needed, since the opcode here is never a variable a malicious prover could substitute.
+        // The instruction word is reconstructed here rather than stored: opcode/`op_a_0`/`imm_b`/
+        // `imm_c` are compile-time constants (this chip only ever sees register-register ADD/ADDU
+        // with `op_a != 0` -- any `op_a==0` row is routed to `AluX0Chip` instead, see
+        // `RTypeReader`'s doc comment), and `op_b`/`op_c` are zero-extended from the adapter's
+        // register-index columns. `send_program`'s lookup against `ProgramChip`'s preprocessed ROM
+        // is what makes `op_a`/`op_b`/`op_c` trustworthy -- there's no separate opcode-binding
+        // check needed, since the opcode here is never a variable a malicious prover could
+        // substitute.
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
             opcode: Opcode::ADD.as_field::<AB::F>().into(),
             op_a: local.adapter.op_a.into(),
             op_b: Word::extend_var::<AB>(local.adapter.op_b),
             op_c: Word::extend_var::<AB>(local.adapter.op_c),
-            op_a_0: local.adapter.op_a_0.into(),
+            op_a_0: AB::Expr::zero(),
             imm_b: AB::Expr::zero(),
             imm_c: AB::Expr::zero(),
         };

@@ -107,6 +107,7 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::Add
             | MipsAirId::Addi
             | MipsAirId::AddNoop
+            | MipsAirId::AluX0
             | MipsAirId::Sub
             | MipsAirId::Bitwise
             | MipsAirId::Mul
@@ -165,6 +166,7 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::Add, record.add_events.len());
     add_chip_cells(MipsAirId::Addi, record.addi_events.len());
     add_chip_cells(MipsAirId::AddNoop, record.add_noop_events.len());
+    add_chip_cells(MipsAirId::AluX0, record.alu_x0_events.len());
     add_chip_cells(MipsAirId::Sub, record.sub_events.len());
     add_chip_cells(MipsAirId::Mul, record.mul_events.len());
     add_chip_cells(MipsAirId::Bitwise, record.bitwise_events.len());
@@ -251,6 +253,10 @@ pub fn estimate_mips_lde_size(
     // Compute the add-noop (SYNC/Pref) chip contribution.
     cells += (num_events_per_air[MipsAirId::AddNoop]).next_power_of_two()
         * costs_per_air[&MipsAirId::AddNoop];
+
+    // Compute the shared add/sub-to-register-0 chip contribution.
+    cells += (num_events_per_air[MipsAirId::AluX0]).next_power_of_two()
+        * costs_per_air[&MipsAirId::AluX0];
 
     // Compute the sub chip contribution.
     cells += (num_events_per_air[MipsAirId::Sub]).next_power_of_two()
@@ -352,15 +358,19 @@ pub fn estimate_mips_event_counts(
     syscalls_sent: u64,
     addi_events: u64,
     add_noop_events: u64,
+    add_x0_events: u64,
+    sub_x0_events: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
     let mut events_counts: EnumMap<MipsAirId, u64> = EnumMap::default();
     // Compute the number of events in the add chip. `opcode_counts[Opcode::ADD]` mixes
-    // register-form ADD, immediate-form ADDI/ADDIU, fully-immediate SYNC/Pref, and register-form
-    // internal dependency rows from other chips -- `addi_events`/`add_noop_events` isolate the
-    // immediate-form/fully-immediate counts (see `AddiChip`/`AddNoopChip`'s doc comments), so
+    // register-form ADD, immediate-form ADDI/ADDIU, fully-immediate SYNC/Pref, register-form
+    // ADD with `op_a==0`, and register-form internal dependency rows from other chips --
+    // `addi_events`/`add_noop_events`/`add_x0_events` isolate the immediate-form/fully-immediate/
+    // zero-destination counts (see `AddiChip`/`AddNoopChip`/`AluX0Chip`'s doc comments), so
     // they're subtracted out here and counted on their own lines below.
-    events_counts[MipsAirId::Add] = opcode_counts[Opcode::ADD] - addi_events - add_noop_events;
+    events_counts[MipsAirId::Add] =
+        opcode_counts[Opcode::ADD] - addi_events - add_noop_events - add_x0_events;
 
     // Compute the number of events in the addi chip.
     events_counts[MipsAirId::Addi] = addi_events;
@@ -369,8 +379,12 @@ pub fn estimate_mips_event_counts(
     events_counts[MipsAirId::AddNoop] = add_noop_events;
 
     // Compute the number of events in the sub chip. MIPS has no SUBI, so every SUB opcode
-    // occurrence (real or a dependency row from another chip) belongs here.
-    events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB];
+    // occurrence (real or a dependency row from another chip) belongs here, except a real SUB
+    // with `op_a==0` (isolated via `sub_x0_events`, see `AluX0Chip`'s doc comment).
+    events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB] - sub_x0_events;
+
+    // Compute the number of events in the shared add/sub-to-register-0 chip.
+    events_counts[MipsAirId::AluX0] = add_x0_events + sub_x0_events;
 
     // Compute the number of events in the mul chip.
     events_counts[MipsAirId::Mul] =
@@ -488,6 +502,9 @@ pub fn pad_mips_event_counts(
         // Same reasoning as Addi: no dependency-row producer ever targets this shape (see
         // `AddNoopChip`'s doc comment), so a real instruction's worst-case growth is 1 per cycle.
         MipsAirId::AddNoop => *v += num_cycles,
+        // Same reasoning as Addi/AddNoop: no dependency-row producer ever targets this shape (see
+        // `AluX0Chip`'s doc comment), so a real instruction's worst-case growth is 1 per cycle.
+        MipsAirId::AluX0 => *v += num_cycles,
         // MIPS has no SUBI, so Sub's only dependency-row producer is `emit_memory_dependencies`'
         // LB/LH sign-extension check (at most 1 per retiring memory instruction), same order as
         // a real retired SUB. `+1` margin over the derived worst case of 1.

@@ -37,9 +37,12 @@ pub const NUM_SUB_COLS: usize = size_of::<SubCols<u8>>();
 ///
 /// SUB is basically an ADD with a re-arrangement of the operands and result: `a = b - c` is
 /// verified as `b = a + c`. MIPS has no immediate-form SUBI, so every SUB event (real or a
-/// dependency row) lands here, and every real, retired SUB instruction is register-register --
-/// this is what lets the chip use the narrow [`RTypeReader`] (see its doc comment) instead of the
-/// generic `InstructionCols`+`RegisterReader` pair.
+/// dependency row) lands here -- except a real `sub $zero, ...`, which is routed to `AluX0Chip`
+/// instead (its result is unobservable, and discarding it soundly requires a different, cheaper
+/// register-write scheme than a real result does; see `RTypeReader`'s doc comment). Every real,
+/// retired SUB instruction reaching *this* chip therefore has a genuine, non-zero destination
+/// register, which is what lets it use the narrow [`RTypeReader`] (see its doc comment) instead of
+/// the generic `InstructionCols`+`RegisterReader` pair.
 ///
 /// Not every row corresponds to a real retired instruction: some rows are internal dependency
 /// checks emitted by other chips (currently, only `emit_memory_dependencies`'s LB/LH
@@ -264,18 +267,19 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        // The instruction word is reconstructed here rather than stored: opcode/`imm_b`/`imm_c`
-        // are compile-time constants (SUB is always register-register), and `op_b`/`op_c` are
-        // zero-extended from the adapter's register-index columns. `send_program`'s lookup
-        // against `ProgramChip`'s preprocessed ROM is what makes `op_a_0`/`op_a`/`op_b`/`op_c`
-        // trustworthy -- there's no separate opcode-binding check needed, since the opcode here
-        // is never a variable a malicious prover could substitute.
+        // The instruction word is reconstructed here rather than stored: opcode/`op_a_0`/`imm_b`/
+        // `imm_c` are compile-time constants (SUB is always register-register, with `op_a != 0`
+        // guaranteed -- any `op_a==0` row is routed to `AluX0Chip` instead, see `RTypeReader`'s
+        // doc comment), and `op_b`/`op_c` are zero-extended from the adapter's register-index
+        // columns. `send_program`'s lookup against `ProgramChip`'s preprocessed ROM is what makes
+        // `op_a`/`op_b`/`op_c` trustworthy -- there's no separate opcode-binding check needed,
+        // since the opcode here is never a variable a malicious prover could substitute.
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
             opcode: Opcode::SUB.as_field::<AB::F>().into(),
             op_a: local.adapter.op_a.into(),
             op_b: Word::extend_var::<AB>(local.adapter.op_b),
             op_c: Word::extend_var::<AB>(local.adapter.op_c),
-            op_a_0: local.adapter.op_a_0.into(),
+            op_a_0: AB::Expr::zero(),
             imm_b: AB::Expr::zero(),
             imm_c: AB::Expr::zero(),
         };

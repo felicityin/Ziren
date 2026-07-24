@@ -85,6 +85,8 @@ pub enum MipsAirId {
     AddNoop = 57,
     /// The sub chip (SUB, SUBU).
     Sub = 52,
+    /// The shared add/sub-to-register-0 chip (see `AluX0Chip`'s doc comment).
+    AluX0 = 58,
     /// The bitwise chip.
     Bitwise = 30,
     /// The mul chip.
@@ -193,6 +195,7 @@ impl MipsAirId {
             Self::StateBump => "StateBump",
             Self::MemoryBump => "MemoryBump",
             Self::AddNoop => "AddNoop",
+            Self::AluX0 => "AluX0",
         }
     }
 }

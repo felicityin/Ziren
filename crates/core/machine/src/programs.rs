@@ -21,6 +21,22 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A synthetic program exercising real register-form `add $zero, ...`/`sub $zero, ...` --
+    /// i.e. `AluX0Chip`'s shape (see its doc comment). Real compiled code essentially never emits
+    /// these (unlike `SYNC`/`Pref`, which real code does), so this is `AluX0Chip`'s only
+    /// end-to-end coverage.
+    #[must_use]
+    pub fn add_sub_x0_program() -> Program {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 5, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, 37, false, true),
+            Instruction::new(Opcode::ADD, 0, 30, 29, false, false),
+            Instruction::new(Opcode::SUB, 0, 30, 29, false, false),
+            Instruction::new(Opcode::ADD, 31, 30, 29, false, false),
+        ];
+        Program::new(instructions, 0, 0)
+    }
+
     /// A synthetic (non-ELF) program that reaches an explicit `HALT` syscall (id 0, exit code 0),
     /// isolating whether syscall handling itself (vs. real-ELF loading/bootstrap complexity)
     /// triggers a given bug.

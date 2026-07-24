@@ -148,6 +148,12 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
+        // `alu_x0_events` is always real instructions (`AluX0Chip` has no synthetic-dependency
+        // role -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.alu_x0_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
         input.shift_left_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
