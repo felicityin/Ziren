@@ -8,7 +8,7 @@ use zkm_hypercube::{air::ZKMAirBuilder, word::Word};
 
 use crate::{air::MemoryAirBuilder, memory::RegisterAccessCols};
 
-/// Register-register (pure R-type) operand access for `a`/`b`/`c`: unlike [`super::RegisterReader`],
+/// Register-register (pure R-type) operand access for `a`/`b`/`c`: unlike [`crate::adapter::RegisterReader`],
 /// this shape guarantees `op_b`/`op_c` are *always* registers, never immediates, so:
 /// - `op_b`/`op_c` need only store the register index (1 field each), not a full `Word` -- the
 ///   `send_program` lookup argument's word-shaped operand is reconstructed via

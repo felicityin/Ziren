@@ -5,6 +5,7 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
+use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
@@ -18,39 +19,37 @@ use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_i_type_reader_non_zero, eval_state_chain, CpuState,
-        InstructionCols, ITypeReaderNonZero,
+        clk_low_expr, eval_cpu_state, eval_i_type_immutable_reader, eval_state_chain, CpuState,
+        InstructionCols, ITypeImmutableReader,
     },
     air::ZKMCoreAirBuilder,
-    memory::{MemoryCols, MemoryReadCols},
+    memory::MemoryReadCols,
     operations::WordAddressOperation,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
 
-/// The number of main trace columns for `LoadWordChip`.
-pub const NUM_LOAD_WORD_COLS: usize = size_of::<LoadWordCols<u8>>();
+/// The number of main trace columns for `LoadX0Chip`.
+pub const NUM_LOAD_X0_COLS: usize = size_of::<LoadX0Cols<u8>>();
 
-/// A chip that implements the word-aligned load opcode LW.
+/// A chip that implements real, retired `lw $zero, offset($base)` -- i.e. `LoadWordChip`'s
+/// zero-destination case (see its doc comment). Structurally almost a clone of `LoadWordChip`:
+/// same address computation/validation and the same real memory read, but the loaded value is
+/// never asserted equal to anything (it's discarded, since `$zero` is hardwired to 0), and `op_a`
+/// is pinned to register 0 by an explicit constraint rather than being a genuinely variable
+/// register index -- letting `LoadWordChip` itself assume `op_a` is never register 0 and use the
+/// unmasked `ITypeReaderNonZero`.
 ///
-/// LW is always a real, retired instruction (memory instructions never produce synthetic
-/// dependency rows). Unlike the general `MemoryInstructionsChip`, this chip drops every
-/// column that only the byte/half/unaligned/atomic variants need -- sign extension
-/// (`unsigned_mem_val`/`most_sig_bit`/`most_sig_byte`/`mem_value_is_neg`), partial-word merging
-/// (`prev_a_val`, the LWL/LWR/SWL/SWR machinery), and the 4-way offset mux (`ls_bits_is_*`,
-/// since a real LW always has `addr_word[0] & 0b11 == 0` -- no separate "aligned" address needs
-/// deriving from an offset). `c` also never comes from a register for a memory instruction (it's
-/// always the encoded immediate offset), so it's read directly off the adapter, same as `AddiChip`.
-///
-/// A real `lw $zero, ...` is routed to `LoadX0Chip` instead (this chip's `op_a` is guaranteed
-/// never register 0, letting it use the unmasked `ITypeReaderNonZero`).
+/// Reuses `ITypeImmutableReader` (built for `StoreWordChip`'s read-only `op_a`) rather than a
+/// bespoke adapter: treating the discarded load as an immutable "read" of register 0 is exactly
+/// the same shape as a store's real read, just with `op_a` fixed to 0 instead of variable.
 #[derive(Default)]
-pub struct LoadWordChip;
+pub struct LoadX0Chip;
 
 /// The column layout for the chip.
 #[derive(AlignedBorrow, Default, Clone, Copy)]
 #[repr(C)]
-pub struct LoadWordCols<T: Copy> {
+pub struct LoadX0Cols<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
@@ -58,21 +57,22 @@ pub struct LoadWordCols<T: Copy> {
     pub pc: T,
     pub next_pc: T,
 
-    /// Register operand access for `a`/`b`/`c`.
-    pub adapter: ITypeReaderNonZero<T>,
+    /// Register operand access for `a`/`b`/`c`. `op_a`/`op_a_0` are constrained to 0/1 (see
+    /// `eval`), since this chip only ever handles `op_a == $zero`.
+    pub adapter: ITypeImmutableReader<T>,
 
     /// The computed, validated memory address (`op_b + op_c`).
     pub word_address: WordAddressOperation<T>,
 
-    /// The memory word being read. A plain read (not read-write): a load never changes memory,
-    /// so `value()`/`prev_value()` are structurally the same column here.
+    /// The memory word being read. Range-checked and consistency-checked like any load, but
+    /// never asserted equal to anything: the loaded value is discarded.
     pub memory_access: MemoryReadCols<T>,
 
-    /// Whether this row is a real, retired LW instruction (as opposed to padding).
+    /// Whether this row is a real, retired `lw $zero, ...` instruction (as opposed to padding).
     pub is_real: T,
 }
 
-impl<F: PrimeField32> MachineAir<F> for LoadWordChip {
+impl<F: PrimeField32> MachineAir<F> for LoadX0Chip {
     type Record = ExecutionRecord;
 
     type Program = Program;
@@ -80,14 +80,14 @@ impl<F: PrimeField32> MachineAir<F> for LoadWordChip {
     type Error = CoreChipError;
 
     fn name(&self) -> String {
-        "LoadWord".to_string()
+        "LoadX0".to_string()
     }
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_power_of_two(
-            input.load_word_events.len(),
+            input.load_x0_events.len(),
             None,
-            <LoadWordChip as MachineAir<F>>::name(self).as_str(),
+            <LoadX0Chip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
     }
@@ -97,22 +97,22 @@ impl<F: PrimeField32> MachineAir<F> for LoadWordChip {
         input: &ExecutionRecord,
         output: &mut ExecutionRecord,
     ) -> Result<RowMajorMatrix<F>, Self::Error> {
-        let chunk_size = std::cmp::max(input.load_word_events.len() / num_cpus::get(), 1);
-        let padded_nb_rows = <LoadWordChip as MachineAir<F>>::num_rows(self, input).unwrap();
-        let mut values = zeroed_f_vec(padded_nb_rows * NUM_LOAD_WORD_COLS);
+        let chunk_size = std::cmp::max(input.load_x0_events.len() / num_cpus::get(), 1);
+        let padded_nb_rows = <LoadX0Chip as MachineAir<F>>::num_rows(self, input).unwrap();
+        let mut values = zeroed_f_vec(padded_nb_rows * NUM_LOAD_X0_COLS);
 
         let blu_events = values
-            .chunks_mut(chunk_size * NUM_LOAD_WORD_COLS)
+            .chunks_mut(chunk_size * NUM_LOAD_X0_COLS)
             .enumerate()
             .par_bridge()
             .map(|(i, rows)| {
                 let mut blu: HashMap<ByteLookupEvent, usize> = HashMap::new();
-                rows.chunks_mut(NUM_LOAD_WORD_COLS).enumerate().for_each(|(j, row)| {
+                rows.chunks_mut(NUM_LOAD_X0_COLS).enumerate().for_each(|(j, row)| {
                     let idx = i * chunk_size + j;
-                    let cols: &mut LoadWordCols<F> = row.borrow_mut();
+                    let cols: &mut LoadX0Cols<F> = row.borrow_mut();
 
-                    if idx < input.load_word_events.len() {
-                        let event = &input.load_word_events[idx];
+                    if idx < input.load_x0_events.len() {
+                        let event = &input.load_x0_events[idx];
                         self.event_to_row(event, cols, &mut blu, &input.program);
                     }
                 });
@@ -122,11 +122,11 @@ impl<F: PrimeField32> MachineAir<F> for LoadWordChip {
 
         output.add_byte_lookup_events_from_maps(blu_events.iter().collect_vec());
 
-        Ok(RowMajorMatrix::new(values, NUM_LOAD_WORD_COLS))
+        Ok(RowMajorMatrix::new(values, NUM_LOAD_X0_COLS))
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        !shard.load_word_events.is_empty()
+        !shard.load_x0_events.is_empty()
     }
 
     fn local_only(&self) -> bool {
@@ -134,11 +134,11 @@ impl<F: PrimeField32> MachineAir<F> for LoadWordChip {
     }
 }
 
-impl LoadWordChip {
+impl LoadX0Chip {
     fn event_to_row<F: PrimeField32>(
         &self,
         event: &MemInstrEvent,
-        cols: &mut LoadWordCols<F>,
+        cols: &mut LoadX0Cols<F>,
         blu: &mut HashMap<ByteLookupEvent, usize>,
         program: &Program,
     ) {
@@ -166,33 +166,37 @@ impl LoadWordChip {
     }
 }
 
-impl<F> BaseAir<F> for LoadWordChip {
+impl<F> BaseAir<F> for LoadX0Chip {
     fn width(&self) -> usize {
-        NUM_LOAD_WORD_COLS
+        NUM_LOAD_X0_COLS
     }
 }
 
-impl<AB> Air<AB> for LoadWordChip
+impl<AB> Air<AB> for LoadX0Chip
 where
     AB: ZKMCoreAirBuilder + AirBuilderWithPublicValues,
 {
     fn eval(&self, builder: &mut AB) {
         let main = builder.main();
         let local = main.row_slice(0);
-        let local: &LoadWordCols<AB::Var> = (*local).borrow();
+        let local: &LoadX0Cols<AB::Var> = (*local).borrow();
 
         builder.assert_bool(local.is_real);
 
-        // The instruction word is reconstructed here rather than stored: opcode/`imm_b`/`imm_c`
-        // are compile-time constants (this chip only ever sees real, retired LW with a
-        // non-zero destination -- any `op_a==0` row is routed to `LoadX0Chip` instead), and
-        // `op_a`/`op_b`/`op_c` come from the adapter.
+        // This chip is specifically for `op_a == $zero`: pin the adapter's witnessed `op_a`/
+        // `op_a_0` so the register-access interaction below can only ever touch register 0 (a
+        // freely-witnessed nonzero `op_a` here would let a real, non-zero-destination load sneak
+        // its register write through this chip's discard-the-value path instead of
+        // `LoadWordChip`'s real one).
+        builder.when(local.is_real).assert_zero(local.adapter.op_a);
+        builder.when(local.is_real).assert_one(local.adapter.op_a_0);
+
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
             opcode: Opcode::LW.as_field::<AB::F>().into(),
             op_a: local.adapter.op_a.into(),
             op_b: Word::extend_var::<AB>(local.adapter.op_b),
             op_c: local.adapter.op_c.map(Into::into),
-            op_a_0: AB::Expr::zero(),
+            op_a_0: local.adapter.op_a_0.into(),
             imm_b: AB::Expr::zero(),
             imm_c: AB::Expr::one(),
         };
@@ -217,14 +221,11 @@ where
             local.is_real,
         );
 
-        // The loaded word is sent directly, unmasked, as `op_a`'s new value -- sound because
-        // `ITypeReaderNonZero` guarantees `op_a` is never register 0 (see its doc comment).
-        eval_i_type_reader_non_zero(
+        eval_i_type_immutable_reader(
             builder,
             &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            local.memory_access.value().map(Into::into),
             local.is_real.into(),
         );
 
@@ -255,14 +256,14 @@ mod tests {
     };
     use zkm_hypercube::air::MachineAir;
 
-    use super::LoadWordChip;
+    use super::LoadX0Chip;
 
     #[test]
     fn generate_trace() {
         let program = Program {
             instructions: vec![Instruction {
                 opcode: Opcode::LW,
-                op_a: 5,
+                op_a: 0,
                 op_b: 8,
                 op_c: 4,
                 imm_b: false,
@@ -275,12 +276,12 @@ mod tests {
             image: Default::default(),
         };
         let mut shard = ExecutionRecord { program: program.into(), ..Default::default() };
-        shard.load_word_events = vec![MemInstrEvent {
+        shard.load_x0_events = vec![MemInstrEvent {
             clk: 0,
             pc: 0,
             next_pc: 4,
             opcode: Opcode::LW,
-            a: 42,
+            a: 0,
             b: 100,
             c: 4,
             mem_access: MemoryReadRecord::new(42, 5, 0).into(),
@@ -289,7 +290,7 @@ mod tests {
             b_record: None,
             c_record: None,
         }];
-        let chip = LoadWordChip;
+        let chip = LoadX0Chip;
         let trace: RowMajorMatrix<KoalaBear> =
             chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();
         println!("{:?}", trace.values)

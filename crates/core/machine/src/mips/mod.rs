@@ -31,7 +31,9 @@ pub(crate) mod mips_chips {
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
-        memory::{LoadWordChip, MemoryGlobalChip, MemoryInstructionsChip, StoreWordChip},
+        memory::{
+            LoadWordChip, LoadX0Chip, MemoryGlobalChip, MemoryInstructionsChip, StoreWordChip,
+        },
         misc::{MiscInstrsChip, MovCondChip},
         program::ProgramChip,
         syscall::{
@@ -114,6 +116,8 @@ pub enum MipsAir<F: PrimeField32> {
     MemoryInstrs(MemoryInstructionsChip),
     /// An AIR for the word-aligned MIPS load instruction (LW).
     LoadWord(LoadWordChip),
+    /// An AIR for real, retired `lw $zero, ...` (`LoadWordChip`'s zero-destination case).
+    LoadX0(LoadX0Chip),
     /// An AIR for the word-aligned MIPS store instruction (SW).
     StoreWord(StoreWordChip),
     /// An AIR for MIPS mov condition instructions.
@@ -295,6 +299,7 @@ impl<F: PrimeField32> MipsAir<F> {
             MemoryBump,
             MemoryInstrs,
             LoadWord,
+            LoadX0,
             StoreWord,
             SyscallCore,
             SyscallInstrs,
@@ -638,6 +643,10 @@ impl<F: PrimeField32> MipsAir<F> {
         costs.insert(load_word.name(), load_word.cost());
         chips.push(load_word);
 
+        let load_x0 = Chip::new(MipsAir::LoadX0(LoadX0Chip::default()));
+        costs.insert(load_x0.name(), load_x0.cost());
+        chips.push(load_x0);
+
         let store_word = Chip::new(MipsAir::StoreWord(StoreWordChip::default()));
         costs.insert(store_word.name(), store_word.cost());
         chips.push(store_word);
@@ -714,6 +723,7 @@ pub mod tests {
     use crate::programs::tests::other_memory_program;
     use crate::programs::tests::add_sub_x0_program;
     use crate::programs::tests::simple_program;
+    use crate::programs::tests::lw_sw_x0_program;
     use crate::programs::tests::slt_x0_program;
     use crate::programs::tests::{
         fibonacci_program, hello_world_program, max_memory_program, sha3_chain_program,
@@ -970,6 +980,13 @@ pub mod tests {
     fn test_slt_x0_prove() {
         setup_logger();
         let program = slt_x0_program();
+        run_test(program).unwrap();
+    }
+
+    #[test]
+    fn test_lw_sw_x0_prove() {
+        setup_logger();
+        let program = lw_sw_x0_program();
         run_test(program).unwrap();
     }
 

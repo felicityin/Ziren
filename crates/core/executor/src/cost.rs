@@ -122,6 +122,7 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::SyscallCore
             | MipsAirId::MemoryInstrs
             | MipsAirId::LoadWord
+            | MipsAirId::LoadX0
             | MipsAirId::StoreWord
             | MipsAirId::MiscInstrs
             | MipsAirId::MemoryGlobalInit
@@ -179,6 +180,7 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::CloClz, record.cloclz_events.len());
     add_chip_cells(MipsAirId::MemoryInstrs, record.memory_instr_events.len());
     add_chip_cells(MipsAirId::LoadWord, record.load_word_events.len());
+    add_chip_cells(MipsAirId::LoadX0, record.load_x0_events.len());
     add_chip_cells(MipsAirId::StoreWord, record.store_word_events.len());
     add_chip_cells(MipsAirId::Branch, record.branch_events.len());
     add_chip_cells(MipsAirId::Jump, record.jump_events.len());
@@ -316,6 +318,10 @@ pub fn estimate_mips_lde_size(
     cells += (num_events_per_air[MipsAirId::LoadWord]).next_power_of_two()
         * costs_per_air[&MipsAirId::LoadWord];
 
+    // Compute the LoadX0 (real `lw $zero, ...`) chip contribution.
+    cells += (num_events_per_air[MipsAirId::LoadX0]).next_power_of_two()
+        * costs_per_air[&MipsAirId::LoadX0];
+
     // Compute the StoreWord chip contribution.
     cells += (num_events_per_air[MipsAirId::StoreWord]).next_power_of_two()
         * costs_per_air[&MipsAirId::StoreWord];
@@ -371,6 +377,7 @@ pub fn estimate_mips_event_counts(
     sltu_i_events: u64,
     slt_x0_events: u64,
     sltu_x0_events: u64,
+    load_x0_events: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
     let mut events_counts: EnumMap<MipsAirId, u64> = EnumMap::default();
@@ -464,8 +471,11 @@ pub fn estimate_mips_event_counts(
         + opcode_counts[Opcode::SWR]
         + opcode_counts[Opcode::SC];
 
-    // Compute the number of events in the LoadWord/StoreWord chips.
-    events_counts[MipsAirId::LoadWord] = opcode_counts[Opcode::LW];
+    // Compute the number of events in the LoadWord/LoadX0/StoreWord chips. `opcode_counts[Opcode::LW]`
+    // mixes real non-zero-destination LW with real `lw $zero, ...` -- `load_x0_events` isolates
+    // the latter (see `LoadX0Chip`'s doc comment).
+    events_counts[MipsAirId::LoadWord] = opcode_counts[Opcode::LW] - load_x0_events;
+    events_counts[MipsAirId::LoadX0] = load_x0_events;
     events_counts[MipsAirId::StoreWord] = opcode_counts[Opcode::SW];
 
     // Compute the number of events in the MiscInstrs chip.
@@ -551,6 +561,10 @@ pub fn pad_mips_event_counts(
         // margin over that derived worst case of 1 for each of the three memory chips below.
         MipsAirId::MemoryInstrs => *v += 2 * num_cycles,
         MipsAirId::LoadWord => *v += 2 * num_cycles,
+        // Same reasoning as Addi/AddNoop/AluX0/Slti: no dependency-row producer ever targets
+        // this shape (see `LoadX0Chip`'s doc comment), so a real instruction's worst-case growth
+        // is 1 per cycle.
+        MipsAirId::LoadX0 => *v += num_cycles,
         MipsAirId::StoreWord => *v += 2 * num_cycles,
         MipsAirId::MiscInstrs => *v += 8 * num_cycles, // TODO: Check this value.
         MipsAirId::CloClz => *v += 3 * num_cycles,     // TODO: Check this value.

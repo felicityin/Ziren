@@ -209,6 +209,10 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
+        input.load_x0_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
         input.store_word_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);

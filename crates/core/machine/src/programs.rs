@@ -57,6 +57,23 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A synthetic program exercising real `sw $zero, ...` (`StoreWordChip`'s `op_a_0` pass-through
+    /// -- a common real-code idiom for zeroing memory) and real `lw $zero, ...` (`LoadX0Chip`'s
+    /// only shape, routed there instead of `LoadWordChip`). `lw $zero,...` is as rare in real
+    /// compiled code as `add $zero,...`, so this is `LoadX0Chip`'s only end-to-end coverage.
+    #[must_use]
+    pub fn lw_sw_x0_program() -> Program {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 0x1000, false, true),
+            Instruction::new(Opcode::ADD, 8, 0, 42, false, true),
+            Instruction::new(Opcode::SW, 8, 29, 0, false, true),
+            Instruction::new(Opcode::LW, 9, 29, 0, false, true),
+            Instruction::new(Opcode::SW, 0, 29, 4, false, true),
+            Instruction::new(Opcode::LW, 0, 29, 0, false, true),
+        ];
+        Program::new(instructions, 0, 0)
+    }
+
     /// A synthetic (non-ELF) program that reaches an explicit `HALT` syscall (id 0, exit code 0),
     /// isolating whether syscall handling itself (vs. real-ELF loading/bootstrap complexity)
     /// triggers a given bug.

@@ -236,6 +236,9 @@ pub struct LocalCounts {
     /// The number of real, retired register-form SLTU instructions with `op_a==0` -- a subset of
     /// `event_counts[Opcode::SLTU]`, needed to split `Lt`'s estimate from `AluX0`'s.
     pub sltu_x0_events: u64,
+    /// The number of real, retired LW instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::LW]`, needed to split `LoadWord`'s estimate from `LoadX0`'s.
+    pub load_x0_events: u64,
 }
 
 /// Errors that the [``Executor``] can throw.
@@ -1252,9 +1255,17 @@ impl<'a> Executor<'a> {
         } else if instruction.is_memory_load_instruction()
             || instruction.is_memory_store_instruction()
         {
+            // LW/SW's register operands (`op_a`/`op_b`) use the cheap register-access scheme
+            // (see `LoadWordChip`/`LoadX0Chip`/`StoreWordChip`'s doc comments); every other
+            // memory instruction (LB/LH/LWL/... via `MemoryInstructionsChip`) still uses the
+            // general-purpose scheme. This condition must match `emit_mem_instr_event`'s routing.
+            if matches!(instruction.opcode, Opcode::LW | Opcode::SW) {
+                self.emit_memory_bump_events(instruction, &record);
+            }
             self.emit_mem_instr_event(
                 clk,
                 instruction.opcode,
+                instruction.op_a == Register::ZERO as u8,
                 a,
                 b,
                 c,
@@ -1478,6 +1489,7 @@ impl<'a> Executor<'a> {
         &mut self,
         clk: u64,
         opcode: Opcode,
+        op_a_is_zero: bool,
         a: u32,
         b: u32,
         c: u32,
@@ -1499,7 +1511,12 @@ impl<'a> Executor<'a> {
             c_record: record.c,
         };
 
+        // A real, retired `lw $zero, ...` goes to the shared `LoadX0Chip` instead (see its doc
+        // comment): `LoadWordChip`'s `op_a` is guaranteed never register 0, so it uses the
+        // unmasked `ITypeReaderNonZero`. `StoreWordChip`'s `op_a` is only ever read, so it needs
+        // no such split (`sw $zero, ...` is already trivially safe).
         match opcode {
+            Opcode::LW if op_a_is_zero => self.record.load_x0_events.push(event),
             Opcode::LW => self.record.load_word_events.push(event),
             Opcode::SW => self.record.store_word_events.push(event),
             _ => self.record.memory_instr_events.push(event),
@@ -1813,6 +1830,11 @@ impl<'a> Executor<'a> {
                 && instruction.op_a == Register::ZERO as u8
             {
                 self.local_counts.sltu_x0_events += 1;
+            }
+            // Same idea for real, retired `lw $zero, ...` (routed to `load_x0_events` -- see
+            // `LoadX0Chip`'s doc comment).
+            if instruction.opcode == Opcode::LW && instruction.op_a == Register::ZERO as u8 {
+                self.local_counts.load_x0_events += 1;
             }
             if instruction.is_memory_load_instruction() {
                 self.local_counts.event_counts[Opcode::ADD] += 2;
@@ -2841,6 +2863,7 @@ impl<'a> Executor<'a> {
                 self.local_counts.sltu_i_events,
                 self.local_counts.slt_x0_events,
                 self.local_counts.sltu_x0_events,
+                self.local_counts.load_x0_events,
                 *self.local_counts.event_counts,
             );
 
@@ -3067,7 +3090,8 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
 
-        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+        let event_counts =
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
@@ -3089,7 +3113,8 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = 1_000;
 
-        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+        let event_counts =
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 

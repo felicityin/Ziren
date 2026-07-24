@@ -103,6 +103,9 @@ pub struct ExecutionRecord {
     pub memory_instr_events: Vec<MemInstrEvent>,
     /// A trace of the LW events.
     pub load_word_events: Vec<MemInstrEvent>,
+    /// A trace of real, retired `lw $zero, ...` events (`LoadWordChip`'s zero-destination case,
+    /// see `LoadX0Chip`'s doc comment).
+    pub load_x0_events: Vec<MemInstrEvent>,
     /// A trace of the SW events.
     pub store_word_events: Vec<MemInstrEvent>,
     /// A trace of the branch events.
@@ -399,6 +402,7 @@ impl MachineRecord for ExecutionRecord {
         stats.insert("cloclz_events".to_string(), self.cloclz_events.len());
         stats.insert("memory_instr_events".to_string(), self.memory_instr_events.len());
         stats.insert("load_word_events".to_string(), self.load_word_events.len());
+        stats.insert("load_x0_events".to_string(), self.load_x0_events.len());
         stats.insert("store_word_events".to_string(), self.store_word_events.len());
         stats.insert("branch_events".to_string(), self.branch_events.len());
         stats.insert("jump_events".to_string(), self.jump_events.len());
@@ -440,6 +444,7 @@ impl MachineRecord for ExecutionRecord {
         self.cloclz_events.append(&mut other.cloclz_events);
         self.memory_instr_events.append(&mut other.memory_instr_events);
         self.load_word_events.append(&mut other.load_word_events);
+        self.load_x0_events.append(&mut other.load_x0_events);
         self.store_word_events.append(&mut other.store_word_events);
         self.branch_events.append(&mut other.branch_events);
         self.jump_events.append(&mut other.jump_events);
