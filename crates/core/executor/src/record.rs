@@ -90,8 +90,12 @@ pub struct ExecutionRecord {
     pub shift_right_events: Vec<AluEvent>,
     /// A trace of the DIV, DIVU events.
     pub divrem_events: Vec<CompAluEvent>,
-    /// A trace of the SLT, SLTI, SLTU, and SLTIU events.
+    /// A trace of the register-form SLT and SLTU events (plus internal dependency-check rows
+    /// from other chips reusing this comparison circuit).
     pub lt_events: Vec<AluEvent>,
+    /// A trace of the immediate-form SLTI and SLTIU events (register `b` plus an encoded
+    /// immediate `c`, see `SltiChip`'s doc comment).
+    pub slti_events: Vec<AluEvent>,
     /// A trace of the CLO and CLZ events.
     pub cloclz_events: Vec<AluEvent>,
     /// A trace of the rare memory instructions (everything except LW/SW: LB, LBU, LH, LHU,
@@ -391,6 +395,7 @@ impl MachineRecord for ExecutionRecord {
         stats.insert("shift_right_events".to_string(), self.shift_right_events.len());
         stats.insert("divrem_events".to_string(), self.divrem_events.len());
         stats.insert("lt_events".to_string(), self.lt_events.len());
+        stats.insert("slti_events".to_string(), self.slti_events.len());
         stats.insert("cloclz_events".to_string(), self.cloclz_events.len());
         stats.insert("memory_instr_events".to_string(), self.memory_instr_events.len());
         stats.insert("load_word_events".to_string(), self.load_word_events.len());
@@ -431,6 +436,7 @@ impl MachineRecord for ExecutionRecord {
         self.shift_right_events.append(&mut other.shift_right_events);
         self.divrem_events.append(&mut other.divrem_events);
         self.lt_events.append(&mut other.lt_events);
+        self.slti_events.append(&mut other.slti_events);
         self.cloclz_events.append(&mut other.cloclz_events);
         self.memory_instr_events.append(&mut other.memory_instr_events);
         self.load_word_events.append(&mut other.load_word_events);

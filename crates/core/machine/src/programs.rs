@@ -37,6 +37,26 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A synthetic program exercising real register-form `slt $zero, ...`/`sltu $zero, ...` --
+    /// i.e. `AluX0Chip`'s extended shape (see its doc comment) -- alongside real register-form
+    /// SLT/SLTU (`LtChip`) and immediate-form SLTI/SLTIU (`SltiChip`). `slt`/`sltu`-to-`$zero` are
+    /// as rare in real compiled code as `add $zero,...`, so this is `AluX0Chip`'s only end-to-end
+    /// coverage for these two opcodes.
+    #[must_use]
+    pub fn slt_x0_program() -> Program {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 5, false, true),
+            Instruction::new(Opcode::ADD, 30, 0, 37, false, true),
+            Instruction::new(Opcode::SLT, 31, 29, 30, false, false),
+            Instruction::new(Opcode::SLTU, 31, 30, 29, false, false),
+            Instruction::new(Opcode::SLT, 31, 29, 10, false, true),
+            Instruction::new(Opcode::SLTU, 31, 29, 10, false, true),
+            Instruction::new(Opcode::SLT, 0, 29, 30, false, false),
+            Instruction::new(Opcode::SLTU, 0, 30, 29, false, false),
+        ];
+        Program::new(instructions, 0, 0)
+    }
+
     /// A synthetic (non-ELF) program that reaches an explicit `HALT` syscall (id 0, exit code 0),
     /// isolating whether syscall handling itself (vs. real-ELF loading/bootstrap complexity)
     /// triggers a given bug.

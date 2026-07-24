@@ -4,47 +4,53 @@ use core::{
 };
 
 use hashbrown::HashMap;
-use itertools::{izip, Itertools};
+use itertools::Itertools;
 use p3_air::AirBuilder;
-use p3_field::{Field, FieldAlgebra, PrimeField32};
+use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::*;
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{AluEvent, ByteLookupEvent, ByteRecord, MemoryRecordEnum},
-    ByteOpcode, ExecutionRecord, Opcode, Program, UNUSED_PC,
+    events::{AluEvent, ByteLookupEvent, ByteRecord},
+    ExecutionRecord, Opcode, Program, UNUSED_PC,
 };
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_hypercube::{
-    air::{BaseAirBuilder, MachineAir},
-    word::Word,
-};
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
-    adapter::InstructionCols,
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_r_type_reader, eval_state_chain, CpuState,
+        InstructionCols, RTypeReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::MemoryCols,
+    operations::LtOperation,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
 
+mod slti;
+pub use slti::*;
+
 /// The number of main trace columns for `LtChip`.
 pub const NUM_LT_COLS: usize = size_of::<LtCols<u8>>();
 
-/// A chip that implements bitwise operations for the opcodes SLT and SLTU.
+/// A chip that implements the register-form opcodes SLT and SLTU.
 ///
-/// As with `AddChip`, not every row is a real retired instruction: `Branch`/`DivRem`
-/// dependency checks reuse this chip's comparison circuit for internal SLT/SLTU checks at the
-/// `UNUSED_PC` sentinel. `is_real_slt`/`is_real_sltu` distinguish real instructions from
-/// synthetic dependency rows.
+/// Not every row corresponds to a real retired instruction: some rows are internal dependency
+/// checks emitted by `Branch`/`DivRem` (reusing this chip's comparison circuit for internal
+/// SLT/SLTU checks) at the `UNUSED_PC` sentinel. `is_retired` distinguishes the two (kept as its
+/// own witnessed column rather than folded into a product, since interaction
+/// values/multiplicities in this lookup argument must stay affine in the trace columns).
+///
+/// `Opcode::SLT`/`Opcode::SLTU` also cover the immediate-form SLTI/SLTIU (register `b` + an
+/// encoded immediate `c`, see `SltiChip`) -- every real row reaching *this* chip is therefore
+/// genuine register-register SLT/SLTU with a non-zero destination (any `op_a==0` row is routed to
+/// `AluX0Chip` instead), which is what lets it use the narrow `RTypeReader` (see its doc comment)
+/// instead of the generic `InstructionCols`+`RegisterReader` pair.
 #[derive(Default)]
 pub struct LtChip;
 
@@ -53,70 +59,29 @@ pub struct LtChip;
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct LtCols<T: Copy> {
-    /// The current shard and clk. Only meaningful when this row is a real instruction.
+    /// The current shard and clk. Only meaningful when `is_retired == 1`.
     pub state: CpuState<T>,
 
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction. Only meaningful when this row is a real instruction.
-    pub instruction: InstructionCols<T>,
-
     /// Register operand access for `a`/`b`/`c`. Only meaningful when this row is a real
-    /// instruction.
-    pub reader: RegisterReader<T>,
+    /// instruction (`is_retired == 1`).
+    pub adapter: RTypeReader<T>,
 
-    /// Whether this row is a real, retired SLT instruction.
-    pub is_real_slt: T,
+    /// Whether this row is a real, retired SLT/SLTU instruction (as opposed to an internal
+    /// dependency check from another chip, or padding).
+    pub is_retired: T,
 
-    /// Whether this row is a real, retired SLTU instruction.
-    pub is_real_sltu: T,
-
-    /// If the opcode is SLT.
-    #[cfg_attr(feature = "picus", picus(selector))]
-    pub is_slt: T,
-
-    /// If the opcode is SLTU.
-    #[cfg_attr(feature = "picus", picus(selector))]
-    pub is_sltu: T,
-
-    /// The output operand.
-    pub a: Word<T>,
-
-    /// The first input operand.
+    /// The first input operand (register `b` for a real instruction).
     pub b: Word<T>,
 
-    /// The second input operand.
+    /// The second input operand (register `c` for a real instruction).
     pub c: Word<T>,
 
-    /// Boolean flag to indicate which byte pair differs if the operands are not equal.
-    pub byte_flags: [T; 4],
-
-    /// The masking b[3] & 0x7F.
-    pub b_masked: T,
-    /// The masking c[3] & 0x7F.
-    pub c_masked: T,
-    /// An inverse of differing byte if c_comp != b_comp.
-    pub not_eq_inv: T,
-
-    /// The most significant bit of operand b.
-    pub msb_b: T,
-    /// The most significant bit of operand c.
-    pub msb_c: T,
-    /// The multiplication msb_b * is_slt.
-    pub bit_b: T,
-    /// The multiplication msb_c * is_slt.
-    pub bit_c: T,
-
-    /// The result of the intermediate SLTU operation `b_comp < c_comp`.
-    pub sltu: T,
-    /// A boolean flag for an intermediate comparison.
-    pub is_comp_eq: T,
-    /// A boolean flag for comparing the sign bits.
-    pub is_sign_eq: T,
-    /// The comparison bytes to be looked up.
-    pub comparison_bytes: [T; 2],
+    /// The SLT/SLTU comparison circuit (shared with `SltiChip`).
+    pub lt_operation: LtOperation<T>,
 }
 
 impl LtCols<u32> {
@@ -172,13 +137,11 @@ impl<F: PrimeField32> MachineAir<F> for LtChip {
                         let mut byte_lookup_events = Vec::new();
                         let event = &input.lt_events[idx];
                         self.event_to_row(event, cols, &mut byte_lookup_events, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
+                    // A padding row is left all-zero: `is_retired` defaults to 0, which gates
+                    // every interaction below to zero multiplicity on its own -- unlike the
+                    // generic `RegisterReader`, `RTypeReader` needs no separate "force immediate
+                    // flags" workaround for this.
                 });
             },
         );
@@ -231,117 +194,31 @@ impl LtChip {
         blu: &mut impl ByteRecord,
         program: &Program,
     ) {
-        let a = event.a.to_le_bytes();
-        let b = event.b.to_le_bytes();
-        let c = event.c.to_le_bytes();
-
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
-        cols.a = Word(a.map(F::from_canonical_u8));
-        cols.b = Word(b.map(F::from_canonical_u8));
-        cols.c = Word(c.map(F::from_canonical_u8));
-
-        cols.is_slt = F::from_bool(event.opcode == Opcode::SLT);
-        cols.is_sltu = F::from_bool(event.opcode == Opcode::SLTU);
-
-        // Default: not a real instruction, so the register reader's b/c memory accesses have
-        // zero multiplicity unless overwritten by a real fetched instruction's actual immediate
-        // flags just below.
-        cols.instruction.imm_b = F::ONE;
-        cols.instruction.imm_c = F::ONE;
+        cols.b = Word::from(event.b);
+        cols.c = Word::from(event.c);
 
         let is_real_instruction = event.pc != UNUSED_PC;
         if is_real_instruction {
-            cols.is_real_slt = cols.is_slt;
-            cols.is_real_sltu = cols.is_sltu;
+            cols.is_retired = F::ONE;
 
             cols.state.populate(blu, event.clk);
 
             let instruction = program.fetch(event.pc);
-            cols.instruction.populate(&instruction);
-
-            *cols.reader.op_a_access.value_mut() = event.a.into();
-            *cols.reader.op_b_access.value_mut() = event.b.into();
-            *cols.reader.op_c_access.value_mut() = event.c.into();
-
-            if let Some(record) = event.a_record {
-                cols.reader.op_a_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-                cols.reader.op_b_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-                cols.reader.op_c_access.populate(record, blu);
-            }
-            cols.reader.populate_op_a_range_checks(blu);
+            cols.adapter.populate(
+                blu,
+                instruction.op_a,
+                event.a_record,
+                instruction.op_b,
+                event.b_record,
+                instruction.op_c,
+                event.c_record,
+            );
         }
 
-        // If this is SLT, mask the MSB of b & c before computing cols.bits.
-        let masked_b = b[3] & 0x7f;
-        let masked_c = c[3] & 0x7f;
-        cols.b_masked = F::from_canonical_u8(masked_b);
-        cols.c_masked = F::from_canonical_u8(masked_c);
-
-        // Send the masked lookup.
-        blu.add_byte_lookup_event(ByteLookupEvent {
-            opcode: ByteOpcode::AND,
-            a1: masked_b as u16,
-            a2: 0,
-            b: b[3],
-            c: 0x7f,
-        });
-        blu.add_byte_lookup_event(ByteLookupEvent {
-            opcode: ByteOpcode::AND,
-            a1: masked_c as u16,
-            a2: 0,
-            b: c[3],
-            c: 0x7f,
-        });
-
-        let mut b_comp = b;
-        let mut c_comp = c;
-        if event.opcode == Opcode::SLT {
-            b_comp[3] = masked_b;
-            c_comp[3] = masked_c;
-        }
-        cols.sltu = F::from_bool(b_comp < c_comp);
-        cols.is_comp_eq = F::from_bool(b_comp == c_comp);
-
-        // Set the byte equality flags.
-        for (b_byte, c_byte, flag) in
-            izip!(b_comp.iter().rev(), c_comp.iter().rev(), cols.byte_flags.iter_mut().rev())
-        {
-            if c_byte != b_byte {
-                *flag = F::ONE;
-                cols.sltu = F::from_bool(b_byte < c_byte);
-                let b_byte = F::from_canonical_u8(*b_byte);
-                let c_byte = F::from_canonical_u8(*c_byte);
-                cols.not_eq_inv = (b_byte - c_byte).inverse();
-                cols.comparison_bytes = [b_byte, c_byte];
-                break;
-            }
-        }
-
-        cols.msb_b = F::from_canonical_u8((b[3] >> 7) & 1);
-        cols.msb_c = F::from_canonical_u8((c[3] >> 7) & 1);
-        cols.is_sign_eq = if event.opcode == Opcode::SLT {
-            F::from_bool((b[3] >> 7) == (c[3] >> 7))
-        } else {
-            F::ONE
-        };
-
-        cols.bit_b = cols.msb_b * cols.is_slt;
-        cols.bit_c = cols.msb_c * cols.is_slt;
-
-        assert_eq!(cols.a[0], cols.bit_b * (F::ONE - cols.bit_c) + cols.is_sign_eq * cols.sltu);
-
-        blu.add_byte_lookup_event(ByteLookupEvent {
-            opcode: ByteOpcode::LTU,
-            a1: cols.sltu.as_canonical_u32() as u16,
-            a2: 0,
-            b: cols.comparison_bytes[0].as_canonical_u32() as u8,
-            c: cols.comparison_bytes[1].as_canonical_u32() as u8,
-        });
+        let result = cols.lt_operation.populate(blu, event.opcode, event.b, event.c);
+        assert_eq!(result, event.a);
     }
 }
 
@@ -361,202 +238,53 @@ where
         let local: &LtCols<AB::Var> = (*local).borrow();
 
 
-        let is_real = local.is_slt + local.is_sltu;
+        builder.assert_bool(local.is_retired);
+        let is_real = local.lt_operation.is_slt + local.lt_operation.is_sltu;
+        // `is_retired` can only be set alongside `is_real` -- kept as its own witnessed column
+        // (not the product `is_real * is_retired`) because interaction values/multiplicities in
+        // this lookup argument must stay affine in the trace columns.
+        builder.when_not(is_real.clone()).assert_zero(local.is_retired);
 
-        // We can compute the signed set-less-than as follows:
-        // SLT (signed) = b_s * (1 - c_s) + (b_s == c_s) * SLTU(b_<s, c_<s)
-        // Source: Jolt 5.3: Set Less Than (https://people.cs.georgetown.edu/jthaler/Jolt-paper.pdf)
-
-        // We will compute SLTU(b_comp, c_comp) where `b_comp` and `c_comp` where:
-        // * if the operation is `SLTU`, `b_comp = b` and `c_comp = c`
-        // * if the operation is `SLT`, `b_comp = b & 0x7FFFFFFF` and `c_comp = c & 0x7FFFFFFF``
-        //
-        // We will set booleans `b_bit` and `c_bit` so that:
-        // * If the operation is `SLTU`, then `b_bit = 0` and `c_bit = 0`.
-        // * If the operation is `SLT`, then `b_bit`, `c_bit` are the most significant bits of `b`
-        //   and `c` respectively.
-        //
-        // Then, we will compute the answer as:
-        // SLT = b_bit * (1 - c_bit) + (b_bit == c_bit) * SLTU(b_comp, c_comp)
-
-        // First, we set up the values of `b_comp` and `c_comp`.
-        let mut b_comp: Word<AB::Expr> = local.b.map(|x| x.into());
-        let mut c_comp: Word<AB::Expr> = local.c.map(|x| x.into());
-
-        b_comp[3] = local.b[3] * local.is_sltu + local.b_masked * local.is_slt;
-        c_comp[3] = local.c[3] * local.is_sltu + local.c_masked * local.is_slt;
-
-        // Constrain the `masked_b` and `masked_c` values via lookup.
-        //
-        // The values are given by `b_masked = b[3] & 0x7F` and `c_masked = c[3] & 0x7F`.
-        builder.send_byte(
-            ByteOpcode::AND.as_field::<AB::F>(),
-            local.b_masked,
-            local.b[3],
-            AB::F::from_canonical_u8(0x7f),
+        LtOperation::<AB::F>::eval(
+            builder,
+            local.b.map(Into::into),
+            local.c.map(Into::into),
+            local.lt_operation,
             is_real.clone(),
         );
-        builder.send_byte(
-            ByteOpcode::AND.as_field::<AB::F>(),
-            local.c_masked,
-            local.c[3],
-            AB::F::from_canonical_u8(0x7f),
-            is_real.clone(),
-        );
-
-        // Set the values of `b_bit` and `c_bit`.
-        builder.assert_eq(local.bit_b, local.msb_b * local.is_slt);
-        builder.assert_eq(local.bit_c, local.msb_c * local.is_slt);
-
-        // Assert the correctness of `local.msb_b` and `local.msb_c` using the mask.
-        let inv_128 = AB::F::from_canonical_u32(128).inverse();
-        builder.assert_eq(local.msb_b, (local.b[3] - local.b_masked) * inv_128);
-        builder.assert_eq(local.msb_c, (local.c[3] - local.c_masked) * inv_128);
-
-        // Constrain that when is_sign_eq = (bit_b == bit_c).
-
-        // assert the flag is a boolean.
-        builder.assert_bool(local.is_sign_eq);
-
-        // assert the correction of the comparison.
-        builder.when(local.is_sign_eq).assert_eq(local.bit_b, local.bit_c);
-        builder
-            .when(is_real.clone())
-            .when_not(local.is_sign_eq)
-            .assert_one(local.bit_b + local.bit_c);
-
-        // Assert the final result `a` is correct.
-
-        // Check that `a[0]` is set correctly.
-        builder.assert_eq(
-            local.a[0],
-            local.bit_b * (AB::Expr::one() - local.bit_c) + local.is_sign_eq * local.sltu,
-        );
-        // Check the 3 most significant bytes of 'a' are zero.
-        builder.assert_zero(local.a[1]);
-        builder.assert_zero(local.a[2]);
-        builder.assert_zero(local.a[3]);
-
-        // Verify that the byte equality flags are set correctly, i.e. all are boolean and only
-        // at most a single byte flag is set.
-        let sum_flags =
-            local.byte_flags[0] + local.byte_flags[1] + local.byte_flags[2] + local.byte_flags[3];
-        builder.assert_bool(local.byte_flags[0]);
-        builder.assert_bool(local.byte_flags[1]);
-        builder.assert_bool(local.byte_flags[2]);
-        builder.assert_bool(local.byte_flags[3]);
-        builder.assert_bool(sum_flags.clone());
-        builder.when(is_real.clone()).assert_eq(AB::Expr::one() - local.is_comp_eq, sum_flags);
-
-        // Constrain `local.sltu == SLTU(b_comp, c_comp)`.
-        //
-        // We define bytes `b_comp_byte` and `c_comp_byte` as follows: If `b_comp == c_comp`, then
-        // `b_comp_byte = c_comp_byte = 0`. Otherwise, we set `b_comp_byte` and `c_comp_byte` to
-        // the first differing byte (in most significant order). We will use the `local.is_comp_eq`
-        // flag to indicate whether the bytes are equal.
-
-        // Check the equality flag is boolean.
-        builder.assert_bool(local.is_comp_eq);
-
-        // Find the differing byte if `b_comp != c_comp` and assert equality in case the flag
-        // `local.is_comp_eq` is set to `1`.
-
-        // A flag to indicate whether an equality check is necessary (this is for all bytes from
-        // most significant until the first inequality.
-        let mut is_inequality_visited = AB::Expr::zero();
-
-        // Expressions for computing the comparison bytes.
-        let mut b_comparison_byte = AB::Expr::zero();
-        let mut c_comparison_byte = AB::Expr::zero();
-        // Iterate over the bytes in reverse order and select the differing bytes using the byte
-        // flag columns values.
-        for (b_byte, c_byte, &flag) in
-            izip!(b_comp.0.iter().rev(), c_comp.0.iter().rev(), local.byte_flags.iter().rev())
-        {
-            // Once the byte flag was set to one, we turn off the quality check flag.
-            // We can do this by calculating the sum of the flags since only `1` is set to `1`.
-            is_inequality_visited = is_inequality_visited.clone() + flag.into();
-
-            b_comparison_byte = b_comparison_byte.clone() + b_byte.clone() * flag;
-            c_comparison_byte = c_comparison_byte.clone() + c_byte.clone() * flag;
-
-            // If inequality is not visited, assert that the bytes are equal.
-            builder
-                .when_not(is_inequality_visited.clone())
-                .assert_eq(b_byte.clone(), c_byte.clone());
-            // If the numbers are assumed equal, inequality should not be visited.
-            builder.when(local.is_comp_eq).assert_zero(is_inequality_visited.clone());
-        }
-        // We need to verify that the comparison bytes are set correctly. This is only relevant in
-        // the case where the bytes are not equal.
-
-        // Constrain the row comparison byte values to be equal to the calculated ones.
-        let (b_comp_byte, c_comp_byte) = (local.comparison_bytes[0], local.comparison_bytes[1]);
-        builder.assert_eq(b_comp_byte, b_comparison_byte);
-        builder.assert_eq(c_comp_byte, c_comparison_byte);
-
-        // Using the values above, we can constrain the `local.is_comp_eq` flag. We already asserted
-        // in the loop that when `local.is_comp_eq == 1` then all bytes are equal. It is left to
-        // verify that when `local.is_comp_eq == 0` the comparison bytes are indeed not equal.
-        // This is done using the inverse hint `not_eq_inv`.
-        builder
-            .when_not(local.is_comp_eq)
-            .assert_eq(local.not_eq_inv * (b_comp_byte - c_comp_byte), is_real.clone());
-
-        // Now the value of `local.sltu` is equal to the same value for the comparison bytes.
-        //
-        // Set `local.sltu = SLTU(b_comp_byte, c_comp_byte)` via a lookup.
-        builder.send_byte(
-            ByteOpcode::LTU.as_field::<AB::F>(),
-            local.sltu,
-            b_comp_byte,
-            c_comp_byte,
-            is_real.clone(),
-        );
-
-        // Constrain the operation flags.
-
-        // Check that the operation flags are boolean.
-        builder.assert_bool(local.is_slt);
-        builder.assert_bool(local.is_sltu);
-        // Check that at most one of the operation flags is set.
-        //
-        // *remark*: this is not strictly necessary since it's also covered by the bus multiplicity
-        // but this is included here to make sure the condition is met.
-        builder.assert_bool(local.is_slt + local.is_sltu);
-
-        // `is_real_X` can only be set alongside the matching `is_X` selector.
-        builder.assert_bool(local.is_real_slt);
-        builder.assert_bool(local.is_real_sltu);
-        builder.when_not(local.is_slt).assert_zero(local.is_real_slt);
-        builder.when_not(local.is_sltu).assert_zero(local.is_real_sltu);
-        let is_real_instruction = local.is_real_slt + local.is_real_sltu;
 
         // ---- Real-instruction path: program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real_instruction.clone());
+        // The instruction word is reconstructed here rather than stored: opcode is selected by
+        // `LtOperation`'s own `is_slt`/`is_sltu`, `op_a`/`op_b`/`op_c` are zero-extended from the
+        // adapter's register-index columns, and `op_a_0`/`imm_b`/`imm_c` are compile-time
+        // constants (this chip only ever sees register-register SLT/SLTU with `op_a != 0` -- any
+        // `op_a==0` row is routed to `AluX0Chip` instead, see `RTypeReader`'s doc comment).
+        let opcode = local.lt_operation.is_slt * Opcode::SLT.as_field::<AB::F>()
+            + local.lt_operation.is_sltu * Opcode::SLTU.as_field::<AB::F>();
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: opcode.clone(),
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: Word::extend_var::<AB>(local.adapter.op_c),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::zero(),
+        };
+        builder.send_program(local.pc, instruction, local.is_retired.into());
 
-        eval_register_reader(
+        eval_r_type_reader(
             builder,
-            &local.reader,
+            &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            &local.instruction,
-            // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
-            // reader.op_a_val())` fires unconditionally whenever `op_a_0` is unset, which it is
-            // by default on synthetic rows (their `instruction` column is never populated) --
-            // an ungated `op_a_value` would then have to equal `reader.op_a_val()` (always zero
-            // on synthetic rows) even when the true result is nonzero.
-            local.a.map(|x| is_real_instruction.clone() * Into::<AB::Expr>::into(x)),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            is_real_instruction.clone(),
+            local.lt_operation.a.map(Into::into),
+            local.is_retired.into(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real_instruction.clone());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_retired.into());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -568,32 +296,24 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            is_real_instruction.clone(),
+            local.is_retired.into(),
         );
 
         builder
-            .when(is_real_instruction.clone())
-            .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
+            .when(local.is_retired)
+            .assert_word_eq(local.adapter.op_b_val(), local.b.map(Into::into));
         builder
-            .when(is_real_instruction.clone())
-            .assert_word_eq(local.reader.op_c_val(), local.c.map(Into::into));
-
-        // Bind `is_real_X` to the row's actual fetched opcode, so a real-instruction row can't
-        // claim the wrong comparison variant while still passing the program lookup.
-        builder
-            .when(local.is_real_slt)
-            .assert_eq(local.instruction.opcode, Opcode::SLT.as_field::<AB::F>());
-        builder
-            .when(local.is_real_sltu)
-            .assert_eq(local.instruction.opcode, Opcode::SLTU.as_field::<AB::F>());
-
-        // Same opcode mux as before -- depends only on which `is_X` selector is set, identical
-        // for real-instruction and synthetic rows.
-        let cpu_opcode = local.is_slt * AB::F::from_canonical_u32(Opcode::SLT as u32)
-            + local.is_sltu * AB::F::from_canonical_u32(Opcode::SLTU as u32);
+            .when(local.is_retired)
+            .assert_word_eq(local.adapter.op_c_val(), local.c.map(Into::into));
 
         // ---- Synthetic dependency path: matches whichever chip generated this internal check via
-        // `send_alu` (always at the `UNUSED_PC` sentinel, shard/clk zero). ----
+        // `send_alu` (always at the `UNUSED_PC` sentinel, shard/clk zero). `is_real - is_retired`
+        // is 1 exactly when this is a real SLT/SLTU row that is *not* a real instruction, i.e. a
+        // synthetic dependency row -- and stays affine (degree 1), unlike the product
+        // `is_real * (1 - is_retired)`. ----
+        let zero_word =
+            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]);
+
         builder.receive_instruction(
             AB::Expr::zero(),
             AB::Expr::zero(),
@@ -601,17 +321,17 @@ where
             local.next_pc,
             local.next_pc + AB::Expr::from_canonical_u32(4),
             AB::Expr::zero(),
-            cpu_opcode,
-            local.a,
+            opcode,
+            local.lt_operation.a,
             local.b,
             local.c,
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
+            zero_word,
             AB::Expr::zero(),
             AB::Expr::zero(),
             AB::Expr::zero(),
             AB::Expr::zero(),
             AB::Expr::one(),
-            is_real - is_real_instruction,
+            is_real - local.is_retired,
         );
     }
 }

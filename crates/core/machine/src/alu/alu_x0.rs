@@ -5,7 +5,6 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
@@ -38,13 +37,22 @@ pub const NUM_ALU_X0_COLS: usize = size_of::<AluX0Cols<u8>>();
 /// result is never observable by anything downstream (any later read of `$zero` yields 0
 /// regardless), so this chip doesn't compute it at all: it only verifies the program lookup
 /// (opcode/operands match the ROM) and the register-consistency accesses (`op_b`/`op_c` reads,
-/// `op_a`'s write modeled as a no-op since `$zero`'s value never changes) -- mirroring SP1's
-/// `AluX0Chip`.
+/// `op_a`'s write modeled as a no-op since `$zero`'s value never changes).
 ///
-/// This is a growing catch-all: as more chips (Bitwise, Shift, Lt, CloClz, Mul, DivRem, MovCond)
-/// migrate to `RTypeReader`, their own `op_a==0` case gets added here too (extend the opcode
-/// root-set check in `eval` and add a routing arm in `emit_alu_event`), rather than spinning up a
-/// new per-opcode chip each time. Currently supports: `ADD`, `SUB`.
+/// This is a growing catch-all: as more chips (Bitwise, Shift, CloClz, Mul, DivRem, MovCond)
+/// migrate to `RTypeReader`, their own `op_a==0` case gets added here too (extend the one-hot
+/// opcode selectors below and add a routing arm in `emit_alu_event`), rather than spinning up a
+/// new per-opcode chip each time. Currently supports: `ADD`, `SUB`, `SLT`, `SLTU`.
+///
+/// The opcode is encoded as one witnessed boolean selector per supported opcode (`is_add`,
+/// `is_sub`, ...) rather than a single witnessed value plus a root-set validity check
+/// (`(opcode-ADD)*(opcode-SUB)*... == 0`) -- the latter was this chip's original design, but its
+/// constraint degree grows by one with every opcode added, and quickly exceeds
+/// `zkm_hypercube::chip::MAX_CONSTRAINT_DEGREE` (3): already at the cap with just two opcodes
+/// (`is_real * (opcode-ADD) * (opcode-SUB)`, degree 3). One-hot selectors cost one extra *column*
+/// per opcode instead, with the reconstructed `opcode` a degree-1 linear combination
+/// (`Σ is_X * OPCODE_X`) -- constant degree regardless of how many opcodes this chip grows to
+/// support, which is the whole point of designing it as a growing catch-all.
 ///
 /// Every row here is a real, retired instruction -- no `is_retired` split needed, since no chip
 /// ever sends a synthetic dependency row shaped like this (an `op_a==0` row has no meaningful
@@ -64,8 +72,16 @@ pub struct AluX0Cols<T: Copy> {
     pub pc: T,
     pub next_pc: T,
 
-    /// Which opcode this row is (currently `ADD` or `SUB`).
-    pub opcode: T,
+    /// One-hot opcode selectors -- exactly one is set on a real row, all zero on padding (see
+    /// `AluX0Chip`'s doc comment for why this replaces a single witnessed `opcode` value).
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_add: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_sub: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_slt: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_sltu: T,
 
     /// Register 0's write access. Modeled as a no-op (the value never changes, since `$zero` is
     /// hardwired to always read as 0) -- see `RTypeReader`'s doc comment for why this chip exists.
@@ -78,10 +94,6 @@ pub struct AluX0Cols<T: Copy> {
     /// The register index of `op_c` (read).
     pub op_c: T,
     pub op_c_access: RegisterAccessCols<T>,
-
-    /// Whether this row is a real, retired instruction (as opposed to padding).
-    #[cfg_attr(feature = "picus", picus(selector))]
-    pub is_real: T,
 }
 
 impl<F: PrimeField32> MachineAir<F> for AluX0Chip {
@@ -181,8 +193,10 @@ impl AluX0Chip {
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
-        cols.is_real = F::ONE;
-        cols.opcode = event.opcode.as_field::<F>();
+        cols.is_add = F::from_bool(event.opcode == Opcode::ADD);
+        cols.is_sub = F::from_bool(event.opcode == Opcode::SUB);
+        cols.is_slt = F::from_bool(event.opcode == Opcode::SLT);
+        cols.is_sltu = F::from_bool(event.opcode == Opcode::SLTU);
 
         cols.state.populate(blu, event.clk);
 
@@ -225,16 +239,16 @@ where
         let local = main.row_slice(0);
         let local: &AluX0Cols<AB::Var> = (*local).borrow();
 
-        builder.assert_bool(local.is_real);
-
-        // Restrict `opcode` to the currently-supported set -- extend this product by one factor
-        // per opcode as more chips migrate to `RTypeReader` and route their own `op_a==0` case
-        // here.
-        let opcode: AB::Expr = local.opcode.into();
-        builder.when(local.is_real).assert_zero(
-            (opcode.clone() - Opcode::ADD.as_field::<AB::F>())
-                * (opcode.clone() - Opcode::SUB.as_field::<AB::F>()),
-        );
+        // Each opcode selector is its own boolean; their sum derives `is_real` (real vs padding)
+        // -- extend with one more selector + term per opcode as more chips migrate to
+        // `RTypeReader`, rather than a single opcode-value + root-set check (whose degree would
+        // grow without bound -- see this chip's doc comment).
+        builder.assert_bool(local.is_add);
+        builder.assert_bool(local.is_sub);
+        builder.assert_bool(local.is_slt);
+        builder.assert_bool(local.is_sltu);
+        let is_real = local.is_add + local.is_sub + local.is_slt + local.is_sltu;
+        builder.assert_bool(is_real.clone());
 
         // The written value is always the constant zero -- `$zero` never actually changes, so
         // writing to it is representationally a no-op; see `RTypeReader`'s doc comment.
@@ -246,8 +260,12 @@ where
 
         // The instruction word is reconstructed here: `op_a=0`/`op_a_0=1`/`imm_b=0`/`imm_c=0` are
         // compile-time constants (this shape is always register-register with a zero
-        // destination); `opcode` is the witnessed selector above; `op_b`/`op_c` are zero-extended
-        // from the register-index columns.
+        // destination); `opcode` is a degree-1 linear combination of the one-hot selectors above;
+        // `op_b`/`op_c` are zero-extended from the register-index columns.
+        let opcode = local.is_add * Opcode::ADD.as_field::<AB::F>()
+            + local.is_sub * Opcode::SUB.as_field::<AB::F>()
+            + local.is_slt * Opcode::SLT.as_field::<AB::F>()
+            + local.is_sltu * Opcode::SLTU.as_field::<AB::F>();
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
             opcode,
             op_a: AB::Expr::zero(),
@@ -257,7 +275,7 @@ where
             imm_b: AB::Expr::zero(),
             imm_c: AB::Expr::zero(),
         };
-        builder.send_program(local.pc, instruction, local.is_real.into());
+        builder.send_program(local.pc, instruction, is_real.clone());
 
         // Register positions must be read/written in the order C, B, A (see
         // `MemoryAccessPosition`'s doc comment).
@@ -266,14 +284,14 @@ where
             clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::C as u32),
             local.op_c.into(),
             &local.op_c_access,
-            local.is_real.into(),
+            is_real.clone(),
         );
         builder.eval_register_access_read(
             clk_high.clone(),
             clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::B as u32),
             local.op_b.into(),
             &local.op_b_access,
-            local.is_real.into(),
+            is_real.clone(),
         );
         builder.eval_register_access_write_value(
             clk_high.clone(),
@@ -281,10 +299,10 @@ where
             AB::Expr::zero(),
             zero_word,
             &local.op_a_access,
-            local.is_real.into(),
+            is_real.clone(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -296,7 +314,7 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            local.is_real.into(),
+            is_real,
         );
     }
 }

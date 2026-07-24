@@ -114,6 +114,7 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::ShiftRight
             | MipsAirId::ShiftLeft
             | MipsAirId::Lt
+            | MipsAirId::Slti
             | MipsAirId::CloClz
             | MipsAirId::Branch
             | MipsAirId::Jump
@@ -174,6 +175,7 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::ShiftRight, record.shift_right_events.len());
     add_chip_cells(MipsAirId::DivRem, record.divrem_events.len());
     add_chip_cells(MipsAirId::Lt, record.lt_events.len());
+    add_chip_cells(MipsAirId::Slti, record.slti_events.len());
     add_chip_cells(MipsAirId::CloClz, record.cloclz_events.len());
     add_chip_cells(MipsAirId::MemoryInstrs, record.memory_instr_events.len());
     add_chip_cells(MipsAirId::LoadWord, record.load_word_events.len());
@@ -286,6 +288,10 @@ pub fn estimate_mips_lde_size(
     cells +=
         (num_events_per_air[MipsAirId::Lt]).next_power_of_two() * costs_per_air[&MipsAirId::Lt];
 
+    // Compute the slti (immediate-form SLT/SLTU) chip contribution.
+    cells += (num_events_per_air[MipsAirId::Slti]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Slti];
+
     // Compute the memory local chip contribution.
     cells += (num_events_per_air[MipsAirId::MemoryLocal]).next_power_of_two()
         * costs_per_air[&MipsAirId::MemoryLocal];
@@ -353,6 +359,7 @@ pub fn estimate_mips_lde_size(
 /// Estimate
 /// Maps the opcode counts to the number of events in each air.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn estimate_mips_event_counts(
     touched_addresses: u64,
     syscalls_sent: u64,
@@ -360,6 +367,10 @@ pub fn estimate_mips_event_counts(
     add_noop_events: u64,
     add_x0_events: u64,
     sub_x0_events: u64,
+    slt_i_events: u64,
+    sltu_i_events: u64,
+    slt_x0_events: u64,
+    sltu_x0_events: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
     let mut events_counts: EnumMap<MipsAirId, u64> = EnumMap::default();
@@ -383,8 +394,8 @@ pub fn estimate_mips_event_counts(
     // with `op_a==0` (isolated via `sub_x0_events`, see `AluX0Chip`'s doc comment).
     events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB] - sub_x0_events;
 
-    // Compute the number of events in the shared add/sub-to-register-0 chip.
-    events_counts[MipsAirId::AluX0] = add_x0_events + sub_x0_events;
+    // Compute the number of events in the shared add/sub/lt-to-register-0 chip.
+    events_counts[MipsAirId::AluX0] = add_x0_events + sub_x0_events + slt_x0_events + sltu_x0_events;
 
     // Compute the number of events in the mul chip.
     events_counts[MipsAirId::Mul] =
@@ -406,8 +417,20 @@ pub fn estimate_mips_event_counts(
     // Compute the number of events in the divrem chip.
     events_counts[MipsAirId::DivRem] = opcode_counts[Opcode::DIV] + opcode_counts[Opcode::DIVU];
 
-    // Compute the number of events in the lt chip.
-    events_counts[MipsAirId::Lt] = opcode_counts[Opcode::SLT] + opcode_counts[Opcode::SLTU];
+    // Compute the number of events in the lt chip. `opcode_counts[Opcode::SLT]`/`[Opcode::SLTU]`
+    // mix register-form SLT/SLTU, immediate-form SLTI/SLTIU, register-form SLT/SLTU with
+    // `op_a==0`, and register-form internal dependency rows from other chips --
+    // `slt_i_events`/`sltu_i_events`/`slt_x0_events`/`sltu_x0_events` isolate the immediate-form/
+    // zero-destination counts (see `SltiChip`/`AluX0Chip`'s doc comments), so they're subtracted
+    // out here and counted on their own lines below.
+    events_counts[MipsAirId::Lt] = opcode_counts[Opcode::SLT] + opcode_counts[Opcode::SLTU]
+        - slt_i_events
+        - sltu_i_events
+        - slt_x0_events
+        - sltu_x0_events;
+
+    // Compute the number of events in the slti (immediate-form SLT/SLTU) chip.
+    events_counts[MipsAirId::Slti] = slt_i_events + sltu_i_events;
 
     // Compute the number of events in the memory local chip.
     events_counts[MipsAirId::MemoryLocal] =
@@ -515,6 +538,10 @@ pub fn pad_mips_event_counts(
         MipsAirId::ShiftRight => *v += num_cycles,
         MipsAirId::DivRem => *v += 4 * num_cycles,
         MipsAirId::Lt => *v += 2 * num_cycles,
+        // Same reasoning as Addi/AddNoop/AluX0: no dependency-row producer ever targets this
+        // shape (see `SltiChip`'s doc comment), so a real instruction's worst-case growth is 1
+        // per cycle.
+        MipsAirId::Slti => *v += num_cycles,
         MipsAirId::MemoryLocal => *v += 64 * num_cycles,
         MipsAirId::Branch => *v += 8 * num_cycles,
         MipsAirId::Jump => *v += 2 * num_cycles,

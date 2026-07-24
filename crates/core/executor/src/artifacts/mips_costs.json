@@ -1,5 +1,5 @@
 {
-  "AluX0": 27,
+  "AluX0": 29,
   "Bn254Fp2MulAssign": 1486,
   "CloClz": 65,
   "Bls12831Fp2AddSubAssign": 1103,
@@ -14,6 +14,7 @@
   "Program": 15,
   "StateBump": 7,
   "Jump": 113,
+  "Slti": 50,
   "Bn254FpOpAssign": 373,
   "Byte": 22,
   "MemoryGlobalFinalize": 148,
@@ -50,7 +51,7 @@
   "Branch": 93,
   "Bls12381DoubleAssign": 3441,
   "MovCond": 79,
-  "Lt": 81,
+  "Lt": 57,
   "ShaExtendControl": 5,
   "Secp256r1DoubleAssign": 2281,
   "SyscallCore": 11,

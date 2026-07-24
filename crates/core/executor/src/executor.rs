@@ -224,6 +224,18 @@ pub struct LocalCounts {
     /// The number of real, retired SUB/SUBU instructions with `op_a==0` -- a subset of
     /// `event_counts[Opcode::SUB]`, needed to split `Sub`'s estimate from `AluX0`'s.
     pub sub_x0_events: u64,
+    /// The number of real, retired immediate-form SLT (SLTI) instructions -- a subset of
+    /// `event_counts[Opcode::SLT]`, needed to split `Lt`'s estimate from `Slti`'s.
+    pub slt_i_events: u64,
+    /// The number of real, retired immediate-form SLTU (SLTIU) instructions -- a subset of
+    /// `event_counts[Opcode::SLTU]`, needed to split `Lt`'s estimate from `Slti`'s.
+    pub sltu_i_events: u64,
+    /// The number of real, retired register-form SLT instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::SLT]`, needed to split `Lt`'s estimate from `AluX0`'s.
+    pub slt_x0_events: u64,
+    /// The number of real, retired register-form SLTU instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::SLTU]`, needed to split `Lt`'s estimate from `AluX0`'s.
+    pub sltu_x0_events: u64,
 }
 
 /// Errors that the [``Executor``] can throw.
@@ -1206,18 +1218,20 @@ impl<'a> Executor<'a> {
         }
 
         if instruction.is_alu_instruction() {
-            // SUB (always) and ADD's `AddChip`/`AddNoopChip`-routed shapes (but *not* its
+            // SUB (always), every SLT/SLTU shape (register-form `LtChip`, immediate-form
+            // `SltiChip` -- both use the cheap scheme, unlike `AddiChip` -- and zero-destination
+            // `AluX0Chip`), and ADD's `AddChip`/`AddNoopChip`-routed shapes (but *not* its
             // `AddiChip`-routed shape -- MFHI/MTHI/MFLO/MTLO and ADDI/ADDIU, which still use the
             // general-purpose scheme) are migrated to the cheap register-access timestamp scheme
-            // so far (see `SubChip`/`AddChip`/`AddNoopChip`'s doc comments); their register
-            // accesses are the only ones that need a `MemoryBumpChip` event when they cross a
-            // `clk_high` boundary. Every other ALU chip/shape still uses the general-purpose
-            // scheme, which handles an arbitrary gap on its own -- emitting a bump event for one
-            // of *those* accesses would double-validate the same transition on the shared memory
-            // argument and unbalance it. This condition must match `emit_alu_event`'s routing
-            // exactly.
+            // so far (see `SubChip`/`AddChip`/`AddNoopChip`/`LtChip`/`SltiChip`'s doc comments);
+            // their register accesses are the only ones that need a `MemoryBumpChip` event when
+            // they cross a `clk_high` boundary. Every other ALU chip/shape still uses the
+            // general-purpose scheme, which handles an arbitrary gap on its own -- emitting a
+            // bump event for one of *those* accesses would double-validate the same transition on
+            // the shared memory argument and unbalance it. This condition must match
+            // `emit_alu_event`'s routing exactly.
             let uses_cheap_register_scheme = match instruction.opcode {
-                Opcode::SUB => true,
+                Opcode::SUB | Opcode::SLT | Opcode::SLTU => true,
                 Opcode::ADD => record.c.is_some() || instruction.imm_b,
                 _ => false,
             };
@@ -1426,6 +1440,18 @@ impl<'a> Executor<'a> {
             }
             Opcode::SRL | Opcode::SRA | Opcode::ROR => {
                 self.record.shift_right_events.push(event);
+            }
+            // A register-form SLT/SLTU goes to `lt_events`; an immediate-form SLTI/SLTIU
+            // (register `b`, encoded immediate `c`, identifiable by `c` having no register read
+            // at all -- MIPS's SLT/SLTU have no third, fully-immediate shape like ADD's SYNC/Pref)
+            // goes to `slti_events` instead (see `SltiChip`'s doc comment). A real register-form
+            // SLT/SLTU with `op_a==0` goes to the shared `alu_x0_events` instead (see
+            // `AluX0Chip`'s doc comment), same reasoning as ADD/SUB.
+            Opcode::SLT | Opcode::SLTU if record.c.is_none() => {
+                self.record.slti_events.push(event);
+            }
+            Opcode::SLT | Opcode::SLTU if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
             }
             Opcode::SLT | Opcode::SLTU => {
                 self.record.lt_events.push(event);
@@ -1765,6 +1791,28 @@ impl<'a> Executor<'a> {
             }
             if instruction.opcode == Opcode::SUB && instruction.op_a == Register::ZERO as u8 {
                 self.local_counts.sub_x0_events += 1;
+            }
+            // Same idea for SLT/SLTU's immediate-form (SLTI/SLTIU, routed to `slti_events`) and
+            // zero-destination (routed to `alu_x0_events`) shapes -- must match `emit_alu_event`'s
+            // routing exactly. Unlike ADD, SLT/SLTU have no fully-immediate/HI-writing shape, so
+            // `imm_c` alone identifies the immediate form.
+            if instruction.opcode == Opcode::SLT && instruction.imm_c {
+                self.local_counts.slt_i_events += 1;
+            }
+            if instruction.opcode == Opcode::SLTU && instruction.imm_c {
+                self.local_counts.sltu_i_events += 1;
+            }
+            if instruction.opcode == Opcode::SLT
+                && !instruction.imm_c
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.slt_x0_events += 1;
+            }
+            if instruction.opcode == Opcode::SLTU
+                && !instruction.imm_c
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.sltu_x0_events += 1;
             }
             if instruction.is_memory_load_instruction() {
                 self.local_counts.event_counts[Opcode::ADD] += 2;
@@ -2789,6 +2837,10 @@ impl<'a> Executor<'a> {
                 self.local_counts.add_noop_events,
                 self.local_counts.add_x0_events,
                 self.local_counts.sub_x0_events,
+                self.local_counts.slt_i_events,
+                self.local_counts.sltu_i_events,
+                self.local_counts.slt_x0_events,
+                self.local_counts.sltu_x0_events,
                 *self.local_counts.event_counts,
             );
 
@@ -3015,7 +3067,7 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
 
-        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, opcode_counts);
+        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
@@ -3037,7 +3089,7 @@ mod tests {
         let mut opcode_counts: EnumMap<Opcode, u64> = EnumMap::default();
         opcode_counts[Opcode::ADD] = 1_000;
 
-        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, opcode_counts);
+        let event_counts = estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 

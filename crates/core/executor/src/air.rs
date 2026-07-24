@@ -97,6 +97,8 @@ pub enum MipsAirId {
     ShiftLeft = 33,
     /// The lt chip.
     Lt = 34,
+    /// The immediate-form lt chip (SLTI, SLTIU).
+    Slti = 59,
     /// The CloClz chip.
     CloClz = 35,
     /// The branch chip.
@@ -176,6 +178,7 @@ impl MipsAirId {
             Self::ShiftRight => "ShiftRight",
             Self::ShiftLeft => "ShiftLeft",
             Self::Lt => "Lt",
+            Self::Slti => "Slti",
             Self::CloClz => "CloClz",
             Self::Branch => "Branch",
             Self::Jump => "Jump",

@@ -27,7 +27,7 @@ pub(crate) mod mips_chips {
     pub use crate::{
         alu::{
             AddChip, AddNoopChip, AddiChip, AluX0Chip, BitwiseChip, CloClzChip, DivRemChip,
-            LtChip, MulChip, ShiftLeft, ShiftRightChip, SubChip,
+            LtChip, MulChip, ShiftLeft, ShiftRightChip, SltiChip, SubChip,
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
@@ -96,6 +96,8 @@ pub enum MipsAir<F: PrimeField32> {
     DivRem(DivRemChip),
     /// An AIR for MIPS Lt instruction.
     Lt(LtChip),
+    /// An AIR for the immediate-form MIPS SLTI/SLTIU instruction.
+    Slti(SltiChip),
     /// An AIR for MIPS CLO and CLZ instruction.
     CloClz(CloClzChip),
     /// An AIR for MIPS SLL instruction.
@@ -282,6 +284,7 @@ impl<F: PrimeField32> MipsAir<F> {
             ShiftRight,
             ShiftLeft,
             Lt,
+            Slti,
             DivRem,
             CloClz,
             Branch,
@@ -606,6 +609,10 @@ impl<F: PrimeField32> MipsAir<F> {
         costs.insert(lt.name(), lt.cost());
         chips.push(lt);
 
+        let slti = Chip::new(MipsAir::Slti(SltiChip));
+        costs.insert(slti.name(), slti.cost());
+        chips.push(slti);
+
         let clo_clz = Chip::new(MipsAir::CloClz(CloClzChip::default()));
         costs.insert(clo_clz.name(), clo_clz.cost());
         chips.push(clo_clz);
@@ -707,6 +714,7 @@ pub mod tests {
     use crate::programs::tests::other_memory_program;
     use crate::programs::tests::add_sub_x0_program;
     use crate::programs::tests::simple_program;
+    use crate::programs::tests::slt_x0_program;
     use crate::programs::tests::{
         fibonacci_program, hello_world_program, max_memory_program, sha3_chain_program,
         simple_memory_program, ssz_withdrawals_program, unconstrained_program,
@@ -955,6 +963,13 @@ pub mod tests {
     fn test_add_sub_x0_prove() {
         setup_logger();
         let program = add_sub_x0_program();
+        run_test(program).unwrap();
+    }
+
+    #[test]
+    fn test_slt_x0_prove() {
+        setup_logger();
+        let program = slt_x0_program();
         run_test(program).unwrap();
     }
 
