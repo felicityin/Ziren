@@ -5,22 +5,23 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{AluEvent, ByteLookupEvent, ByteRecord, MemoryAccessPosition, MemoryRecordEnum},
-    ByteOpcode, ExecutionRecord, Opcode, Program,
+    events::{AluEvent, ByteLookupEvent, ByteRecord},
+    ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
-use zkm_hypercube::air::MachineAir;
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
-    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::{MemoryCols, MemoryReadCols, MemoryReadWriteCols},
+    adapter::{
+        clk_low_expr, eval_cpu_state, eval_i_type_reader, eval_state_chain, CpuState,
+        InstructionCols, ITypeReader,
+    },
+    air::ZKMCoreAirBuilder,
     operations::AddOperation,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
@@ -32,12 +33,12 @@ pub const NUM_ADDI_COLS: usize = size_of::<AddiCols<u8>>();
 /// A chip that implements addition for the immediate-form opcodes ADDI and ADDIU: register `b`
 /// plus the instruction's own encoded immediate `c`.
 ///
-/// Unlike `AddChip`/`SubChip`, `c` never comes from a register here -- it's read directly off
-/// `InstructionCols::op_c` (already populated for the `send_program` lookup), so this chip pays
-/// no `MemoryReadCols`/interaction for it, and every real row is `a = b + c` with no role mux.
-/// The synthetic internal-dependency-check rows other chips emit via
-/// `send_alu`/`send_alu_with_hi` are always register-shaped (see `AddChip`'s doc comment) and
-/// stay on `AddChip`/`SubChip`; every row here is a real, retired instruction.
+/// Unlike `AddChip`/`SubChip`, `c` never comes from a register here -- it's read directly off the
+/// adapter's own immediate `op_c` (already populated for the `send_program` lookup), so this chip
+/// pays no register access for it, and every real row is `a = b + c` with no role mux. The
+/// synthetic internal-dependency-check rows other chips emit via `send_alu`/`send_alu_with_hi` are
+/// always register-shaped (see `AddChip`'s doc comment) and stay on `AddChip`/`SubChip`; every row
+/// here is a real, retired instruction.
 #[derive(Default)]
 pub struct AddiChip;
 
@@ -52,13 +53,8 @@ pub struct AddiCols<T: Copy> {
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction, used for the program lookup and register resolution.
-    pub instruction: InstructionCols<T>,
-
-    /// Register `a` write access.
-    pub op_a_access: MemoryReadWriteCols<T>,
-    /// Register `b` read access.
-    pub op_b_access: MemoryReadCols<T>,
+    /// Register operand access for `a`/`b`/`c`.
+    pub adapter: ITypeReader<T>,
 
     /// Instance of `AddOperation` verifying `a = b + c`.
     pub add_operation: AddOperation<T>,
@@ -167,30 +163,14 @@ impl AddiChip {
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        if let Some(record) = event.a_record {
-            cols.op_a_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.op_b_access.populate(record, blu);
-        }
-
-        let bytes = cols.op_a_access.access.value.0.map(|x| x.as_canonical_u32() as u8);
-        blu.add_byte_lookup_event(ByteLookupEvent {
-            opcode: ByteOpcode::U8Range,
-            a1: 0,
-            a2: 0,
-            b: bytes[0],
-            c: bytes[1],
-        });
-        blu.add_byte_lookup_event(ByteLookupEvent {
-            opcode: ByteOpcode::U8Range,
-            a1: 0,
-            a2: 0,
-            b: bytes[2],
-            c: bytes[3],
-        });
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+        );
     }
 }
 
@@ -209,24 +189,27 @@ where
         let local = main.row_slice(0);
         let local: &AddiCols<AB::Var> = (*local).borrow();
 
-
         builder.assert_bool(local.is_real);
 
-        // Structural assumptions this chip's narrower layout relies on: `b` is always a
-        // register, `c` is always the encoded immediate, and the opcode is always ADD (MIPS has
-        // no immediate-form SUB). Binding these to the fetched instruction means a row that
-        // doesn't actually match this shape fails to satisfy the program lookup below rather
-        // than silently being accepted.
-        builder.when(local.is_real).assert_zero(local.instruction.imm_b);
-        builder.when(local.is_real).assert_eq(local.instruction.imm_c, AB::Expr::one());
-        builder
-            .when(local.is_real)
-            .assert_eq(local.instruction.opcode, Opcode::ADD.as_field::<AB::F>());
+        // The instruction word is reconstructed here rather than stored: opcode is hardcoded to
+        // ADD (MIPS has no immediate-form SUB), `op_a`/`op_a_0`/`op_b` come from the adapter, and
+        // `imm_b=0`/`imm_c=1` are compile-time constants (every real row here is register `b` plus
+        // an encoded immediate `c`).
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: Opcode::ADD.as_field::<AB::F>().into(),
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: local.adapter.op_c.map(Into::into),
+            op_a_0: local.adapter.op_a_0.into(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::one(),
+        };
+        builder.send_program(local.pc, instruction, local.is_real.into());
 
         AddOperation::<AB::F>::eval(
             builder,
-            *local.op_b_access.value(),
-            local.instruction.op_c,
+            local.adapter.op_b_val(),
+            local.adapter.op_c,
             local.add_operation,
             local.is_real.into(),
         );
@@ -234,32 +217,14 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, local.is_real);
-
-        builder.eval_memory_access(
+        eval_i_type_reader(
+            builder,
+            &local.adapter,
             clk_high.clone(),
-            clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::B as u32),
-            local.instruction.op_b[0],
-            &local.op_b_access,
-            local.is_real,
+            clk_low.clone(),
+            local.add_operation.value.map(Into::into),
+            local.is_real.into(),
         );
-
-        // If we are writing to register 0, the new value must be zero; otherwise it must equal
-        // the addition result.
-        builder.when(local.instruction.op_a_0).assert_word_zero(*local.op_a_access.value());
-        builder
-            .when_not(local.instruction.op_a_0)
-            .assert_word_eq(local.add_operation.value, *local.op_a_access.value());
-
-        builder.eval_memory_access(
-            clk_high.clone(),
-            clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::A as u32),
-            local.instruction.op_a,
-            &local.op_a_access,
-            local.is_real,
-        );
-
-        builder.slice_range_check_u8(&local.op_a_access.access.value.0, local.is_real);
 
         eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
 

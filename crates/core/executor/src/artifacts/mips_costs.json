@@ -34,7 +34,7 @@
   "Secp256k1DoubleAssign": 2281,
   "U256XU2048Mul": 3158,
   "StoreWord": 58,
-  "Addi": 48,
+  "Addi": 36,
   "DivRem": 151,
   "KeccakSponge": 84888,
   "ShiftLeft": 92,

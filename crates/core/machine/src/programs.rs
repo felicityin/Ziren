@@ -57,6 +57,21 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A synthetic program exercising real immediate-form `addi $zero, ...` -- `AddiChip`'s
+    /// `op_a==0` masking path via `ITypeReader` (the same masked-write adapter `SltiChip` uses;
+    /// no existing test exercises `ITypeReader`'s masking branch at all before this, since
+    /// `slt_x0_program` only covers register-form SLT/SLTU-to-`$zero`, not the immediate-form
+    /// SLTI/SLTIU-to-`$zero` shape). `addi $zero,...` is as rare in real compiled code as
+    /// `add $zero,...`.
+    #[must_use]
+    pub fn addi_x0_program() -> Program {
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 5, false, true),
+            Instruction::new(Opcode::ADD, 0, 29, 7, false, true),
+        ];
+        Program::new(instructions, 0, 0)
+    }
+
     /// A synthetic program exercising real `sw $zero, ...` (`StoreWordChip`'s `op_a_0` pass-through
     /// -- a common real-code idiom for zeroing memory) and real `lw $zero, ...` (`LoadX0Chip`'s
     /// only shape, routed there instead of `LoadWordChip`). `lw $zero,...` is as rare in real

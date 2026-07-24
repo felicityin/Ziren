@@ -723,6 +723,7 @@ pub mod tests {
     use crate::programs::tests::other_memory_program;
     use crate::programs::tests::add_sub_x0_program;
     use crate::programs::tests::simple_program;
+    use crate::programs::tests::addi_x0_program;
     use crate::programs::tests::lw_sw_x0_program;
     use crate::programs::tests::slt_x0_program;
     use crate::programs::tests::{
@@ -987,6 +988,13 @@ pub mod tests {
     fn test_lw_sw_x0_prove() {
         setup_logger();
         let program = lw_sw_x0_program();
+        run_test(program).unwrap();
+    }
+
+    #[test]
+    fn test_addi_x0_prove() {
+        setup_logger();
+        let program = addi_x0_program();
         run_test(program).unwrap();
     }
 
