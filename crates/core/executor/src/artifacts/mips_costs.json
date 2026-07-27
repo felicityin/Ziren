@@ -38,7 +38,7 @@
   "DivRem": 151,
   "KeccakSponge": 84888,
   "ShiftLeft": 92,
-  "MemoryLocal": 22,
+  "MemoryLocal": 14,
   "Global": 100,
   "Secp256k1AddAssign": 2050,
   "AddNoop": 16,

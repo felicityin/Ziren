@@ -21,7 +21,7 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    air::{MemoryAirBuilder, WordAirBuilder},
+    air::WordAirBuilder,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -46,26 +46,6 @@ pub struct SingleMemoryLocal<T: Copy> {
 
     /// The final `clk_low` of the memory access.
     pub final_low: T,
-
-    /// The 16-bit limb of `initial_clk_high`, used for its 24-bit range check.
-    pub initial_clk_high_16bit_limb: T,
-    /// The 8-bit limb of `initial_clk_high`, used for its 24-bit range check.
-    pub initial_clk_high_8bit_limb: T,
-
-    /// The 16-bit limb of `final_clk_high`, used for its 24-bit range check.
-    pub final_clk_high_16bit_limb: T,
-    /// The 8-bit limb of `final_clk_high`, used for its 24-bit range check.
-    pub final_clk_high_8bit_limb: T,
-
-    /// The 16-bit limb of `initial_low`, used for its 24-bit range check.
-    pub initial_low_16bit_limb: T,
-    /// The 8-bit limb of `initial_low`, used for its 24-bit range check.
-    pub initial_low_8bit_limb: T,
-
-    /// The 16-bit limb of `final_low`, used for its 24-bit range check.
-    pub final_low_16bit_limb: T,
-    /// The 8-bit limb of `final_low`, used for its 24-bit range check.
-    pub final_low_8bit_limb: T,
 
     /// The initial value of the memory access.
     pub initial_value: Word<T>,
@@ -123,7 +103,6 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
         output: &mut ExecutionRecord,
     ) -> Result<(), Self::Error> {
         let mut events = Vec::new();
-        // Byte lookups required by the defense-in-depth range checks emitted in `eval`.
         let mut blu: HashMap<ByteLookupEvent, usize> = HashMap::new();
 
         input.get_local_mem_events().for_each(|mem_event| {
@@ -162,12 +141,6 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
             // Byte range check the eight value limbs (initial and final).
             blu.add_u8_range_checks(&mem_event.initial_mem_access.value.to_le_bytes());
             blu.add_u8_range_checks(&mem_event.final_mem_access.value.to_le_bytes());
-
-            // 24-bit range checks (16-bit + 8-bit limbs) for the clk_high and clk_low fields.
-            for value in [initial_high, final_high, initial_low, final_low] {
-                blu.add_u16_range_check((value & 0xffff) as u16);
-                blu.add_u8_range_check(0, ((value >> 16) & 0xff) as u8);
-            }
         });
 
         output.global_lookup_events.extend(events);
@@ -222,33 +195,6 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
                         cols.initial_low = F::from_canonical_u64(initial_low);
                         cols.final_low = F::from_canonical_u64(final_low);
 
-                        // Populate the limbs backing the defense-in-depth range checks.
-                        for (value, limb_16, limb_8) in [
-                            (
-                                initial_high,
-                                &mut cols.initial_clk_high_16bit_limb,
-                                &mut cols.initial_clk_high_8bit_limb,
-                            ),
-                            (
-                                final_high,
-                                &mut cols.final_clk_high_16bit_limb,
-                                &mut cols.final_clk_high_8bit_limb,
-                            ),
-                            (
-                                initial_low,
-                                &mut cols.initial_low_16bit_limb,
-                                &mut cols.initial_low_8bit_limb,
-                            ),
-                            (
-                                final_low,
-                                &mut cols.final_low_16bit_limb,
-                                &mut cols.final_low_8bit_limb,
-                            ),
-                        ] {
-                            *limb_16 = F::from_canonical_u64(value & 0xffff);
-                            *limb_8 = F::from_canonical_u64((value >> 16) & 0xff);
-                        }
-
                         cols.initial_value = event.initial_mem_access.value.into();
                         cols.final_value = event.final_mem_access.value.into();
                         cols.is_real = F::ONE;
@@ -286,31 +232,12 @@ where
             builder.slice_range_check_u8(&local.initial_value.0, local.is_real);
             builder.slice_range_check_u8(&local.final_value.0, local.is_real);
 
-            // Defense-in-depth: range check clk_high and clk_low to 24 bits each.
-            builder.eval_range_check_24bits(
-                local.initial_clk_high,
-                local.initial_clk_high_16bit_limb,
-                local.initial_clk_high_8bit_limb,
-                local.is_real,
-            );
-            builder.eval_range_check_24bits(
-                local.final_clk_high,
-                local.final_clk_high_16bit_limb,
-                local.final_clk_high_8bit_limb,
-                local.is_real,
-            );
-            builder.eval_range_check_24bits(
-                local.initial_low,
-                local.initial_low_16bit_limb,
-                local.initial_low_8bit_limb,
-                local.is_real,
-            );
-            builder.eval_range_check_24bits(
-                local.final_low,
-                local.final_low_16bit_limb,
-                local.final_low_8bit_limb,
-                local.is_real,
-            );
+            // `initial_clk_high`/`final_clk_high`/`initial_low`/`final_low` need no range check
+            // here: they're matched via the `receive`/`send` `LookupKind::Memory` interactions
+            // below against the originating instruction's own `clk_high`/`clk_low`, which is
+            // already range-checked to 24 bits by `CpuState`'s `eval_cpu_state` (`clk_low`) and the
+            // `clk_high`-transition chip (`clk_high`) wherever it was genuinely produced -- see
+            // `crate::air::MemoryAirBuilder::eval_memory_access_timestamp`'s doc comment.
 
             let mut values =
                 vec![local.initial_clk_high.into(), local.initial_low.into(), local.addr.into()];
