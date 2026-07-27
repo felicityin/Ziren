@@ -166,8 +166,8 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         }
 
         // Memory initialization & finalization constraints.
-        let mut last_init_addr_bits_prev = [KoalaBear::ZERO; 32];
-        let mut last_finalize_addr_bits_prev = [KoalaBear::ZERO; 32];
+        let mut last_init_addr_prev = Word([KoalaBear::ZERO; WORD_SIZE]);
+        let mut last_finalize_addr_prev = Word([KoalaBear::ZERO; WORD_SIZE]);
         for shard_proof in proof.0.iter() {
             let public_values: &PublicValues<Word<_>, _> =
                 shard_proof.public_values.as_slice().borrow();
@@ -175,30 +175,30 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
                 shard_proof.opened_values.chips.contains_key("MemoryGlobalInit");
             let contains_memory_finalize =
                 shard_proof.opened_values.chips.contains_key("MemoryGlobalFinalize");
-            if public_values.previous_init_addr_bits != last_init_addr_bits_prev {
+            if public_values.previous_init_addr != last_init_addr_prev {
                 return Err(ZKMVerificationError::InvalidPublicValues(
-                    "previous_init_addr_bits != last_init_addr_bits_prev",
+                    "previous_init_addr != last_init_addr_prev",
                 ));
-            } else if public_values.previous_finalize_addr_bits != last_finalize_addr_bits_prev {
+            } else if public_values.previous_finalize_addr != last_finalize_addr_prev {
                 return Err(ZKMVerificationError::InvalidPublicValues(
-                    "last_init_addr_bits != last_finalize_addr_bits_prev",
+                    "last_init_addr != last_finalize_addr_prev",
                 ));
             } else if !contains_memory_init
-                && public_values.previous_init_addr_bits != public_values.last_init_addr_bits
+                && public_values.previous_init_addr != public_values.last_init_addr
             {
                 return Err(ZKMVerificationError::InvalidPublicValues(
-                    "previous_init_addr_bits != last_init_addr_bits",
+                    "previous_init_addr != last_init_addr",
                 ));
             } else if !contains_memory_finalize
-                && public_values.previous_finalize_addr_bits
-                    != public_values.last_finalize_addr_bits
+                && public_values.previous_finalize_addr
+                    != public_values.last_finalize_addr
             {
                 return Err(ZKMVerificationError::InvalidPublicValues(
-                    "previous_finalize_addr_bits != last_finalize_addr_bits",
+                    "previous_finalize_addr != last_finalize_addr",
                 ));
             }
-            last_init_addr_bits_prev = public_values.last_init_addr_bits;
-            last_finalize_addr_bits_prev = public_values.last_finalize_addr_bits;
+            last_init_addr_prev = public_values.last_init_addr;
+            last_finalize_addr_prev = public_values.last_finalize_addr;
         }
 
         // Digest constraints.

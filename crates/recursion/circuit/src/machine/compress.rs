@@ -114,8 +114,8 @@ where
         let mut reconstruct_deferred_digest: [Felt<_>; POSEIDON_NUM_WORDS] =
             core::array::from_fn(|_| builder.uninit());
         let mut global_cumulative_sums = Vec::new();
-        let mut init_addr_bits: [Felt<_>; 32] = core::array::from_fn(|_| builder.uninit());
-        let mut finalize_addr_bits: [Felt<_>; 32] = core::array::from_fn(|_| builder.uninit());
+        let mut init_addr: [Felt<_>; 4] = core::array::from_fn(|_| builder.uninit());
+        let mut finalize_addr: [Felt<_>; 4] = core::array::from_fn(|_| builder.uninit());
 
         // Initialize a flag to denote if any of the recursive proofs represents a shard range
         // where at least once of the shards is an execution shard (i.e. contains cpu).
@@ -186,22 +186,22 @@ where
                 execution_shard = current_public_values.start_execution_shard;
 
                 // Initialize the MemoryInitialize address bits.
-                for (bit, (first_bit, current_bit)) in init_addr_bits.iter_mut().zip(
+                for (bit, (first_bit, current_bit)) in init_addr.iter_mut().zip(
                     compress_public_values
-                        .previous_init_addr_bits
+                        .previous_init_addr
                         .iter_mut()
-                        .zip(current_public_values.previous_init_addr_bits.iter()),
+                        .zip(current_public_values.previous_init_addr.iter()),
                 ) {
                     *bit = *current_bit;
                     *first_bit = *current_bit;
                 }
 
                 // Initialize the MemoryFinalize address bits.
-                for (bit, (first_bit, current_bit)) in finalize_addr_bits.iter_mut().zip(
+                for (bit, (first_bit, current_bit)) in finalize_addr.iter_mut().zip(
                     compress_public_values
-                        .previous_finalize_addr_bits
+                        .previous_finalize_addr
                         .iter_mut()
-                        .zip(current_public_values.previous_finalize_addr_bits.iter()),
+                        .zip(current_public_values.previous_finalize_addr.iter()),
                 ) {
                     *bit = *current_bit;
                     *first_bit = *current_bit;
@@ -289,15 +289,15 @@ where
 
             // Assert that the MemoryInitialize address bits are the same.
             for (bit, current_bit) in
-                init_addr_bits.iter().zip(current_public_values.previous_init_addr_bits.iter())
+                init_addr.iter().zip(current_public_values.previous_init_addr.iter())
             {
                 builder.assert_felt_eq(*bit, *current_bit);
             }
 
             // Assert that the MemoryFinalize address bits are the same.
-            for (bit, current_bit) in finalize_addr_bits
+            for (bit, current_bit) in finalize_addr
                 .iter()
-                .zip(current_public_values.previous_finalize_addr_bits.iter())
+                .zip(current_public_values.previous_finalize_addr.iter())
             {
                 builder.assert_felt_eq(*bit, *current_bit);
             }
@@ -409,15 +409,15 @@ where
 
             // Update the MemoryInitialize address bits.
             for (bit, next_bit) in
-                init_addr_bits.iter_mut().zip(current_public_values.last_init_addr_bits.iter())
+                init_addr.iter_mut().zip(current_public_values.last_init_addr.iter())
             {
                 *bit = *next_bit;
             }
 
             // Update the MemoryFinalize address bits.
-            for (bit, next_bit) in finalize_addr_bits
+            for (bit, next_bit) in finalize_addr
                 .iter_mut()
-                .zip(current_public_values.last_finalize_addr_bits.iter())
+                .zip(current_public_values.last_finalize_addr.iter())
             {
                 *bit = *next_bit;
             }
@@ -437,9 +437,9 @@ where
         // Set next execution shard to be the last execution shard
         compress_public_values.next_execution_shard = execution_shard;
         // Set the MemoryInitialize address bits to be the last MemoryInitialize address bits.
-        compress_public_values.last_init_addr_bits = init_addr_bits;
+        compress_public_values.last_init_addr = init_addr;
         // Set the MemoryFinalize address bits to be the last MemoryFinalize address bits.
-        compress_public_values.last_finalize_addr_bits = finalize_addr_bits;
+        compress_public_values.last_finalize_addr = finalize_addr;
         // Set the start reconstruct deferred digest to be the last reconstruct deferred digest.
         compress_public_values.end_reconstruct_deferred_digest = reconstruct_deferred_digest;
         // Assign the deferred proof digests.

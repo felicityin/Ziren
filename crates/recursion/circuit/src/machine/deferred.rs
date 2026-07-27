@@ -62,8 +62,8 @@ pub struct ZKMDeferredWitnessValues<GC: IopCtx<F = KoalaBear> + FieldHasher<Koal
     pub end_pc: GC::F,
     pub end_shard: GC::F,
     pub end_execution_shard: GC::F,
-    pub init_addr_bits: [GC::F; 32],
-    pub finalize_addr_bits: [GC::F; 32],
+    pub init_addr: [GC::F; 4],
+    pub finalize_addr: [GC::F; 4],
     pub is_complete: bool,
 }
 
@@ -78,8 +78,8 @@ pub struct ZKMDeferredWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt
     pub end_pc: Felt<C::F>,
     pub end_shard: Felt<C::F>,
     pub end_execution_shard: Felt<C::F>,
-    pub init_addr_bits: [Felt<C::F>; 32],
-    pub finalize_addr_bits: [Felt<C::F>; 32],
+    pub init_addr: [Felt<C::F>; 4],
+    pub finalize_addr: [Felt<C::F>; 4],
     pub is_complete: Felt<C::F>,
 }
 
@@ -113,8 +113,8 @@ where
             end_pc,
             end_shard,
             end_execution_shard,
-            init_addr_bits,
-            finalize_addr_bits,
+            init_addr,
+            finalize_addr,
             is_complete,
         } = input;
 
@@ -191,10 +191,10 @@ where
         deferred_public_values.start_execution_shard = end_execution_shard;
         deferred_public_values.next_execution_shard = end_execution_shard;
         // Set the init and finalize address bits to be the hinted values.
-        deferred_public_values.previous_init_addr_bits = init_addr_bits;
-        deferred_public_values.last_init_addr_bits = init_addr_bits;
-        deferred_public_values.previous_finalize_addr_bits = finalize_addr_bits;
-        deferred_public_values.last_finalize_addr_bits = finalize_addr_bits;
+        deferred_public_values.previous_init_addr = init_addr;
+        deferred_public_values.last_init_addr = init_addr;
+        deferred_public_values.previous_finalize_addr = finalize_addr;
+        deferred_public_values.last_finalize_addr = finalize_addr;
 
         // Set the zkm_vk_digest to be the hinted value.
         deferred_public_values.zkm_vk_digest = zkm_vk_digest;

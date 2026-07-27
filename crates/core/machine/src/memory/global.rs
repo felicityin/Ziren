@@ -2,13 +2,16 @@ use core::{
     borrow::{Borrow, BorrowMut},
     mem::size_of,
 };
-use std::{array, iter::once};
+use std::iter::once;
 
+use hashbrown::HashMap;
 use p3_air::{Air, AirBuilder, BaseAir};
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use zkm_core_executor::events::{GlobalLookupEvent, MemoryInitializeFinalizeEvent};
+use zkm_core_executor::events::{
+    ByteLookupEvent, ByteRecord, GlobalLookupEvent, MemoryInitializeFinalizeEvent,
+};
 use zkm_core_executor::{ExecutionRecord, Program};
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
@@ -16,10 +19,12 @@ use zkm_derive::PicusAnnotations;
 use zkm_hypercube::{
     air::{AirLookup, LookupScope, MachineAir, ZKMAirBuilder},
     lookup::LookupKind,
+    word::Word,
 };
 
 use crate::{
-    operations::{AssertLtColsBits, IsZeroOperation, KoalaBearBitDecomposition},
+    air::WordAirBuilder,
+    operations::{AssertLtColsBytes, IsZeroOperation, KoalaBearWordRangeChecker},
     utils::next_power_of_two,
     CoreChipError,
 };
@@ -89,6 +94,30 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
 
         memory_events.sort_by_key(|event| event.addr);
 
+        // `ByteChip::generate_trace` reads its multiplicities from `input.byte_lookups`, which is
+        // only populated by `generate_dependencies` output (not `generate_trace`'s, which the real
+        // shard-proving driver discards) -- so the byte lookups this chip's `eval` sends must be
+        // registered here too, mirroring the sequential address-chain pass in `generate_trace`.
+        let previous_addr = match self.kind {
+            MemoryChipType::Initialize => input.public_values.previous_init_addr,
+            MemoryChipType::Finalize => input.public_values.previous_finalize_addr,
+        };
+        let mut blu: HashMap<ByteLookupEvent, usize> = HashMap::new();
+        for (i, event) in memory_events.iter().enumerate() {
+            let prev_addr = if i == 0 { previous_addr } else { memory_events[i - 1].addr };
+            blu.add_u8_range_checks(&event.addr.to_le_bytes());
+            blu.add_u8_range_checks(&event.value.to_le_bytes());
+            blu.add_u8_range_checks(&prev_addr.to_le_bytes());
+
+            let is_comp = prev_addr != 0 || i != 0 || event.addr != 0;
+            if is_comp {
+                let mut row = [F::ZERO; NUM_MEMORY_INIT_COLS];
+                let cols: &mut MemoryInitCols<F> = row.as_mut_slice().borrow_mut();
+                cols.lt_cols.populate(&mut blu, &prev_addr.to_le_bytes(), &event.addr.to_le_bytes());
+            }
+        }
+        output.add_byte_lookup_events_from_maps(vec![&blu]);
+
         let events = memory_events.into_iter().map(|event| {
             let lookup_clk_high = if is_receive { (event.timestamp >> 24) as u32 } else { 0 };
             let lookup_clk_low = if is_receive { (event.timestamp & 0xffffff) as u32 } else { 0 };
@@ -128,16 +157,16 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
     fn generate_trace(
         &self,
         input: &ExecutionRecord,
-        _output: &mut ExecutionRecord,
+        output: &mut ExecutionRecord,
     ) -> Result<RowMajorMatrix<F>, Self::Error> {
         let mut memory_events = match self.kind {
             MemoryChipType::Initialize => input.global_memory_initialize_events.clone(),
             MemoryChipType::Finalize => input.global_memory_finalize_events.clone(),
         };
 
-        let previous_addr_bits = match self.kind {
-            MemoryChipType::Initialize => input.public_values.previous_init_addr_bits,
-            MemoryChipType::Finalize => input.public_values.previous_finalize_addr_bits,
+        let previous_addr = match self.kind {
+            MemoryChipType::Initialize => input.public_values.previous_init_addr,
+            MemoryChipType::Finalize => input.public_values.previous_finalize_addr,
         };
 
         memory_events.sort_by_key(|event| event.addr);
@@ -148,34 +177,44 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
 
                 let mut row = [F::ZERO; NUM_MEMORY_INIT_COLS];
                 let cols: &mut MemoryInitCols<F> = row.as_mut_slice().borrow_mut();
-                cols.addr = F::from_canonical_u32(addr);
-                cols.addr_bits.populate(addr);
+                cols.addr = Word::from(addr);
+                cols.addr_range_checker.populate(addr);
                 cols.clk_high = F::from_canonical_u64(timestamp >> 24);
-                cols.low = F::from_canonical_u64(timestamp & 0xffffff);
-                cols.value = array::from_fn(|i| F::from_canonical_u32((value >> i) & 1));
+                cols.clk_low = F::from_canonical_u64(timestamp & 0xffffff);
+                cols.value = Word::from(value);
                 cols.is_real = F::one();
 
                 row
             })
             .collect::<Vec<_>>();
 
+        // The strictly-increasing address chain is inherently sequential (each row depends on the
+        // previous sorted event's address), so this second pass isn't parallelized like the first.
+        let mut blu: HashMap<ByteLookupEvent, usize> = HashMap::new();
         for i in 0..memory_events.len() {
             let addr = memory_events[i].addr;
+            let value = memory_events[i].value;
             let cols: &mut MemoryInitCols<F> = rows[i].as_mut_slice().borrow_mut();
 
-            let prev_addr = if i == 0 {
-                previous_addr_bits.iter().enumerate().map(|(j, bit)| bit * (1 << j)).sum::<u32>()
-            } else {
-                memory_events[i - 1].addr
-            };
-            let prev_addr_bits: [_; 32] = array::from_fn(|j| (prev_addr >> j) & 1);
+            let prev_addr = if i == 0 { previous_addr } else { memory_events[i - 1].addr };
+
+            // Matches `slice_range_check_u8(&local.addr.0/&local.value.0/&local.prev_addr.0, ...)`
+            // in `eval()` -- each is a raw witnessed column with no other interaction that would
+            // already range-check its bytes, so the matching lookup event must be registered here.
+            blu.add_u8_range_checks(&addr.to_le_bytes());
+            blu.add_u8_range_checks(&value.to_le_bytes());
+            blu.add_u8_range_checks(&prev_addr.to_le_bytes());
 
             cols.index = F::from_canonical_u32(i as u32);
-            cols.prev_addr_bits = prev_addr_bits.map(F::from_canonical_u32);
+            cols.prev_addr = Word::from(prev_addr);
             cols.prev_valid = F::from_bool(!(prev_addr == 0 && i != 0));
-            let is_prev_addr_zero = cols.is_prev_addr_zero.populate(prev_addr);
+            let is_prev_addr_zero = cols.is_prev_addr_zero.populate_from_field_element(
+                cols.prev_addr.0[0] + cols.prev_addr.0[1] + cols.prev_addr.0[2] + cols.prev_addr.0[3],
+            );
             let is_index_zero = cols.is_index_zero.populate(i as u32);
-            cols.is_addr_zero.populate(addr);
+            cols.is_addr_zero.populate_from_field_element(
+                cols.addr.0[0] + cols.addr.0[1] + cols.addr.0[2] + cols.addr.0[3],
+            );
             cols.is_prev_addr_and_index_zero =
                 F::from_bool(is_prev_addr_zero == 1 && is_index_zero == 1);
 
@@ -183,10 +222,10 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
             cols.is_comp = F::from_bool(is_comp);
             if is_comp {
                 debug_assert!(prev_addr < addr, "prev_addr {prev_addr} < addr {addr}");
-                let addr_bits: [_; 32] = array::from_fn(|j| (addr >> j) & 1);
-                cols.lt_cols.populate(&prev_addr_bits, &addr_bits);
+                cols.lt_cols.populate(&mut blu, &prev_addr.to_le_bytes(), &addr.to_le_bytes());
             }
         }
+        output.add_byte_lookup_events_from_maps(vec![&blu]);
 
         // Pad the trace to a power of two depending on the proof shape in `input`.
         rows.resize(
@@ -222,21 +261,22 @@ pub struct MemoryInitCols<T: Copy> {
 
     /// The `clk_low` of the memory access.
     #[cfg_attr(feature = "picus", picus(input, transition_input))]
-    pub low: T,
+    pub clk_low: T,
 
     /// The address of the memory access.
     #[cfg_attr(feature = "picus", picus(input, transition_input))]
-    pub addr: T,
+    pub addr: Word<T>,
+
+    /// Gadget to verify that `addr` is within the Koala-Bear field -- needed since `addr` is used
+    /// as a single reduced field element (in the `Global` interaction and the chain below).
+    pub addr_range_checker: KoalaBearWordRangeChecker<T>,
 
     /// Comparison assertions for address to be strictly increasing.
-    pub lt_cols: AssertLtColsBits<T, 32>,
-
-    /// A bit decomposition of `addr`.
-    pub addr_bits: KoalaBearBitDecomposition<T>,
+    pub lt_cols: AssertLtColsBytes<T, 4>,
 
     /// The value of the memory access.
     #[cfg_attr(feature = "picus", picus(transition_input))]
-    pub value: [T; 32],
+    pub value: Word<T>,
 
     /// Whether the memory access is a real access.
     pub is_real: T,
@@ -246,9 +286,10 @@ pub struct MemoryInitCols<T: Copy> {
     /// instead of physical row adjacency.
     pub index: T,
 
-    /// This row's own witnessed previous address, as bits (matched by value against whichever
-    /// row -- or `ExecutionRecord::eval_public_values`, at index 0 -- sent it).
-    pub prev_addr_bits: [T; 32],
+    /// This row's own witnessed previous address (matched by value against whichever row -- or
+    /// `ExecutionRecord::eval_public_values`, at index 0 -- sent it). No canonical range-check
+    /// needed: only ever used for the is-zero check and the byte-wise comparison below.
+    pub prev_addr: Word<T>,
 
     /// The validity of the previous state received at `index`. False only for the unique
     /// %x0-initializes-once case (mirrors `is_comp`, offset by one row).
@@ -286,49 +327,45 @@ where
         let local: &MemoryInitCols<AB::Var> = (*local).borrow();
 
         builder.assert_bool(local.is_real);
-        for i in 0..32 {
-            builder.assert_bool(local.value[i]);
-        }
+
+        // `addr`/`value`/`prev_addr` are raw witnessed columns (not derived via any interaction
+        // that would already range-check them elsewhere), so each needs its own explicit
+        // byte-range-check.
+        builder.slice_range_check_u8(&local.addr.0, local.is_real);
+        builder.slice_range_check_u8(&local.value.0, local.is_real);
+        builder.slice_range_check_u8(&local.prev_addr.0, local.is_real);
+
         // Canonicalize padded rows to the default zero trace shape so witness columns cannot
         // drift in extraction modules.
         builder.when_not(local.is_real).assert_zero(local.clk_high);
-        builder.when_not(local.is_real).assert_zero(local.low);
-        builder.when_not(local.is_real).assert_zero(local.addr);
-        for i in 0..32 {
-            builder.when_not(local.is_real).assert_zero(local.value[i]);
-            builder.when_not(local.is_real).assert_zero(local.addr_bits.bits[i]);
-            builder.when_not(local.is_real).assert_zero(local.lt_cols.bit_flags[i]);
+        builder.when_not(local.is_real).assert_zero(local.clk_low);
+        builder.when_not(local.is_real).assert_word_zero(local.addr);
+        builder.when_not(local.is_real).assert_word_zero(local.value);
+        builder.when_not(local.is_real).assert_word_zero(local.prev_addr);
+        for i in 0..4 {
+            builder.when_not(local.is_real).assert_zero(local.lt_cols.byte_flags[i]);
         }
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_bits.and_most_sig_byte_decomp_0_to_2);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_bits.and_most_sig_byte_decomp_0_to_3);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_bits.and_most_sig_byte_decomp_0_to_4);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_bits.and_most_sig_byte_decomp_0_to_5);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_bits.and_most_sig_byte_decomp_0_to_6);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_bits.and_most_sig_byte_decomp_0_to_7);
-
-        let mut byte1 = AB::Expr::zero();
-        let mut byte2 = AB::Expr::zero();
-        let mut byte3 = AB::Expr::zero();
-        let mut byte4 = AB::Expr::zero();
         for i in 0..8 {
-            byte1 = byte1.clone() + local.value[i].into() * AB::F::from_canonical_u8(1 << i);
-            byte2 = byte2.clone() + local.value[i + 8].into() * AB::F::from_canonical_u8(1 << i);
-            byte3 = byte3.clone() + local.value[i + 16].into() * AB::F::from_canonical_u8(1 << i);
-            byte4 = byte4.clone() + local.value[i + 24].into() * AB::F::from_canonical_u8(1 << i);
+            builder.when_not(local.is_real).assert_zero(local.addr_range_checker.most_sig_byte_decomp[i]);
         }
-        let value = [byte1, byte2, byte3, byte4];
+        builder
+            .when_not(local.is_real)
+            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_2);
+        builder
+            .when_not(local.is_real)
+            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_3);
+        builder
+            .when_not(local.is_real)
+            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_4);
+        builder
+            .when_not(local.is_real)
+            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_5);
+        builder
+            .when_not(local.is_real)
+            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_6);
+        builder
+            .when_not(local.is_real)
+            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_7);
 
         if self.kind == MemoryChipType::Initialize {
             // Send the lookup to the global table.
@@ -337,13 +374,13 @@ where
                     vec![
                         AB::Expr::zero(), // shard
                         AB::Expr::zero(), // timestamp
-                        local.addr.into(),
-                        value[0].clone(),
-                        value[1].clone(),
-                        value[2].clone(),
-                        value[3].clone(),
-                        local.is_real.into() * AB::Expr::one(),
-                        local.is_real.into() * AB::Expr::zero(),
+                        local.addr.reduce::<AB>(),
+                        local.value.0[0].into(),
+                        local.value.0[1].into(),
+                        local.value.0[2].into(),
+                        local.value.0[3].into(),
+                        local.is_real.into(),
+                        AB::Expr::zero(),
                         AB::Expr::from_canonical_u8(LookupKind::Memory as u8),
                     ],
                     local.is_real.into(),
@@ -357,14 +394,14 @@ where
                 AirLookup::new(
                     vec![
                         local.clk_high.into(),
-                        local.low.into(),
-                        local.addr.into(),
-                        value[0].clone(),
-                        value[1].clone(),
-                        value[2].clone(),
-                        value[3].clone(),
-                        local.is_real.into() * AB::Expr::zero(),
-                        local.is_real.into() * AB::Expr::one(),
+                        local.clk_low.into(),
+                        local.addr.reduce::<AB>(),
+                        local.value.0[0].into(),
+                        local.value.0[1].into(),
+                        local.value.0[2].into(),
+                        local.value.0[3].into(),
+                        AB::Expr::zero(),
+                        local.is_real.into(),
                         AB::Expr::from_canonical_u8(LookupKind::Memory as u8),
                     ],
                     local.is_real.into(),
@@ -374,17 +411,18 @@ where
             );
         }
 
-        // Canonically decompose the address into bits so we can do comparisons.
-        KoalaBearBitDecomposition::<AB::F>::range_check(
+        // Canonically range-check the address into the field so it can be safely used as a
+        // single reduced element above and in the chain below.
+        KoalaBearWordRangeChecker::<AB::F>::range_check(
             builder,
             local.addr,
-            local.addr_bits,
+            local.addr_range_checker,
             local.is_real.into(),
         );
 
-        // Chain this row's own witnessed `prev_addr_bits` against whichever row (or
+        // Chain this row's own witnessed `prev_addr` against whichever row (or
         // `ExecutionRecord::eval_public_values`, at index 0) sent it as its own address, and this
-        // row's own `addr_bits` against whichever row (or the phantom receive, at the final index)
+        // row's own `addr` against whichever row (or the phantom receive, at the final index)
         // receives it as the start of the next segment -- replacing the old row-adjacency
         // `addr < addr'` chaining.
         let interaction_kind = match self.kind {
@@ -394,7 +432,7 @@ where
         builder.receive(
             AirLookup::new(
                 once(local.index.into())
-                    .chain(local.prev_addr_bits.iter().map(|&b| b.into()))
+                    .chain(local.prev_addr.0.iter().map(|&b| b.into()))
                     .chain(once(local.prev_valid.into()))
                     .collect(),
                 local.is_real.into(),
@@ -405,7 +443,7 @@ where
         builder.send(
             AirLookup::new(
                 once(local.index.into() + AB::Expr::one())
-                    .chain(local.addr_bits.bits.iter().map(|&b| b.into()))
+                    .chain(local.addr.0.iter().map(|&b| b.into()))
                     .chain(once(local.is_comp.into()))
                     .collect(),
                 local.is_real.into(),
@@ -414,23 +452,9 @@ where
             LookupScope::Local,
         );
 
-        // Since `prev_addr_bits` is either witnessed from a genuine row's already-range-checked
-        // `addr_bits`, or from public values (a separate, not-yet-in-scope trust boundary, same
-        // status as `CpuChip`'s `start_pc`/`next_pc`), plain booleanity is enough here -- we get an
-        // element of the field with no concern for overflow, same as the reconstruction below.
-        for i in 0..32 {
-            builder.when(local.is_real).assert_bool(local.prev_addr_bits[i]);
-        }
-        let prev_addr = local
-            .prev_addr_bits
-            .iter()
-            .enumerate()
-            .map(|(i, bit)| (*bit).into() * AB::F::from_wrapped_u32(1 << i))
-            .sum::<AB::Expr>();
-
         IsZeroOperation::<AB::F>::eval(
             builder,
-            prev_addr,
+            local.prev_addr.0[0] + local.prev_addr.0[1] + local.prev_addr.0[2] + local.prev_addr.0[3],
             local.is_prev_addr_zero,
             local.is_real.into(),
         );
@@ -442,7 +466,7 @@ where
         );
         IsZeroOperation::<AB::F>::eval(
             builder,
-            local.addr.into(),
+            local.addr.0[0] + local.addr.0[1] + local.addr.0[2] + local.addr.0[3],
             local.is_addr_zero,
             local.is_real.into(),
         );
@@ -471,11 +495,11 @@ where
         builder.assert_bool(local.is_comp);
 
         // If `is_comp`, `prev_addr < addr` must hold.
-        local.lt_cols.eval(builder, &local.prev_addr_bits, &local.addr_bits.bits, local.is_comp);
+        local.lt_cols.eval(builder, &local.prev_addr.0, &local.addr.0, local.is_comp);
 
         // Make assertions for specific types of memory chips.
         if self.kind == MemoryChipType::Initialize {
-            builder.when(local.is_real).assert_eq(local.low, AB::F::ONE);
+            builder.when(local.is_real).assert_eq(local.clk_low, AB::F::ONE);
             builder.when(local.is_real).assert_zero(local.clk_high);
         }
 
@@ -486,12 +510,10 @@ where
         // address and value must both be zero.
         //
         // **Remark**: it is up to the verifier to ensure this happens exactly once, constrained by
-        // the public values setting `previous_init_addr_bits`/`previous_finalize_addr_bits` to zero.
+        // the public values setting `previous_init_addr`/`previous_finalize_addr` to zero.
         let is_not_comp = local.is_real - local.is_comp;
-        builder.when(is_not_comp.clone()).assert_zero(local.addr);
-        for i in 0..32 {
-            builder.when(is_not_comp.clone()).assert_zero(local.value[i]);
-        }
+        builder.when(is_not_comp.clone()).assert_word_zero(local.addr);
+        builder.when(is_not_comp).assert_word_zero(local.value);
     }
 }
 

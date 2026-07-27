@@ -48,17 +48,17 @@ pub struct PublicValues<W, T> {
     /// chip is guaranteed to be present in every execution shard.
     pub is_execution_shard: T,
 
-    /// The bits of the largest address that is witnessed for initialization in the previous shard.
-    pub previous_init_addr_bits: [T; 32],
+    /// The largest address that is witnessed for initialization in the previous shard.
+    pub previous_init_addr: W,
 
     /// The largest address that is witnessed for initialization in the current shard.
-    pub last_init_addr_bits: [T; 32],
+    pub last_init_addr: W,
 
-    /// The bits of the largest address that is witnessed for finalization in the previous shard.
-    pub previous_finalize_addr_bits: [T; 32],
+    /// The largest address that is witnessed for finalization in the previous shard.
+    pub previous_finalize_addr: W,
 
-    /// The bits of the largest address that is witnessed for finalization in the current shard.
-    pub last_finalize_addr_bits: [T; 32],
+    /// The largest address that is witnessed for finalization in the current shard.
+    pub last_finalize_addr: W,
 
     /// The `clk_high` of the shard's first real CPU row.
     pub initial_clk_high: T,
@@ -127,10 +127,10 @@ impl PublicValues<u32, u32> {
         copy.initial_clk_low = 0;
         copy.last_clk_high = 0;
         copy.last_clk_low = 0;
-        copy.previous_init_addr_bits = [0; 32];
-        copy.last_init_addr_bits = [0; 32];
-        copy.previous_finalize_addr_bits = [0; 32];
-        copy.last_finalize_addr_bits = [0; 32];
+        copy.previous_init_addr = 0;
+        copy.last_init_addr = 0;
+        copy.previous_finalize_addr = 0;
+        copy.last_finalize_addr = 0;
         copy
     }
 }
@@ -177,10 +177,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             shard,
             execution_shard,
             is_execution_shard,
-            previous_init_addr_bits,
-            last_init_addr_bits,
-            previous_finalize_addr_bits,
-            last_finalize_addr_bits,
+            previous_init_addr,
+            last_init_addr,
+            previous_finalize_addr,
+            last_finalize_addr,
             initial_clk_high,
             initial_clk_low,
             last_clk_high,
@@ -205,10 +205,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let shard = F::from_canonical_u32(shard);
         let execution_shard = F::from_canonical_u32(execution_shard);
         let is_execution_shard = F::from_canonical_u32(is_execution_shard);
-        let previous_init_addr_bits = previous_init_addr_bits.map(F::from_canonical_u32);
-        let last_init_addr_bits = last_init_addr_bits.map(F::from_canonical_u32);
-        let previous_finalize_addr_bits = previous_finalize_addr_bits.map(F::from_canonical_u32);
-        let last_finalize_addr_bits = last_finalize_addr_bits.map(F::from_canonical_u32);
+        let previous_init_addr = Word::from(previous_init_addr);
+        let last_init_addr = Word::from(last_init_addr);
+        let previous_finalize_addr = Word::from(previous_finalize_addr);
+        let last_finalize_addr = Word::from(last_finalize_addr);
         let initial_clk_high = F::from_canonical_u32(initial_clk_high);
         let initial_clk_low = F::from_canonical_u32(initial_clk_low);
         let last_clk_high = F::from_canonical_u32(last_clk_high);
@@ -228,10 +228,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             shard,
             execution_shard,
             is_execution_shard,
-            previous_init_addr_bits,
-            last_init_addr_bits,
-            previous_finalize_addr_bits,
-            last_finalize_addr_bits,
+            previous_init_addr,
+            last_init_addr,
+            previous_finalize_addr,
+            last_finalize_addr,
             initial_clk_high,
             initial_clk_low,
             last_clk_high,

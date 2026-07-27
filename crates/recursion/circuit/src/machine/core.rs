@@ -118,12 +118,12 @@ where
         let mut current_pc: Felt<_> = builder.uninit();
 
         // Initialize memory initialization and finalization variables.
-        let mut initial_previous_init_addr_bits: [Felt<_>; 32] =
+        let mut initial_previous_init_addr: [Felt<_>; 4] =
             array::from_fn(|_| builder.uninit());
-        let mut initial_previous_finalize_addr_bits: [Felt<_>; 32] =
+        let mut initial_previous_finalize_addr: [Felt<_>; 4] =
             array::from_fn(|_| builder.uninit());
-        let mut current_init_addr_bits: [Felt<_>; 32] = array::from_fn(|_| builder.uninit());
-        let mut current_finalize_addr_bits: [Felt<_>; 32] = array::from_fn(|_| builder.uninit());
+        let mut current_init_addr: [Felt<_>; 4] = array::from_fn(|_| builder.uninit());
+        let mut current_finalize_addr: [Felt<_>; 4] = array::from_fn(|_| builder.uninit());
 
         // Initialize the exit code variable.
         let mut exit_code: Felt<_> = builder.uninit();
@@ -169,18 +169,18 @@ where
                 current_pc = public_values.start_pc;
 
                 // Memory initialization & finalization.
-                for ((bit, pub_bit), first_bit) in current_init_addr_bits
+                for ((bit, pub_bit), first_bit) in current_init_addr
                     .iter_mut()
-                    .zip(public_values.previous_init_addr_bits.iter())
-                    .zip(initial_previous_init_addr_bits.iter_mut())
+                    .zip(public_values.previous_init_addr.0.iter())
+                    .zip(initial_previous_init_addr.iter_mut())
                 {
                     *bit = *pub_bit;
                     *first_bit = *pub_bit;
                 }
-                for ((bit, pub_bit), first_bit) in current_finalize_addr_bits
+                for ((bit, pub_bit), first_bit) in current_finalize_addr
                     .iter_mut()
-                    .zip(public_values.previous_finalize_addr_bits.iter())
-                    .zip(initial_previous_finalize_addr_bits.iter_mut())
+                    .zip(public_values.previous_finalize_addr.0.iter())
+                    .zip(initial_previous_finalize_addr.iter_mut())
                 {
                     *bit = *pub_bit;
                     *first_bit = *pub_bit;
@@ -231,11 +231,11 @@ where
                     vk.initial_global_cumulative_sum,
                 ));
 
-                // Assert that `init_addr_bits` and `finalize_addr_bits` are zero for the first
-                for bit in current_init_addr_bits.iter() {
+                // Assert that `init_addr` and `finalize_addr` are zero for the first
+                for bit in current_init_addr.iter() {
                     builder.assert_felt_eq(is_first_shard * *bit, C::F::ZERO);
                 }
-                for bit in current_finalize_addr_bits.iter() {
+                for bit in current_finalize_addr.iter() {
                     builder.assert_felt_eq(is_first_shard * *bit, C::F::ZERO);
                 }
             }
@@ -318,17 +318,17 @@ where
             // Memory initialization & finalization constraints.
             {
                 // Assert that the MemoryInitialize address bits match the current loop variable.
-                for (bit, current_bit) in current_init_addr_bits
+                for (bit, current_bit) in current_init_addr
                     .iter()
-                    .zip_eq(public_values.previous_init_addr_bits.iter())
+                    .zip_eq(public_values.previous_init_addr.0.iter())
                 {
                     builder.assert_felt_eq(*bit, *current_bit);
                 }
 
                 // Assert that the MemoryFinalize address bits match the current loop variable.
-                for (bit, current_bit) in current_finalize_addr_bits
+                for (bit, current_bit) in current_finalize_addr
                     .iter()
-                    .zip_eq(public_values.previous_finalize_addr_bits.iter())
+                    .zip_eq(public_values.previous_finalize_addr.0.iter())
                 {
                     builder.assert_felt_eq(*bit, *current_bit);
                 }
@@ -336,9 +336,10 @@ where
                 // Assert that if MemoryInit is not present, then the address bits are the same.
                 if !contains_memory_init {
                     for (prev_bit, last_bit) in public_values
-                        .previous_init_addr_bits
+                        .previous_init_addr
+                        .0
                         .iter()
-                        .zip_eq(public_values.last_init_addr_bits.iter())
+                        .zip_eq(public_values.last_init_addr.0.iter())
                     {
                         builder.assert_felt_eq(*prev_bit, *last_bit);
                     }
@@ -348,9 +349,10 @@ where
                 // same.
                 if !contains_memory_finalize {
                     for (prev_bit, last_bit) in public_values
-                        .previous_finalize_addr_bits
+                        .previous_finalize_addr
+                        .0
                         .iter()
-                        .zip_eq(public_values.last_finalize_addr_bits.iter())
+                        .zip_eq(public_values.last_finalize_addr.0.iter())
                     {
                         builder.assert_felt_eq(*prev_bit, *last_bit);
                     }
@@ -358,15 +360,15 @@ where
 
                 // Update the MemoryInitialize address bits.
                 for (bit, pub_bit) in
-                    current_init_addr_bits.iter_mut().zip(public_values.last_init_addr_bits.iter())
+                    current_init_addr.iter_mut().zip(public_values.last_init_addr.0.iter())
                 {
                     *bit = *pub_bit;
                 }
 
                 // Update the MemoryFinalize address bits.
-                for (bit, pub_bit) in current_finalize_addr_bits
+                for (bit, pub_bit) in current_finalize_addr
                     .iter_mut()
-                    .zip(public_values.last_finalize_addr_bits.iter())
+                    .zip(public_values.last_finalize_addr.0.iter())
                 {
                     *bit = *pub_bit;
                 }
@@ -514,11 +516,11 @@ where
             recursion_public_values.next_shard = current_shard;
             recursion_public_values.start_execution_shard = initial_execution_shard;
             recursion_public_values.next_execution_shard = current_execution_shard;
-            recursion_public_values.previous_init_addr_bits = initial_previous_init_addr_bits;
-            recursion_public_values.last_init_addr_bits = current_init_addr_bits;
-            recursion_public_values.previous_finalize_addr_bits =
-                initial_previous_finalize_addr_bits;
-            recursion_public_values.last_finalize_addr_bits = current_finalize_addr_bits;
+            recursion_public_values.previous_init_addr = initial_previous_init_addr;
+            recursion_public_values.last_init_addr = current_init_addr;
+            recursion_public_values.previous_finalize_addr =
+                initial_previous_finalize_addr;
+            recursion_public_values.last_finalize_addr = current_finalize_addr;
             recursion_public_values.zkm_vk_digest = vk_digest;
             recursion_public_values.global_cumulative_sum = global_cumulative_sum;
             recursion_public_values.start_reconstruct_deferred_digest = start_deferred_digest;
@@ -649,21 +651,19 @@ mod tests {
         MipsAir::<KoalaBear>::hypercube_machine()
             .generate_dependencies(std::iter::once(&mut record), None)
             .unwrap();
-        // Likewise, `previous_init_addr_bits`/`last_init_addr_bits` (and the `finalize`
+        // Likewise, `previous_init_addr`/`last_init_addr` (and the `finalize`
         // counterparts) are normally back-filled by the deferred-event splitting machinery in
         // `ExecutionRecord::defer`/`split`, which the real proving pipeline always runs before
         // proving but which this simplified single-shard test never invokes. Since this is the
         // only (and therefore also the first and last) shard, there is no earlier/later memory
-        // chain to continue from or into, so `previous_*_addr_bits` correctly stay all-zero;
-        // only `last_*_addr_bits` (the address of the sorted chain's final event) need
-        // computing here, mirroring `ExecutionRecord::defer`'s per-chunk bit computation.
+        // chain to continue from or into, so `previous_*_addr` correctly stays zero; only
+        // `last_*_addr` (the sorted chain's final event's address) needs computing here,
+        // mirroring `ExecutionRecord::split`'s per-chunk computation.
         if let Some(last) = record.global_memory_initialize_events.iter().max_by_key(|e| e.addr) {
-            record.public_values.last_init_addr_bits =
-                core::array::from_fn(|i| (last.addr >> i) & 1);
+            record.public_values.last_init_addr = last.addr;
         }
         if let Some(last) = record.global_memory_finalize_events.iter().max_by_key(|e| e.addr) {
-            record.public_values.last_finalize_addr_bits =
-                core::array::from_fn(|i| (last.addr >> i) & 1);
+            record.public_values.last_finalize_addr = last.addr;
         }
 
         eprintln!(

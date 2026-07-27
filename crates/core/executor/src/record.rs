@@ -286,8 +286,8 @@ impl ExecutionRecord {
                 &mut blank_record
             };
 
-            let mut init_addr_bits = [0; 32];
-            let mut finalize_addr_bits = [0; 32];
+            let mut init_addr = 0;
+            let mut finalize_addr = 0;
             for mem_chunks in self
                 .global_memory_initialize_events
                 .chunks(opts.memory)
@@ -301,21 +301,18 @@ impl ExecutionRecord {
                     EitherOrBoth::Right(mem_finalize_chunk) => ([].as_slice(), mem_finalize_chunk),
                 };
                 last_record_ref.global_memory_initialize_events.extend_from_slice(mem_init_chunk);
-                last_record_ref.public_values.previous_init_addr_bits = init_addr_bits;
+                last_record_ref.public_values.previous_init_addr = init_addr;
                 if let Some(last_event) = mem_init_chunk.last() {
-                    let last_init_addr_bits = core::array::from_fn(|i| (last_event.addr >> i) & 1);
-                    init_addr_bits = last_init_addr_bits;
+                    init_addr = last_event.addr;
                 }
-                last_record_ref.public_values.last_init_addr_bits = init_addr_bits;
+                last_record_ref.public_values.last_init_addr = init_addr;
 
                 last_record_ref.global_memory_finalize_events.extend_from_slice(mem_finalize_chunk);
-                last_record_ref.public_values.previous_finalize_addr_bits = finalize_addr_bits;
+                last_record_ref.public_values.previous_finalize_addr = finalize_addr;
                 if let Some(last_event) = mem_finalize_chunk.last() {
-                    let last_finalize_addr_bits =
-                        core::array::from_fn(|i| (last_event.addr >> i) & 1);
-                    finalize_addr_bits = last_finalize_addr_bits;
+                    finalize_addr = last_event.addr;
                 }
-                last_record_ref.public_values.last_finalize_addr_bits = finalize_addr_bits;
+                last_record_ref.public_values.last_finalize_addr = finalize_addr;
 
                 if !pack_memory_events_into_last_record {
                     // If not packing memory events into the last record, add 'last_record_ref'
@@ -521,13 +518,13 @@ impl MachineRecord for ExecutionRecord {
         );
 
         // Anchor `MemoryGlobalChip`'s (Init and Finalize instantiations) `index`-keyed
-        // sorted-address chains the same way: the shard's first real row's `prev_addr_bits`
-        // receive has nothing in-shard to match, and the last real row's `addr_bits` send (at
+        // sorted-address chains the same way: the shard's first real row's `prev_addr` receive
+        // has nothing in-shard to match, and the last real row's `addr` send (at
         // `index + 1 == global_*_count`) has nothing in-shard to match either.
         builder.send(
             AirLookup::new(
                 once(AB::Expr::zero())
-                    .chain(public_values.previous_init_addr_bits.iter().cloned().map(Into::into))
+                    .chain(public_values.previous_init_addr.0.iter().cloned().map(Into::into))
                     .chain(once(AB::Expr::one()))
                     .collect(),
                 AB::Expr::one(),
@@ -538,7 +535,7 @@ impl MachineRecord for ExecutionRecord {
         builder.receive(
             AirLookup::new(
                 once(public_values.global_init_count.into())
-                    .chain(public_values.last_init_addr_bits.iter().cloned().map(Into::into))
+                    .chain(public_values.last_init_addr.0.iter().cloned().map(Into::into))
                     .chain(once(AB::Expr::one()))
                     .collect(),
                 AB::Expr::one(),
@@ -549,9 +546,7 @@ impl MachineRecord for ExecutionRecord {
         builder.send(
             AirLookup::new(
                 once(AB::Expr::zero())
-                    .chain(
-                        public_values.previous_finalize_addr_bits.iter().cloned().map(Into::into),
-                    )
+                    .chain(public_values.previous_finalize_addr.0.iter().cloned().map(Into::into))
                     .chain(once(AB::Expr::one()))
                     .collect(),
                 AB::Expr::one(),
@@ -562,7 +557,7 @@ impl MachineRecord for ExecutionRecord {
         builder.receive(
             AirLookup::new(
                 once(public_values.global_finalize_count.into())
-                    .chain(public_values.last_finalize_addr_bits.iter().cloned().map(Into::into))
+                    .chain(public_values.last_finalize_addr.0.iter().cloned().map(Into::into))
                     .chain(once(AB::Expr::one()))
                     .collect(),
                 AB::Expr::one(),
@@ -602,9 +597,9 @@ impl MachineRecord for ExecutionRecord {
 
     fn max_public_values_interaction_arity() -> usize {
         // The widest interactions here are `MemoryGlobalInitControl`/`MemoryGlobalFinalizeControl`'s
-        // boundary-anchor sends/receives above: 1 (index) + 32 (address bits) + 1 (flag) values,
+        // boundary-anchor sends/receives above: 1 (index) + 4 (address bytes) + 1 (flag) values,
         // plus 1 for the `LookupKind` value itself.
-        1 + 32 + 1 + 1
+        1 + 4 + 1 + 1
     }
 }
 
@@ -622,6 +617,62 @@ impl ByteRecord for ExecutionRecord {
             for (blu_event, count) in new_blu_map.iter() {
                 *self.byte_lookups.entry(*blu_event).or_insert(0) += count;
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Forces `global_memory_initialize_events`/`global_memory_finalize_events` across more than
+    /// one shard (via a tiny `opts.memory` threshold) and checks that the
+    /// `previous_init_addr`/`last_init_addr`/`previous_finalize_addr`/`last_finalize_addr` chain
+    /// threads correctly shard-to-shard -- the one path the plain-`u32` retype (replacing the old
+    /// `[T; 32]` bit-array reconstruction) doesn't otherwise get exercised by, since no existing
+    /// end-to-end test's memory footprint is large enough to cross `SplitOpts::memory`'s
+    /// production-scale default threshold.
+    #[test]
+    fn test_split_memory_chain_across_multiple_shards() {
+        let program = Arc::new(Program::default());
+        let mut record = ExecutionRecord::new(program);
+        for i in 0..10u32 {
+            record.global_memory_initialize_events.push(MemoryInitializeFinalizeEvent {
+                addr: (i + 1) * 4,
+                value: i,
+                timestamp: 0,
+            });
+            record.global_memory_finalize_events.push(MemoryInitializeFinalizeEvent {
+                addr: (i + 1) * 4,
+                value: i * 2,
+                timestamp: 1,
+            });
+        }
+
+        let mut opts = SplitOpts::new(zkm_stark::MAX_DEFERRED_SPLIT_THRESHOLD);
+        opts.memory = 3;
+        let shards = record.split(true, None, opts);
+        assert!(
+            shards.len() >= 4,
+            "expected the memory chain to be split across multiple shards, got {}",
+            shards.len()
+        );
+
+        let mut expected_previous_init = 0u32;
+        let mut expected_previous_finalize = 0u32;
+        for shard in &shards {
+            assert_eq!(shard.public_values.previous_init_addr, expected_previous_init);
+            assert_eq!(shard.public_values.previous_finalize_addr, expected_previous_finalize);
+
+            if let Some(last) = shard.global_memory_initialize_events.last() {
+                expected_previous_init = last.addr;
+            }
+            if let Some(last) = shard.global_memory_finalize_events.last() {
+                expected_previous_finalize = last.addr;
+            }
+
+            assert_eq!(shard.public_values.last_init_addr, expected_previous_init);
+            assert_eq!(shard.public_values.last_finalize_addr, expected_previous_finalize);
         }
     }
 }

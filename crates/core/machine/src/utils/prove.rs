@@ -309,14 +309,14 @@ pub fn prove_with_context(
                                 for record in deferred.iter_mut() {
                                     state.shard += 1;
                                     state.is_execution_shard = 0;
-                                    state.previous_init_addr_bits =
-                                        record.public_values.previous_init_addr_bits;
-                                    state.last_init_addr_bits =
-                                        record.public_values.last_init_addr_bits;
-                                    state.previous_finalize_addr_bits =
-                                        record.public_values.previous_finalize_addr_bits;
-                                    state.last_finalize_addr_bits =
-                                        record.public_values.last_finalize_addr_bits;
+                                    state.previous_init_addr =
+                                        record.public_values.previous_init_addr;
+                                    state.last_init_addr =
+                                        record.public_values.last_init_addr;
+                                    state.previous_finalize_addr =
+                                        record.public_values.previous_finalize_addr;
+                                    state.last_finalize_addr =
+                                        record.public_values.last_finalize_addr;
                                     state.start_pc = state.next_pc;
                                     state.initial_clk_high = state.last_clk_high;
                                     state.initial_clk_low = state.last_clk_low;
@@ -364,14 +364,14 @@ pub fn prove_with_context(
                                 for record in deferred.iter_mut() {
                                     state.shard += 1;
                                     state.is_execution_shard = 0;
-                                    state.previous_init_addr_bits =
-                                        record.public_values.previous_init_addr_bits;
-                                    state.last_init_addr_bits =
-                                        record.public_values.last_init_addr_bits;
-                                    state.previous_finalize_addr_bits =
-                                        record.public_values.previous_finalize_addr_bits;
-                                    state.last_finalize_addr_bits =
-                                        record.public_values.last_finalize_addr_bits;
+                                    state.previous_init_addr =
+                                        record.public_values.previous_init_addr;
+                                    state.last_init_addr =
+                                        record.public_values.last_init_addr;
+                                    state.previous_finalize_addr =
+                                        record.public_values.previous_finalize_addr;
+                                    state.last_finalize_addr =
+                                        record.public_values.last_finalize_addr;
                                     state.start_pc = state.next_pc;
                                     state.initial_clk_high = state.last_clk_high;
                                     state.initial_clk_low = state.last_clk_low;

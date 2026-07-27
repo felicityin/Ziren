@@ -453,8 +453,8 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
                 end_pc: KoalaBear::ZERO,
                 end_shard: last_proof_pv.shard + KoalaBear::ONE,
                 end_execution_shard: last_proof_pv.execution_shard,
-                init_addr_bits: last_proof_pv.last_init_addr_bits,
-                finalize_addr_bits: last_proof_pv.last_finalize_addr_bits,
+                init_addr: last_proof_pv.last_init_addr.0,
+                finalize_addr: last_proof_pv.last_finalize_addr.0,
                 committed_value_digest: last_proof_pv.committed_value_digest,
                 deferred_proofs_digest: last_proof_pv.deferred_proofs_digest,
             });

@@ -43,17 +43,17 @@ pub struct PublicValues<W, T> {
     /// The execution shard number.
     pub execution_shard: T,
 
-    /// The bits of the largest address that is witnessed for initialization in the previous shard.
-    pub previous_init_addr_bits: [T; 32],
+    /// The largest address that is witnessed for initialization in the previous shard.
+    pub previous_init_addr: W,
 
     /// The largest address that is witnessed for initialization in the current shard.
-    pub last_init_addr_bits: [T; 32],
+    pub last_init_addr: W,
 
-    /// The bits of the largest address that is witnessed for finalization in the previous shard.
-    pub previous_finalize_addr_bits: [T; 32],
+    /// The largest address that is witnessed for finalization in the previous shard.
+    pub previous_finalize_addr: W,
 
-    /// The bits of the largest address that is witnessed for finalization in the current shard.
-    pub last_finalize_addr_bits: [T; 32],
+    /// The largest address that is witnessed for finalization in the current shard.
+    pub last_finalize_addr: W,
 
     /// This field is here to ensure that the size of the public values struct is a multiple of 8.
     pub empty: [T; 3],
@@ -80,10 +80,10 @@ impl PublicValues<u32, u32> {
         copy.execution_shard = 0;
         copy.start_pc = 0;
         copy.next_pc = 0;
-        copy.previous_init_addr_bits = [0; 32];
-        copy.last_init_addr_bits = [0; 32];
-        copy.previous_finalize_addr_bits = [0; 32];
-        copy.last_finalize_addr_bits = [0; 32];
+        copy.previous_init_addr = 0;
+        copy.last_init_addr = 0;
+        copy.previous_finalize_addr = 0;
+        copy.last_finalize_addr = 0;
         copy
     }
 }
@@ -132,10 +132,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             exit_code,
             shard,
             execution_shard,
-            previous_init_addr_bits,
-            last_init_addr_bits,
-            previous_finalize_addr_bits,
-            last_finalize_addr_bits,
+            previous_init_addr,
+            last_init_addr,
+            previous_finalize_addr,
+            last_finalize_addr,
             ..
         } = value;
 
@@ -150,10 +150,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let exit_code = F::from_canonical_u32(exit_code);
         let shard = F::from_canonical_u32(shard);
         let execution_shard = F::from_canonical_u32(execution_shard);
-        let previous_init_addr_bits = previous_init_addr_bits.map(F::from_canonical_u32);
-        let last_init_addr_bits = last_init_addr_bits.map(F::from_canonical_u32);
-        let previous_finalize_addr_bits = previous_finalize_addr_bits.map(F::from_canonical_u32);
-        let last_finalize_addr_bits = last_finalize_addr_bits.map(F::from_canonical_u32);
+        let previous_init_addr = Word::from(previous_init_addr);
+        let last_init_addr = Word::from(last_init_addr);
+        let previous_finalize_addr = Word::from(previous_finalize_addr);
+        let last_finalize_addr = Word::from(last_finalize_addr);
 
         Self {
             committed_value_digest,
@@ -163,10 +163,10 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             exit_code,
             shard,
             execution_shard,
-            previous_init_addr_bits,
-            last_init_addr_bits,
-            previous_finalize_addr_bits,
-            last_finalize_addr_bits,
+            previous_init_addr,
+            last_init_addr,
+            previous_finalize_addr,
+            last_finalize_addr,
             empty: [F::ZERO, F::ZERO, F::ZERO],
         }
     }
