@@ -1222,22 +1222,18 @@ impl<'a> Executor<'a> {
 
         if instruction.is_alu_instruction() {
             // SUB (always), every SLT/SLTU shape (register-form `LtChip`, immediate-form
-            // `SltiChip` -- both use the cheap scheme, unlike `AddiChip` -- and zero-destination
-            // `AluX0Chip`), and ADD's `AddChip`/`AddNoopChip`-routed shapes (but *not* its
-            // `AddiChip`-routed shape -- MFHI/MTHI/MFLO/MTLO and ADDI/ADDIU, which still use the
-            // general-purpose scheme) are migrated to the cheap register-access timestamp scheme
-            // so far (see `SubChip`/`AddChip`/`AddNoopChip`/`LtChip`/`SltiChip`'s doc comments);
-            // their register accesses are the only ones that need a `MemoryBumpChip` event when
-            // they cross a `clk_high` boundary. Every other ALU chip/shape still uses the
-            // general-purpose scheme, which handles an arbitrary gap on its own -- emitting a
+            // `SltiChip`, and zero-destination `AluX0Chip`), and every ADD shape (register-form
+            // `AddChip`, immediate-form `AddiChip`, and fully-immediate SYNC/Pref via
+            // `AddNoopChip`) are migrated to the cheap register-access timestamp scheme so far
+            // (see `SubChip`/`AddChip`/`AddiChip`/`AddNoopChip`/`LtChip`/`SltiChip`'s doc
+            // comments); their register accesses are the only ones that need a `MemoryBumpChip`
+            // event when they cross a `clk_high` boundary. Every other ALU chip/shape still uses
+            // the general-purpose scheme, which handles an arbitrary gap on its own -- emitting a
             // bump event for one of *those* accesses would double-validate the same transition on
             // the shared memory argument and unbalance it. This condition must match
             // `emit_alu_event`'s routing exactly.
-            let uses_cheap_register_scheme = match instruction.opcode {
-                Opcode::SUB | Opcode::SLT | Opcode::SLTU => true,
-                Opcode::ADD => record.c.is_some() || instruction.imm_b,
-                _ => false,
-            };
+            let uses_cheap_register_scheme =
+                matches!(instruction.opcode, Opcode::ADD | Opcode::SUB | Opcode::SLT | Opcode::SLTU);
             if uses_cheap_register_scheme {
                 self.emit_memory_bump_events(instruction, &record);
             }
