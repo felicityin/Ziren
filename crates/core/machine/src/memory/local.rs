@@ -26,7 +26,7 @@ use crate::{
     CoreChipError,
 };
 
-pub const NUM_LOCAL_MEMORY_ENTRIES_PER_ROW: usize = 4;
+pub const NUM_LOCAL_MEMORY_ENTRIES_PER_ROW: usize = 1;
 pub(crate) const NUM_MEMORY_LOCAL_INIT_COLS: usize = size_of::<MemoryLocalCols<u8>>();
 
 #[derive(AlignedBorrow, Clone, Copy)]
