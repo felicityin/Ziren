@@ -5,8 +5,7 @@ use zkm_derive::PicusAnnotations;
 use zkm_hypercube::word::Word;
 
 use crate::{
-    adapter::InstructionCols,
-    adapter::{CpuState, RegisterReader},
+    adapter::{CpuState, ITypeImmutableReader},
     operations::KoalaBearWordRangeChecker,
 };
 
@@ -20,11 +19,12 @@ pub struct BranchColumns<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
+    /// Register operand access for `a`/`b`/`c`: `op_a`/`op_b` are both read-only (a branch
+    /// compares two registers but never writes one), `op_c` is always the instruction's own
+    /// encoded immediate offset (never a register) -- the Program lookup's instruction word is
+    /// reconstructed from this adapter's fields directly, so no separate `InstructionCols` is
+    /// needed (see `Air::eval`).
+    pub reader: ITypeImmutableReader<T>,
 
     /// The current program counter.
     pub pc: T,

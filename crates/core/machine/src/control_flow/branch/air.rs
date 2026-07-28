@@ -4,15 +4,15 @@ use p3_air::AirBuilder;
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use slop_air::{Air, AirBuilderWithPublicValues};
-use zkm_core_executor::Opcode;
+use zkm_core_executor::{events::MemoryAccessPosition, Opcode};
 use zkm_hypercube::{
     air::BaseAirBuilder,
     word::Word,
 };
 
 use crate::{
-    adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
-    air::ZKMCoreAirBuilder,
+    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, InstructionCols},
+    air::{WordAirBuilder, ZKMCoreAirBuilder},
     operations::KoalaBearWordRangeChecker,
 };
 
@@ -60,20 +60,54 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.clone());
+        // BEQ/BNE compare two real registers (`op_b` is `rt`, `imm_b = 0`); BLTZ/BGEZ/BLEZ/BGTZ
+        // compare `op_a` against a hardcoded-zero immediate in `op_b`'s slot (`imm_b = 1`, no
+        // register access at all for it) -- see `Instruction::decode`'s BGEZ/BLTZ/BLEZ/BGTZ arms.
+        // `op_a`/`op_c` don't have this split: `op_a` is always a real register for all six
+        // opcodes, `op_c` is always the encoded immediate offset.
+        let reads_op_b_as_register = local.is_beq + local.is_bne;
 
-        // Branch instructions only read `op_a` (for the comparison); `op_a_immutable = 1` means
-        // the register access must re-affirm the existing value rather than write a new one.
-        eval_register_reader(
-            builder,
-            &local.reader,
+        // The instruction word is reconstructed here rather than stored: `op_a`/`op_a_0`/`op_b`/
+        // `op_c` come from the adapter, and `opcode` is a sum over the six mutually-exclusive
+        // selectors (so, unlike a hardcoded opcode, there is nothing left to separately bind a
+        // selector to -- the correspondence holds by construction).
+        let opcode = local.is_beq.into() * AB::Expr::from_canonical_u32(Opcode::BEQ as u32)
+            + local.is_bne.into() * AB::Expr::from_canonical_u32(Opcode::BNE as u32)
+            + local.is_bltz.into() * AB::Expr::from_canonical_u32(Opcode::BLTZ as u32)
+            + local.is_bgez.into() * AB::Expr::from_canonical_u32(Opcode::BGEZ as u32)
+            + local.is_blez.into() * AB::Expr::from_canonical_u32(Opcode::BLEZ as u32)
+            + local.is_bgtz.into() * AB::Expr::from_canonical_u32(Opcode::BGTZ as u32);
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode,
+            op_a: local.reader.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.reader.op_b),
+            op_c: local.reader.op_c.map(Into::into),
+            op_a_0: local.reader.op_a_0.into(),
+            imm_b: AB::Expr::one() - reads_op_b_as_register.clone(),
+            imm_c: AB::Expr::one(),
+        };
+        builder.send_program(local.pc, instruction, is_real.clone());
+
+        // `op_a` is always a real register access. `op_b` only is for BEQ/BNE -- for the other
+        // four opcodes it's a hardcoded-zero immediate (see `reads_op_b_as_register` above), so
+        // its register-access lookup must be gated accordingly, and its witnessed value forced to
+        // zero on the remaining rows (otherwise a dishonest prover could witness any value there
+        // and use it, unconstrained, in the SLT comparisons below).
+        builder.eval_register_access_read(
             clk_high.clone(),
-            clk_low.clone(),
-            &local.instruction,
-            local.reader.op_a_val().map(Into::into),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::one(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::B as u32),
+            local.reader.op_b,
+            &local.reader.op_b_access,
+            reads_op_b_as_register.clone(),
+        );
+        builder
+            .when(is_real.clone() - reads_op_b_as_register)
+            .assert_word_zero(local.reader.op_b_val());
+        builder.eval_register_access_read(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::A as u32),
+            local.reader.op_a,
+            &local.reader.op_a_access,
             is_real.clone(),
         );
 
@@ -98,27 +132,6 @@ where
             AB::Expr::from_canonical_u32(5),
             is_real.clone(),
         );
-
-        // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
-        // can't claim the wrong branch variant while still passing the program lookup.
-        builder
-            .when(local.is_beq)
-            .assert_eq(local.instruction.opcode, Opcode::BEQ.as_field::<AB::F>());
-        builder
-            .when(local.is_bne)
-            .assert_eq(local.instruction.opcode, Opcode::BNE.as_field::<AB::F>());
-        builder
-            .when(local.is_bltz)
-            .assert_eq(local.instruction.opcode, Opcode::BLTZ.as_field::<AB::F>());
-        builder
-            .when(local.is_bgez)
-            .assert_eq(local.instruction.opcode, Opcode::BGEZ.as_field::<AB::F>());
-        builder
-            .when(local.is_blez)
-            .assert_eq(local.instruction.opcode, Opcode::BLEZ.as_field::<AB::F>());
-        builder
-            .when(local.is_bgtz)
-            .assert_eq(local.instruction.opcode, Opcode::BGTZ.as_field::<AB::F>());
 
         // Evaluate program counter constraints.
         {
@@ -149,7 +162,7 @@ where
                 Opcode::ADD.as_field::<AB::F>(),
                 local.next_next_pc,
                 local.next_pc,
-                local.reader.op_c_val(),
+                local.reader.op_c,
                 local.is_branching,
             );
 

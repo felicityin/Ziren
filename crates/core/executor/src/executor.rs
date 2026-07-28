@@ -1269,6 +1269,11 @@ impl<'a> Executor<'a> {
                 record,
             );
         } else if instruction.is_branch_instruction() {
+            // Every branch opcode's register operands (`op_a`/`op_b`) use the cheap
+            // register-access scheme now (see `BranchChip`'s doc comment), so this is
+            // unconditional -- `is_branch_instruction()` already narrows this branch to exactly
+            // that opcode set.
+            self.emit_memory_bump_events(instruction, &record);
             self.emit_branch_event(clk, instruction.opcode, a, b, c, next_pc, next_next_pc, record);
         } else if instruction.is_jump_instruction() {
             self.emit_jump_event(clk, instruction.opcode, a, b, c, next_pc, next_next_pc, record);
