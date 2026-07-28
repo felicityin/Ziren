@@ -1,5 +1,5 @@
 use crate::memory::MemoryReadWriteCols;
-use crate::operations::AddDoubleOperation;
+use crate::operations::{AddDoubleOperation, MulOperation};
 use std::mem::size_of;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::word::Word;
@@ -10,9 +10,8 @@ pub const NUM_MADDSUB_COLS: usize = size_of::<MaddsubCols<u8>>();
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MaddsubCols<T> {
-    /// Result value of intermediate mul operation.
-    pub mul_lo: Word<T>,
-    pub mul_hi: Word<T>,
+    /// The `b * c` product, computed locally (no cross-chip lookup into `MulChip`).
+    pub mul_operation: MulOperation<T>,
 
     /// Add operations of low/high word.
     pub add_operation: AddDoubleOperation<T>,

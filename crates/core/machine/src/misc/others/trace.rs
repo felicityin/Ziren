@@ -195,15 +195,8 @@ impl MiscInstrsChip {
 
         let is_sign = event.opcode == Opcode::MADD || event.opcode == Opcode::MSUB;
         let maddsub_cols = cols.misc_specific_columns.maddsub_mut();
-        let multiply = if is_sign {
-            ((event.b as i32 as i64) * (event.c as i32 as i64)) as u64
-        } else {
-            event.b as u64 * event.c as u64
-        };
-        let mul_hi = (multiply >> 32) as u32;
-        let mul_lo = multiply as u32;
-        maddsub_cols.mul_hi = Word::from(mul_hi);
-        maddsub_cols.mul_lo = Word::from(mul_lo);
+        let (mul_lo, mul_hi) = maddsub_cols.mul_operation.populate(blu, event.b, event.c, is_sign);
+        let multiply = ((mul_hi as u64) << 32) + (mul_lo as u64);
 
         let is_add = event.opcode == Opcode::MADDU || event.opcode == Opcode::MADD;
         let src2_lo = if is_add { event.prev_a } else { event.a };

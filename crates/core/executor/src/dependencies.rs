@@ -1,8 +1,5 @@
 use crate::{
-    events::{
-        AluEvent, BranchEvent, CompAluEvent, JumpEvent, MemInstrEvent, MemoryRecord,
-        MemoryWriteRecord, MiscEvent,
-    },
+    events::{AluEvent, BranchEvent, JumpEvent, MemInstrEvent, MemoryRecord, MiscEvent},
     utils::{get_msb, get_quotient_and_remainder, is_signed_operation},
     Executor, Opcode, DEFAULT_PC_INC, UNUSED_PC,
 };
@@ -10,7 +7,7 @@ use crate::{
 /// Emits the dependencies for division and remainder operations.
 #[allow(clippy::too_many_lines)]
 pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
-    let (quotient, remainder) = get_quotient_and_remainder(event.b, event.c, event.opcode);
+    let (_, remainder) = get_quotient_and_remainder(event.b, event.c, event.opcode);
     let c_msb = get_msb(event.c);
     let rem_msb = get_msb(remainder);
     let mut c_neg = 0;
@@ -52,38 +49,8 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
         });
     }
 
-    let c_times_quotient = {
-        if is_signed_operation {
-            (((quotient as i32) as i64) * ((event.c as i32) as i64)).to_le_bytes()
-        } else {
-            ((quotient as u64) * (event.c as u64)).to_le_bytes()
-        }
-    };
-    let lower_word = u32::from_le_bytes(c_times_quotient[0..4].try_into().unwrap());
-    let upper_word = u32::from_le_bytes(c_times_quotient[4..8].try_into().unwrap());
-
-    let multiplication = CompAluEvent {
-        clk: 0,
-        pc: UNUSED_PC,
-        next_pc: UNUSED_PC + DEFAULT_PC_INC,
-        opcode: {
-            if is_signed_operation {
-                Opcode::MULT
-            } else {
-                Opcode::MULTU
-            }
-        },
-        a: lower_word,
-        c: event.c,
-        b: quotient,
-        hi: upper_word,
-        hi_record_is_real: false,
-        hi_record: MemoryWriteRecord::default(),
-        a_record: None,
-        b_record: None,
-        c_record: None,
-    };
-    executor.record.mul_events.push(multiplication);
+    // `c * quotient` is now verified locally by `DivRemChip` via an embedded `MulOperation` (see
+    // `alu/divrem/mod.rs`), so no dependency send into `mul_events` is needed here at all.
 
     let lt_event = if is_signed_operation {
         AluEvent {
@@ -283,47 +250,10 @@ pub fn emit_jump_dependencies(executor: &mut Executor, event: JumpEvent) {
 
 /// Emit the dependencies for misc instructions.
 pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
-    if matches!(event.opcode, Opcode::MADDU | Opcode::MSUBU) {
-        let multiply = event.b as u64 * event.c as u64;
-        let mul_hi = (multiply >> 32) as u32;
-        let mul_lo = multiply as u32;
-        let mul_event = CompAluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::MULTU,
-            hi: mul_hi,
-            a: mul_lo,
-            b: event.b,
-            c: event.c,
-            hi_record_is_real: false,
-            hi_record: MemoryWriteRecord::default(),
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.add_mul_event(mul_event);
-    } else if matches!(event.opcode, Opcode::MADD | Opcode::MSUB) {
-        let multiply = ((event.b as i32 as i64) * (event.c as i32 as i64)) as u64;
-        let mul_hi = (multiply >> 32) as u32;
-        let mul_lo = multiply as u32;
-        let mul_event = CompAluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::MULT,
-            hi: mul_hi,
-            a: mul_lo,
-            b: event.b,
-            c: event.c,
-            hi_record_is_real: false,
-            hi_record: MemoryWriteRecord::default(),
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.add_mul_event(mul_event);
-    } else if matches!(event.opcode, Opcode::EXT) {
+    // MADD/MADDU/MSUB/MSUBU's `b * c` is now verified locally by `MiscInstrsChip` via an
+    // embedded `MulOperation` (see `misc/others/air.rs`'s `eval_maddsub`), so no dependency send
+    // into `mul_events` is needed here at all.
+    if matches!(event.opcode, Opcode::EXT) {
         let lsb = event.c & 0x1f;
         let msbd = event.c >> 5;
         // `execute_ext` rejects encodings with `lsb + msbd >= 32`, so the `31 - lsb - msbd`

@@ -95,7 +95,7 @@ use crate::{
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
-    operations::{IsEqualWordOperation, IsZeroWordOperation},
+    operations::{IsEqualWordOperation, IsZeroWordOperation, MulOperation},
     utils::next_power_of_two,
 };
 
@@ -157,8 +157,8 @@ pub struct DivRemCols<T: Copy> {
     /// `max(abs(c), 1)`, used to check `abs(remainder) < abs(c)`.
     pub max_abs_c_or_1: Word<T>,
 
-    /// The result of `c * quotient`.
-    pub c_times_quotient: [T; LONG_WORD_SIZE],
+    /// The `c * quotient` product, computed locally (no cross-chip lookup into `MulChip`).
+    pub mul_operation: MulOperation<T>,
 
     /// Carry propagated when adding `remainder` by `c * quotient`.
     pub carry: [T; LONG_WORD_SIZE],
@@ -363,14 +363,11 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
 
             // Calculate c * quotient + remainder.
             {
-                let c_times_quotient = {
-                    if is_signed_operation(event.opcode) {
-                        (((quotient as i32) as i64) * ((event.c as i32) as i64)).to_le_bytes()
-                    } else {
-                        ((quotient as u64) * (event.c as u64)).to_le_bytes()
-                    }
-                };
-                cols.c_times_quotient = c_times_quotient.map(F::from_canonical_u8);
+                let (lo, hi) =
+                    cols.mul_operation.populate(output, quotient, event.c, is_signed_operation(event.opcode));
+                let mut c_times_quotient = [0u8; LONG_WORD_SIZE];
+                c_times_quotient[..WORD_SIZE].copy_from_slice(&lo.to_le_bytes());
+                c_times_quotient[WORD_SIZE..].copy_from_slice(&hi.to_le_bytes());
 
                 let remainder_bytes = {
                     if is_signed_operation(event.opcode) {
@@ -392,13 +389,13 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                     cols.carry[i] = F::from_canonical_u32(carry[i]);
                 }
 
-                // Range check.
+                // Range check. (`c_times_quotient`'s bytes are already range-checked by
+                // `mul_operation.populate` above.)
                 {
                     output.add_u8_range_checks(&event.b.to_le_bytes());
                     output.add_u8_range_checks(&event.c.to_le_bytes());
                     output.add_u8_range_checks(&quotient.to_le_bytes());
                     output.add_u8_range_checks(&remainder.to_le_bytes());
-                    output.add_u8_range_checks(&c_times_quotient);
                 }
             }
 
@@ -468,39 +465,26 @@ where
             }
         }
 
-        // Use the mult or multu table to compute c * quotient and compare it to local.c_times_quotient.
-        {
-            let lower_half: [AB::Expr; 4] = [
-                local.c_times_quotient[0].into(),
-                local.c_times_quotient[1].into(),
-                local.c_times_quotient[2].into(),
-                local.c_times_quotient[3].into(),
-            ];
-
-            let upper_half: [AB::Expr; 4] = [
-                local.c_times_quotient[4].into(),
-                local.c_times_quotient[5].into(),
-                local.c_times_quotient[6].into(),
-                local.c_times_quotient[7].into(),
-            ];
-
-            let opcode = {
-                let mult = AB::Expr::from_canonical_u32(Opcode::MULT as u32);
-                let multu = AB::Expr::from_canonical_u32(Opcode::MULTU as u32);
-                (local.is_div + local.is_mod) * mult + (local.is_divu + local.is_modu) * multu
-            };
-
-            // The lower 4 bytes of c_times_quotient must match the LO in (c * quotient).
-            // The upper 4 bytes of c_times_quotient must match the HI in (c * quotient).
-            builder.send_alu_with_hi(
-                opcode,
-                Word(lower_half),
-                local.quotient,
-                local.c,
-                Word(upper_half),
-                is_real.clone(),
-            );
-        }
+        // Compute c * quotient locally (no cross-chip lookup into `MulChip`). DIV/MOD treat their
+        // operands as signed; DIVU/MODU as unsigned.
+        let (c_times_quotient_lo, c_times_quotient_hi) = MulOperation::<AB::F>::eval(
+            builder,
+            local.quotient,
+            local.c,
+            local.mul_operation,
+            local.is_div + local.is_mod,
+            is_real.clone(),
+        );
+        let c_times_quotient: [AB::Var; LONG_WORD_SIZE] = [
+            c_times_quotient_lo[0],
+            c_times_quotient_lo[1],
+            c_times_quotient_lo[2],
+            c_times_quotient_lo[3],
+            c_times_quotient_hi[0],
+            c_times_quotient_hi[1],
+            c_times_quotient_hi[2],
+            c_times_quotient_hi[3],
+        ];
 
         // Calculate is_overflow. is_overflow = is_equal(b, -2^{31}) * is_equal(c, -1) * is_signed
         {
@@ -536,7 +520,7 @@ where
 
             // Add remainder to c_times_quotient and propagate carry.
             for i in 0..LONG_WORD_SIZE {
-                c_times_quotient_plus_remainder[i] = local.c_times_quotient[i].into();
+                c_times_quotient_plus_remainder[i] = c_times_quotient[i].into();
 
                 // Add remainder.
                 if i < WORD_SIZE {
@@ -724,7 +708,7 @@ where
                 builder.assert_bool(*carry);
             });
 
-            builder.slice_range_check_u8(&local.c_times_quotient, is_real.clone());
+            // `c_times_quotient`'s bytes are already range-checked by `MulOperation::eval` above.
         }
 
         // Check that the flags are boolean.

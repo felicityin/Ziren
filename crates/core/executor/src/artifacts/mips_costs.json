@@ -39,7 +39,7 @@
   "U256XU2048Mul": 3158,
   "StoreWord": 48,
   "Addi": 36,
-  "DivRem": 151,
+  "DivRem": 163,
   "KeccakSponge": 84888,
   "ShiftLeft": 92,
   "MemoryLocal": 14,
@@ -48,7 +48,7 @@
   "Global": 100,
   "AddNoop": 16,
   "Poseidon2Permute": 988,
-  "Mul": 104,
+  "Mul": 91,
   "ShaExtend": 8016,
   "Bls12381AddAssign": 3090,
   "SyscallPrecompile": 11,
@@ -65,6 +65,6 @@
   "SyscallCore": 11,
   "Bls12381FpOpAssign": 557,
   "ShaCompress": 20960,
-  "MiscInstrs": 117,
+  "MiscInstrs": 129,
   "LoadWordUnaligned": 72
 }

@@ -14,8 +14,8 @@ use zkm_hypercube::{
 
 use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
-    air::{MemoryAirBuilder, WordAirBuilder, ZKMCoreAirBuilder},
-    operations::AddDoubleOperation,
+    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    operations::{AddDoubleOperation, MulOperation},
 };
 
 use super::{columns::MiscInstrColumns, MiscInstrsChip};
@@ -203,7 +203,7 @@ impl MiscInstrsChip {
         }
     }
 
-    pub(crate) fn eval_maddsub<AB: ZKMAirBuilder>(
+    pub(crate) fn eval_maddsub<AB: ZKMCoreAirBuilder>(
         &self,
         builder: &mut AB,
         local: &MiscInstrColumns<AB::Var>,
@@ -211,19 +211,16 @@ impl MiscInstrsChip {
         let maddsub_cols = local.misc_specific_columns.maddsub();
         let is_real = local.is_maddu + local.is_msubu + local.is_madd + local.is_msub;
         let is_sign = local.is_madd + local.is_msub;
-        let is_unsign = local.is_maddu + local.is_msubu;
         let is_add = local.is_maddu + local.is_madd;
         let is_sub = local.is_msubu + local.is_msub;
 
-        let opcode = is_sign * Opcode::MULT.as_field::<AB::F>()
-            + is_unsign * Opcode::MULTU.as_field::<AB::F>();
-
-        builder.send_alu_with_hi(
-            opcode,
-            maddsub_cols.mul_lo,
+        // Compute b * c locally (no cross-chip lookup into `MulChip`).
+        let (mul_lo, mul_hi) = MulOperation::<AB::F>::eval(
+            builder,
             local.op_b_value,
             local.op_c_value,
-            maddsub_cols.mul_hi,
+            maddsub_cols.mul_operation,
+            is_sign,
             is_real.clone(),
         );
 
@@ -241,8 +238,8 @@ impl MiscInstrsChip {
 
         AddDoubleOperation::<AB::F>::eval(
             builder,
-            maddsub_cols.mul_lo,
-            maddsub_cols.mul_hi,
+            mul_lo,
+            mul_hi,
             maddsub_cols.src2_lo,
             maddsub_cols.src2_hi,
             maddsub_cols.add_operation,
