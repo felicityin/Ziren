@@ -23,7 +23,7 @@ use crate::{
         InstructionCols, JTypeReaderNonZero,
     },
     air::ZKMCoreAirBuilder,
-    operations::KoalaBearWordRangeChecker,
+    operations::{AddOperation, KoalaBearWordRangeChecker},
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -37,7 +37,7 @@ pub const NUM_JUMP_DIRECT_COLS: usize = size_of::<JumpDirectCols<u8>>();
 /// guaranteed-nonzero `JTypeReaderNonZero` adapter (see its doc comment).
 ///
 /// Unlike `JumpChip`/`JumpiChip`, BAL's target is pc-relative (`next_next_pc = next_pc + op_b`),
-/// so this chip sends a synthetic ADD row to `AddChip` to verify it.
+/// verified via a locally embedded `AddOperation` (no cross-chip lookup).
 #[derive(Default)]
 pub struct JumpDirectChip;
 
@@ -61,8 +61,8 @@ pub struct JumpDirectCols<T: Copy> {
     pub next_pc: Word<T>,
     pub next_pc_range_checker: KoalaBearWordRangeChecker<T>,
 
-    /// The resolved jump target (`next_pc + op_b`), the ADD lookup's witnessed result.
-    pub next_next_pc: Word<T>,
+    /// The resolved jump target (`next_pc + op_b`), computed locally by `add_operation`.
+    pub add_operation: AddOperation<T>,
     pub next_next_pc_range_checker: KoalaBearWordRangeChecker<T>,
 
     /// The value written to `op_a` (`next_pc + 4`). Unlike `JumpChip`/`JumpiChip`'s masked
@@ -156,8 +156,8 @@ impl JumpDirectChip {
 
         cols.next_pc = Word::from(event.next_pc);
         cols.next_pc_range_checker.populate(event.next_pc);
-        cols.next_next_pc = Word::from(event.next_next_pc);
-        cols.next_next_pc_range_checker.populate(event.next_next_pc);
+        let target_pc = cols.add_operation.populate(blu, event.next_pc, event.b);
+        cols.next_next_pc_range_checker.populate(target_pc);
         cols.op_a_value = Word::from(event.a);
         cols.op_a_range_checker.populate(event.a);
     }
@@ -221,6 +221,17 @@ where
 
         eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
 
+        // BAL's target is pc-relative: `next_next_pc = next_pc + op_b`, computed locally by
+        // `add_operation` (no cross-chip lookup).
+        AddOperation::<AB::F>::eval(
+            builder,
+            local.next_pc,
+            local.reader.op_b,
+            local.add_operation,
+            local.is_real.into(),
+        );
+        let next_next_pc = local.add_operation.value;
+
         eval_state_chain(
             builder,
             clk_high,
@@ -228,24 +239,14 @@ where
             local.pc.into(),
             local.next_pc.reduce::<AB>(),
             local.next_pc.reduce::<AB>(),
-            local.next_next_pc.reduce::<AB>(),
+            next_next_pc.reduce::<AB>(),
             AB::Expr::from_canonical_u32(5),
             local.is_real.into(),
         );
 
-        // BAL's target is pc-relative: `next_next_pc = next_pc + op_b`, verified via a synthetic
-        // ADD lookup (mirroring the pre-split chip's own JumpDirect handling).
-        builder.send_alu(
-            Opcode::ADD.as_field::<AB::F>(),
-            local.next_next_pc,
-            local.next_pc,
-            local.reader.op_b,
-            local.is_real,
-        );
-
         // Range check `next_pc`, `next_next_pc`, and the value written to `op_a`.
-        // SAFETY: `is_real` is already checked to be boolean. `next_next_pc` is the ADD lookup's
-        // own witnessed result, so it isn't already known to be a valid word the way an existing
+        // SAFETY: `is_real` is already checked to be boolean. `next_next_pc` (`add_operation`'s
+        // own witnessed result) isn't already known to be a valid word the way an existing
         // register value or Program-table immediate would be -- it still needs its own check.
         KoalaBearWordRangeChecker::<AB::F>::range_check(
             builder,
@@ -255,7 +256,7 @@ where
         );
         KoalaBearWordRangeChecker::<AB::F>::range_check(
             builder,
-            local.next_next_pc,
+            next_next_pc,
             local.next_next_pc_range_checker,
             local.is_real.into(),
         );

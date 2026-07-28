@@ -1,3 +1,4 @@
+use crate::operations::AddOperation;
 use std::mem::size_of;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::word::Word;
@@ -22,5 +23,7 @@ pub struct InsCols<T> {
     pub srl1_val: Word<T>,
     pub srl_val: Word<T>,
     pub sll_val: Word<T>,
-    pub add_val: Word<T>,
+
+    /// `add_val = srl_val + sll_val`, computed locally (no cross-chip lookup into `AddChip`).
+    pub add_operation: AddOperation<T>,
 }

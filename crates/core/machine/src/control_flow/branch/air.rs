@@ -13,7 +13,7 @@ use zkm_hypercube::{
 use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, InstructionCols},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
-    operations::KoalaBearWordRangeChecker,
+    operations::{AddOperation, KoalaBearWordRangeChecker},
 };
 
 use super::{BranchChip, BranchColumns};
@@ -154,17 +154,21 @@ where
                 is_real.clone(),
             );
 
-            // When we are branching, assert that local.next_next_pc <==> local.next_pc + c.
-            // `next_next_pc` is sent directly as the ADD lookup's result -- no intermediate
-            // `target_pc` column is needed, since the only thing it was ever compared against
-            // was `next_next_pc` itself.
-            builder.send_alu(
-                Opcode::ADD.as_field::<AB::F>(),
-                local.next_next_pc,
+            // When we are branching, assert that local.next_next_pc <==> local.next_pc + c,
+            // computed locally by `add_operation` (no cross-chip lookup). `add_operation` is
+            // populated with `next_pc + op_c` unconditionally (see `trace.rs`), but only
+            // meaningful here when `is_branching` -- the not-branching case is handled by the
+            // separate `next_pc + 4` assertion below instead.
+            AddOperation::<AB::F>::eval(
+                builder,
                 local.next_pc,
                 local.reader.op_c,
-                local.is_branching,
+                local.add_operation,
+                local.is_branching.into(),
             );
+            builder
+                .when(local.is_branching)
+                .assert_word_eq(local.next_next_pc, local.add_operation.value);
 
             // When we are not branching, assert that local.next_pc + 4 <==> next.next_next_pc.
             builder.when(is_real.clone()).when_not(local.is_branching).assert_eq(

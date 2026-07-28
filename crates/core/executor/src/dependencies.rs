@@ -1,6 +1,6 @@
 use crate::{
-    events::{AluEvent, BranchEvent, JumpEvent, MemInstrEvent, MemoryRecord, MiscEvent},
-    utils::{get_msb, get_quotient_and_remainder, is_signed_operation},
+    events::{AluEvent, BranchEvent, MemInstrEvent, MemoryRecord, MiscEvent},
+    utils::{get_quotient_and_remainder, is_signed_operation},
     Executor, Opcode, DEFAULT_PC_INC, UNUSED_PC,
 };
 
@@ -8,49 +8,11 @@ use crate::{
 #[allow(clippy::too_many_lines)]
 pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
     let (_, remainder) = get_quotient_and_remainder(event.b, event.c, event.opcode);
-    let c_msb = get_msb(event.c);
-    let rem_msb = get_msb(remainder);
-    let mut c_neg = 0;
-    let mut rem_neg = 0;
     let is_signed_operation = is_signed_operation(event.opcode);
-    if is_signed_operation {
-        c_neg = c_msb; // same as abs_c_alu_event
-        rem_neg = rem_msb; // same as abs_rem_alu_event
-    }
 
-    if c_neg == 1 {
-        executor.record.add_events.push(AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::ADD,
-            hi: 0,
-            a: 0,
-            b: event.c,
-            c: (event.c as i32).unsigned_abs(),
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        });
-    }
-    if rem_neg == 1 {
-        executor.record.add_events.push(AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::ADD,
-            hi: 0,
-            a: 0,
-            b: remainder,
-            c: (remainder as i32).unsigned_abs(),
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        });
-    }
-
-    // `c * quotient` is now verified locally by `DivRemChip` via an embedded `MulOperation` (see
-    // `alu/divrem/mod.rs`), so no dependency send into `mul_events` is needed here at all.
+    // `0 == c + abs_c` / `0 == remainder + abs_remainder` and `c * quotient` are now verified
+    // locally by `DivRemChip` via embedded `AddOperation`/`MulOperation` (see `alu/divrem/mod.rs`),
+    // so no dependency sends into `add_events`/`mul_events` are needed here at all.
 
     let lt_event = if is_signed_operation {
         AluEvent {
@@ -164,7 +126,6 @@ pub fn emit_memory_dependencies(
 
 /// Emit the dependencies for branch instructions.
 pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
-    let a_eq_b = event.a == event.b;
     let a_lt_b = (event.a as i32) < (event.b as i32);
     let a_gt_b = (event.a as i32) > (event.b as i32);
 
@@ -196,56 +157,8 @@ pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
     };
     executor.record.lt_events.push(lt_comp_event);
     executor.record.lt_events.push(gt_comp_event);
-    let branching = match event.opcode {
-        Opcode::BEQ => a_eq_b,
-        Opcode::BNE => !a_eq_b,
-        Opcode::BLTZ => a_lt_b,
-        Opcode::BLEZ => a_lt_b || a_eq_b,
-        Opcode::BGTZ => a_gt_b,
-        Opcode::BGEZ => a_eq_b || a_gt_b,
-        _ => unreachable!(),
-    };
-    if branching {
-        let add_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::ADD,
-            hi: 0,
-            a: event.next_next_pc,
-            b: event.next_pc,
-            c: event.c,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.add_events.push(add_event);
-    }
-}
-
-/// Emit the dependencies for jump instructions.
-pub fn emit_jump_dependencies(executor: &mut Executor, event: JumpEvent) {
-    match event.opcode {
-        Opcode::JumpDirect => {
-            let target_pc = event.next_pc.wrapping_add(event.b);
-            let add_event = AluEvent {
-                clk: 0,
-                pc: UNUSED_PC,
-                next_pc: UNUSED_PC + DEFAULT_PC_INC,
-                opcode: Opcode::ADD,
-                hi: 0,
-                a: target_pc,
-                b: event.next_pc,
-                c: event.b,
-                a_record: None,
-                b_record: None,
-                c_record: None,
-            };
-            executor.record.add_events.push(add_event);
-        }
-        Opcode::Jump | Opcode::Jumpi => {}
-        _ => unreachable!(),
-    }
+    // The taken-branch `next_next_pc = next_pc + c` is now verified locally by `BranchChip` via an
+    // embedded `AddOperation`, so no dependency send into `add_events` is needed here at all.
 }
 
 /// Emit the dependencies for misc instructions.
@@ -359,21 +272,10 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         };
         executor.record.shift_left_events.push(sll_event);
 
+        // `extra_shift = srl_val + sll_val` is now verified locally by `MiscInstrsChip` via an
+        // embedded `AddOperation` (see `misc/others/air.rs`'s `eval_ins`), so no dependency send
+        // into `add_events` is needed here at all.
         let extra_shift = srl_val + sll_val;
-        let add_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::ADD,
-            hi: 0,
-            a: extra_shift,
-            b: srl_val,
-            c: sll_val,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.add_events.push(add_event);
 
         let ror_event2 = AluEvent {
             clk: 0,

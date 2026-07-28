@@ -16,7 +16,7 @@ use crate::{
     context::ZKMContext,
     dependencies::{
         emit_branch_dependencies, emit_cloclz_dependencies, emit_divrem_dependencies,
-        emit_jump_dependencies, emit_memory_dependencies, emit_misc_dependencies,
+        emit_memory_dependencies, emit_misc_dependencies,
     },
     estimate_mips_event_counts, estimate_mips_lde_size,
     events::{
@@ -1609,7 +1609,6 @@ impl<'a> Executor<'a> {
                 "emit_jump_event is only called for jump opcodes, all of which are handled above"
             ),
         }
-        emit_jump_dependencies(self, event);
     }
 
     /// Emit a misc event.

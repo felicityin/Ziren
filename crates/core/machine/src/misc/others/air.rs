@@ -15,7 +15,7 @@ use zkm_hypercube::{
 use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
-    operations::{AddDoubleOperation, MulOperation},
+    operations::{AddDoubleOperation, AddOperation, MulOperation},
 };
 
 use super::{columns::MiscInstrColumns, MiscInstrsChip};
@@ -274,7 +274,7 @@ impl MiscInstrsChip {
         );
     }
 
-    pub(crate) fn eval_ins<AB: ZKMAirBuilder>(
+    pub(crate) fn eval_ins<AB: ZKMCoreAirBuilder>(
         &self,
         builder: &mut AB,
         local: &MiscInstrColumns<AB::Var>,
@@ -343,18 +343,21 @@ impl MiscInstrsChip {
                 local.is_ins,
             );
 
-            builder.send_alu(
-                Opcode::ADD.as_field::<AB::F>(),
-                ins_cols.add_val,
+            // `add_val = srl_val + sll_val`, computed locally (no cross-chip lookup into
+            // `AddChip`).
+            AddOperation::<AB::F>::eval(
+                builder,
                 ins_cols.srl_val,
                 ins_cols.sll_val,
-                local.is_ins,
+                ins_cols.add_operation,
+                local.is_ins.into(),
             );
+            let add_val = ins_cols.add_operation.value;
 
             builder.send_alu(
                 Opcode::ROR.as_field::<AB::F>(),
                 local.op_a_value,
-                ins_cols.add_val,
+                add_val,
                 Word([
                     AB::Expr::from_canonical_u32(31) - ins_cols.msb,
                     AB::Expr::zero(),

@@ -143,7 +143,14 @@ impl BranchChip {
         cols.next_pc_range_checker.populate(event.next_pc);
         cols.next_next_pc_range_checker.populate(event.next_next_pc);
         cols.is_branching = F::from_bool(branching);
-        if !branching {
+        if branching {
+            // `next_next_pc = next_pc + op_c`: only populated (and its byte-range-check
+            // dependency events only recorded) when actually branching, matching the AIR's
+            // `is_branching`-gated `AddOperation::eval` -- populating it unconditionally would
+            // record BLU events with no matching send on non-branching rows, an interaction
+            // imbalance.
+            cols.add_operation.populate(blu, event.next_pc, event.c);
+        } else {
             blu.add_u8_range_checks(&event.next_pc.to_le_bytes());
             blu.add_u8_range_checks(&event.next_next_pc.to_le_bytes());
         }

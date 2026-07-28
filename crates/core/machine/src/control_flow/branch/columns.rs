@@ -6,7 +6,7 @@ use zkm_hypercube::word::Word;
 
 use crate::{
     adapter::{CpuState, ITypeImmutableReader},
-    operations::KoalaBearWordRangeChecker,
+    operations::{AddOperation, KoalaBearWordRangeChecker},
 };
 
 pub const NUM_BRANCH_COLS: usize = size_of::<BranchColumns<u8>>();
@@ -33,12 +33,16 @@ pub struct BranchColumns<T: Copy> {
     pub next_pc: Word<T>,
     pub next_pc_range_checker: KoalaBearWordRangeChecker<T>,
 
-    /// The next next program counter. When branching, this is also the ADD lookup's result
-    /// (`next_pc + op_c`), so no separate `target_pc` column is needed.
+    /// The next next program counter: `next_pc + op_c` when branching (cross-checked against
+    /// `add_operation.value` below), `next_pc + 4` otherwise.
     pub next_next_pc: Word<T>,
 
     /// Range check for next next program counter.
     pub next_next_pc_range_checker: KoalaBearWordRangeChecker<T>,
+
+    /// Computes `next_pc + op_c` locally (no cross-chip lookup); only meaningful when
+    /// `is_branching`, since `next_next_pc` takes a different formula (`next_pc + 4`) otherwise.
+    pub add_operation: AddOperation<T>,
 
     /// Branch Instructions Selectors.
     #[cfg_attr(feature = "picus", picus(selector))]

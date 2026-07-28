@@ -5,14 +5,13 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
     events::{AluEvent, ByteLookupEvent, ByteRecord},
-    ExecutionRecord, Opcode, Program, UNUSED_PC,
+    ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
@@ -24,7 +23,7 @@ use zkm_hypercube::{air::MachineAir, word::Word};
 use crate::{
     adapter::InstructionCols,
     adapter::{clk_low_expr, eval_cpu_state, eval_r_type_reader, eval_state_chain, CpuState, RTypeReader},
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    air::ZKMCoreAirBuilder,
     operations::AddOperation,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
@@ -35,14 +34,10 @@ pub const NUM_ADD_COLS: usize = size_of::<AddCols<u8>>();
 
 /// A chip that implements addition for the register-form opcodes ADD and ADDU.
 ///
-/// Not every row corresponds to a real retired instruction: some rows are internal dependency
-/// checks emitted by other chips (e.g. DivRem verifying `quotient*divisor+remainder`, or
-/// Branch/Jump verifying a target-address addition) that reuse this chip's arithmetic circuit
-/// instead of duplicating it. Those rows carry the sentinel `pc == UNUSED_PC` and hand off via
-/// the chip-to-chip `send_alu`/`receive_instruction` pair on `LookupKind::Instruction`, bypassing
-/// program lookup and register access entirely. `is_retired` distinguishes the two (kept as its
-/// own witnessed column rather than folded into a product, since interaction
-/// values/multiplicities in this lookup argument must stay affine in the trace columns).
+/// Every row is a real, retired ADD/ADDU instruction -- unlike `MulChip`/`DivRemChip` before it,
+/// nothing sends a synthetic dependency row here: `BranchChip`/`JumpDirectChip`/`DivRemChip` each
+/// embed their own copy of `AddOperation` for their internal target-address/overflow checks
+/// instead of routing through a shared lookup.
 ///
 /// `Opcode::ADD` also covers two other shapes, both split into their own chips: ADDI/ADDIU
 /// (register `b` + an encoded immediate `c`, see `AddiChip`) and SYNC/Pref (fully-immediate,
@@ -61,32 +56,20 @@ pub struct AddChip;
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct AddCols<T: Copy> {
-    /// The current shard and clk. Only meaningful when `is_retired == 1`.
+    /// The current shard and clk.
     pub state: CpuState<T>,
 
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// Register operand access for `a`/`b`/`c`. Only meaningful when this row is a real
-    /// instruction (`is_retired == 1`).
+    /// Register operand access for `a`/`b`/`c`.
     pub adapter: RTypeReader<T>,
 
-    /// Whether this row is a real, retired ADD instruction (as opposed to an internal
-    /// dependency check from another chip, or padding).
-    pub is_retired: T,
-
-    /// Instance of `AddOperation` to handle addition logic: `value = operand_1 + operand_2`.
+    /// Instance of `AddOperation` to handle addition logic: `value = op_b + op_c`.
     pub add_operation: AddOperation<T>,
 
-    /// The first input operand (register `b` for a real instruction).
-    pub operand_1: Word<T>,
-
-    /// The second input operand (register `c` for a real instruction).
-    pub operand_2: Word<T>,
-
-    /// Flag indicating whether this row is a real ADD-shaped row (retired instruction or
-    /// synthetic dependency check) as opposed to padding.
+    /// Whether this row is a real, retired ADD instruction (as opposed to padding).
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_real: T,
 }
@@ -137,10 +120,10 @@ impl<F: PrimeField32> MachineAir<F> for AddChip {
                         let event = &input.add_events[idx];
                         self.event_to_row(event, cols, &mut byte_lookup_events, &input.program);
                     }
-                    // A padding row is left all-zero: `is_real`/`is_retired` default to 0, which
-                    // gates every interaction below to zero multiplicity on its own -- unlike the
-                    // generic `RegisterReader`, `RTypeReader` needs no separate "force immediate
-                    // flags" workaround for this.
+                    // A padding row is left all-zero: `is_real` defaults to 0, which gates every
+                    // interaction below to zero multiplicity on its own -- unlike the generic
+                    // `RegisterReader`, `RTypeReader` needs no separate "force immediate flags"
+                    // workaround for this.
                 });
             },
         );
@@ -198,30 +181,20 @@ impl AddChip {
 
         cols.is_real = F::ONE;
 
-        let operand_1 = event.b;
-        let operand_2 = event.c;
+        cols.add_operation.populate(blu, event.b, event.c);
 
-        cols.add_operation.populate(blu, operand_1, operand_2);
-        cols.operand_1 = Word::from(operand_1);
-        cols.operand_2 = Word::from(operand_2);
+        cols.state.populate(blu, event.clk);
 
-        let is_real_instruction = event.pc != UNUSED_PC;
-        if is_real_instruction {
-            cols.is_retired = F::ONE;
-
-            cols.state.populate(blu, event.clk);
-
-            let instruction = program.fetch(event.pc);
-            cols.adapter.populate(
-                blu,
-                instruction.op_a,
-                event.a_record,
-                instruction.op_b,
-                event.b_record,
-                instruction.op_c,
-                event.c_record,
-            );
-        }
+        let instruction = program.fetch(event.pc);
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+            event.c_record,
+        );
     }
 }
 
@@ -241,28 +214,17 @@ where
         let local: &AddCols<AB::Var> = (*local).borrow();
 
         builder.assert_bool(local.is_real);
-        builder.assert_bool(local.is_retired);
-        // `is_retired` can only be set alongside `is_real` -- kept as its own witnessed column
-        // (not the product `is_real * is_retired`) because interaction values/multiplicities in
-        // this lookup argument must stay affine in the trace columns.
-        builder.when_not(local.is_real).assert_zero(local.is_retired);
 
         // Evaluate the addition operation.
         AddOperation::<AB::F>::eval(
             builder,
-            local.operand_1,
-            local.operand_2,
+            local.adapter.op_b_val(),
+            local.adapter.op_c_val(),
             local.add_operation,
             local.is_real.into(),
         );
 
-        // Register `a` is written `add_operation.value`, register `b` holds `operand_1`, and
-        // register `c` holds `operand_2` -- a direct (not rearranged) mapping, unlike Sub's
-        // `a = b - c` verified as `b = a + c`.
-        let op_b_role = local.operand_1;
-        let op_c_role = local.operand_2;
-
-        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
@@ -283,7 +245,7 @@ where
             imm_b: AB::Expr::zero(),
             imm_c: AB::Expr::zero(),
         };
-        builder.send_program(local.pc, instruction, local.is_retired.into());
+        builder.send_program(local.pc, instruction, local.is_real.into());
 
         eval_r_type_reader(
             builder,
@@ -291,10 +253,10 @@ where
             clk_high.clone(),
             clk_low.clone(),
             local.add_operation.value.map(Into::into),
-            local.is_retired.into(),
+            local.is_real.into(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_retired.into());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -306,42 +268,7 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            local.is_retired.into(),
-        );
-
-        builder
-            .when(local.is_retired)
-            .assert_word_eq(local.adapter.op_b_val(), op_b_role.map(Into::into));
-        builder
-            .when(local.is_retired)
-            .assert_word_eq(local.adapter.op_c_val(), op_c_role.map(Into::into));
-
-        // ---- Synthetic dependency path: matches whichever chip generated this internal check via
-        // `send_alu`/`send_alu_with_hi` (always at the `UNUSED_PC` sentinel, shard/clk zero).
-        // `is_real - is_retired` is 1 exactly when this is a real ADD row that is *not* a real
-        // instruction, i.e. a synthetic dependency row -- and stays affine (degree 1), unlike the
-        // product `is_real * (1 - is_retired)`. ----
-        let zero_word =
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]);
-
-        builder.receive_instruction(
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            Opcode::ADD.as_field::<AB::F>(),
-            local.add_operation.value,
-            local.operand_1,
-            local.operand_2,
-            zero_word,
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
-            local.is_real - local.is_retired,
+            local.is_real.into(),
         );
     }
 }
@@ -350,17 +277,32 @@ where
 mod tests {
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode, UNUSED_PC};
+    use zkm_core_executor::{
+        events::AluEvent, ExecutionRecord, Instruction, Opcode, Program,
+    };
     use zkm_hypercube::air::MachineAir;
 
     use super::AddChip;
 
     #[test]
     fn generate_trace() {
-        let mut shard = ExecutionRecord::default();
-        // `UNUSED_PC` keeps this a synthetic-dependency-style row, so trace generation doesn't
-        // need a real `Program` to fetch an instruction from.
-        shard.add_events = vec![AluEvent::new(UNUSED_PC, Opcode::ADD, 14, 8, 6)];
+        let program = Program {
+            instructions: vec![Instruction {
+                opcode: Opcode::ADD,
+                op_a: 5,
+                op_b: 8,
+                op_c: 9,
+                imm_b: false,
+                imm_c: false,
+                raw: None,
+            }],
+            pc_start: 0,
+            pc_base: 0,
+            next_pc: 4,
+            image: Default::default(),
+        };
+        let mut shard = ExecutionRecord { program: program.into(), ..Default::default() };
+        shard.add_events = vec![AluEvent::new(0, Opcode::ADD, 14, 8, 6)];
         let chip = AddChip::default();
         let trace: RowMajorMatrix<KoalaBear> =
             chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();

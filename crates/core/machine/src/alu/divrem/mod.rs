@@ -95,7 +95,7 @@ use crate::{
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
-    operations::{IsEqualWordOperation, IsZeroWordOperation, MulOperation},
+    operations::{AddOperation, IsEqualWordOperation, IsZeroWordOperation, MulOperation},
     utils::next_power_of_two,
 };
 
@@ -156,6 +156,14 @@ pub struct DivRemCols<T: Copy> {
 
     /// `max(abs(c), 1)`, used to check `abs(remainder) < abs(c)`.
     pub max_abs_c_or_1: Word<T>,
+
+    /// Verifies `0 == c + abs_c` (only meaningful when `c_neg`), computed locally (no cross-chip
+    /// lookup into `AddChip`).
+    pub add_operation_abs_c: AddOperation<T>,
+
+    /// Verifies `0 == remainder + abs_remainder` (only meaningful when `rem_neg`), computed
+    /// locally (no cross-chip lookup into `AddChip`).
+    pub add_operation_abs_remainder: AddOperation<T>,
 
     /// The `c * quotient` product, computed locally (no cross-chip lookup into `MulChip`).
     pub mul_operation: MulOperation<T>,
@@ -320,7 +328,7 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                 cols.c_msb = F::from_canonical_u8(get_msb(event.c));
                 cols.is_overflow_b.populate(event.b, i32::MIN as u32);
                 cols.is_overflow_c.populate(event.c, -1i32 as u32);
-                if is_signed_operation(event.opcode) {
+                let (c_neg, rem_neg, abs_c, abs_remainder) = if is_signed_operation(event.opcode) {
                     let abs_remainder = (remainder as i32).unsigned_abs();
                     let abs_c = (event.c as i32).unsigned_abs();
 
@@ -332,10 +340,23 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                     cols.abs_remainder = Word::from(abs_remainder);
                     cols.abs_c = Word::from(abs_c);
                     cols.max_abs_c_or_1 = Word::from(u32::max(1, abs_c));
+                    (get_msb(event.c) == 1, get_msb(remainder) == 1, abs_c, abs_remainder)
                 } else {
                     cols.abs_remainder = cols.remainder;
                     cols.abs_c = cols.c;
                     cols.max_abs_c_or_1 = Word::from(u32::max(1, event.c));
+                    (false, false, event.c, remainder)
+                };
+                // `0 == c + abs_c` / `0 == remainder + abs_remainder`, computed locally (no
+                // cross-chip lookup into `AddChip`). Only populated (and its byte-range-check
+                // dependency events only recorded) when actually negative, matching the AIR's
+                // `c_neg`/`rem_neg`-gated `AddOperation::eval` -- populating unconditionally would
+                // record BLU events with no matching send, an interaction imbalance.
+                if c_neg {
+                    cols.add_operation_abs_c.populate(output, event.c, abs_c);
+                }
+                if rem_neg {
+                    cols.add_operation_abs_remainder.populate(output, remainder, abs_remainder);
                 }
 
                 // Insert the MSB lookup events.
@@ -623,22 +644,24 @@ where
                     .when_not(local.rem_neg)
                     .assert_eq(local.remainder[i], local.abs_remainder[i]);
             }
-            // In the case that `c` or `rem` is negative, instead check that their sum is zero by
-            // sending an AddEvent.
-            builder.send_alu(
-                AB::Expr::from_canonical_u32(Opcode::ADD as u32),
-                Word([zero.clone(), zero.clone(), zero.clone(), zero.clone()]),
+            // In the case that `c` or `rem` is negative, instead check that their sum is zero,
+            // computed locally (no cross-chip lookup into `AddChip`).
+            AddOperation::<AB::F>::eval(
+                builder,
                 local.c,
                 local.abs_c,
-                local.c_neg,
+                local.add_operation_abs_c,
+                local.c_neg.into(),
             );
-            builder.send_alu(
-                AB::Expr::from_canonical_u32(Opcode::ADD as u32),
-                Word([zero.clone(), zero.clone(), zero.clone(), zero.clone()]),
+            builder.when(local.c_neg).assert_word_zero(local.add_operation_abs_c.value);
+            AddOperation::<AB::F>::eval(
+                builder,
                 local.remainder,
                 local.abs_remainder,
-                local.rem_neg,
+                local.add_operation_abs_remainder,
+                local.rem_neg.into(),
             );
+            builder.when(local.rem_neg).assert_word_zero(local.add_operation_abs_remainder.value);
 
             // max(abs(c), 1) = abs(c) * (1 - is_c_0) + 1 * is_c_0
             let max_abs_c_or_1: Word<AB::Expr> = {
