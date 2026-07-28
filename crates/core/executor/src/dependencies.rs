@@ -149,26 +149,10 @@ pub fn emit_memory_dependencies(
     event: MemInstrEvent,
     memory_record: MemoryRecord,
 ) {
+    // Every memory opcode now verifies `addr == b + c` locally via an embedded `AddOperation`
+    // (see `WordAddressOperation`/`UnalignedWordAddressOperation`), so no dependency send is
+    // needed here at all.
     let memory_addr = event.b.wrapping_add(event.c);
-    // LW/LL/SW/SC verify `addr == b + c` locally via an embedded `AddOperation` now (see
-    // `WordAddressOperation`), not via this dependency send -- every other memory opcode still
-    // uses the general `UnalignedWordAddressOperation`, which still needs it.
-    if !matches!(event.opcode, Opcode::LW | Opcode::LL | Opcode::SW | Opcode::SC) {
-        let add_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::ADD,
-            hi: 0,
-            a: memory_addr,
-            b: event.b,
-            c: event.c,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.add_events.push(add_event);
-    }
     let addr_offset = (memory_addr % 4_u32) as u8;
     let mem_value = memory_record.value;
 

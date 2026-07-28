@@ -14,7 +14,7 @@
   "Bitwise": 69,
   "Bn254AddAssign": 2050,
   "Program": 15,
-  "StoreByte": 63,
+  "StoreByte": 66,
   "StoreConditional": 65,
   "StateBump": 7,
   "Jump": 60,
@@ -27,8 +27,8 @@
   "MemoryGlobalInit": 45,
   "Bls12831Fp2MulAssign": 2238,
   "Bn254DoubleAssign": 2281,
-  "LoadByte": 72,
-  "LoadHalf": 72,
+  "LoadByte": 75,
+  "LoadHalf": 75,
   "SysLinux": 104,
   "EdAddAssign": 1862,
   "Bls12381Decompress": 2178,
@@ -56,8 +56,8 @@
   "Uint256MulMod": 481,
   "Branch": 68,
   "Bls12381DoubleAssign": 3441,
-  "StoreHalf": 63,
-  "StoreWordUnaligned": 65,
+  "StoreHalf": 66,
+  "StoreWordUnaligned": 68,
   "MovCond": 79,
   "Lt": 57,
   "ShaExtendControl": 5,
@@ -66,5 +66,5 @@
   "Bls12381FpOpAssign": 557,
   "ShaCompress": 20960,
   "MiscInstrs": 117,
-  "LoadWordUnaligned": 69
+  "LoadWordUnaligned": 72
 }
