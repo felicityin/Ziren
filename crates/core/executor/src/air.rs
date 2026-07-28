@@ -107,14 +107,26 @@ pub enum MipsAirId {
     Jump = 37,
     /// The SyscallInstructionChip.
     SyscallInstrs = 38,
-    /// The MemoryInstructionChip.
-    MemoryInstrs = 39,
     /// The word-aligned load chip (LW).
     LoadWord = 53,
     /// The real, retired `lw $zero, ...` chip (`LoadWord`'s zero-destination case).
     LoadX0 = 60,
     /// The word-aligned store chip (SW).
     StoreWord = 54,
+    /// The byte-load chip (LB, LBU).
+    LoadByte = 61,
+    /// The halfword-load chip (LH, LHU).
+    LoadHalf = 62,
+    /// The unaligned partial-word load chip (LWL, LWR).
+    LoadWordUnaligned = 63,
+    /// The byte-store chip (SB).
+    StoreByte = 64,
+    /// The halfword-store chip (SH).
+    StoreHalf = 65,
+    /// The unaligned partial-word store chip (SWL, SWR).
+    StoreWordUnaligned = 66,
+    /// The atomic store-conditional chip (SC).
+    StoreConditional = 67,
     /// The MiscInstrsChip.
     MiscInstrs = 40,
     /// The memory global init chip.
@@ -185,10 +197,16 @@ impl MipsAirId {
             Self::Branch => "Branch",
             Self::Jump => "Jump",
             Self::SyscallInstrs => "SyscallInstrs",
-            Self::MemoryInstrs => "MemoryInstrs",
             Self::LoadWord => "LoadWord",
             Self::LoadX0 => "LoadX0",
             Self::StoreWord => "StoreWord",
+            Self::LoadByte => "LoadByte",
+            Self::LoadHalf => "LoadHalf",
+            Self::LoadWordUnaligned => "LoadWordUnaligned",
+            Self::StoreByte => "StoreByte",
+            Self::StoreHalf => "StoreHalf",
+            Self::StoreWordUnaligned => "StoreWordUnaligned",
+            Self::StoreConditional => "StoreConditional",
             Self::MiscInstrs => "MiscInstrs",
             Self::MemoryGlobalInit => "MemoryGlobalInit",
             Self::MemoryGlobalFinalize => "MemoryGlobalFinalize",

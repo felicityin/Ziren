@@ -198,13 +198,9 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        // `memory_instr_events`/`load_word_events`/`store_word_events` are always real
-        // instructions (no synthetic-dependency producer targets any of them), so no
-        // `UNUSED_PC` filter is needed here.
-        input.memory_instr_events.iter().for_each(|event| {
-            let pc = event.pc;
-            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
-        });
+        // `load_word_events`/`store_word_events`/`load_byte_events` are always real instructions
+        // (no synthetic-dependency producer targets any of them), so no `UNUSED_PC` filter is
+        // needed here.
         input.load_word_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
@@ -214,6 +210,34 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
         input.store_word_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.load_byte_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.load_half_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.load_word_unaligned_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.store_byte_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.store_half_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.store_word_unaligned_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.store_conditional_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });

@@ -24,6 +24,7 @@ mod lt;
 mod not;
 mod or;
 pub mod poseidon2;
+mod unaligned_word_address;
 mod word_address;
 mod xor;
 
@@ -45,5 +46,6 @@ pub use koala_bear_word::*;
 pub use lt::*;
 pub use not::*;
 pub use or::*;
+pub use unaligned_word_address::*;
 pub use word_address::*;
 pub use xor::*;

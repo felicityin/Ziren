@@ -120,10 +120,16 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::Jump
             | MipsAirId::SyscallInstrs
             | MipsAirId::SyscallCore
-            | MipsAirId::MemoryInstrs
             | MipsAirId::LoadWord
             | MipsAirId::LoadX0
             | MipsAirId::StoreWord
+            | MipsAirId::LoadByte
+            | MipsAirId::LoadHalf
+            | MipsAirId::LoadWordUnaligned
+            | MipsAirId::StoreByte
+            | MipsAirId::StoreHalf
+            | MipsAirId::StoreWordUnaligned
+            | MipsAirId::StoreConditional
             | MipsAirId::MiscInstrs
             | MipsAirId::MemoryGlobalInit
             | MipsAirId::MemoryGlobalFinalize
@@ -178,10 +184,16 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::Lt, record.lt_events.len());
     add_chip_cells(MipsAirId::Slti, record.slti_events.len());
     add_chip_cells(MipsAirId::CloClz, record.cloclz_events.len());
-    add_chip_cells(MipsAirId::MemoryInstrs, record.memory_instr_events.len());
     add_chip_cells(MipsAirId::LoadWord, record.load_word_events.len());
     add_chip_cells(MipsAirId::LoadX0, record.load_x0_events.len());
     add_chip_cells(MipsAirId::StoreWord, record.store_word_events.len());
+    add_chip_cells(MipsAirId::LoadByte, record.load_byte_events.len());
+    add_chip_cells(MipsAirId::LoadHalf, record.load_half_events.len());
+    add_chip_cells(MipsAirId::LoadWordUnaligned, record.load_word_unaligned_events.len());
+    add_chip_cells(MipsAirId::StoreByte, record.store_byte_events.len());
+    add_chip_cells(MipsAirId::StoreHalf, record.store_half_events.len());
+    add_chip_cells(MipsAirId::StoreWordUnaligned, record.store_word_unaligned_events.len());
+    add_chip_cells(MipsAirId::StoreConditional, record.store_conditional_events.len());
     add_chip_cells(MipsAirId::Branch, record.branch_events.len());
     add_chip_cells(MipsAirId::Jump, record.jump_events.len());
     add_chip_cells(MipsAirId::MovCond, record.movcond_events.len());
@@ -310,10 +322,6 @@ pub fn estimate_mips_lde_size(
     cells += (num_events_per_air[MipsAirId::SyscallInstrs]).next_power_of_two()
         * costs_per_air[&MipsAirId::SyscallInstrs];
 
-    // Compute the MemoryInstruction chip contribution.
-    cells += (num_events_per_air[MipsAirId::MemoryInstrs]).next_power_of_two()
-        * costs_per_air[&MipsAirId::MemoryInstrs];
-
     // Compute the LoadWord chip contribution.
     cells += (num_events_per_air[MipsAirId::LoadWord]).next_power_of_two()
         * costs_per_air[&MipsAirId::LoadWord];
@@ -325,6 +333,34 @@ pub fn estimate_mips_lde_size(
     // Compute the StoreWord chip contribution.
     cells += (num_events_per_air[MipsAirId::StoreWord]).next_power_of_two()
         * costs_per_air[&MipsAirId::StoreWord];
+
+    // Compute the LoadByte chip contribution.
+    cells += (num_events_per_air[MipsAirId::LoadByte]).next_power_of_two()
+        * costs_per_air[&MipsAirId::LoadByte];
+
+    // Compute the LoadHalf chip contribution.
+    cells += (num_events_per_air[MipsAirId::LoadHalf]).next_power_of_two()
+        * costs_per_air[&MipsAirId::LoadHalf];
+
+    // Compute the LoadWordUnaligned chip contribution.
+    cells += (num_events_per_air[MipsAirId::LoadWordUnaligned]).next_power_of_two()
+        * costs_per_air[&MipsAirId::LoadWordUnaligned];
+
+    // Compute the StoreByte chip contribution.
+    cells += (num_events_per_air[MipsAirId::StoreByte]).next_power_of_two()
+        * costs_per_air[&MipsAirId::StoreByte];
+
+    // Compute the StoreHalf chip contribution.
+    cells += (num_events_per_air[MipsAirId::StoreHalf]).next_power_of_two()
+        * costs_per_air[&MipsAirId::StoreHalf];
+
+    // Compute the StoreWordUnaligned chip contribution.
+    cells += (num_events_per_air[MipsAirId::StoreWordUnaligned]).next_power_of_two()
+        * costs_per_air[&MipsAirId::StoreWordUnaligned];
+
+    // Compute the StoreConditional chip contribution.
+    cells += (num_events_per_air[MipsAirId::StoreConditional]).next_power_of_two()
+        * costs_per_air[&MipsAirId::StoreConditional];
 
     // Compute the MiscInstruction chip contribution.
     cells += (num_events_per_air[MipsAirId::MiscInstrs]).next_power_of_two()
@@ -456,27 +492,37 @@ pub fn estimate_mips_event_counts(
         + opcode_counts[Opcode::Jumpi]
         + opcode_counts[Opcode::JumpDirect];
 
-    // Compute the number of events in the MemoryInstrs chip (every memory opcode except the
-    // word-aligned LW/SW, which get their own narrower chips below).
-    events_counts[MipsAirId::MemoryInstrs] = opcode_counts[Opcode::LB]
-        + opcode_counts[Opcode::LH]
-        + opcode_counts[Opcode::LBU]
-        + opcode_counts[Opcode::LHU]
-        + opcode_counts[Opcode::SB]
-        + opcode_counts[Opcode::SH]
-        + opcode_counts[Opcode::LWL]
-        + opcode_counts[Opcode::LWR]
-        + opcode_counts[Opcode::LL]
-        + opcode_counts[Opcode::SWL]
-        + opcode_counts[Opcode::SWR]
-        + opcode_counts[Opcode::SC];
-
-    // Compute the number of events in the LoadWord/LoadX0/StoreWord chips. `opcode_counts[Opcode::LW]`
-    // mixes real non-zero-destination LW with real `lw $zero, ...` -- `load_x0_events` isolates
-    // the latter (see `LoadX0Chip`'s doc comment).
-    events_counts[MipsAirId::LoadWord] = opcode_counts[Opcode::LW] - load_x0_events;
+    // Compute the number of events in the LoadWord/LoadX0/StoreWord chips.
+    // `opcode_counts[Opcode::LW] + opcode_counts[Opcode::LL]` mixes real non-zero-destination
+    // LW/LL with real `lw $zero, ...`/`ll $zero, ...` -- `load_x0_events` isolates the latter
+    // (see `LoadX0Chip`'s doc comment).
+    events_counts[MipsAirId::LoadWord] =
+        opcode_counts[Opcode::LW] + opcode_counts[Opcode::LL] - load_x0_events;
     events_counts[MipsAirId::LoadX0] = load_x0_events;
     events_counts[MipsAirId::StoreWord] = opcode_counts[Opcode::SW];
+
+    // Compute the number of events in the LoadByte chip.
+    events_counts[MipsAirId::LoadByte] = opcode_counts[Opcode::LB] + opcode_counts[Opcode::LBU];
+
+    // Compute the number of events in the LoadHalf chip.
+    events_counts[MipsAirId::LoadHalf] = opcode_counts[Opcode::LH] + opcode_counts[Opcode::LHU];
+
+    // Compute the number of events in the LoadWordUnaligned chip.
+    events_counts[MipsAirId::LoadWordUnaligned] =
+        opcode_counts[Opcode::LWL] + opcode_counts[Opcode::LWR];
+
+    // Compute the number of events in the StoreByte chip.
+    events_counts[MipsAirId::StoreByte] = opcode_counts[Opcode::SB];
+
+    // Compute the number of events in the StoreHalf chip.
+    events_counts[MipsAirId::StoreHalf] = opcode_counts[Opcode::SH];
+
+    // Compute the number of events in the StoreWordUnaligned chip.
+    events_counts[MipsAirId::StoreWordUnaligned] =
+        opcode_counts[Opcode::SWL] + opcode_counts[Opcode::SWR];
+
+    // Compute the number of events in the StoreConditional chip.
+    events_counts[MipsAirId::StoreConditional] = opcode_counts[Opcode::SC];
 
     // Compute the number of events in the MiscInstrs chip.
     events_counts[MipsAirId::MiscInstrs] = opcode_counts[Opcode::INS]
@@ -558,14 +604,20 @@ pub fn pad_mips_event_counts(
         MipsAirId::SyscallInstrs => *v += num_cycles,
         // Memory instructions are never synthetic-dependency-row producers or targets, so at
         // most one real instruction of each specific opcode class retires per cycle -- `+1`
-        // margin over that derived worst case of 1 for each of the three memory chips below.
-        MipsAirId::MemoryInstrs => *v += 2 * num_cycles,
+        // margin over that derived worst case of 1 for each memory chip below.
         MipsAirId::LoadWord => *v += 2 * num_cycles,
         // Same reasoning as Addi/AddNoop/AluX0/Slti: no dependency-row producer ever targets
         // this shape (see `LoadX0Chip`'s doc comment), so a real instruction's worst-case growth
         // is 1 per cycle.
         MipsAirId::LoadX0 => *v += num_cycles,
         MipsAirId::StoreWord => *v += 2 * num_cycles,
+        MipsAirId::LoadByte => *v += 2 * num_cycles,
+        MipsAirId::LoadHalf => *v += 2 * num_cycles,
+        MipsAirId::LoadWordUnaligned => *v += 2 * num_cycles,
+        MipsAirId::StoreByte => *v += 2 * num_cycles,
+        MipsAirId::StoreHalf => *v += 2 * num_cycles,
+        MipsAirId::StoreWordUnaligned => *v += 2 * num_cycles,
+        MipsAirId::StoreConditional => *v += 2 * num_cycles,
         MipsAirId::MiscInstrs => *v += 8 * num_cycles, // TODO: Check this value.
         MipsAirId::CloClz => *v += 3 * num_cycles,     // TODO: Check this value.
         MipsAirId::SyscallCore => *v += 2 * num_cycles,

@@ -98,9 +98,6 @@ pub struct ExecutionRecord {
     pub slti_events: Vec<AluEvent>,
     /// A trace of the CLO and CLZ events.
     pub cloclz_events: Vec<AluEvent>,
-    /// A trace of the rare memory instructions (everything except LW/SW: LB, LBU, LH, LHU,
-    /// LWL, LWR, LL, SB, SH, SWL, SWR, SC).
-    pub memory_instr_events: Vec<MemInstrEvent>,
     /// A trace of the LW events.
     pub load_word_events: Vec<MemInstrEvent>,
     /// A trace of real, retired `lw $zero, ...` events (`LoadWordChip`'s zero-destination case,
@@ -108,6 +105,20 @@ pub struct ExecutionRecord {
     pub load_x0_events: Vec<MemInstrEvent>,
     /// A trace of the SW events.
     pub store_word_events: Vec<MemInstrEvent>,
+    /// A trace of the LB/LBU events.
+    pub load_byte_events: Vec<MemInstrEvent>,
+    /// A trace of the LH/LHU events.
+    pub load_half_events: Vec<MemInstrEvent>,
+    /// A trace of the LWL/LWR events.
+    pub load_word_unaligned_events: Vec<MemInstrEvent>,
+    /// A trace of the SB events.
+    pub store_byte_events: Vec<MemInstrEvent>,
+    /// A trace of the SH events.
+    pub store_half_events: Vec<MemInstrEvent>,
+    /// A trace of the SWL/SWR events.
+    pub store_word_unaligned_events: Vec<MemInstrEvent>,
+    /// A trace of the SC events.
+    pub store_conditional_events: Vec<MemInstrEvent>,
     /// A trace of the branch events.
     pub branch_events: Vec<BranchEvent>,
     /// A trace of the jump events.
@@ -151,13 +162,11 @@ impl ExecutionRecord {
         let add_events = Vec::with_capacity(1 << 22);
         let addi_events = Vec::with_capacity(1 << 22);
         let sub_events = Vec::with_capacity(1 << 21);
-        let memory_instr_events = Vec::with_capacity(1 << 19);
         let load_word_events = Vec::with_capacity(1 << 22);
         let store_word_events = Vec::with_capacity(1 << 22);
         Self {
             program,
             cpu_events,
-            memory_instr_events,
             load_word_events,
             store_word_events,
             add_events,
@@ -397,10 +406,22 @@ impl MachineRecord for ExecutionRecord {
         stats.insert("lt_events".to_string(), self.lt_events.len());
         stats.insert("slti_events".to_string(), self.slti_events.len());
         stats.insert("cloclz_events".to_string(), self.cloclz_events.len());
-        stats.insert("memory_instr_events".to_string(), self.memory_instr_events.len());
         stats.insert("load_word_events".to_string(), self.load_word_events.len());
         stats.insert("load_x0_events".to_string(), self.load_x0_events.len());
         stats.insert("store_word_events".to_string(), self.store_word_events.len());
+        stats.insert("load_byte_events".to_string(), self.load_byte_events.len());
+        stats.insert("load_half_events".to_string(), self.load_half_events.len());
+        stats.insert(
+            "load_word_unaligned_events".to_string(),
+            self.load_word_unaligned_events.len(),
+        );
+        stats.insert("store_byte_events".to_string(), self.store_byte_events.len());
+        stats.insert("store_half_events".to_string(), self.store_half_events.len());
+        stats.insert(
+            "store_word_unaligned_events".to_string(),
+            self.store_word_unaligned_events.len(),
+        );
+        stats.insert("store_conditional_events".to_string(), self.store_conditional_events.len());
         stats.insert("branch_events".to_string(), self.branch_events.len());
         stats.insert("jump_events".to_string(), self.jump_events.len());
         stats.insert("misc_events".to_string(), self.misc_events.len());
@@ -439,10 +460,16 @@ impl MachineRecord for ExecutionRecord {
         self.lt_events.append(&mut other.lt_events);
         self.slti_events.append(&mut other.slti_events);
         self.cloclz_events.append(&mut other.cloclz_events);
-        self.memory_instr_events.append(&mut other.memory_instr_events);
         self.load_word_events.append(&mut other.load_word_events);
         self.load_x0_events.append(&mut other.load_x0_events);
         self.store_word_events.append(&mut other.store_word_events);
+        self.load_byte_events.append(&mut other.load_byte_events);
+        self.load_half_events.append(&mut other.load_half_events);
+        self.load_word_unaligned_events.append(&mut other.load_word_unaligned_events);
+        self.store_byte_events.append(&mut other.store_byte_events);
+        self.store_half_events.append(&mut other.store_half_events);
+        self.store_word_unaligned_events.append(&mut other.store_word_unaligned_events);
+        self.store_conditional_events.append(&mut other.store_conditional_events);
         self.branch_events.append(&mut other.branch_events);
         self.jump_events.append(&mut other.jump_events);
         self.misc_events.append(&mut other.misc_events);

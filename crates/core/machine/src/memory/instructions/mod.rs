@@ -1,22 +1,12 @@
-use columns::NUM_MEMORY_INSTRUCTIONS_COLUMNS;
-use p3_air::BaseAir;
+pub mod load;
+pub mod store;
 
-pub mod air;
-pub mod columns;
-pub mod load_word;
-pub mod load_x0;
-pub mod store_word;
-pub mod trace;
-
-pub use load_word::LoadWordChip;
-pub use load_x0::LoadX0Chip;
-pub use store_word::StoreWordChip;
-
-#[derive(Default)]
-pub struct MemoryInstructionsChip;
-
-impl<F> BaseAir<F> for MemoryInstructionsChip {
-    fn width(&self) -> usize {
-        NUM_MEMORY_INSTRUCTIONS_COLUMNS
-    }
-}
+pub use load::{
+    load_byte::LoadByteChip, load_half::LoadHalfChip, load_word::LoadWordChip,
+    load_word_unaligned::LoadWordUnalignedChip, load_x0::LoadX0Chip,
+};
+pub use store::{
+    store_byte::StoreByteChip, store_conditional::StoreConditionalChip,
+    store_half::StoreHalfChip, store_word::StoreWordChip,
+    store_word_unaligned::StoreWordUnalignedChip,
+};

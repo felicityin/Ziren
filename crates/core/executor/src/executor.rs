@@ -1251,13 +1251,13 @@ impl<'a> Executor<'a> {
         } else if instruction.is_memory_load_instruction()
             || instruction.is_memory_store_instruction()
         {
-            // LW/SW's register operands (`op_a`/`op_b`) use the cheap register-access scheme
-            // (see `LoadWordChip`/`LoadX0Chip`/`StoreWordChip`'s doc comments); every other
-            // memory instruction (LB/LH/LWL/... via `MemoryInstructionsChip`) still uses the
-            // general-purpose scheme. This condition must match `emit_mem_instr_event`'s routing.
-            if matches!(instruction.opcode, Opcode::LW | Opcode::SW) {
-                self.emit_memory_bump_events(instruction, &record);
-            }
+            // Every memory load/store opcode's register operands (`op_a`/`op_b`) use the cheap
+            // register-access scheme now (see `LoadWordChip`/`LoadX0Chip`/`StoreWordChip`/
+            // `LoadByteChip`/`LoadHalfChip`/`LoadWordUnalignedChip`/`StoreByteChip`/
+            // `StoreHalfChip`/`StoreWordUnalignedChip`/`StoreConditionalChip`'s doc comments), so
+            // this is unconditional -- `is_memory_load_instruction()`/`is_memory_store_instruction()`
+            // already narrow this branch to exactly that opcode set.
+            self.emit_memory_bump_events(instruction, &record);
             self.emit_mem_instr_event(
                 clk,
                 instruction.opcode,
@@ -1507,15 +1507,24 @@ impl<'a> Executor<'a> {
             c_record: record.c,
         };
 
-        // A real, retired `lw $zero, ...` goes to the shared `LoadX0Chip` instead (see its doc
-        // comment): `LoadWordChip`'s `op_a` is guaranteed never register 0, so it uses the
-        // unmasked `ITypeReaderNonZero`. `StoreWordChip`'s `op_a` is only ever read, so it needs
-        // no such split (`sw $zero, ...` is already trivially safe).
+        // A real, retired `lw $zero, ...`/`ll $zero, ...` goes to the shared `LoadX0Chip` instead
+        // (see its doc comment): `LoadWordChip`'s `op_a` is guaranteed never register 0, so it
+        // uses the unmasked `ITypeReaderNonZero`. `StoreWordChip`'s `op_a` is only ever read, so
+        // it needs no such split (`sw $zero, ...` is already trivially safe).
         match opcode {
-            Opcode::LW if op_a_is_zero => self.record.load_x0_events.push(event),
-            Opcode::LW => self.record.load_word_events.push(event),
+            Opcode::LW | Opcode::LL if op_a_is_zero => self.record.load_x0_events.push(event),
+            Opcode::LW | Opcode::LL => self.record.load_word_events.push(event),
             Opcode::SW => self.record.store_word_events.push(event),
-            _ => self.record.memory_instr_events.push(event),
+            Opcode::LB | Opcode::LBU => self.record.load_byte_events.push(event),
+            Opcode::LH | Opcode::LHU => self.record.load_half_events.push(event),
+            Opcode::LWL | Opcode::LWR => self.record.load_word_unaligned_events.push(event),
+            Opcode::SB => self.record.store_byte_events.push(event),
+            Opcode::SH => self.record.store_half_events.push(event),
+            Opcode::SWL | Opcode::SWR => self.record.store_word_unaligned_events.push(event),
+            Opcode::SC => self.record.store_conditional_events.push(event),
+            _ => unreachable!(
+                "emit_mem_instr_event is only called for memory load/store opcodes, all of which are handled above"
+            ),
         }
         emit_memory_dependencies(
             self,
@@ -1827,9 +1836,11 @@ impl<'a> Executor<'a> {
             {
                 self.local_counts.sltu_x0_events += 1;
             }
-            // Same idea for real, retired `lw $zero, ...` (routed to `load_x0_events` -- see
-            // `LoadX0Chip`'s doc comment).
-            if instruction.opcode == Opcode::LW && instruction.op_a == Register::ZERO as u8 {
+            // Same idea for real, retired `lw $zero, ...`/`ll $zero, ...` (routed to
+            // `load_x0_events` -- see `LoadX0Chip`'s doc comment).
+            if matches!(instruction.opcode, Opcode::LW | Opcode::LL)
+                && instruction.op_a == Register::ZERO as u8
+            {
                 self.local_counts.load_x0_events += 1;
             }
             if instruction.is_memory_load_instruction() {

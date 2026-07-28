@@ -32,13 +32,13 @@ use crate::{
 /// The number of main trace columns for `LoadX0Chip`.
 pub const NUM_LOAD_X0_COLS: usize = size_of::<LoadX0Cols<u8>>();
 
-/// A chip that implements real, retired `lw $zero, offset($base)` -- i.e. `LoadWordChip`'s
-/// zero-destination case (see its doc comment). Structurally almost a clone of `LoadWordChip`:
-/// same address computation/validation and the same real memory read, but the loaded value is
-/// never asserted equal to anything (it's discarded, since `$zero` is hardwired to 0), and `op_a`
-/// is pinned to register 0 by an explicit constraint rather than being a genuinely variable
-/// register index -- letting `LoadWordChip` itself assume `op_a` is never register 0 and use the
-/// unmasked `ITypeReaderNonZero`.
+/// A chip that implements real, retired `lw $zero, offset($base)`/`ll $zero, offset($base)` --
+/// i.e. `LoadWordChip`'s zero-destination case (see its doc comment). Structurally almost a clone
+/// of `LoadWordChip`: same address computation/validation and the same real memory read, but the
+/// loaded value is never asserted equal to anything (it's discarded, since `$zero` is hardwired to
+/// 0), and `op_a` is pinned to register 0 by an explicit constraint rather than being a genuinely
+/// variable register index -- letting `LoadWordChip` itself assume `op_a` is never register 0 and
+/// use the unmasked `ITypeReaderNonZero`.
 ///
 /// Reuses `ITypeImmutableReader` (built for `StoreWordChip`'s read-only `op_a`) rather than a
 /// bespoke adapter: treating the discarded load as an immutable "read" of register 0 is exactly
@@ -68,8 +68,10 @@ pub struct LoadX0Cols<T: Copy> {
     /// never asserted equal to anything: the loaded value is discarded.
     pub memory_access: MemoryReadCols<T>,
 
-    /// Whether this row is a real, retired `lw $zero, ...` instruction (as opposed to padding).
-    pub is_real: T,
+    /// Whether this is a real, retired `lw $zero, ...` instruction.
+    pub is_lw: T,
+    /// Whether this is a real, retired `ll $zero, ...` instruction.
+    pub is_ll: T,
 }
 
 impl<F: PrimeField32> MachineAir<F> for LoadX0Chip {
@@ -143,7 +145,8 @@ impl LoadX0Chip {
         program: &Program,
     ) {
         cols.state.populate(blu, event.clk);
-        cols.is_real = F::ONE;
+        cols.is_lw = F::from_bool(matches!(event.opcode, Opcode::LW));
+        cols.is_ll = F::from_bool(matches!(event.opcode, Opcode::LL));
 
         let instruction = program.fetch(event.pc);
         cols.pc = F::from_canonical_u32(event.pc);
@@ -181,18 +184,23 @@ where
         let local = main.row_slice(0);
         let local: &LoadX0Cols<AB::Var> = (*local).borrow();
 
-        builder.assert_bool(local.is_real);
+        builder.assert_bool(local.is_lw);
+        builder.assert_bool(local.is_ll);
+        let is_real = local.is_lw + local.is_ll;
+        builder.assert_bool(is_real.clone());
 
         // This chip is specifically for `op_a == $zero`: pin the adapter's witnessed `op_a`/
         // `op_a_0` so the register-access interaction below can only ever touch register 0 (a
         // freely-witnessed nonzero `op_a` here would let a real, non-zero-destination load sneak
         // its register write through this chip's discard-the-value path instead of
         // `LoadWordChip`'s real one).
-        builder.when(local.is_real).assert_zero(local.adapter.op_a);
-        builder.when(local.is_real).assert_one(local.adapter.op_a_0);
+        builder.when(is_real.clone()).assert_zero(local.adapter.op_a);
+        builder.when(is_real.clone()).assert_one(local.adapter.op_a_0);
 
+        let opcode = local.is_lw.into() * AB::Expr::from_canonical_u32(Opcode::LW as u32)
+            + local.is_ll.into() * AB::Expr::from_canonical_u32(Opcode::LL as u32);
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
-            opcode: Opcode::LW.as_field::<AB::F>().into(),
+            opcode,
             op_a: local.adapter.op_a.into(),
             op_b: Word::extend_var::<AB>(local.adapter.op_b),
             op_c: local.adapter.op_c.map(Into::into),
@@ -200,7 +208,7 @@ where
             imm_b: AB::Expr::zero(),
             imm_c: AB::Expr::one(),
         };
-        builder.send_program(local.pc, instruction, local.is_real.into());
+        builder.send_program(local.pc, instruction, is_real.clone());
 
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
@@ -210,7 +218,7 @@ where
             local.adapter.op_b_val().map(Into::into),
             local.adapter.op_c.map(Into::into),
             local.word_address,
-            local.is_real.into(),
+            is_real.clone(),
         );
 
         builder.eval_memory_access(
@@ -218,7 +226,7 @@ where
             clk_low.clone() + AB::F::from_canonical_u32(MemoryAccessPosition::Memory as u32),
             addr_word.reduce::<AB>(),
             &local.memory_access,
-            local.is_real,
+            is_real.clone(),
         );
 
         eval_i_type_immutable_reader(
@@ -226,10 +234,10 @@ where
             &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            local.is_real.into(),
+            is_real.clone(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -241,7 +249,7 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            local.is_real.into(),
+            is_real,
         );
     }
 }

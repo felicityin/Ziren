@@ -32,7 +32,9 @@ pub(crate) mod mips_chips {
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip},
         memory::{
-            LoadWordChip, LoadX0Chip, MemoryGlobalChip, MemoryInstructionsChip, StoreWordChip,
+            LoadByteChip, LoadHalfChip, LoadWordChip, LoadWordUnalignedChip, LoadX0Chip,
+            MemoryGlobalChip, StoreByteChip, StoreConditionalChip, StoreHalfChip, StoreWordChip,
+            StoreWordUnalignedChip,
         },
         misc::{MiscInstrsChip, MovCondChip},
         program::ProgramChip,
@@ -112,14 +114,26 @@ pub enum MipsAir<F: PrimeField32> {
     Branch(BranchChip),
     /// An AIR for MIPS Jump instructions.
     Jump(JumpChip),
-    /// An AIR for the rare MIPS memory instructions (everything except LW/SW).
-    MemoryInstrs(MemoryInstructionsChip),
     /// An AIR for the word-aligned MIPS load instruction (LW).
     LoadWord(LoadWordChip),
     /// An AIR for real, retired `lw $zero, ...` (`LoadWordChip`'s zero-destination case).
     LoadX0(LoadX0Chip),
     /// An AIR for the word-aligned MIPS store instruction (SW).
     StoreWord(StoreWordChip),
+    /// An AIR for the MIPS byte-load instructions (LB, LBU).
+    LoadByte(LoadByteChip),
+    /// An AIR for the MIPS halfword-load instructions (LH, LHU).
+    LoadHalf(LoadHalfChip),
+    /// An AIR for the MIPS unaligned partial-word load instructions (LWL, LWR).
+    LoadWordUnaligned(LoadWordUnalignedChip),
+    /// An AIR for the MIPS byte-store instruction (SB).
+    StoreByte(StoreByteChip),
+    /// An AIR for the MIPS halfword-store instruction (SH).
+    StoreHalf(StoreHalfChip),
+    /// An AIR for the MIPS unaligned partial-word store instructions (SWL, SWR).
+    StoreWordUnaligned(StoreWordUnalignedChip),
+    /// An AIR for the MIPS atomic store-conditional instruction (SC).
+    StoreConditional(StoreConditionalChip),
     /// An AIR for MIPS mov condition instructions.
     MovCond(MovCondChip),
     /// An AIR for MIPS misc instructions.
@@ -297,10 +311,16 @@ impl<F: PrimeField32> MipsAir<F> {
             MovCond,
             StateBump,
             MemoryBump,
-            MemoryInstrs,
             LoadWord,
             LoadX0,
             StoreWord,
+            LoadByte,
+            LoadHalf,
+            LoadWordUnaligned,
+            StoreByte,
+            StoreHalf,
+            StoreWordUnaligned,
+            StoreConditional,
             SyscallCore,
             SyscallInstrs,
             MemoryLocal,
@@ -634,11 +654,6 @@ impl<F: PrimeField32> MipsAir<F> {
         costs.insert(syscall_instrs.name(), syscall_instrs.cost());
         chips.push(syscall_instrs);
 
-        let memory_instructions =
-            Chip::new(MipsAir::MemoryInstrs(MemoryInstructionsChip::default()));
-        costs.insert(memory_instructions.name(), memory_instructions.cost());
-        chips.push(memory_instructions);
-
         let load_word = Chip::new(MipsAir::LoadWord(LoadWordChip::default()));
         costs.insert(load_word.name(), load_word.cost());
         chips.push(load_word);
@@ -650,6 +665,36 @@ impl<F: PrimeField32> MipsAir<F> {
         let store_word = Chip::new(MipsAir::StoreWord(StoreWordChip::default()));
         costs.insert(store_word.name(), store_word.cost());
         chips.push(store_word);
+
+        let load_byte = Chip::new(MipsAir::LoadByte(LoadByteChip::default()));
+        costs.insert(load_byte.name(), load_byte.cost());
+        chips.push(load_byte);
+
+        let load_half = Chip::new(MipsAir::LoadHalf(LoadHalfChip::default()));
+        costs.insert(load_half.name(), load_half.cost());
+        chips.push(load_half);
+
+        let load_word_unaligned =
+            Chip::new(MipsAir::LoadWordUnaligned(LoadWordUnalignedChip::default()));
+        costs.insert(load_word_unaligned.name(), load_word_unaligned.cost());
+        chips.push(load_word_unaligned);
+
+        let store_byte = Chip::new(MipsAir::StoreByte(StoreByteChip::default()));
+        costs.insert(store_byte.name(), store_byte.cost());
+        chips.push(store_byte);
+
+        let store_half = Chip::new(MipsAir::StoreHalf(StoreHalfChip::default()));
+        costs.insert(store_half.name(), store_half.cost());
+        chips.push(store_half);
+
+        let store_word_unaligned =
+            Chip::new(MipsAir::StoreWordUnaligned(StoreWordUnalignedChip::default()));
+        costs.insert(store_word_unaligned.name(), store_word_unaligned.cost());
+        chips.push(store_word_unaligned);
+
+        let store_conditional = Chip::new(MipsAir::StoreConditional(StoreConditionalChip::default()));
+        costs.insert(store_conditional.name(), store_conditional.cost());
+        chips.push(store_conditional);
 
         let misc_instrs = Chip::new(MipsAir::MiscInstrs(MiscInstrsChip::default()));
         costs.insert(misc_instrs.name(), misc_instrs.cost());
