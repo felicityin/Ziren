@@ -69,7 +69,11 @@ impl<GC: IopCtx, SC: ShardContext<GC>> GkrProverImpl<GC, SC> {
     ) -> LogupGkrProof<<GC::Challenger as GrindingChallenger>::Witness, GC::EF> {
         let max_interaction_arity =
             chips.iter().flat_map(|c| c.sends().iter().chain(c.receives().iter())).map(|i| i.values.len() + 1).max().unwrap();
-        let max_public_values_interaction_arity = Record::<GC, SC>::max_public_values_interaction_arity();
+        let max_public_values_interaction_arity = Record::<GC, SC>::interactions_in_public_values()
+            .iter()
+            .map(|kind| kind.num_values() + 1)
+            .max()
+            .unwrap_or(1);
         let beta_seed_dim =
             std::cmp::max(max_interaction_arity, max_public_values_interaction_arity).next_power_of_two().ilog2();
 

@@ -103,7 +103,11 @@ where
         // gadget must match the native prover/verifier's transcript exactly
         // (`zkm_hypercube::logup_gkr::verifier::LogUpGkrVerifier::verify_logup_gkr`) or the
         // Fiat-Shamir challenges desynchronize.
-        let max_public_values_interaction_arity = A::Record::max_public_values_interaction_arity();
+        let max_public_values_interaction_arity = A::Record::interactions_in_public_values()
+            .iter()
+            .map(|kind| kind.num_values() + 1)
+            .max()
+            .unwrap_or(1);
         let beta_seed_dim = max_interaction_arity
             .max(max_public_values_interaction_arity)
             .next_power_of_two()

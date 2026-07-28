@@ -4,6 +4,7 @@ use hashbrown::HashMap;
 use p3_field::{Field, FieldAlgebra, PrimeField32};
 use zkm_hypercube::{
     air::{MachineAir, ZKMAirBuilder},
+    lookup::LookupKind,
     record::MachineRecord,
     PROOF_MAX_NUM_PVS,
 };
@@ -107,8 +108,8 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
     // memory/global accumulation lookups across shards).
     fn eval_public_values<AB: ZKMAirBuilder>(_builder: &mut AB) {}
 
-    fn max_public_values_interaction_arity() -> usize {
-        0
+    fn interactions_in_public_values() -> Vec<LookupKind> {
+        vec![]
     }
 }
 

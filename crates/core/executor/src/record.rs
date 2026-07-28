@@ -622,11 +622,8 @@ impl MachineRecord for ExecutionRecord {
         );
     }
 
-    fn max_public_values_interaction_arity() -> usize {
-        // The widest interactions here are `MemoryGlobalInitControl`/`MemoryGlobalFinalizeControl`'s
-        // boundary-anchor sends/receives above: 1 (index) + 4 (address bytes) + 1 (flag) values,
-        // plus 1 for the `LookupKind` value itself.
-        1 + 4 + 1 + 1
+    fn interactions_in_public_values() -> Vec<LookupKind> {
+        LookupKind::all_kinds().into_iter().filter(LookupKind::appears_in_eval_public_values).collect()
     }
 }
 

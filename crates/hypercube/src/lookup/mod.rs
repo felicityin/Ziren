@@ -56,6 +56,45 @@ impl LookupKind {
             LookupKind::Poseidon2SkinnyState,
         ]
     }
+
+    /// Whether this interaction kind appears in the core MIPS machine's own `eval_public_values`
+    /// (`crates/core/executor/src/record.rs`). Used to build `interactions_in_public_values()`.
+    #[must_use]
+    pub fn appears_in_eval_public_values(&self) -> bool {
+        matches!(
+            self,
+            LookupKind::State
+                | LookupKind::MemoryGlobalInitControl
+                | LookupKind::MemoryGlobalFinalizeControl
+                | LookupKind::GlobalAccumulation
+        )
+    }
+
+    /// The number of raw `values` sent/received for each interaction kind in the core MIPS
+    /// machine (not counting the `LookupKind` discriminant itself, added separately by callers).
+    /// The recursion machine reuses several of these same-named kinds with *different* arities
+    /// (e.g. `Memory`=6, `Range`=2, variable-arity `Syscall`) -- safe to share this table only
+    /// because the recursion machine's `interactions_in_public_values()` always returns `vec![]`
+    /// (its `eval_public_values` is a no-op), so this method is never invoked for a
+    /// recursion-specific kind in practice.
+    #[must_use]
+    pub fn num_values(&self) -> usize {
+        match self {
+            LookupKind::Memory => 7,
+            LookupKind::Program => 14,
+            LookupKind::Instruction => 28,
+            LookupKind::Byte | LookupKind::Syscall => 5,
+            LookupKind::Global => 10,
+            LookupKind::SyscallResult => 8,
+            LookupKind::State | LookupKind::ShaExtend => 4,
+            LookupKind::GlobalAccumulation => 15,
+            LookupKind::MemoryGlobalInitControl | LookupKind::MemoryGlobalFinalizeControl => 6,
+            LookupKind::ShaCompress => 37,
+            LookupKind::KeccakPermuteRound | LookupKind::KeccakSpongeBlock => 106,
+            // Not used anywhere in the core MIPS machine.
+            LookupKind::Range | LookupKind::Poseidon2SkinnyState => 0,
+        }
+    }
 }
 
 impl Display for LookupKind {
