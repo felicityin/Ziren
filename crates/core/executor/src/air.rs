@@ -103,8 +103,12 @@ pub enum MipsAirId {
     CloClz = 35,
     /// The branch chip.
     Branch = 36,
-    /// The jump chip.
+    /// The register-target jump chip (JR/JALR).
     Jump = 37,
+    /// The immediate-target jump chip (J/JAL).
+    Jumpi = 68,
+    /// The pc-relative jump-and-link chip (BAL).
+    JumpDirect = 69,
     /// The SyscallInstructionChip.
     SyscallInstrs = 38,
     /// The word-aligned load chip (LW).
@@ -196,6 +200,8 @@ impl MipsAirId {
             Self::CloClz => "CloClz",
             Self::Branch => "Branch",
             Self::Jump => "Jump",
+            Self::Jumpi => "Jumpi",
+            Self::JumpDirect => "JumpDirect",
             Self::SyscallInstrs => "SyscallInstrs",
             Self::LoadWord => "LoadWord",
             Self::LoadX0 => "LoadX0",

@@ -10,5 +10,9 @@ pub use register::i_type::{
     eval_i_type_immutable_reader, eval_i_type_reader, eval_i_type_reader_non_zero,
     ITypeImmutableReader, ITypeReader, ITypeReaderNonZero,
 };
+pub use register::j_type::{
+    eval_j_type_reader, eval_j_type_reader_non_zero, eval_r_type_reader_masked, JTypeReader,
+    JTypeReaderNonZero, RTypeReaderMasked,
+};
 pub use register::r_type::{eval_r_type_reader, RTypeReader};
 pub use state::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState};

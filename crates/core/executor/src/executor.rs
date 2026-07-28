@@ -1276,6 +1276,11 @@ impl<'a> Executor<'a> {
             self.emit_memory_bump_events(instruction, &record);
             self.emit_branch_event(clk, instruction.opcode, a, b, c, next_pc, next_next_pc, record);
         } else if instruction.is_jump_instruction() {
+            // Every jump opcode's register operands use the cheap register-access scheme now
+            // (see `JumpChip`/`JumpiChip`/`JumpDirectChip`'s doc comments), so this is
+            // unconditional -- `is_jump_instruction()` already narrows this branch to exactly
+            // that opcode set.
+            self.emit_memory_bump_events(instruction, &record);
             self.emit_jump_event(clk, instruction.opcode, a, b, c, next_pc, next_next_pc, record);
         } else if instruction.is_misc_instruction() {
             self.emit_misc_event(
@@ -1596,7 +1601,14 @@ impl<'a> Executor<'a> {
         event.a_record = record.a;
         event.b_record = record.b;
         event.c_record = record.c;
-        self.record.jump_events.push(event);
+        match opcode {
+            Opcode::Jump => self.record.jump_events.push(event),
+            Opcode::Jumpi => self.record.jumpi_events.push(event),
+            Opcode::JumpDirect => self.record.jumpdirect_events.push(event),
+            _ => unreachable!(
+                "emit_jump_event is only called for jump opcodes, all of which are handled above"
+            ),
+        }
         emit_jump_dependencies(self, event);
     }
 

@@ -121,8 +121,12 @@ pub struct ExecutionRecord {
     pub store_conditional_events: Vec<MemInstrEvent>,
     /// A trace of the branch events.
     pub branch_events: Vec<BranchEvent>,
-    /// A trace of the jump events.
+    /// A trace of the JR/JALR events.
     pub jump_events: Vec<JumpEvent>,
+    /// A trace of the J/JAL events.
+    pub jumpi_events: Vec<JumpEvent>,
+    /// A trace of the BAL events.
+    pub jumpdirect_events: Vec<JumpEvent>,
     /// A trace of the conditional move events.
     pub movcond_events: Vec<MovCondEvent>,
     /// A trace of the misc events.
@@ -424,6 +428,8 @@ impl MachineRecord for ExecutionRecord {
         stats.insert("store_conditional_events".to_string(), self.store_conditional_events.len());
         stats.insert("branch_events".to_string(), self.branch_events.len());
         stats.insert("jump_events".to_string(), self.jump_events.len());
+        stats.insert("jumpi_events".to_string(), self.jumpi_events.len());
+        stats.insert("jumpdirect_events".to_string(), self.jumpdirect_events.len());
         stats.insert("misc_events".to_string(), self.misc_events.len());
 
         for (syscall_code, events) in self.precompile_events.iter() {
@@ -472,6 +478,8 @@ impl MachineRecord for ExecutionRecord {
         self.store_conditional_events.append(&mut other.store_conditional_events);
         self.branch_events.append(&mut other.branch_events);
         self.jump_events.append(&mut other.jump_events);
+        self.jumpi_events.append(&mut other.jumpi_events);
+        self.jumpdirect_events.append(&mut other.jumpdirect_events);
         self.misc_events.append(&mut other.misc_events);
         self.syscall_events.append(&mut other.syscall_events);
 

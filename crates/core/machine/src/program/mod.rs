@@ -198,6 +198,14 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
+        input.jumpi_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.jumpdirect_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
         // `load_word_events`/`store_word_events`/`load_byte_events` are always real instructions
         // (no synthetic-dependency producer targets any of them), so no `UNUSED_PC` filter is
         // needed here.

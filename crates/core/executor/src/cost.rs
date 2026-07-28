@@ -118,6 +118,8 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::CloClz
             | MipsAirId::Branch
             | MipsAirId::Jump
+            | MipsAirId::Jumpi
+            | MipsAirId::JumpDirect
             | MipsAirId::SyscallInstrs
             | MipsAirId::SyscallCore
             | MipsAirId::LoadWord
@@ -196,6 +198,8 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::StoreConditional, record.store_conditional_events.len());
     add_chip_cells(MipsAirId::Branch, record.branch_events.len());
     add_chip_cells(MipsAirId::Jump, record.jump_events.len());
+    add_chip_cells(MipsAirId::Jumpi, record.jumpi_events.len());
+    add_chip_cells(MipsAirId::JumpDirect, record.jumpdirect_events.len());
     add_chip_cells(MipsAirId::MovCond, record.movcond_events.len());
     add_chip_cells(MipsAirId::MiscInstrs, record.misc_events.len());
     add_chip_cells(MipsAirId::MemoryGlobalInit, record.global_memory_initialize_events.len());
@@ -314,9 +318,13 @@ pub fn estimate_mips_lde_size(
     cells += (num_events_per_air[MipsAirId::Branch]).next_power_of_two()
         * costs_per_air[&MipsAirId::Branch];
 
-    // Compute the jump chip contribution.
+    // Compute the jump chips' contribution.
     cells +=
         (num_events_per_air[MipsAirId::Jump]).next_power_of_two() * costs_per_air[&MipsAirId::Jump];
+    cells += (num_events_per_air[MipsAirId::Jumpi]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Jumpi];
+    cells += (num_events_per_air[MipsAirId::JumpDirect]).next_power_of_two()
+        * costs_per_air[&MipsAirId::JumpDirect];
 
     // Compute the SyscallInstruction chip contribution.
     cells += (num_events_per_air[MipsAirId::SyscallInstrs]).next_power_of_two()
@@ -487,10 +495,10 @@ pub fn estimate_mips_event_counts(
         + opcode_counts[Opcode::BLTZ]
         + opcode_counts[Opcode::BLEZ];
 
-    // Compute the number of events in the jump chip.
-    events_counts[MipsAirId::Jump] = opcode_counts[Opcode::Jump]
-        + opcode_counts[Opcode::Jumpi]
-        + opcode_counts[Opcode::JumpDirect];
+    // Compute the number of events in the jump chips.
+    events_counts[MipsAirId::Jump] = opcode_counts[Opcode::Jump];
+    events_counts[MipsAirId::Jumpi] = opcode_counts[Opcode::Jumpi];
+    events_counts[MipsAirId::JumpDirect] = opcode_counts[Opcode::JumpDirect];
 
     // Compute the number of events in the LoadWord/LoadX0/StoreWord chips.
     // `opcode_counts[Opcode::LW] + opcode_counts[Opcode::LL]` mixes real non-zero-destination
@@ -601,6 +609,8 @@ pub fn pad_mips_event_counts(
         MipsAirId::MemoryLocal => *v += 64 * num_cycles,
         MipsAirId::Branch => *v += 8 * num_cycles,
         MipsAirId::Jump => *v += 2 * num_cycles,
+        MipsAirId::Jumpi => *v += 2 * num_cycles,
+        MipsAirId::JumpDirect => *v += 2 * num_cycles,
         MipsAirId::SyscallInstrs => *v += num_cycles,
         // Memory instructions are never synthetic-dependency-row producers or targets, so at
         // most one real instruction of each specific opcode class retires per cycle -- `+1`

@@ -30,7 +30,7 @@ pub(crate) mod mips_chips {
             LtChip, MulChip, ShiftLeft, ShiftRightChip, SltiChip, SubChip,
         },
         bytes::ByteChip,
-        control_flow::{BranchChip, JumpChip},
+        control_flow::{BranchChip, JumpChip, JumpDirectChip, JumpiChip},
         memory::{
             LoadByteChip, LoadHalfChip, LoadWordChip, LoadWordUnalignedChip, LoadX0Chip,
             MemoryGlobalChip, StoreByteChip, StoreConditionalChip, StoreHalfChip, StoreWordChip,
@@ -112,8 +112,12 @@ pub enum MipsAir<F: PrimeField32> {
     ByteLookup(ByteChip<F>),
     /// An AIR for MIPS Branch instructions.
     Branch(BranchChip),
-    /// An AIR for MIPS Jump instructions.
+    /// An AIR for MIPS register-target jump instructions (JR/JALR).
     Jump(JumpChip),
+    /// An AIR for MIPS immediate-target jump instructions (J/JAL).
+    Jumpi(JumpiChip),
+    /// An AIR for the MIPS pc-relative jump-and-link instruction (BAL).
+    JumpDirect(JumpDirectChip),
     /// An AIR for the word-aligned MIPS load instruction (LW).
     LoadWord(LoadWordChip),
     /// An AIR for real, retired `lw $zero, ...` (`LoadWordChip`'s zero-destination case).
@@ -307,6 +311,8 @@ impl<F: PrimeField32> MipsAir<F> {
             CloClz,
             Branch,
             Jump,
+            Jumpi,
+            JumpDirect,
             MiscInstrs,
             MovCond,
             StateBump,
@@ -649,6 +655,14 @@ impl<F: PrimeField32> MipsAir<F> {
         let jump = Chip::new(MipsAir::Jump(JumpChip::default()));
         costs.insert(jump.name(), jump.cost());
         chips.push(jump);
+
+        let jumpi = Chip::new(MipsAir::Jumpi(JumpiChip::default()));
+        costs.insert(jumpi.name(), jumpi.cost());
+        chips.push(jumpi);
+
+        let jump_direct = Chip::new(MipsAir::JumpDirect(JumpDirectChip::default()));
+        costs.insert(jump_direct.name(), jump_direct.cost());
+        chips.push(jump_direct);
 
         let syscall_instrs = Chip::new(MipsAir::SyscallInstrs(SyscallInstrsChip::default()));
         costs.insert(syscall_instrs.name(), syscall_instrs.cost());
