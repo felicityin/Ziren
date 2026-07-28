@@ -5,6 +5,7 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
+use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
@@ -56,13 +57,17 @@ pub struct JumpCols<T: Copy> {
     /// register, `op_b` (read) is the jump-target register.
     pub reader: RTypeReaderMasked<T>,
 
-    /// The next program counter (`pc + 4`) -- also the link value written to `op_a`. There is no
-    /// separate `next_next_pc` column: the jump target is `op_b`'s own (already range-checked)
-    /// register value, used directly wherever `next_next_pc` is needed.
+    /// The next program counter (`pc + 4`). There is no separate `next_next_pc` column: the jump
+    /// target is `op_b`'s own (already range-checked) register value, used directly wherever
+    /// `next_next_pc` is needed.
     pub next_pc: Word<T>,
     pub next_pc_range_checker: KoalaBearWordRangeChecker<T>,
 
-    /// A range checker for the value written to `op_a` (`next_pc + 4`, or zero when masked).
+    /// The link value (`next_pc + 4`) written to `op_a`. Its own witness, separate from
+    /// `reader.op_a_access.value`: the addition must be checked at the reduced-scalar level
+    /// (`next_pc.reduce() + 4`), not limb-by-limb (a byte-wise `next_pc.0[0] + 4` would silently
+    /// drop the carry whenever that byte is >= 252) -- see `eval`.
+    pub op_a_value: Word<T>,
     pub op_a_range_checker: KoalaBearWordRangeChecker<T>,
 
     /// Whether this is a real, retired JR/JALR instruction.
@@ -149,6 +154,7 @@ impl JumpChip {
 
         cols.next_pc = Word::from(event.next_pc);
         cols.next_pc_range_checker.populate(event.next_pc);
+        cols.op_a_value = Word::from(event.a);
         cols.op_a_range_checker.populate(event.a);
     }
 }
@@ -174,13 +180,14 @@ where
         let clk_high: AB::Expr = local.state.clk_high.into();
 
         // The candidate link value: always `next_pc + 4`, masked to zero by
-        // `eval_r_type_reader_masked` when `op_a_0` (JR, or a real `jalr $zero, ...`).
-        let op_a_computed_value = Word([
-            local.next_pc.0[0].into() + AB::Expr::from_canonical_u32(4),
-            local.next_pc.0[1].into(),
-            local.next_pc.0[2].into(),
-            local.next_pc.0[3].into(),
-        ]);
+        // `eval_r_type_reader_masked` when `op_a_0` (JR, or a real `jalr $zero, ...`). Checked at
+        // the reduced-scalar level, not limb-by-limb: a byte-wise `next_pc.0[0] + 4` would
+        // silently drop the carry whenever that byte is >= 252.
+        builder.when(local.is_real).assert_eq(
+            local.op_a_value.reduce::<AB>(),
+            local.next_pc.reduce::<AB>() + AB::Expr::from_canonical_u32(4),
+        );
+        let op_a_computed_value = local.op_a_value.map(Into::into);
 
         // The instruction word is reconstructed here rather than stored: `opcode` is hardcoded
         // (this chip only ever sees `Opcode::Jump`), `imm_b`/`imm_c` are compile-time constants
@@ -235,7 +242,7 @@ where
         );
         KoalaBearWordRangeChecker::<AB::F>::range_check(
             builder,
-            local.reader.op_a_access.value,
+            local.op_a_value,
             local.op_a_range_checker,
             local.is_real.into(),
         );

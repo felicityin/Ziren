@@ -1342,6 +1342,82 @@ pub mod tests {
         run_test(program).unwrap();
     }
 
+    fn pc_carry_filler(n: usize) -> Vec<Instruction> {
+        (0..n).map(|_| Instruction::new(Opcode::ADD, 0, 0, 0, false, true)).collect::<Vec<_>>()
+    }
+
+    /// A real HALT sequence (`v0 = 0`, `a0 = 0`, `syscall`) at a fixed, known address (`pc = 4`,
+    /// prefixed by one filler instruction at `pc = 0` -- jumping directly to `pc = 0` trips the
+    /// executor's `NullPointerReference` check), for the `*_pc_carry_prove` tests below to jump
+    /// back into. Jumping into unmapped memory with nothing to catch it (as an earlier version of
+    /// these tests did, targeting an out-of-range address with no HALT there) doesn't correspond
+    /// to any real, valid MIPS program -- real programs always end via an explicit syscall exit,
+    /// never by running off the end of their own instructions -- and was masking the real
+    /// regression this test is meant to catch behind an unrelated, invalid-program artifact.
+    const PC_CARRY_HALT_TARGET: u32 = 4;
+
+    fn pc_carry_halt_setup() -> Vec<Instruction> {
+        vec![
+            Instruction::new(Opcode::ADD, 0, 0, 0, false, true), // pc=0: filler (avoid jumping to 0)
+            Instruction::new(Opcode::ADD, 2, 0, 0, false, true), // pc=4: v0 = 0 (HALT syscall id)
+            Instruction::new(Opcode::ADD, 4, 0, 0, false, true), // pc=8: a0 = 0 (exit code)
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false), // pc=12: halt
+        ]
+    }
+
+    #[test]
+    fn test_j_pc_carry_prove() {
+        // Regression test: `JumpiChip`'s link value (`next_pc + 4`, written to `op_a`) must be
+        // computed at the reduced-scalar level, not by naively adding 4 to `next_pc`'s low byte --
+        // which silently drops the carry whenever that byte is >= 252. J is placed so its own
+        // `next_pc` (`pc + 4`) has a low byte of exactly 252, triggering exactly that carry.
+        setup_logger();
+        let mut instructions = pc_carry_halt_setup();
+        instructions.extend(pc_carry_filler(58)); // pc 16..244 (indices 4..61)
+        instructions.push(Instruction::new(Opcode::Jumpi, 0, PC_CARRY_HALT_TARGET, 0, true, true)); // pc=248
+        instructions.push(Instruction::new(Opcode::ADD, 0, 0, 0, false, true)); // delay slot, pc=252
+        run_test(Program::new(instructions, 0, 0)).unwrap();
+    }
+
+    #[test]
+    fn test_jr_pc_carry_prove() {
+        // See `test_j_pc_carry_prove`.
+        setup_logger();
+        let mut instructions = pc_carry_halt_setup();
+        instructions.extend(pc_carry_filler(57)); // pc 16..240 (indices 4..60)
+        instructions.push(Instruction::new(Opcode::ADD, 11, 0, PC_CARRY_HALT_TARGET, false, true)); // pc=244
+        instructions.push(Instruction::new(Opcode::Jump, 0, 11, 0, false, true)); // pc=248
+        instructions.push(Instruction::new(Opcode::ADD, 0, 0, 0, false, true)); // delay slot, pc=252
+        run_test(Program::new(instructions, 0, 0)).unwrap();
+    }
+
+    #[test]
+    fn test_jalr_pc_carry_prove() {
+        // See `test_j_pc_carry_prove`. A real (non-masked) link register.
+        setup_logger();
+        let mut instructions = pc_carry_halt_setup();
+        instructions.extend(pc_carry_filler(56)); // pc 16..236 (indices 4..59)
+        instructions.push(Instruction::new(Opcode::ADD, 5, 0, 0, false, true)); // pc=240
+        instructions.push(Instruction::new(Opcode::ADD, 11, 11, PC_CARRY_HALT_TARGET, false, true)); // pc=244
+        instructions.push(Instruction::new(Opcode::Jump, 5, 11, 0, false, true)); // pc=248
+        instructions.push(Instruction::new(Opcode::ADD, 0, 0, 0, false, true)); // delay slot, pc=252
+        run_test(Program::new(instructions, 0, 0)).unwrap();
+    }
+
+    #[test]
+    fn test_jumpdirect_pc_carry_prove() {
+        // See `test_j_pc_carry_prove`. Also the only coverage anywhere of `JumpDirect` (BAL),
+        // untested even before the `JumpChip` split. `offset` is pc-relative (`next_pc + offset`,
+        // wrapping): `next_pc` here is 252, so `offset = PC_CARRY_HALT_TARGET - 252` (wrapping).
+        setup_logger();
+        let mut instructions = pc_carry_halt_setup();
+        instructions.extend(pc_carry_filler(58)); // pc 16..244 (indices 4..61)
+        let offset = PC_CARRY_HALT_TARGET.wrapping_sub(252);
+        instructions.push(Instruction::new(Opcode::JumpDirect, 31, offset, 0, true, true)); // pc=248
+        instructions.push(Instruction::new(Opcode::ADD, 0, 0, 0, false, true)); // delay slot, pc=252
+        run_test(Program::new(instructions, 0, 0)).unwrap();
+    }
+
     #[test]
     fn test_sc_prove() {
         let instructions = vec![
