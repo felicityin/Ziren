@@ -213,8 +213,8 @@ where
 
         let addr_word = WordAddressOperation::<AB::F>::eval(
             builder,
-            local.adapter.op_b_val().map(Into::into),
-            local.adapter.op_c.map(Into::into),
+            local.adapter.op_b_val(),
+            local.adapter.op_c,
             local.word_address,
             is_real.clone(),
         );
