@@ -163,9 +163,9 @@ pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
 
 /// Emit the dependencies for misc instructions.
 pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
-    // MADD/MADDU/MSUB/MSUBU's `b * c` is now verified locally by `MiscInstrsChip` via an
-    // embedded `MulOperation` (see `misc/others/air.rs`'s `eval_maddsub`), so no dependency send
-    // into `mul_events` is needed here at all.
+    // MADD/MADDU/MSUB/MSUBU's `b * c` is now verified locally by `MaddsubChip` via an embedded
+    // `MulOperation` (see `misc/maddsub/mod.rs`), so no dependency send into `mul_events` is
+    // needed here at all.
     if matches!(event.opcode, Opcode::EXT) {
         let lsb = event.c & 0x1f;
         let msbd = event.c >> 5;
@@ -272,9 +272,9 @@ pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
         };
         executor.record.shift_left_events.push(sll_event);
 
-        // `extra_shift = srl_val + sll_val` is now verified locally by `MiscInstrsChip` via an
-        // embedded `AddOperation` (see `misc/others/air.rs`'s `eval_ins`), so no dependency send
-        // into `add_events` is needed here at all.
+        // `extra_shift = srl_val + sll_val` is now verified locally by `InsChip` via an embedded
+        // `AddOperation` (see `misc/ins/mod.rs`), so no dependency send into `add_events` is
+        // needed here at all.
         let extra_shift = srl_val + sll_val;
 
         let ror_event2 = AluEvent {

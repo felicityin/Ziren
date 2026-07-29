@@ -1659,7 +1659,19 @@ impl<'a> Executor<'a> {
             event.a_record = record.a;
             event.b_record = record.b;
             event.c_record = record.c;
-            self.record.misc_events.push(event);
+            match opcode {
+                Opcode::SEXT => self.record.sext_events.push(event),
+                Opcode::INS => self.record.ins_events.push(event),
+                Opcode::EXT => self.record.ext_events.push(event),
+                Opcode::MADDU | Opcode::MSUBU | Opcode::MADD | Opcode::MSUB => {
+                    self.record.maddsub_events.push(event);
+                }
+                Opcode::TEQ => self.record.teq_events.push(event),
+                _ => unreachable!(
+                    "emit_misc_event is only called for misc opcodes, all of which are handled \
+                     above"
+                ),
+            }
             emit_misc_dependencies(self, event);
         }
     }

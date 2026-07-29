@@ -77,7 +77,7 @@ pub const BYTE_SIZE: usize = 8;
 
 /// A chip that implements bitwise operations for the opcodes SLL and SLLI.
 ///
-/// As with `AddChip`, not every row is a real retired instruction: `misc/others`'s EXT/INS
+/// As with `AddChip`, not every row is a real retired instruction: `ExtChip`/`InsChip`'s
 /// dependency checks reuse this chip's arithmetic circuit for internal SLL checks at the
 /// `UNUSED_PC` sentinel. `is_real_instruction` distinguishes the two.
 #[derive(Default)]

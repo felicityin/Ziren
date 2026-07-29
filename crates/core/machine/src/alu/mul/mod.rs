@@ -2,7 +2,7 @@
 //!
 //! See `operations::MulOperation` for the shared arithmetic (sign extension, carry-propagated
 //! product). This chip covers real, retired MUL/MULT/MULTU instructions only -- `DivRemChip`'s
-//! `c * quotient` overflow check and `MiscInstrsChip`'s MADD/MADDU/MSUB/MSUBU accumulate-multiply
+//! `c * quotient` overflow check and `MaddsubChip`'s MADD/MADDU/MSUB/MSUBU accumulate-multiply
 //! each embed their own copy of `MulOperation` instead of depending on this chip.
 
 use core::{
@@ -70,7 +70,7 @@ pub struct MulCols<T: Copy> {
     /// The output operand.
     pub a: Word<T>,
 
-    /// The `b * c` product (sign-aware): shared arithmetic with `DivRemChip`/`MiscInstrsChip`'s
+    /// The `b * c` product (sign-aware): shared arithmetic with `DivRemChip`/`MaddsubChip`'s
     /// embedded copies, but computed locally here -- no cross-chip lookup.
     pub mul_operation: MulOperation<T>,
 

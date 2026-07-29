@@ -26,7 +26,7 @@ fn get_msb(a: [u8; WORD_SIZE]) -> u8 {
 /// Computes and validates the (sign-aware) 64-bit product `b * c` of two 32-bit words, shared by
 /// every chip that needs a multiply's full lo/hi result: `MulChip` (real MUL/MULT/MULTU
 /// instructions), and -- as an embedded, no-cross-chip-lookup copy -- `DivRemChip`'s `c *
-/// quotient` overflow check and `MiscInstrsChip`'s MADD/MADDU/MSUB/MSUBU accumulate-multiply.
+/// quotient` overflow check and `MaddsubChip`'s MADD/MADDU/MSUB/MSUBU accumulate-multiply.
 #[derive(AlignedBorrow, Default, Debug, Clone, Copy)]
 #[repr(C)]
 pub struct MulOperation<T> {
@@ -192,9 +192,11 @@ impl<F: Field> MulOperation<F> {
         }
 
         // Propagate carry. Gated by `is_real`: unlike `MulChip` (whose `b`/`c` come from a
-        // dedicated register reader that's naturally zero when `is_real` is 0), a caller like
-        // `MiscInstrsChip` shares its `b`/`c` columns across multiple opcode families, so they can
-        // be genuinely nonzero on a row where this particular product isn't the one being proved.
+        // dedicated register reader that's naturally zero when `is_real` is 0), a caller whose
+        // `b`/`c` columns are shared with other opcode families (e.g. via a `union`) can have
+        // them genuinely nonzero on a row where this particular product isn't the one being
+        // proved -- gating on `is_real` unconditionally keeps this operation safe to embed either
+        // way.
         for i in 0..PRODUCT_SIZE {
             if i == 0 {
                 builder
@@ -209,9 +211,9 @@ impl<F: Field> MulOperation<F> {
         }
 
         // Check that the boolean values are indeed boolean values. Gated by `is_real`: a caller
-        // that shares these columns with other opcode families via a `union` (e.g.
-        // `MiscInstrsChip`'s `MiscSpecificCols`) has genuinely arbitrary bytes here on a row
-        // where this operation isn't the active view, not just zeros.
+        // that shares these columns with other opcode families via a `union` has genuinely
+        // arbitrary bytes here on a row where this operation isn't the active view, not just
+        // zeros.
         for boolean in [cols.b_msb, cols.c_msb, cols.b_sign_extend, cols.c_sign_extend] {
             builder.when(is_real.clone()).assert_bool(boolean);
         }

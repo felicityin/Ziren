@@ -36,7 +36,7 @@ pub(crate) mod mips_chips {
             MemoryGlobalChip, StoreByteChip, StoreConditionalChip, StoreHalfChip, StoreWordChip,
             StoreWordUnalignedChip,
         },
-        misc::{MiscInstrsChip, MovCondChip},
+        misc::{ExtChip, InsChip, MaddsubChip, MovCondChip, SextChip, TeqChip},
         program::ProgramChip,
         syscall::{
             chip::SyscallChip,
@@ -140,8 +140,16 @@ pub enum MipsAir<F: PrimeField32> {
     StoreConditional(StoreConditionalChip),
     /// An AIR for MIPS mov condition instructions.
     MovCond(MovCondChip),
-    /// An AIR for MIPS misc instructions.
-    MiscInstrs(MiscInstrsChip),
+    /// An AIR for the MIPS sign-extend instructions (SEB/SEH).
+    Sext(SextChip),
+    /// An AIR for the MIPS bit-field insert instruction (INS).
+    Ins(InsChip),
+    /// An AIR for the MIPS bit-field extract instruction (EXT).
+    Ext(ExtChip),
+    /// An AIR for the MIPS multiply-accumulate instructions (MADD/MADDU/MSUB/MSUBU).
+    Maddsub(MaddsubChip),
+    /// An AIR for the MIPS trap-on-equal instruction (TEQ).
+    Teq(TeqChip),
     /// An AIR proving `clk_high` transitions (see [`StateBumpChip`]'s doc comment).
     StateBump(StateBumpChip),
     /// An AIR proving per-register `clk_high` realignment (see [`MemoryBumpChip`]'s doc comment).
@@ -313,7 +321,11 @@ impl<F: PrimeField32> MipsAir<F> {
             Jump,
             Jumpi,
             JumpDirect,
-            MiscInstrs,
+            Sext,
+            Ins,
+            Ext,
+            Maddsub,
+            Teq,
             MovCond,
             StateBump,
             MemoryBump,
@@ -710,9 +722,25 @@ impl<F: PrimeField32> MipsAir<F> {
         costs.insert(store_conditional.name(), store_conditional.cost());
         chips.push(store_conditional);
 
-        let misc_instrs = Chip::new(MipsAir::MiscInstrs(MiscInstrsChip::default()));
-        costs.insert(misc_instrs.name(), misc_instrs.cost());
-        chips.push(misc_instrs);
+        let sext = Chip::new(MipsAir::Sext(SextChip::default()));
+        costs.insert(sext.name(), sext.cost());
+        chips.push(sext);
+
+        let ins = Chip::new(MipsAir::Ins(InsChip::default()));
+        costs.insert(ins.name(), ins.cost());
+        chips.push(ins);
+
+        let ext = Chip::new(MipsAir::Ext(ExtChip::default()));
+        costs.insert(ext.name(), ext.cost());
+        chips.push(ext);
+
+        let maddsub = Chip::new(MipsAir::Maddsub(MaddsubChip::default()));
+        costs.insert(maddsub.name(), maddsub.cost());
+        chips.push(maddsub);
+
+        let teq = Chip::new(MipsAir::Teq(TeqChip::default()));
+        costs.insert(teq.name(), teq.cost());
+        chips.push(teq);
 
         let memory_global_init =
             Chip::new(MipsAir::MemoryGlobalInit(MemoryGlobalChip::new(MemoryChipType::Initialize)));
@@ -1249,6 +1277,74 @@ pub mod tests {
             let program = Program::new(instructions, 0, 0);
             run_test(program).unwrap();
         }
+    }
+
+    #[test]
+    fn test_misc_prove() {
+        setup_logger();
+        let instructions = vec![
+            Instruction::new(Opcode::ADD, 29, 0, 0xf, false, true),
+            Instruction::new(Opcode::ADD, 28, 0, 0x8F8F, false, true),
+            Instruction::new(Opcode::SEXT, 30, 29, 0, false, true),
+            Instruction::new(Opcode::SEXT, 31, 28, 0, false, true),
+            Instruction::new(Opcode::SEXT, 0, 28, 0, false, true),
+            Instruction::new(Opcode::SEXT, 30, 29, 1, false, true),
+            Instruction::new(Opcode::SEXT, 31, 28, 1, false, true),
+            Instruction::new(Opcode::SEXT, 0, 28, 1, false, true),
+            Instruction::new(Opcode::EXT, 30, 28, 0x21, false, true),
+            Instruction::new(Opcode::EXT, 30, 31, 0x1EF, false, true),
+            Instruction::new(Opcode::EXT, 0, 28, 0x21, false, true),
+            Instruction::new(Opcode::INS, 30, 29, 0x21, false, true),
+            Instruction::new(Opcode::INS, 30, 31, 0x3EF, false, true),
+            Instruction::new(Opcode::INS, 0, 29, 0x21, false, true),
+            Instruction::new(Opcode::MADDU, 32, 31, 31, false, false),
+            Instruction::new(Opcode::MADDU, 32, 29, 31, false, false),
+            Instruction::new(Opcode::MADDU, 32, 29, 0, false, false),
+            Instruction::new(Opcode::MSUBU, 32, 31, 31, false, false),
+            Instruction::new(Opcode::MSUBU, 32, 29, 31, false, false),
+            Instruction::new(Opcode::MSUBU, 32, 29, 0, false, false),
+            Instruction::new(Opcode::MADD, 32, 31, 31, false, false),
+            Instruction::new(Opcode::MADD, 32, 29, 31, false, false),
+            Instruction::new(Opcode::MADD, 32, 29, 0, false, false),
+            Instruction::new(Opcode::MSUB, 32, 31, 31, false, false),
+            Instruction::new(Opcode::MSUB, 32, 29, 31, false, false),
+            Instruction::new(Opcode::MSUB, 32, 29, 0, false, false),
+            Instruction::new(Opcode::TEQ, 28, 29, 0, false, true),
+            Instruction::new(Opcode::TEQ, 28, 0, 0, false, true),
+            Instruction::new(Opcode::TEQ, 0, 28, 0, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        run_test(program).unwrap();
+    }
+
+    /// Test INS instruction with width=32 (lsb=0, msb=31), the edge case fixed by splitting the
+    /// SRL into two steps to keep each shift amount in [0, 31].
+    #[test]
+    fn test_ins_offset_32() {
+        setup_logger();
+        // INS c encoding: lsb | (msb << 5)
+        // width = msb - lsb + 1
+        let instructions = vec![
+            // Set up source registers with non-trivial values.
+            Instruction::new(Opcode::ADD, 29, 0, 0xDEAD, false, true),
+            Instruction::new(Opcode::ADD, 28, 0, 0xBEEF, false, true),
+            // width=32: lsb=0, msb=31 -> c = 0 | (31 << 5) = 0x3E0
+            Instruction::new(Opcode::INS, 30, 29, 0x3E0, false, true),
+            // width=32 with different registers
+            Instruction::new(Opcode::INS, 31, 28, 0x3E0, false, true),
+            // width=32 with zero dest
+            Instruction::new(Opcode::INS, 0, 29, 0x3E0, false, true),
+            // width=31: lsb=0, msb=30 -> c = 0 | (30 << 5) = 0x3C0
+            Instruction::new(Opcode::INS, 30, 28, 0x3C0, false, true),
+            // width=1: lsb=0, msb=0 -> c = 0
+            Instruction::new(Opcode::INS, 30, 29, 0x0, false, true),
+            // width=1: lsb=31, msb=31 -> c = 31 | (31 << 5) = 0x3FF
+            Instruction::new(Opcode::INS, 30, 28, 0x3FF, false, true),
+            // width=16: lsb=8, msb=23 -> c = 8 | (23 << 5) = 0x2E8
+            Instruction::new(Opcode::INS, 30, 29, 0x2E8, false, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        run_test(program).unwrap();
     }
 
     #[test]

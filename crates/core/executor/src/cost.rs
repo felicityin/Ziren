@@ -132,7 +132,11 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::StoreHalf
             | MipsAirId::StoreWordUnaligned
             | MipsAirId::StoreConditional
-            | MipsAirId::MiscInstrs
+            | MipsAirId::Sext
+            | MipsAirId::Ins
+            | MipsAirId::Ext
+            | MipsAirId::Maddsub
+            | MipsAirId::Teq
             | MipsAirId::MemoryGlobalInit
             | MipsAirId::MemoryGlobalFinalize
             | MipsAirId::MemoryLocal
@@ -201,7 +205,11 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::Jumpi, record.jumpi_events.len());
     add_chip_cells(MipsAirId::JumpDirect, record.jumpdirect_events.len());
     add_chip_cells(MipsAirId::MovCond, record.movcond_events.len());
-    add_chip_cells(MipsAirId::MiscInstrs, record.misc_events.len());
+    add_chip_cells(MipsAirId::Sext, record.sext_events.len());
+    add_chip_cells(MipsAirId::Ins, record.ins_events.len());
+    add_chip_cells(MipsAirId::Ext, record.ext_events.len());
+    add_chip_cells(MipsAirId::Maddsub, record.maddsub_events.len());
+    add_chip_cells(MipsAirId::Teq, record.teq_events.len());
     add_chip_cells(MipsAirId::MemoryGlobalInit, record.global_memory_initialize_events.len());
     add_chip_cells(MipsAirId::MemoryGlobalFinalize, record.global_memory_finalize_events.len());
     add_chip_cells(MipsAirId::MemoryLocal, record.cpu_local_memory_access.len());
@@ -370,9 +378,25 @@ pub fn estimate_mips_lde_size(
     cells += (num_events_per_air[MipsAirId::StoreConditional]).next_power_of_two()
         * costs_per_air[&MipsAirId::StoreConditional];
 
-    // Compute the MiscInstruction chip contribution.
-    cells += (num_events_per_air[MipsAirId::MiscInstrs]).next_power_of_two()
-        * costs_per_air[&MipsAirId::MiscInstrs];
+    // Compute the Sext chip contribution.
+    cells += (num_events_per_air[MipsAirId::Sext]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Sext];
+
+    // Compute the Ins chip contribution.
+    cells += (num_events_per_air[MipsAirId::Ins]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Ins];
+
+    // Compute the Ext chip contribution.
+    cells += (num_events_per_air[MipsAirId::Ext]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Ext];
+
+    // Compute the Maddsub chip contribution.
+    cells += (num_events_per_air[MipsAirId::Maddsub]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Maddsub];
+
+    // Compute the Teq chip contribution.
+    cells += (num_events_per_air[MipsAirId::Teq]).next_power_of_two()
+        * costs_per_air[&MipsAirId::Teq];
 
     // Compute the cloclz chip contribution.
     cells += (num_events_per_air[MipsAirId::CloClz]).next_power_of_two()
@@ -532,15 +556,15 @@ pub fn estimate_mips_event_counts(
     // Compute the number of events in the StoreConditional chip.
     events_counts[MipsAirId::StoreConditional] = opcode_counts[Opcode::SC];
 
-    // Compute the number of events in the MiscInstrs chip.
-    events_counts[MipsAirId::MiscInstrs] = opcode_counts[Opcode::INS]
-        + opcode_counts[Opcode::EXT]
-        + opcode_counts[Opcode::SEXT]
-        + opcode_counts[Opcode::MADDU]
+    // Compute the number of events in the Sext/Ins/Ext/Maddsub/Teq chips.
+    events_counts[MipsAirId::Sext] = opcode_counts[Opcode::SEXT];
+    events_counts[MipsAirId::Ins] = opcode_counts[Opcode::INS];
+    events_counts[MipsAirId::Ext] = opcode_counts[Opcode::EXT];
+    events_counts[MipsAirId::Maddsub] = opcode_counts[Opcode::MADDU]
         + opcode_counts[Opcode::MSUBU]
         + opcode_counts[Opcode::MADD]
-        + opcode_counts[Opcode::MSUB]
-        + opcode_counts[Opcode::TEQ];
+        + opcode_counts[Opcode::MSUB];
+    events_counts[MipsAirId::Teq] = opcode_counts[Opcode::TEQ];
 
     events_counts[MipsAirId::MovCond] =
         opcode_counts[Opcode::WSBH] + opcode_counts[Opcode::MNE] + opcode_counts[Opcode::MEQ];
@@ -628,7 +652,15 @@ pub fn pad_mips_event_counts(
         MipsAirId::StoreHalf => *v += 2 * num_cycles,
         MipsAirId::StoreWordUnaligned => *v += 2 * num_cycles,
         MipsAirId::StoreConditional => *v += 2 * num_cycles,
-        MipsAirId::MiscInstrs => *v += 8 * num_cycles, // TODO: Check this value.
+        // Each opcode variant contributes its own 1x-per-cycle worst case; `Maddsub` covers 4
+        // opcodes (MADD/MADDU/MSUB/MSUBU), matching the combined `8 * num_cycles` the
+        // pre-split `MiscInstrs` used (1 each for Sext/Ins/Ext/Teq + 4 for Maddsub).
+        // TODO: Check this value.
+        MipsAirId::Sext => *v += num_cycles,
+        MipsAirId::Ins => *v += num_cycles,
+        MipsAirId::Ext => *v += num_cycles,
+        MipsAirId::Maddsub => *v += 4 * num_cycles,
+        MipsAirId::Teq => *v += num_cycles,
         MipsAirId::CloClz => *v += 3 * num_cycles,     // TODO: Check this value.
         MipsAirId::SyscallCore => *v += 2 * num_cycles,
         MipsAirId::MovCond => *v += 2 * num_cycles,

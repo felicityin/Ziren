@@ -131,8 +131,16 @@ pub enum MipsAirId {
     StoreWordUnaligned = 66,
     /// The atomic store-conditional chip (SC).
     StoreConditional = 67,
-    /// The MiscInstrsChip.
-    MiscInstrs = 40,
+    /// The SEXT chip (SEB/SEH).
+    Sext = 70,
+    /// The INS chip.
+    Ins = 71,
+    /// The EXT chip.
+    Ext = 72,
+    /// The MADD/MADDU/MSUB/MSUBU chip.
+    Maddsub = 73,
+    /// The TEQ chip.
+    Teq = 74,
     /// The memory global init chip.
     MemoryGlobalInit = 41,
     /// The memory global finalize chip.
@@ -213,7 +221,11 @@ impl MipsAirId {
             Self::StoreHalf => "StoreHalf",
             Self::StoreWordUnaligned => "StoreWordUnaligned",
             Self::StoreConditional => "StoreConditional",
-            Self::MiscInstrs => "MiscInstrs",
+            Self::Sext => "Sext",
+            Self::Ins => "Ins",
+            Self::Ext => "Ext",
+            Self::Maddsub => "Maddsub",
+            Self::Teq => "Teq",
             Self::MemoryGlobalInit => "MemoryGlobalInit",
             Self::MemoryGlobalFinalize => "MemoryGlobalFinalize",
             Self::MemoryLocal => "MemoryLocal",

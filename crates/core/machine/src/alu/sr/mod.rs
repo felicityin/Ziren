@@ -95,7 +95,7 @@ const BYTE_SIZE: usize = 8;
 /// A chip that implements bitwise operations for the opcodes SRL, SRA, and ROR.
 ///
 /// As with `AddChip`, not every row is a real retired instruction: `CloClz` and
-/// `misc/others`'s EXT/INS dependency checks reuse this chip's arithmetic circuit for internal
+/// `ExtChip`/`InsChip`'s dependency checks reuse this chip's arithmetic circuit for internal
 /// SRL/ROR checks at the `UNUSED_PC` sentinel (SRA currently has no synthetic producer, but the
 /// `is_real_sra` flag is kept for uniformity). `is_real_srl`/`is_real_sra`/`is_real_ror`
 /// distinguish real instructions from synthetic dependency rows.

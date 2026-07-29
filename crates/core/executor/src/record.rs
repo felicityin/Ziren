@@ -129,8 +129,16 @@ pub struct ExecutionRecord {
     pub jumpdirect_events: Vec<JumpEvent>,
     /// A trace of the conditional move events.
     pub movcond_events: Vec<MovCondEvent>,
-    /// A trace of the misc events.
-    pub misc_events: Vec<MiscEvent>,
+    /// A trace of the SEXT events.
+    pub sext_events: Vec<MiscEvent>,
+    /// A trace of the INS events.
+    pub ins_events: Vec<MiscEvent>,
+    /// A trace of the EXT events.
+    pub ext_events: Vec<MiscEvent>,
+    /// A trace of the MADD/MADDU/MSUB/MSUBU events.
+    pub maddsub_events: Vec<MiscEvent>,
+    /// A trace of the TEQ events.
+    pub teq_events: Vec<MiscEvent>,
     /// A trace of the byte lookups that are needed.
     pub byte_lookups: HashMap<ByteLookupEvent, usize>,
     /// A trace of the precompile events.
@@ -430,7 +438,11 @@ impl MachineRecord for ExecutionRecord {
         stats.insert("jump_events".to_string(), self.jump_events.len());
         stats.insert("jumpi_events".to_string(), self.jumpi_events.len());
         stats.insert("jumpdirect_events".to_string(), self.jumpdirect_events.len());
-        stats.insert("misc_events".to_string(), self.misc_events.len());
+        stats.insert("sext_events".to_string(), self.sext_events.len());
+        stats.insert("ins_events".to_string(), self.ins_events.len());
+        stats.insert("ext_events".to_string(), self.ext_events.len());
+        stats.insert("maddsub_events".to_string(), self.maddsub_events.len());
+        stats.insert("teq_events".to_string(), self.teq_events.len());
 
         for (syscall_code, events) in self.precompile_events.iter() {
             stats.insert(format!("syscall {syscall_code:?}"), events.len());
@@ -480,7 +492,11 @@ impl MachineRecord for ExecutionRecord {
         self.jump_events.append(&mut other.jump_events);
         self.jumpi_events.append(&mut other.jumpi_events);
         self.jumpdirect_events.append(&mut other.jumpdirect_events);
-        self.misc_events.append(&mut other.misc_events);
+        self.sext_events.append(&mut other.sext_events);
+        self.ins_events.append(&mut other.ins_events);
+        self.ext_events.append(&mut other.ext_events);
+        self.maddsub_events.append(&mut other.maddsub_events);
+        self.teq_events.append(&mut other.teq_events);
         self.syscall_events.append(&mut other.syscall_events);
 
         self.precompile_events.append(&mut other.precompile_events);

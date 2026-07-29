@@ -255,10 +255,26 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        // `misc_events` is always real instructions (no synthetic-dependency producer targets
-        // it -- this chip is itself a dependency producer), so no `UNUSED_PC` filter is needed
-        // here.
-        input.misc_events.iter().for_each(|event| {
+        // `sext_events`/`ins_events`/`ext_events`/`maddsub_events`/`teq_events` are always real
+        // instructions (no synthetic-dependency producer targets them -- these chips are
+        // themselves dependency producers), so no `UNUSED_PC` filter is needed here.
+        input.sext_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.ins_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.ext_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.maddsub_events.iter().for_each(|event| {
+            let pc = event.pc;
+            instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
+        });
+        input.teq_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
