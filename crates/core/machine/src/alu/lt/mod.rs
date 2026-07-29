@@ -5,14 +5,13 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::*;
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
     events::{AluEvent, ByteLookupEvent, ByteRecord},
-    ExecutionRecord, Opcode, Program, UNUSED_PC,
+    ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
@@ -26,7 +25,7 @@ use crate::{
         clk_low_expr, eval_cpu_state, eval_r_type_reader, eval_state_chain, CpuState,
         InstructionCols, RTypeReader,
     },
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    air::ZKMCoreAirBuilder,
     operations::LtOperation,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
@@ -40,11 +39,10 @@ pub const NUM_LT_COLS: usize = size_of::<LtCols<u8>>();
 
 /// A chip that implements the register-form opcodes SLT and SLTU.
 ///
-/// Not every row corresponds to a real retired instruction: some rows are internal dependency
-/// checks emitted by `Branch`/`DivRem` (reusing this chip's comparison circuit for internal
-/// SLT/SLTU checks) at the `UNUSED_PC` sentinel. `is_retired` distinguishes the two (kept as its
-/// own witnessed column rather than folded into a product, since interaction
-/// values/multiplicities in this lookup argument must stay affine in the trace columns).
+/// Every row is a real, retired instruction: nothing sends a synthetic dependency row into
+/// `lt_events` -- `BranchChip`/`DivRemChip` now verify their own former SLT/SLTU checks locally
+/// via an embedded copy of the comparison circuit instead of a cross-chip lookup into this chip
+/// (see their doc comments).
 ///
 /// `Opcode::SLT`/`Opcode::SLTU` also cover the immediate-form SLTI/SLTIU (register `b` + an
 /// encoded immediate `c`, see `SltiChip`) -- every real row reaching *this* chip is therefore
@@ -59,26 +57,15 @@ pub struct LtChip;
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct LtCols<T: Copy> {
-    /// The current shard and clk. Only meaningful when `is_retired == 1`.
+    /// The current shard and clk.
     pub state: CpuState<T>,
 
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// Register operand access for `a`/`b`/`c`. Only meaningful when this row is a real
-    /// instruction (`is_retired == 1`).
+    /// Register operand access for `a`/`b`/`c`.
     pub adapter: RTypeReader<T>,
-
-    /// Whether this row is a real, retired SLT/SLTU instruction (as opposed to an internal
-    /// dependency check from another chip, or padding).
-    pub is_retired: T,
-
-    /// The first input operand (register `b` for a real instruction).
-    pub b: Word<T>,
-
-    /// The second input operand (register `c` for a real instruction).
-    pub c: Word<T>,
 
     /// The SLT/SLTU comparison circuit (shared with `SltiChip`).
     pub lt_operation: LtOperation<T>,
@@ -196,26 +183,21 @@ impl LtChip {
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
-        cols.b = Word::from(event.b);
-        cols.c = Word::from(event.c);
 
-        let is_real_instruction = event.pc != UNUSED_PC;
-        if is_real_instruction {
-            cols.is_retired = F::ONE;
+        // Every `lt_events` row is a real, retired instruction -- nothing ever produces a
+        // synthetic dependency row here.
+        cols.state.populate(blu, event.clk);
 
-            cols.state.populate(blu, event.clk);
-
-            let instruction = program.fetch(event.pc);
-            cols.adapter.populate(
-                blu,
-                instruction.op_a,
-                event.a_record,
-                instruction.op_b,
-                event.b_record,
-                instruction.op_c,
-                event.c_record,
-            );
-        }
+        let instruction = program.fetch(event.pc);
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+            event.c_record,
+        );
 
         let result = cols.lt_operation.populate(blu, event.opcode, event.b, event.c);
         assert_eq!(result, event.a);
@@ -237,23 +219,20 @@ where
         let local = main.row_slice(0);
         let local: &LtCols<AB::Var> = (*local).borrow();
 
-
-        builder.assert_bool(local.is_retired);
         let is_real = local.lt_operation.is_slt + local.lt_operation.is_sltu;
-        // `is_retired` can only be set alongside `is_real` -- kept as its own witnessed column
-        // (not the product `is_real * is_retired`) because interaction values/multiplicities in
-        // this lookup argument must stay affine in the trace columns.
-        builder.when_not(is_real.clone()).assert_zero(local.is_retired);
+
+        let op_b_val = local.adapter.op_b_val();
+        let op_c_val = local.adapter.op_c_val();
 
         LtOperation::<AB::F>::eval(
             builder,
-            local.b.map(Into::into),
-            local.c.map(Into::into),
+            op_b_val.map(Into::into),
+            op_c_val.map(Into::into),
             local.lt_operation,
             is_real.clone(),
         );
 
-        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
@@ -265,7 +244,7 @@ where
         let opcode = local.lt_operation.is_slt * Opcode::SLT.as_field::<AB::F>()
             + local.lt_operation.is_sltu * Opcode::SLTU.as_field::<AB::F>();
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
-            opcode: opcode.clone(),
+            opcode,
             op_a: local.adapter.op_a.into(),
             op_b: Word::extend_var::<AB>(local.adapter.op_b),
             op_c: Word::extend_var::<AB>(local.adapter.op_c),
@@ -273,7 +252,7 @@ where
             imm_b: AB::Expr::zero(),
             imm_c: AB::Expr::zero(),
         };
-        builder.send_program(local.pc, instruction, local.is_retired.into());
+        builder.send_program(local.pc, instruction, is_real.clone());
 
         eval_r_type_reader(
             builder,
@@ -281,10 +260,10 @@ where
             clk_high.clone(),
             clk_low.clone(),
             local.lt_operation.a.map(Into::into),
-            local.is_retired.into(),
+            is_real.clone(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_retired.into());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -296,42 +275,7 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            local.is_retired.into(),
-        );
-
-        builder
-            .when(local.is_retired)
-            .assert_word_eq(local.adapter.op_b_val(), local.b.map(Into::into));
-        builder
-            .when(local.is_retired)
-            .assert_word_eq(local.adapter.op_c_val(), local.c.map(Into::into));
-
-        // ---- Synthetic dependency path: matches whichever chip generated this internal check via
-        // `send_alu` (always at the `UNUSED_PC` sentinel, shard/clk zero). `is_real - is_retired`
-        // is 1 exactly when this is a real SLT/SLTU row that is *not* a real instruction, i.e. a
-        // synthetic dependency row -- and stays affine (degree 1), unlike the product
-        // `is_real * (1 - is_retired)`. ----
-        let zero_word =
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]);
-
-        builder.receive_instruction(
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            opcode,
-            local.lt_operation.a,
-            local.b,
-            local.c,
-            zero_word,
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
-            is_real - local.is_retired,
+            is_real,
         );
     }
 }
@@ -342,7 +286,7 @@ mod tests {
     // use crate::utils::{uni_stark_prove as prove, uni_stark_verify as verify};
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode, UNUSED_PC};
+    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Instruction, Opcode, Program};
     use zkm_hypercube::air::MachineAir;
     // use zkm_stark::{
     //     air::MachineAir, koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig,
@@ -352,8 +296,17 @@ mod tests {
 
     #[test]
     fn generate_trace() {
-        let mut shard = ExecutionRecord::default();
-        shard.lt_events = vec![AluEvent::new(UNUSED_PC, Opcode::SLT, 0, 3, 2)];
+        // Every `lt_events` row is a real, retired instruction (see this chip's doc comment), so
+        // trace-gen always does a real program lookup -- unlike this test's old `UNUSED_PC`-based
+        // synthetic-dependency shape.
+        let program = Program {
+            instructions: vec![Instruction::new(Opcode::SLT, 30, 29, 28, false, false)],
+            pc_start: 0,
+            pc_base: 0,
+            ..Default::default()
+        };
+        let mut shard = ExecutionRecord { program: program.into(), ..Default::default() };
+        shard.lt_events = vec![AluEvent::new(0, Opcode::SLT, 0, 3, 2)];
         let chip = LtChip::default();
         let generate_trace = chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();
         let trace: RowMajorMatrix<KoalaBear> = generate_trace;

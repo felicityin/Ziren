@@ -172,7 +172,10 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.lt_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `lt_events` is always real instructions now (`Branch`/`DivRem` verify their former SLT/
+        // SLTU dependency checks locally instead -- see `BranchChip`/`DivRemChip`'s doc comments),
+        // so no `UNUSED_PC` filter is needed here.
+        input.lt_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });

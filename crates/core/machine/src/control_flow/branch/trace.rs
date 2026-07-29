@@ -7,7 +7,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use zkm_core_executor::{
     events::{BranchEvent, ByteLookupEvent, ByteRecord},
-    ExecutionRecord, Opcode, Program,
+    get_msb, ByteOpcode, ExecutionRecord, Opcode, Program,
 };
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
@@ -120,21 +120,28 @@ impl BranchChip {
         cols.is_blez = F::from_bool(matches!(event.opcode, Opcode::BLEZ));
         cols.is_bgez = F::from_bool(matches!(event.opcode, Opcode::BGEZ));
 
-        let a_eq_b = event.a == event.b;
-
-        let a_lt_b = (event.a as i32) < (event.b as i32);
-        let a_gt_b = (event.a as i32) > (event.b as i32);
-
-        cols.a_lt_b = F::from_bool(a_lt_b);
-        cols.a_gt_b = F::from_bool(a_gt_b);
+        // Computed locally (no cross-chip lookup into `LtChip`): `a_eq_b` covers BEQ/BNE's real
+        // comparison and doubles as `op_a == 0` for BLTZ/BGEZ/BLEZ/BGTZ (whose `op_b` is always
+        // the executor's own hardcoded-zero `event.b`); `msb_a` is `op_a`'s sign bit, the only
+        // other primitive those four opcodes need.
+        let a_eq_b = cols.a_eq_b.populate(event.a, event.b) == 1;
+        let msb_a = get_msb(event.a);
+        cols.msb_a = F::from_canonical_u8(msb_a);
+        blu.add_byte_lookup_event(ByteLookupEvent {
+            opcode: ByteOpcode::MSB,
+            a1: msb_a as u16,
+            a2: 0,
+            b: event.a.to_le_bytes()[3],
+            c: 0,
+        });
 
         let branching = match event.opcode {
             Opcode::BEQ => a_eq_b,
             Opcode::BNE => !a_eq_b,
-            Opcode::BLTZ => a_lt_b,
-            Opcode::BLEZ => a_lt_b || a_eq_b,
-            Opcode::BGTZ => a_gt_b,
-            Opcode::BGEZ => a_eq_b || a_gt_b,
+            Opcode::BLTZ => msb_a == 1,
+            Opcode::BLEZ => msb_a == 1 || a_eq_b,
+            Opcode::BGTZ => msb_a == 0 && !a_eq_b,
+            Opcode::BGEZ => msb_a == 0,
             _ => panic!("Invalid opcode: {}", event.opcode),
         };
 

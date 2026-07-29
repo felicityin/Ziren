@@ -4,7 +4,7 @@ use p3_air::AirBuilder;
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
 use slop_air::{Air, AirBuilderWithPublicValues};
-use zkm_core_executor::{events::MemoryAccessPosition, Opcode};
+use zkm_core_executor::{events::MemoryAccessPosition, ByteOpcode, Opcode};
 use zkm_hypercube::{
     air::BaseAirBuilder,
     word::Word,
@@ -13,7 +13,7 @@ use zkm_hypercube::{
 use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, InstructionCols},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
-    operations::{AddOperation, KoalaBearWordRangeChecker},
+    operations::{AddOperation, IsEqualWordOperation, KoalaBearWordRangeChecker},
 };
 
 use super::{BranchChip, BranchColumns};
@@ -189,72 +189,58 @@ where
             builder.when(is_real.clone()).assert_bool(local.is_branching);
         }
 
-        // Evaluate branching value constraints.
+        // `a_eq_b`/`msb_a`, computed locally (no cross-chip lookup into `LtChip`): `a_eq_b`
+        // covers BEQ/BNE's real two-register comparison and doubles as `op_a == 0` for
+        // BLTZ/BGEZ/BLEZ/BGTZ (whose `op_b` is always the hardcoded-zero immediate, so
+        // `reader.op_b_val()` is the zero word there -- see `reads_op_b_as_register` above).
+        IsEqualWordOperation::<AB::F>::eval(
+            builder,
+            local.reader.op_a_val().map(Into::into),
+            local.reader.op_b_val().map(Into::into),
+            local.a_eq_b,
+            is_real.clone(),
+        );
+        let a_eq_b: AB::Expr = local.a_eq_b.is_diff_zero.result.into();
+
+        // `msb_a` is `op_a`'s sign bit -- the only other primitive BLTZ/BGEZ/BLEZ/BGTZ need
+        // (they never compare `op_a` against an arbitrary second operand, only against zero).
+        builder.send_byte(
+            ByteOpcode::MSB.as_field::<AB::F>(),
+            local.msb_a,
+            local.reader.op_a_val()[3],
+            AB::Expr::zero(),
+            is_real.clone(),
+        );
+
+        // Evaluate branching value constraints. `msb_a==1` and `a_eq_b==1` are mutually
+        // exclusive (a negative word is never zero), so every sum below is a safe disjoint OR,
+        // not just an upper bound.
         {
-            // When the opcode is BEQ and we are branching, assert that a_gt_b + a_lt_b is false.
-            builder
-                .when(local.is_beq * local.is_branching)
-                .assert_zero(local.a_gt_b + local.a_lt_b);
+            // BEQ branches iff a == b.
+            builder.when(local.is_beq).assert_eq(local.is_branching, a_eq_b.clone());
 
-            // When the opcode is BEQ and we are not branching, assert that either a_gt_b or a_lt_b
-            // is true.
-            builder
-                .when(local.is_beq)
-                .when_not(local.is_branching)
-                .assert_one(local.a_gt_b + local.a_lt_b);
-
-            // When the opcode is BNE and we are branching, assert that either a_gt_b or a_lt_b is
-            // true.
-            builder.when(local.is_bne * local.is_branching).assert_one(local.a_gt_b + local.a_lt_b);
-
-            // When the opcode is BNE and we are not branching, assert that a_gt_b + a_lt_b is false.
+            // BNE branches iff a != b.
             builder
                 .when(local.is_bne)
-                .when_not(local.is_branching)
-                .assert_zero(local.a_gt_b + local.a_lt_b);
+                .assert_eq(local.is_branching, AB::Expr::one() - a_eq_b.clone());
 
-            // When the opcode is BLTZ and we are branching, assert that a_lt_b is true.
-            builder.when(local.is_bltz * local.is_branching).assert_one(local.a_lt_b);
+            // BLTZ branches iff a < 0, i.e. msb_a.
+            builder.when(local.is_bltz).assert_eq(local.is_branching, local.msb_a.into());
 
-            // When the opcode is BLTZ and we are not branching, assert a_lt_b is false.
-            builder.when(local.is_bltz).when_not(local.is_branching).assert_zero(local.a_lt_b);
+            // BGEZ branches iff a >= 0, i.e. !msb_a.
+            builder
+                .when(local.is_bgez)
+                .assert_eq(local.is_branching, AB::Expr::one() - local.msb_a.into());
 
-            // When the opcode is BLEZ and we are branching, assert that either a_gt_b is false
-            builder.when(local.is_blez * local.is_branching).assert_zero(local.a_gt_b);
+            // BLEZ branches iff a < 0 || a == 0.
+            builder
+                .when(local.is_blez)
+                .assert_eq(local.is_branching, local.msb_a.into() + a_eq_b.clone());
 
-            // When the opcode is BLEZ and we are not branching, assert that a_gt_b is true.
-            builder.when(local.is_blez).when_not(local.is_branching).assert_one(local.a_gt_b);
-
-            // When the opcode is BGTZ and we are branching, assert that a_gt_b is true.
-            builder.when(local.is_bgtz * local.is_branching).assert_one(local.a_gt_b);
-
-            // When the opcode is BGTZ and we are not branching, assert that a_gt_b is false.
-            builder.when(local.is_bgtz).when_not(local.is_branching).assert_zero(local.a_gt_b);
-
-            // When the opcode is BGEZ and we are branching, assert that a_lt_b is false.
-            builder.when(local.is_bgez * local.is_branching).assert_zero(local.a_lt_b);
-
-            // When the opcode is BGEZ and we are not branching, assert that a_lt_b is true.
-            builder.when(local.is_bgez).when_not(local.is_branching).assert_one(local.a_lt_b);
+            // BGTZ branches iff !(a < 0 || a == 0).
+            builder
+                .when(local.is_bgtz)
+                .assert_eq(local.is_branching, AB::Expr::one() - local.msb_a.into() - a_eq_b);
         }
-
-        // Calculate a_lt_b <==> a < b (using appropriate signedness).
-        // SAFETY: `use_signed_comparison` is boolean, since at most one selector is turned on.
-        builder.send_alu(
-            Opcode::SLT.as_field::<AB::F>(),
-            Word::extend_var::<AB>(local.a_lt_b),
-            local.reader.op_a_val(),
-            local.reader.op_b_val(),
-            is_real.clone(),
-        );
-
-        // Calculate a_gt_b <==> a > b (using appropriate signedness).
-        builder.send_alu(
-            Opcode::SLT.as_field::<AB::F>(),
-            Word::extend_var::<AB>(local.a_gt_b),
-            local.reader.op_b_val(),
-            local.reader.op_a_val(),
-            is_real.clone(),
-        );
     }
 }

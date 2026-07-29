@@ -6,7 +6,7 @@ use zkm_hypercube::word::Word;
 
 use crate::{
     adapter::{CpuState, ITypeImmutableReader},
-    operations::{AddOperation, KoalaBearWordRangeChecker},
+    operations::{AddOperation, IsEqualWordOperation, KoalaBearWordRangeChecker},
 };
 
 pub const NUM_BRANCH_COLS: usize = size_of::<BranchColumns<u8>>();
@@ -68,9 +68,18 @@ pub struct BranchColumns<T: Copy> {
     /// > is_bgez & (a_gt_0  | a_eq_0)
     pub is_branching: T,
 
-    /// Whether a is greater than b.
-    pub a_gt_b: T,
+    /// Whether `op_a == op_b` -- for BEQ/BNE this is the real comparison; for BLTZ/BGEZ/BLEZ/BGTZ,
+    /// `op_b` is hardcoded to 0 (see `reads_op_b_as_register` in `Air::eval`), so this doubles as
+    /// `op_a == 0`. Computed locally (no cross-chip lookup into `LtChip`), unlike this chip's
+    /// former `a_lt_b`/`a_gt_b` columns -- MIPS branches never need a generic two-register
+    /// *ordering* comparison (RISC-V's BLT/BGE do, which is why sp1's `BranchChip` embeds a real
+    /// `LtOperationSigned`); every MIPS branch reduces to equality plus `op_a`'s own sign, both far
+    /// cheaper primitives.
+    pub a_eq_b: IsEqualWordOperation<T>,
 
-    /// Whether a is less than b.
-    pub a_lt_b: T,
+    /// The most significant (sign) bit of `op_a`, used by BLTZ/BGEZ/BLEZ/BGTZ. Verified via a
+    /// `send_byte(MSB, ...)` lookup against `op_a`'s own most significant byte -- cheaper than a
+    /// full signed comparison since these four opcodes only ever need `op_a`'s sign, never an
+    /// arbitrary second operand's magnitude.
+    pub msb_a: T,
 }

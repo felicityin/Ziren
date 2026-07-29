@@ -89,7 +89,7 @@ use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::{MemoryCols, RegisterAccessCols, RegisterWriteAccessCols},
-    operations::{AddOperation, IsEqualWordOperation, IsZeroWordOperation, MulOperation},
+    operations::{AddOperation, IsEqualWordOperation, IsZeroWordOperation, LtOperation, MulOperation},
     utils::next_power_of_two,
 };
 
@@ -105,10 +105,11 @@ const LONG_WORD_SIZE: usize = 2 * WORD_SIZE;
 /// A chip that implements addition for the opcodes DIV/REM.
 ///
 /// Unlike `AddChip`/`MulChip`, no other chip ever emits a synthetic dependency row into
-/// `divrem_events` (DivRem's own internal checks are the other direction: it sends synthetic
-/// ADD/MULT/MULTU/SLTU rows to those chips, see the `send_alu`/`send_alu_with_hi` calls below).
-/// Every row here is therefore a real, retired instruction -- no `is_real_instruction` split is
-/// needed, unlike the other migrated ALU chips.
+/// `divrem_events`. DivRem's own internal checks (the `c * quotient` product, the `abs`
+/// computations, and the `abs(remainder) < max(abs(c), 1)` comparison) are all verified locally
+/// via embedded `MulOperation`/`AddOperation`/`LtOperation` copies -- no cross-chip `send_alu`
+/// lookups into `MulChip`/`AddChip`/`LtChip` at all. Every row here is therefore a real, retired
+/// instruction -- no `is_real_instruction` split is needed, unlike the other migrated ALU chips.
 ///
 /// `op_b`/`op_c` are always registers (MIPS has no DIVI), so they use the cheap
 /// [`RegisterAccessCols`] scheme. `op_a`'s write value is `quotient` for DIV/DIVU and `remainder`
@@ -233,6 +234,10 @@ pub struct DivRemCols<T: Copy> {
     /// Column to modify multiplicity for remainder range check event.
     pub remainder_check_multiplicity: T,
 
+    /// Verifies `abs(remainder) < max(abs(c), 1)`, computed locally (no cross-chip lookup into
+    /// `LtChip`).
+    pub remainder_check: LtOperation<T>,
+
     /// Access to hi register
     pub op_hi_access: MemoryReadWriteCols<T>,
 }
@@ -349,6 +354,14 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                     cols.max_abs_c_or_1 = Word::from(u32::max(1, event.c));
                     (false, false, event.c, remainder)
                 };
+
+                // Verify `abs(remainder) < max(abs(c), 1)`, computed locally (no cross-chip
+                // lookup into `LtChip`). `c != 0` is enforced architecturally (division by zero
+                // traps in the executor), so this is unconditional for every real row.
+                let max_abs_c_or_1 = u32::max(1, abs_c);
+                let result = cols.remainder_check.populate(output, Opcode::SLTU, abs_remainder, max_abs_c_or_1);
+                debug_assert_eq!(result, 1);
+
                 // `0 == c + abs_c` / `0 == remainder + abs_remainder`, computed locally (no
                 // cross-chip lookup into `AddChip`). Only populated (and its byte-range-check
                 // dependency events only recorded) when actually negative, matching the AIR's
@@ -691,15 +704,18 @@ where
                 local.remainder_check_multiplicity,
             );
 
-            // Dispatch abs(remainder) < max(abs(c), 1), this is equivalent to abs(remainder) <
-            // abs(c) if not division by 0.
-            builder.send_alu(
-                AB::Expr::from_canonical_u32(Opcode::SLTU as u32),
-                Word([one.clone(), zero.clone(), zero.clone(), zero.clone()]),
-                local.abs_remainder,
-                local.max_abs_c_or_1,
-                local.remainder_check_multiplicity,
+            // Verify abs(remainder) < max(abs(c), 1), computed locally (no cross-chip lookup into
+            // `LtChip`); this is equivalent to abs(remainder) < abs(c) if not division by 0.
+            LtOperation::<AB::F>::eval(
+                builder,
+                local.abs_remainder.map(Into::into),
+                local.max_abs_c_or_1.map(Into::into),
+                local.remainder_check,
+                local.remainder_check_multiplicity.into(),
             );
+            builder
+                .when(local.remainder_check_multiplicity)
+                .assert_one(local.remainder_check.a[0]);
         }
 
         // Check that the MSBs are correct.

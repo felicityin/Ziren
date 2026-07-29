@@ -650,10 +650,12 @@ pub fn estimate_mips_event_counts(
     // Compute the number of events in the global chip.
     events_counts[MipsAirId::Global] = 2 * touched_addresses + syscalls_sent;
 
-    // Adjust for divrem dependencies.
-    events_counts[MipsAirId::Mul] += events_counts[MipsAirId::DivRem];
-    events_counts[MipsAirId::Lt] += events_counts[MipsAirId::DivRem];
-
+    // Unlike before, DivRem's `c * quotient`/`abs`/`abs(remainder) < max(abs(c), 1)` checks are
+    // all verified locally via embedded `MulOperation`/`AddOperation`/`LtOperation` copies now (no
+    // cross-chip `send_alu` lookups into `MulChip`/`AddChip`/`LtChip` at all -- see `DivRemChip`'s
+    // doc comment), so no dependency adjustment is needed here for Mul/Lt. Same for `BranchChip`'s
+    // former SLT/SLT dependency into `LtChip` (see `BranchChip`'s doc comment).
+    //
     // Note: we ignore the additional dependencies for add/sub, since they are accounted for in
     // the maximal shapes.
 
@@ -697,7 +699,11 @@ pub fn pad_mips_event_counts(
         MipsAirId::Lui => *v += num_cycles,
         MipsAirId::ShiftRight => *v += num_cycles,
         MipsAirId::DivRem => *v += 4 * num_cycles,
-        MipsAirId::Lt => *v += 2 * num_cycles,
+        // Same reasoning as Addi/AddNoop/AluX0/Slti: no dependency-row producer ever targets
+        // this shape anymore (`Branch`'s former SLT sends and `DivRem`'s former SLTU send are
+        // both verified locally now -- see `BranchChip`/`DivRemChip`'s doc comments), so a real
+        // instruction's worst-case growth is 1 per cycle.
+        MipsAirId::Lt => *v += num_cycles,
         // Same reasoning as Addi/AddNoop/AluX0: no dependency-row producer ever targets this
         // shape (see `SltiChip`'s doc comment), so a real instruction's worst-case growth is 1
         // per cycle.

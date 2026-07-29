@@ -14,7 +14,7 @@ use zkm_stark::{ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
 
 use crate::{
     context::ZKMContext,
-    dependencies::{emit_branch_dependencies, emit_divrem_dependencies, emit_memory_dependencies},
+    dependencies::emit_memory_dependencies,
     estimate_mips_event_counts, estimate_mips_lde_size,
     events::{
         AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, CpuEvent, JumpEvent,
@@ -1580,16 +1580,15 @@ impl<'a> Executor<'a> {
             }
             // A real, retired MOD/MODU with `op_a==0` goes to the shared `alu_x0_events` instead
             // (see `AluX0Chip`'s doc comment); DIV/DIVU always decode with `op_a=32` (MIPS's
-            // HI/LO-style divide), so they never hit this case. Unlike other `alu_x0_events`
-            // routing, this also skips `emit_divrem_dependencies`: `AluX0Chip` doesn't verify the
-            // div/mod computation at all (the result is entirely discarded), so there's no
-            // `send_alu(SLTU, ...)` on its side to balance that dependency send.
+            // HI/LO-style divide), so they never hit this case.
             Opcode::MOD | Opcode::MODU if op_a_is_zero => {
                 self.record.alu_x0_events.push(event);
             }
+            // `DivRemChip`'s `c * quotient`/`abs`/`abs(remainder) < max(abs(c), 1)` checks are all
+            // verified locally via embedded `MulOperation`/`AddOperation`/`LtOperation` copies (see
+            // its doc comment), so no dependency send is needed here at all.
             Opcode::DIV | Opcode::DIVU | Opcode::MOD | Opcode::MODU => {
                 self.record.divrem_events.push(event_comp);
-                emit_divrem_dependencies(self, event);
             }
             // A real, retired CLZ/CLO with `op_a==0` goes to the shared `alu_x0_events` instead
             // (see `AluX0Chip`'s doc comment).
@@ -1688,8 +1687,10 @@ impl<'a> Executor<'a> {
             b_record: record.b,
             c_record: record.c,
         };
+        // `a_lt_b`/`a_gt_b`-equivalent checks are now verified locally by `BranchChip` via an
+        // embedded `IsEqualWordOperation` plus a sign-bit lookup, so no dependency send into
+        // `lt_events` is needed here at all.
         self.record.branch_events.push(event);
-        emit_branch_dependencies(self, event);
     }
 
     /// Emit a jump event.
