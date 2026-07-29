@@ -11,7 +11,7 @@
   "ShiftRight": 117,
   "Sub": 43,
   "Secp256k1Decompress": 1379,
-  "Bitwise": 69,
+  "Bitwise": 57,
   "Bn254AddAssign": 2050,
   "Program": 15,
   "StoreByte": 66,
