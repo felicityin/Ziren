@@ -11,7 +11,7 @@ use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum, MiscEvent},
+    events::{ByteLookupEvent, ByteRecord, MiscEvent},
     ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
@@ -22,13 +22,11 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
-    adapter::InstructionCols,
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_i_type_immutable_reader, eval_state_chain, CpuState,
+        ITypeImmutableReader, InstructionCols,
     },
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::MemoryCols,
+    air::ZKMCoreAirBuilder,
     operations::IsEqualWordOperation,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
@@ -41,7 +39,9 @@ pub const NUM_TEQ_COLS: usize = size_of::<TeqCols<u8>>();
 ///
 /// Every row is a real, retired instruction: nothing sends a synthetic dependency row into
 /// `teq_events`. TEQ never writes `op_a` (it's a pure comparison), so its register access is an
-/// immutable read, not a read-modify-write like `MaddsubChip`/`InsChip`.
+/// immutable read (`op_a` and `op_b` both read, never register-0-masked); `op_c` is always the
+/// instruction's own encoded immediate (always exactly `0`, never read) -- the same shape
+/// `ITypeImmutableReader` covers (already used by `BranchChip` and several load/store chips).
 #[derive(Default)]
 pub struct TeqChip;
 
@@ -53,24 +53,14 @@ pub struct TeqCols<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
-
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The value of the first operand.
-    pub op_a_value: Word<T>,
-    /// The value of the second operand.
-    pub op_b_value: Word<T>,
-    /// The value of the third operand.
-    pub op_c_value: Word<T>,
+    /// Register operand access for `a`/`b`/`c`.
+    pub adapter: ITypeImmutableReader<T>,
 
-    /// Whether `op_a_value == op_b_value` -- TEQ must trap only when they differ (equality is
+    /// Whether `op_a == op_b` -- TEQ must trap only when they differ (equality is
     /// architecturally unreachable for a valid trap-free execution, mirrored by the `assert_zero`
     /// below).
     pub a_eq_b: IsEqualWordOperation<T>,
@@ -126,12 +116,6 @@ impl<F: PrimeField32> MachineAir<F> for TeqChip {
                     if idx < input.teq_events.len() {
                         let event = &input.teq_events[idx];
                         self.event_to_row(event, cols, &mut blu, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -168,26 +152,14 @@ impl TeqChip {
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
-
-        if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
-
-        cols.op_a_value = event.a.into();
-        cols.op_b_value = event.b.into();
-        cols.op_c_value = event.c.into();
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+        );
 
         cols.a_eq_b.populate(event.a, event.b);
     }
@@ -211,23 +183,33 @@ where
         let is_real = local.is_real;
         builder.assert_bool(is_real);
 
+        let op_a_val = local.adapter.op_a_val();
+        let op_b_val = local.adapter.op_b_val();
+
         // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.into());
+        // The instruction word is reconstructed here rather than stored: `opcode`/`imm_b` are
+        // compile-time constants (this chip only ever sees register `op_a`/`op_b` -- see this
+        // chip's doc comment), `imm_c` is always set (TEQ's `op_c` is always the immediate 0),
+        // and `op_a`/`op_a_0`/`op_b`/`op_c` are the adapter's own columns.
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: Opcode::TEQ.as_field::<AB::F>().into(),
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: local.adapter.op_c.map(Into::into),
+            op_a_0: local.adapter.op_a_0.into(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::one(),
+        };
+        builder.send_program(local.pc, instruction, is_real.into());
 
-        // TEQ never writes `op_a` -- it's an immutable read, compared against `op_b` below.
-        eval_register_reader(
+        eval_i_type_immutable_reader(
             builder,
-            &local.reader,
+            &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            &local.instruction,
-            local.op_a_value.map(Into::into),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            is_real.into(),
             is_real.into(),
         );
 
@@ -246,25 +228,12 @@ where
             is_real.into(),
         );
 
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
-
-        // Bind to the row's actual fetched opcode, so a row can't claim to be TEQ while still
-        // passing the program lookup with a different instruction.
-        builder
-            .when(is_real)
-            .assert_eq(local.instruction.opcode, Opcode::TEQ.as_field::<AB::F>());
-
         // Check that a != b -- a real TEQ retirement never traps (the executor rejects a program
-        // that would), so `op_a_value == op_b_value` is architecturally unreachable here.
+        // that would), so `op_a == op_b` is architecturally unreachable here.
         IsEqualWordOperation::<AB::F>::eval(
             builder,
-            local.op_a_value.map(|x| x.into()),
-            local.op_b_value.map(|x| x.into()),
+            op_a_val.map(|x| x.into()),
+            op_b_val.map(|x| x.into()),
             local.a_eq_b,
             is_real.into(),
         );

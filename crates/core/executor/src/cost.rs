@@ -113,6 +113,7 @@ const fn is_core_air(id: MipsAirId) -> bool {
             | MipsAirId::Mul
             | MipsAirId::ShiftRight
             | MipsAirId::ShiftLeft
+            | MipsAirId::Lui
             | MipsAirId::Lt
             | MipsAirId::Slti
             | MipsAirId::CloClz
@@ -185,6 +186,7 @@ pub fn estimate_record_trace_bytes(
     add_chip_cells(MipsAirId::Mul, record.mul_events.len());
     add_chip_cells(MipsAirId::Bitwise, record.bitwise_events.len());
     add_chip_cells(MipsAirId::ShiftLeft, record.shift_left_events.len());
+    add_chip_cells(MipsAirId::Lui, record.lui_events.len());
     add_chip_cells(MipsAirId::ShiftRight, record.shift_right_events.len());
     add_chip_cells(MipsAirId::DivRem, record.divrem_events.len());
     add_chip_cells(MipsAirId::Lt, record.lt_events.len());
@@ -301,6 +303,10 @@ pub fn estimate_mips_lde_size(
     // Compute the shift left chip contribution.
     cells += (num_events_per_air[MipsAirId::ShiftLeft]).next_power_of_two()
         * costs_per_air[&MipsAirId::ShiftLeft];
+
+    // Compute the LUI chip contribution.
+    cells +=
+        (num_events_per_air[MipsAirId::Lui]).next_power_of_two() * costs_per_air[&MipsAirId::Lui];
 
     // Compute the shift right chip contribution.
     cells += (num_events_per_air[MipsAirId::ShiftRight]).next_power_of_two()
@@ -447,6 +453,15 @@ pub fn estimate_mips_event_counts(
     sltu_x0_events: u64,
     bitwise_x0_events: u64,
     shift_right_x0_events: u64,
+    lui_events: u64,
+    shift_left_x0_events: u64,
+    mul_x0_events: u64,
+    movcond_x0_events: u64,
+    divrem_x0_events: u64,
+    cloclz_x0_events: u64,
+    ins_x0_events: u64,
+    ext_x0_events: u64,
+    sext_x0_events: u64,
     load_x0_events: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
@@ -471,18 +486,29 @@ pub fn estimate_mips_event_counts(
     // with `op_a==0` (isolated via `sub_x0_events`, see `AluX0Chip`'s doc comment).
     events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB] - sub_x0_events;
 
-    // Compute the number of events in the shared add/sub/lt/bitwise/shift-right-to-register-0
-    // chip.
+    // Compute the number of events in the shared
+    // add/sub/lt/bitwise/shift-right/shift-left/mul-to-register-0 chip.
     events_counts[MipsAirId::AluX0] = add_x0_events
         + sub_x0_events
         + slt_x0_events
         + sltu_x0_events
         + bitwise_x0_events
-        + shift_right_x0_events;
+        + shift_right_x0_events
+        + shift_left_x0_events
+        + mul_x0_events
+        + movcond_x0_events
+        + divrem_x0_events
+        + cloclz_x0_events
+        + ins_x0_events
+        + ext_x0_events
+        + sext_x0_events;
 
-    // Compute the number of events in the mul chip.
-    events_counts[MipsAirId::Mul] =
-        opcode_counts[Opcode::MUL] + opcode_counts[Opcode::MULT] + opcode_counts[Opcode::MULTU];
+    // Compute the number of events in the mul chip. `opcode_counts[Opcode::MUL]` includes real,
+    // retired `op_a==0` rows too (isolated via `mul_x0_events`, see `AluX0Chip`'s doc comment);
+    // MULT/MULTU always decode with `op_a=32`, so they never need this split.
+    events_counts[MipsAirId::Mul] = opcode_counts[Opcode::MUL] + opcode_counts[Opcode::MULT]
+        + opcode_counts[Opcode::MULTU]
+        - mul_x0_events;
 
     // Compute the number of events in the bitwise chip. `opcode_counts[Opcode::XOR]`/`[OR]`/
     // `[AND]`/`[NOR]` include real, retired `op_a==0` rows too (isolated via `bitwise_x0_events`,
@@ -493,8 +519,15 @@ pub fn estimate_mips_event_counts(
         + opcode_counts[Opcode::NOR]
         - bitwise_x0_events;
 
-    // Compute the number of events in the shift left chip.
-    events_counts[MipsAirId::ShiftLeft] = opcode_counts[Opcode::SLL];
+    // Compute the number of events in the shift left chip. `opcode_counts[Opcode::SLL]` mixes
+    // register-form SLL/SLLV, LUI (isolated via `lui_events`, see `LuiChip`'s doc comment), and
+    // zero-destination SLL/SLLV (isolated via `shift_left_x0_events`, see `AluX0Chip`'s doc
+    // comment), so those are subtracted out here and counted on their own lines.
+    events_counts[MipsAirId::ShiftLeft] =
+        opcode_counts[Opcode::SLL] - lui_events - shift_left_x0_events;
+
+    // Compute the number of events in the LUI chip.
+    events_counts[MipsAirId::Lui] = lui_events;
 
     // Compute the number of events in the shift right chip. `opcode_counts[Opcode::SRL]`/`[SRA]`/
     // `[ROR]` include real, retired `op_a==0` rows too (isolated via `shift_right_x0_events`, see
@@ -504,8 +537,15 @@ pub fn estimate_mips_event_counts(
         + opcode_counts[Opcode::ROR]
         - shift_right_x0_events;
 
-    // Compute the number of events in the divrem chip.
-    events_counts[MipsAirId::DivRem] = opcode_counts[Opcode::DIV] + opcode_counts[Opcode::DIVU];
+    // Compute the number of events in the divrem chip. `opcode_counts[Opcode::MOD]`/`[MODU]`
+    // include real, retired `op_a==0` rows too (isolated via `divrem_x0_events`, see
+    // `AluX0Chip`'s doc comment); DIV/DIVU always decode with `op_a=32`, so they never need this
+    // split.
+    events_counts[MipsAirId::DivRem] = opcode_counts[Opcode::DIV]
+        + opcode_counts[Opcode::DIVU]
+        + opcode_counts[Opcode::MOD]
+        + opcode_counts[Opcode::MODU]
+        - divrem_x0_events;
 
     // Compute the number of events in the lt chip. `opcode_counts[Opcode::SLT]`/`[Opcode::SLTU]`
     // mix register-form SLT/SLTU, immediate-form SLTI/SLTIU, register-form SLT/SLTU with
@@ -572,20 +612,34 @@ pub fn estimate_mips_event_counts(
     events_counts[MipsAirId::StoreConditional] = opcode_counts[Opcode::SC];
 
     // Compute the number of events in the Sext/Ins/Ext/Maddsub/Teq chips.
-    events_counts[MipsAirId::Sext] = opcode_counts[Opcode::SEXT];
-    events_counts[MipsAirId::Ins] = opcode_counts[Opcode::INS];
-    events_counts[MipsAirId::Ext] = opcode_counts[Opcode::EXT];
+    // `opcode_counts[Opcode::SEXT]` includes real, retired `op_a==0` rows too (isolated via
+    // `sext_x0_events`, see `AluX0Chip`'s doc comment), so that's subtracted out here.
+    events_counts[MipsAirId::Sext] = opcode_counts[Opcode::SEXT] - sext_x0_events;
+    // `opcode_counts[Opcode::INS]` includes real, retired `op_a==0` rows too (isolated via
+    // `ins_x0_events`, see `AluX0Chip`'s doc comment), so that's subtracted out here.
+    events_counts[MipsAirId::Ins] = opcode_counts[Opcode::INS] - ins_x0_events;
+    // `opcode_counts[Opcode::EXT]` includes real, retired `op_a==0` rows too (isolated via
+    // `ext_x0_events`, see `AluX0Chip`'s doc comment), so that's subtracted out here.
+    events_counts[MipsAirId::Ext] = opcode_counts[Opcode::EXT] - ext_x0_events;
     events_counts[MipsAirId::Maddsub] = opcode_counts[Opcode::MADDU]
         + opcode_counts[Opcode::MSUBU]
         + opcode_counts[Opcode::MADD]
         + opcode_counts[Opcode::MSUB];
     events_counts[MipsAirId::Teq] = opcode_counts[Opcode::TEQ];
 
-    events_counts[MipsAirId::MovCond] =
-        opcode_counts[Opcode::WSBH] + opcode_counts[Opcode::MNE] + opcode_counts[Opcode::MEQ];
+    // `opcode_counts[Opcode::WSBH]`/`[Opcode::MNE]`/`[Opcode::MEQ]` include real, retired
+    // `op_a==0` rows too (isolated via `movcond_x0_events`, see `AluX0Chip`'s doc comment), so
+    // that's subtracted out here.
+    events_counts[MipsAirId::MovCond] = opcode_counts[Opcode::WSBH]
+        + opcode_counts[Opcode::MNE]
+        + opcode_counts[Opcode::MEQ]
+        - movcond_x0_events;
 
-    // Compute the number of events in the auipc chip.
-    events_counts[MipsAirId::CloClz] = opcode_counts[Opcode::CLO] + opcode_counts[Opcode::CLZ];
+    // Compute the number of events in the CloClz chip. `opcode_counts[Opcode::CLO]`/`[CLZ]`
+    // include real, retired `op_a==0` rows too (isolated via `cloclz_x0_events`, see
+    // `AluX0Chip`'s doc comment), so that's subtracted out here.
+    events_counts[MipsAirId::CloClz] =
+        opcode_counts[Opcode::CLO] + opcode_counts[Opcode::CLZ] - cloclz_x0_events;
 
     // Compute the number of events in the syscall core chip.
     events_counts[MipsAirId::SyscallCore] = syscalls_sent;
@@ -638,6 +692,9 @@ pub fn pad_mips_event_counts(
         MipsAirId::Mul => *v += 4 * num_cycles,
         MipsAirId::Bitwise => *v += 3 * num_cycles,
         MipsAirId::ShiftLeft => *v += num_cycles,
+        // Same reasoning as ShiftLeft: no dependency-row producer ever targets this shape (see
+        // `LuiChip`'s doc comment), so a real instruction's worst-case growth is 1 per cycle.
+        MipsAirId::Lui => *v += num_cycles,
         MipsAirId::ShiftRight => *v += num_cycles,
         MipsAirId::DivRem => *v += 4 * num_cycles,
         MipsAirId::Lt => *v += 2 * num_cycles,

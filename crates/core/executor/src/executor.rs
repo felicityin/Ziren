@@ -241,6 +241,41 @@ pub struct LocalCounts {
     /// form) with `op_a==0` -- a subset of `event_counts[Opcode::SRL]`/`[Opcode::SRA]`/
     /// `[Opcode::ROR]`, needed to split `ShiftRight`'s estimate from `AluX0`'s.
     pub shift_right_x0_events: u64,
+    /// The number of real, retired LUI instructions -- a subset of `event_counts[Opcode::SLL]`
+    /// (LUI decodes to `Opcode::SLL` with `imm_b=true`), needed to split `ShiftLeft`'s estimate
+    /// from `Lui`'s.
+    pub lui_events: u64,
+    /// The number of real, retired register- or immediate-shift-amount-form SLL/SLLV
+    /// instructions with `op_a==0` -- a subset of `event_counts[Opcode::SLL]`, needed to split
+    /// `ShiftLeft`'s estimate from `AluX0`'s.
+    pub shift_left_x0_events: u64,
+    /// The number of real, retired MUL instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::MUL]`, needed to split `Mul`'s estimate from `AluX0`'s. MULT/MULTU
+    /// always decode with `op_a=32` (MIPS's HI/LO-style multiply), so they never reach
+    /// `AluX0Chip`.
+    pub mul_x0_events: u64,
+    /// The number of real, retired MEQ/MNE/WSBH instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::MEQ]`/`[Opcode::MNE]`/`[Opcode::WSBH]`, needed to split `MovCond`'s
+    /// estimate from `AluX0`'s.
+    pub movcond_x0_events: u64,
+    /// The number of real, retired MOD/MODU instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::MOD]`/`[Opcode::MODU]`, needed to split `DivRem`'s estimate from
+    /// `AluX0`'s. DIV/DIVU always decode with `op_a=32` (MIPS's HI/LO-style divide), so they
+    /// never reach `AluX0Chip`.
+    pub divrem_x0_events: u64,
+    /// The number of real, retired CLZ/CLO instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::CLZ]`/`[Opcode::CLO]`, needed to split `CloClz`'s estimate from
+    /// `AluX0`'s.
+    pub cloclz_x0_events: u64,
+    /// The number of real, retired INS instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::INS]`, needed to split `Ins`'s estimate from `AluX0`'s.
+    pub ins_x0_events: u64,
+    /// The number of real, retired EXT instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::EXT]`, needed to split `Ext`'s estimate from `AluX0`'s.
+    pub ext_x0_events: u64,
+    /// The number of real, retired SEXT instructions with `op_a==0` -- a subset of
+    /// `event_counts[Opcode::SEXT]`, needed to split `Sext`'s estimate from `AluX0`'s.
+    pub sext_x0_events: u64,
     /// The number of real, retired LW instructions with `op_a==0` -- a subset of
     /// `event_counts[Opcode::LW]`, needed to split `LoadWord`'s estimate from `LoadX0`'s.
     pub load_x0_events: u64,
@@ -1230,16 +1265,19 @@ impl<'a> Executor<'a> {
             // `SltiChip`, and zero-destination `AluX0Chip`), every ADD shape (register-form
             // `AddChip`, immediate-form `AddiChip`, and fully-immediate SYNC/Pref via
             // `AddNoopChip`), every XOR/OR/AND/NOR shape (register- or immediate-form
-            // `BitwiseChip`, and zero-destination `AluX0Chip`), and every SRL/SRA/ROR shape
+            // `BitwiseChip`, and zero-destination `AluX0Chip`), every SRL/SRA/ROR shape
             // (register- or immediate-shift-amount-form `ShiftRightChip`, and zero-destination
-            // `AluX0Chip`) are migrated to the cheap register-access timestamp scheme so far (see
+            // `AluX0Chip`), and every SLL shape (register- or immediate-shift-amount-form
+            // `ShiftLeftChip`, zero-destination `AluX0Chip`, and LUI's `imm_b`-form `LuiChip`) are
+            // migrated to the cheap register-access timestamp scheme so far (see
             // `SubChip`/`AddChip`/`AddiChip`/`AddNoopChip`/`LtChip`/`SltiChip`/`BitwiseChip`/
-            // `ShiftRightChip`'s doc comments); their register accesses are the only ones that
-            // need a `MemoryBumpChip` event when they cross a `clk_high` boundary. Every other ALU
-            // chip/shape still uses the general-purpose scheme, which handles an arbitrary gap on
-            // its own -- emitting a bump event for one of *those* accesses would double-validate
-            // the same transition on the shared memory argument and unbalance it. This condition
-            // must match `emit_alu_event`'s routing exactly.
+            // `ShiftRightChip`/`ShiftLeftChip`/`LuiChip`/`MulChip`'s doc comments); their register
+            // accesses are the only ones that need a `MemoryBumpChip` event when they cross a
+            // `clk_high` boundary. Every other ALU chip/shape still uses the general-purpose
+            // scheme, which handles an arbitrary gap on its own -- emitting a bump event for one
+            // of *those* accesses would double-validate the same transition on the shared memory
+            // argument and unbalance it. This condition must match `emit_alu_event`'s routing
+            // exactly.
             let uses_cheap_register_scheme = matches!(
                 instruction.opcode,
                 Opcode::ADD
@@ -1253,6 +1291,16 @@ impl<'a> Executor<'a> {
                     | Opcode::SRL
                     | Opcode::SRA
                     | Opcode::ROR
+                    | Opcode::SLL
+                    | Opcode::MUL
+                    | Opcode::MULT
+                    | Opcode::MULTU
+                    | Opcode::DIV
+                    | Opcode::DIVU
+                    | Opcode::MOD
+                    | Opcode::MODU
+                    | Opcode::CLZ
+                    | Opcode::CLO
             );
             if uses_cheap_register_scheme {
                 self.emit_memory_bump_events(instruction, &record);
@@ -1303,9 +1351,16 @@ impl<'a> Executor<'a> {
             self.emit_memory_bump_events(instruction, &record);
             self.emit_jump_event(clk, instruction.opcode, a, b, c, next_pc, next_next_pc, record);
         } else if instruction.is_misc_instruction() {
+            // Every misc opcode (MEQ/MNE/WSBH via `MovCondChip`, MADD/MADDU/MSUB/MSUBU via
+            // `MaddsubChip`, INS/EXT/SEXT via `InsChip`/`ExtChip`/`SextChip`, TEQ via `TeqChip`)
+            // now uses the cheap register-access scheme (see their doc comments), so this is
+            // unconditional -- `is_misc_instruction()` already narrows this branch to exactly
+            // that opcode set.
+            self.emit_memory_bump_events(instruction, &record);
             self.emit_misc_event(
                 clk,
                 instruction.opcode,
+                instruction.op_a == Register::ZERO as u8,
                 a,
                 b,
                 c,
@@ -1313,6 +1368,11 @@ impl<'a> Executor<'a> {
                 record,
             );
         } else if instruction.is_syscall_instruction() {
+            // SYSCALL's register operands (`op_a`/`op_b`/`op_c` -- always the hardcoded `V0`/
+            // `A0`/`A1`) now use the cheap register-access scheme (see `SyscallInstrsChip`'s doc
+            // comment), so this is unconditional -- `is_syscall_instruction()` already narrows
+            // this branch to exactly that opcode.
+            self.emit_memory_bump_events(instruction, &record);
             self.emit_syscall_event(clk, record, syscall_code, b, c, next_pc);
         } else {
             log::debug!("wrong {}\n", instruction.opcode);
@@ -1475,6 +1535,16 @@ impl<'a> Executor<'a> {
             Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR => {
                 self.record.bitwise_events.push(event);
             }
+            // LUI decodes to `Opcode::SLL` with `imm_b=true` (`op_b` the instruction's own
+            // encoded immediate, never a register) -- a distinct shape from SLL/SLLV (`imm_b`
+            // always false, `op_b` always a register), so it's routed to its own `lui_events`
+            // instead (see `LuiChip`'s doc comment).
+            Opcode::SLL if imm_b => {
+                self.record.lui_events.push(event);
+            }
+            Opcode::SLL if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
+            }
             Opcode::SLL => {
                 self.record.shift_left_events.push(event);
             }
@@ -1499,12 +1569,32 @@ impl<'a> Executor<'a> {
             Opcode::SLT | Opcode::SLTU => {
                 self.record.lt_events.push(event);
             }
+            // A real, retired MUL with `op_a==0` goes to the shared `alu_x0_events` instead (see
+            // `AluX0Chip`'s doc comment); MULT/MULTU always decode with `op_a=32` (MIPS's
+            // HI/LO-style multiply), so they never hit this case.
+            Opcode::MUL if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
+            }
             Opcode::MUL | Opcode::MULT | Opcode::MULTU => {
                 self.record.mul_events.push(event_comp);
+            }
+            // A real, retired MOD/MODU with `op_a==0` goes to the shared `alu_x0_events` instead
+            // (see `AluX0Chip`'s doc comment); DIV/DIVU always decode with `op_a=32` (MIPS's
+            // HI/LO-style divide), so they never hit this case. Unlike other `alu_x0_events`
+            // routing, this also skips `emit_divrem_dependencies`: `AluX0Chip` doesn't verify the
+            // div/mod computation at all (the result is entirely discarded), so there's no
+            // `send_alu(SLTU, ...)` on its side to balance that dependency send.
+            Opcode::MOD | Opcode::MODU if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
             }
             Opcode::DIV | Opcode::DIVU | Opcode::MOD | Opcode::MODU => {
                 self.record.divrem_events.push(event_comp);
                 emit_divrem_dependencies(self, event);
+            }
+            // A real, retired CLZ/CLO with `op_a==0` goes to the shared `alu_x0_events` instead
+            // (see `AluX0Chip`'s doc comment).
+            Opcode::CLZ | Opcode::CLO if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
             }
             Opcode::CLZ | Opcode::CLO => {
                 // `bb >> (31 - result) == 1` is now verified locally by `CloClzChip` via an
@@ -1646,6 +1736,7 @@ impl<'a> Executor<'a> {
         &mut self,
         clk: u64,
         opcode: Opcode,
+        op_a_is_zero: bool,
         a: u32,
         b: u32,
         c: u32,
@@ -1653,6 +1744,28 @@ impl<'a> Executor<'a> {
         record: MemoryAccessRecord,
     ) {
         if matches!(opcode, Opcode::MNE | Opcode::MEQ | Opcode::WSBH) {
+            // A real, retired MEQ/MNE/WSBH with `op_a==0` goes to the shared `alu_x0_events`
+            // instead (see `AluX0Chip`'s doc comment) -- its result is discarded and
+            // unobservable, so it needs a different (cheaper) register-write scheme than
+            // `MovCondChip` uses for a real result.
+            if op_a_is_zero {
+                let event = AluEvent {
+                    clk,
+                    pc: self.state.pc,
+                    next_pc: self.state.next_pc,
+                    opcode,
+                    hi: 0,
+                    a,
+                    b,
+                    c,
+                    a_record: record.a,
+                    b_record: record.b,
+                    c_record: record.c,
+                };
+                self.record.alu_x0_events.push(event);
+                return;
+            }
+
             let mut event = MovCondEvent::new(
                 clk,
                 self.state.pc,
@@ -1668,6 +1781,28 @@ impl<'a> Executor<'a> {
             event.c_record = record.c;
             self.record.movcond_events.push(event);
         } else {
+            // A real, retired INS/EXT/SEXT with `op_a==0` goes to the shared `alu_x0_events`
+            // instead (see `AluX0Chip`'s doc comment) -- the computed result is discarded and
+            // unobservable, so the full shift chain/sign-extension doesn't need to be verified
+            // for that row at all.
+            if matches!(opcode, Opcode::INS | Opcode::EXT | Opcode::SEXT) && op_a_is_zero {
+                let event = AluEvent {
+                    clk,
+                    pc: self.state.pc,
+                    next_pc: self.state.next_pc,
+                    opcode,
+                    hi: 0,
+                    a,
+                    b,
+                    c,
+                    a_record: record.a,
+                    b_record: record.b,
+                    c_record: record.c,
+                };
+                self.record.alu_x0_events.push(event);
+                return;
+            }
+
             let hi_access = match record.hi {
                 Some(MemoryRecordEnum::Write(record)) => record,
                 _ => MemoryWriteRecord::default(),
@@ -1912,6 +2047,63 @@ impl<'a> Executor<'a> {
                 && instruction.op_a == Register::ZERO as u8
             {
                 self.local_counts.shift_right_x0_events += 1;
+            }
+            // Same idea for LUI (routed to `lui_events` -- see `LuiChip`'s doc comment) and real,
+            // retired register-/immediate-shift-amount-form SLL/SLLV with `op_a==0` (routed to
+            // `alu_x0_events`). Must match `emit_alu_event`'s routing order exactly: LUI is
+            // identified by `imm_b` alone (checked first), then the zero-destination case only
+            // applies to what's left.
+            if instruction.opcode == Opcode::SLL && instruction.imm_b {
+                self.local_counts.lui_events += 1;
+            }
+            if instruction.opcode == Opcode::SLL
+                && !instruction.imm_b
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.shift_left_x0_events += 1;
+            }
+            // Same idea for real, retired MUL with `op_a==0` (routed to `alu_x0_events` -- see
+            // `AluX0Chip`'s doc comment). MULT/MULTU always decode with `op_a=32`, so they never
+            // hit this case.
+            if instruction.opcode == Opcode::MUL && instruction.op_a == Register::ZERO as u8 {
+                self.local_counts.mul_x0_events += 1;
+            }
+            // Same idea for real, retired MEQ/MNE/WSBH with `op_a==0` (routed to `alu_x0_events`
+            // -- see `AluX0Chip`'s doc comment).
+            if matches!(instruction.opcode, Opcode::MEQ | Opcode::MNE | Opcode::WSBH)
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.movcond_x0_events += 1;
+            }
+            // Same idea for real, retired MOD/MODU with `op_a==0` (routed to `alu_x0_events` --
+            // see `AluX0Chip`'s doc comment). DIV/DIVU always decode with `op_a=32`, so they never
+            // hit this case.
+            if matches!(instruction.opcode, Opcode::MOD | Opcode::MODU)
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.divrem_x0_events += 1;
+            }
+            // Same idea for real, retired CLZ/CLO with `op_a==0` (routed to `alu_x0_events` --
+            // see `AluX0Chip`'s doc comment).
+            if matches!(instruction.opcode, Opcode::CLZ | Opcode::CLO)
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.cloclz_x0_events += 1;
+            }
+            // Same idea for real, retired INS with `op_a==0` (routed to `alu_x0_events` -- see
+            // `AluX0Chip`'s doc comment).
+            if instruction.opcode == Opcode::INS && instruction.op_a == Register::ZERO as u8 {
+                self.local_counts.ins_x0_events += 1;
+            }
+            // Same idea for real, retired EXT with `op_a==0` (routed to `alu_x0_events` -- see
+            // `AluX0Chip`'s doc comment).
+            if instruction.opcode == Opcode::EXT && instruction.op_a == Register::ZERO as u8 {
+                self.local_counts.ext_x0_events += 1;
+            }
+            // Same idea for real, retired SEXT with `op_a==0` (routed to `alu_x0_events` -- see
+            // `AluX0Chip`'s doc comment).
+            if instruction.opcode == Opcode::SEXT && instruction.op_a == Register::ZERO as u8 {
+                self.local_counts.sext_x0_events += 1;
             }
             // Same idea for real, retired `lw $zero, ...`/`ll $zero, ...` (routed to
             // `load_x0_events` -- see `LoadX0Chip`'s doc comment).
@@ -2949,6 +3141,15 @@ impl<'a> Executor<'a> {
                 self.local_counts.sltu_x0_events,
                 self.local_counts.bitwise_x0_events,
                 self.local_counts.shift_right_x0_events,
+                self.local_counts.lui_events,
+                self.local_counts.shift_left_x0_events,
+                self.local_counts.mul_x0_events,
+                self.local_counts.movcond_x0_events,
+                self.local_counts.divrem_x0_events,
+                self.local_counts.cloclz_x0_events,
+                self.local_counts.ins_x0_events,
+                self.local_counts.ext_x0_events,
+                self.local_counts.sext_x0_events,
                 self.local_counts.load_x0_events,
                 *self.local_counts.event_counts,
             );
@@ -3177,7 +3378,7 @@ mod tests {
         opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
 
         let event_counts =
-            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
@@ -3200,7 +3401,7 @@ mod tests {
         opcode_counts[Opcode::ADD] = 1_000;
 
         let event_counts =
-            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 

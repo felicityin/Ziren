@@ -11,7 +11,7 @@ use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum, MiscEvent},
+    events::{ByteLookupEvent, ByteRecord, MemoryAccessPosition, MiscEvent},
     ByteOpcode, ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
@@ -22,13 +22,9 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
-    adapter::InstructionCols,
-    adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
-    },
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::MemoryCols,
+    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
+    air::ZKMCoreAirBuilder,
+    memory::{RegisterAccessCols, RegisterWriteAccessCols},
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -37,11 +33,18 @@ use crate::{
 pub const NUM_SEXT_COLS: usize = size_of::<SextCols<u8>>();
 
 /// A chip that implements the MIPS sign-extend instructions SEB/SEH (both decoded as
-/// `Opcode::SEXT`, distinguished by the encoded `c` immediate: 0 for SEB, 1 for SEH).
+/// `Opcode::SEXT`, distinguished by the encoded `c` immediate: 0 for SEB, 1 for SEH -- which is
+/// therefore not stored as its own column here, but derived directly as `is_seh`, see
+/// `SextCols::is_seh`'s doc comment).
 ///
 /// Every row is a real, retired instruction: nothing sends a synthetic dependency row into
-/// `sext_events`. SEXT is a fresh write of `op_a` (not read-modify-write), so it needs no
-/// `prev_a_value`.
+/// `sext_events`. `op_a` may be any register (including register 0 -- routed to `AluX0Chip`
+/// instead, see its doc comment, since the sign-extended result is then unobservable); `op_b` is
+/// always a register. SEXT is a fresh write of `op_a` (not read-modify-write), but its written
+/// value is a per-byte mux between `op_b`'s bytes and a sign-extension byte (depending on
+/// `is_seb`/`is_seh`) -- degree 2, which can't be sent directly as a lookup value the way an
+/// `RTypeReader`-style chip does (see `RegisterWriteAccessCols`'s doc comment), so `op_a` uses
+/// that instead, with each byte separately asserted against its witnessed `value`.
 #[derive(Default)]
 pub struct SextChip;
 
@@ -53,22 +56,20 @@ pub struct SextCols<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
-
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The value of the first operand.
-    pub op_a_value: Word<T>,
-    /// The value of the second operand.
-    pub op_b_value: Word<T>,
-    /// The value of the third operand.
-    pub op_c_value: Word<T>,
+    /// The register index of `op_a` (written; may be any register, including register 0 -- see
+    /// this chip's doc comment).
+    pub op_a: T,
+    /// `op_a`'s access. A fresh write whose witnessed `value` is masked/muxed depending on
+    /// `is_seb`/`is_seh`, so it needs `RegisterWriteAccessCols` rather than a directly-fed lookup
+    /// value.
+    pub op_a_access: RegisterWriteAccessCols<T>,
+    /// The register index of `op_b` (read).
+    pub op_b: T,
+    pub op_b_access: RegisterAccessCols<T>,
 
     /// The most significant bit of the most significant byte.
     pub most_sig_bit: T,
@@ -76,12 +77,14 @@ pub struct SextCols<T: Copy> {
     /// The most significant byte.
     pub sig_byte: T,
 
-    /// SEB/SEH instruction selectors.
+    /// Flag indicating whether the opcode is SEB. `op_c` (the instruction's own encoded
+    /// immediate, always exactly 0 or 1) is therefore never stored as its own column: it equals
+    /// `is_seh` directly.
+    #[cfg_attr(feature = "picus", picus(selector))]
     pub is_seb: T,
+    /// Flag indicating whether the opcode is SEH.
+    #[cfg_attr(feature = "picus", picus(selector))]
     pub is_seh: T,
-
-    /// Whether this row is a real, retired SEXT instruction (as opposed to padding).
-    pub is_real: T,
 }
 
 impl<F: PrimeField32> MachineAir<F> for SextChip {
@@ -131,12 +134,6 @@ impl<F: PrimeField32> MachineAir<F> for SextChip {
                     if idx < input.sext_events.len() {
                         let event = &input.sext_events[idx];
                         self.event_to_row(event, cols, &mut blu, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -168,31 +165,22 @@ impl SextChip {
     ) {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
-        cols.is_real = F::ONE;
 
+        // Every `sext_events` row is a real, retired instruction -- nothing ever produces a
+        // synthetic dependency row here.
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
 
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
-
+        cols.op_a = F::from_canonical_u8(instruction.op_a);
         if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
+            cols.op_a_access.populate(record, blu);
         }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
 
-        cols.op_a_value = event.a.into();
-        cols.op_b_value = event.b.into();
-        cols.op_c_value = event.c.into();
+        cols.op_b = F::from_canonical_u32(instruction.op_b);
+        if let Some(record) = event.b_record {
+            cols.op_b_access.populate(record, blu);
+        }
 
         let (sig_bit, sig_byte) = if event.c > 0 {
             cols.is_seh = F::ONE;
@@ -229,33 +217,77 @@ where
         let local = main.row_slice(0);
         let local: &SextCols<AB::Var> = (*local).borrow();
 
-        let is_real = local.is_real;
-        builder.assert_bool(is_real);
         builder.assert_bool(local.is_seb);
         builder.assert_bool(local.is_seh);
-        builder.when(is_real).assert_one(local.is_seh + local.is_seb);
+        let is_real = local.is_seb + local.is_seh;
+        builder.assert_bool(is_real.clone());
+
+        let op_b_val = local.op_b_access.prev_value;
+        let written_value: Word<AB::Expr> = local.op_a_access.value.map(Into::into);
 
         // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.into());
+        // `op_c`'s value equals `is_seh` directly (see `SextCols::is_seh`'s doc comment): SEB
+        // always decodes with `op_c=0`, SEH always with `op_c=1`. `imm_c` (whether `op_c` is an
+        // immediate at all, as opposed to its value) is a separate, always-true compile-time
+        // constant -- SEXT always decodes with `imm_c=true` for both SEB and SEH.
+        let op_c_lsb: AB::Expr = local.is_seh.into();
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: Opcode::SEXT.as_field::<AB::F>().into(),
+            op_a: local.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.op_b),
+            op_c: Word([op_c_lsb, AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::one(),
+        };
 
-        // SEXT is a fresh write of `op_a` (not read-modify-write).
-        eval_register_reader(
-            builder,
-            &local.reader,
-            clk_high.clone(),
-            clk_low.clone(),
-            &local.instruction,
-            local.op_a_value.map(Into::into),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
+        // most_sig_bit is bit 7 of sig_byte.
+        builder.send_byte(
+            ByteOpcode::MSB.as_field::<AB::F>(),
+            local.most_sig_bit,
+            local.sig_byte,
             AB::Expr::zero(),
-            AB::Expr::zero(),
-            is_real.into(),
+            is_real.clone(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.into());
+        // For seb, sig_byte is byte 0 of op_b. For seh, sig_byte is byte 1 of op_b.
+        builder.when(local.is_seb).assert_eq(op_b_val[0], local.sig_byte);
+        builder.when(local.is_seh).assert_eq(op_b_val[1], local.sig_byte);
+
+        // Constraints for result value: for both seb and seh, bytes lower than sig_byte (contain)
+        // equal op_b, bytes upper than sig_byte equal sign byte (0xff when sig_bit is 1,
+        // otherwise 0).
+        let sign_byte = AB::Expr::from_canonical_u8(0xFF) * local.most_sig_bit;
+
+        builder.when(is_real.clone()).assert_eq(written_value[0].clone(), op_b_val[0].into());
+        builder.when(local.is_seb).assert_eq(written_value[1].clone(), sign_byte.clone());
+        builder.when(local.is_seh).assert_eq(written_value[1].clone(), op_b_val[1].into());
+        builder.when(is_real.clone()).assert_eq(written_value[2].clone(), sign_byte.clone());
+        builder.when(is_real.clone()).assert_eq(written_value[3].clone(), sign_byte);
+
+        builder.send_program(local.pc, instruction, is_real.clone());
+
+        // Register positions must be read/written in the order B, A (see
+        // `MemoryAccessPosition`'s doc comment).
+        builder.eval_register_access_read(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::B as u32),
+            local.op_b.into(),
+            &local.op_b_access,
+            is_real.clone(),
+        );
+        builder.eval_register_access_write(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::A as u32),
+            local.op_a.into(),
+            &local.op_a_access,
+            is_real.clone(),
+        );
+
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -267,50 +299,8 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            is_real.into(),
-        );
-
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
-
-        // Bind to the row's actual fetched opcode, so a row can't claim to be SEXT while still
-        // passing the program lookup with a different instruction.
-        builder
-            .when(is_real)
-            .assert_eq(local.instruction.opcode, Opcode::SEXT.as_field::<AB::F>());
-
-        // most_sig_bit is bit 7 of sig_byte.
-        builder.send_byte(
-            ByteOpcode::MSB.as_field::<AB::F>(),
-            local.most_sig_bit,
-            local.sig_byte,
-            AB::Expr::zero(),
             is_real,
         );
-
-        // op_c can be 0 (for seb) and 1 (for seh).
-        builder.when(is_real).assert_bool(local.op_c_value[0]);
-        builder.when(is_real).when(local.is_seb).assert_zero(local.op_c_value[0]);
-        builder.when(is_real).when(local.is_seh).assert_one(local.op_c_value[0]);
-
-        // For seb, sig_byte is byte 0 of op_a. For seh, sig_byte is byte 1 of op_a.
-        builder.when(is_real).when(local.is_seb).assert_eq(local.op_b_value[0], local.sig_byte);
-        builder.when(is_real).when(local.is_seh).assert_eq(local.op_b_value[1], local.sig_byte);
-
-        // Constraints for result value: for both seb and seh, bytes lower than sig_byte (contain)
-        // equal op_b, bytes upper than sig_byte equal sign byte (0xff when sig_bit is 1,
-        // otherwise 0).
-        let sign_byte = AB::Expr::from_canonical_u8(0xFF) * local.most_sig_bit;
-
-        builder.when(is_real).assert_eq(local.op_a_value[0], local.op_b_value[0]);
-        builder.when(is_real).when(local.is_seb).assert_eq(local.op_a_value[1], sign_byte.clone());
-        builder.when(is_real).when(local.is_seh).assert_eq(local.op_a_value[1], local.op_b_value[1]);
-        builder.when(is_real).assert_eq(local.op_a_value[2], sign_byte.clone());
-        builder.when(is_real).assert_eq(local.op_a_value[3], sign_byte);
     }
 }
 

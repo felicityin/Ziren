@@ -86,6 +86,10 @@ pub struct ExecutionRecord {
     pub bitwise_events: Vec<AluEvent>,
     /// A trace of the SLL and SLLV events.
     pub shift_left_events: Vec<AluEvent>,
+    /// A trace of the LUI events -- LUI decodes to `Opcode::SLL` with `imm_b=true` (`op_b` is the
+    /// instruction's own encoded immediate, never a register), a distinct shape from SLL/SLLV
+    /// that `LuiChip` handles separately (see its doc comment).
+    pub lui_events: Vec<AluEvent>,
     /// A trace of the SRL, SRLV, SRA, and SRAV events.
     pub shift_right_events: Vec<AluEvent>,
     /// A trace of the DIV, DIVU events.
@@ -413,6 +417,7 @@ impl MachineRecord for ExecutionRecord {
         stats.insert("mul_events".to_string(), self.mul_events.len());
         stats.insert("bitwise_events".to_string(), self.bitwise_events.len());
         stats.insert("shift_left_events".to_string(), self.shift_left_events.len());
+        stats.insert("lui_events".to_string(), self.lui_events.len());
         stats.insert("shift_right_events".to_string(), self.shift_right_events.len());
         stats.insert("divrem_events".to_string(), self.divrem_events.len());
         stats.insert("lt_events".to_string(), self.lt_events.len());
@@ -473,6 +478,7 @@ impl MachineRecord for ExecutionRecord {
         self.mul_events.append(&mut other.mul_events);
         self.bitwise_events.append(&mut other.bitwise_events);
         self.shift_left_events.append(&mut other.shift_left_events);
+        self.lui_events.append(&mut other.lui_events);
         self.shift_right_events.append(&mut other.shift_right_events);
         self.divrem_events.append(&mut other.divrem_events);
         self.lt_events.append(&mut other.lt_events);

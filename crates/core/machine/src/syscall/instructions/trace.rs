@@ -14,11 +14,8 @@ use zkm_hypercube::air::MachineAir;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 
-use crate::{
-    memory::MemoryCols,
-    utils::{next_power_of_two, zeroed_f_vec},
-    CoreChipError,
-};
+use crate::utils::{next_power_of_two, zeroed_f_vec};
+use crate::CoreChipError;
 
 use super::{
     columns::{SyscallInstrColumns, NUM_SYSCALL_INSTR_COLS},
@@ -71,14 +68,11 @@ impl<F: PrimeField32> MachineAir<F> for SyscallInstrsChip {
 
                     if idx < input.syscall_events.len() {
                         let event = &input.syscall_events[idx];
-                        self.event_to_row(event, cols, &mut blu, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see
-                        // cpuchip-migration-register-reader-gotchas memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
+                        self.event_to_row(event, cols, &mut blu);
                     }
+                    // A padding row is left all-zero: `is_real` defaults to 0, which gates every
+                    // interaction below to zero multiplicity on its own -- unlike the generic
+                    // `RegisterReader`, this needs no separate "force immediate flags" workaround.
                 });
                 blu
             })
@@ -101,7 +95,6 @@ impl SyscallInstrsChip {
         event: &SyscallEvent,
         cols: &mut SyscallInstrColumns<F>,
         blu: &mut impl ByteRecord,
-        program: &Program,
     ) {
         cols.is_real = F::ONE;
         cols.pc = F::from_canonical_u32(event.pc);
@@ -109,27 +102,20 @@ impl SyscallInstrsChip {
 
         cols.state.populate(blu, event.clk);
 
-        let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_b_access.value_mut() = event.arg1.into();
-        *cols.reader.op_c_access.value_mut() = event.arg2.into();
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
+        // `op_a`/`op_b`/`op_c` are always registers `V0`/`A0`/`A1` (2/4/5), compile-time
+        // constants -- no register-index columns or program-ROM fetch are needed to determine
+        // them (see this chip's doc comment).
+        cols.op_a_access.populate(MemoryRecordEnum::Write(event.a_record), blu);
+        if let Some(record) = event.b_record {
+            cols.op_b_access.populate(record, blu);
         }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
+        if let Some(record) = event.c_record {
+            cols.op_c_access.populate(record, blu);
         }
-        cols.reader.op_a_access.populate_write(event.a_record, blu);
-        cols.reader.populate_op_a_range_checks(blu);
 
-        cols.op_a_value = event.a_record.value.into();
-        cols.op_b_value = event.arg1.into();
-        cols.op_c_value = event.arg2.into();
-        cols.prev_a_value = event.a_record.prev_value.into();
         cols.syscall_id = F::from_canonical_u32(event.syscall_id);
         let syscall_id = F::from_canonical_u32(event.a_record.prev_value & 0xffff);
-        let num_cycles = cols.prev_a_value[3];
+        let num_cycles = cols.op_a_access.prev_value[3];
 
         cols.num_extra_cycles = num_cycles;
         cols.is_halt = F::from_bool(
@@ -186,7 +172,7 @@ impl SyscallInstrsChip {
         if syscall_id == F::from_canonical_u32(SyscallCode::COMMIT.syscall_id())
             || syscall_id == F::from_canonical_u32(SyscallCode::COMMIT_DEFERRED_PROOFS.syscall_id())
         {
-            let digest_idx = cols.op_b_value.to_u32() as usize;
+            let digest_idx = cols.op_b_access.prev_value.to_u32() as usize;
             cols.index_bitmap[digest_idx] = F::ONE;
         }
 

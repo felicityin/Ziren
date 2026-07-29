@@ -3,7 +3,7 @@ use std::borrow::Borrow;
 use p3_air::{Air, AirBuilder};
 use p3_field::FieldAlgebra;
 use p3_matrix::Matrix;
-use zkm_core_executor::{syscalls::SyscallCode, Opcode};
+use zkm_core_executor::{events::MemoryAccessPosition, syscalls::SyscallCode, Opcode};
 use zkm_hypercube::{
     air::{
         BaseAirBuilder, LookupScope, PublicValues, ZKMAirBuilder, POSEIDON_NUM_WORDS,
@@ -13,8 +13,8 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    adapter::{clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain},
-    air::{ProgramAirBuilder, WordAirBuilder},
+    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, InstructionCols},
+    air::{MemoryAirBuilder, ProgramAirBuilder, WordAirBuilder},
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
 };
 
@@ -47,20 +47,58 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.clone());
+        // The instruction word is reconstructed here rather than stored: SYSCALL always
+        // hardcodes its operand registers (`op_a`=`V0`=2, `op_b`=`A0`=4, `op_c`=`A1`=5 -- see
+        // this chip's doc comment), so `opcode`/`op_a`/`op_b`/`op_c`/`op_a_0`/`imm_b`/`imm_c` are
+        // all compile-time constants, never witnessed columns.
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: Opcode::SYSCALL.as_field::<AB::F>().into(),
+            op_a: AB::Expr::from_canonical_u32(2),
+            op_b: Word([
+                AB::Expr::from_canonical_u32(4),
+                AB::Expr::zero(),
+                AB::Expr::zero(),
+                AB::Expr::zero(),
+            ]),
+            op_c: Word([
+                AB::Expr::from_canonical_u32(5),
+                AB::Expr::zero(),
+                AB::Expr::zero(),
+                AB::Expr::zero(),
+            ]),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::zero(),
+        };
+        builder.send_program(local.pc, instruction, is_real.clone());
 
-        // SYSCALL is a read-modify-write of `op_a` (`is_rw_a = 1`); `prev_a_value` is
-        // cross-checked against the register's real previous value.
-        eval_register_reader(
-            builder,
-            &local.reader,
+        // SYSCALL is a read-modify-write of `op_a`: its witnessed `value` is masked/muxed
+        // depending on the syscall kind (see `eval_syscall`), so it needs
+        // `RegisterWriteAccessCols`'s own witnessed `value` rather than a directly-fed lookup
+        // value (see `RegisterWriteAccessCols`'s doc comment). Register positions must be
+        // read/written in the order C, B, A (see `MemoryAccessPosition`'s doc comment); each gets
+        // its own `clk_low` offset, matching the executor's own `rr_traced`/`rw_traced`
+        // timestamps for these accesses (`c = rr_cpu(A1, C)` then `b = rr_cpu(A0, B)` then
+        // `rw_cpu(V0, a, A)`).
+        builder.eval_register_access_read(
             clk_high.clone(),
-            clk_low.clone(),
-            &local.instruction,
-            local.op_a_value.map(Into::into),
-            local.prev_a_value.map(Into::into),
-            AB::Expr::one(),
-            AB::Expr::zero(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::C as u32),
+            AB::Expr::from_canonical_u32(5),
+            &local.op_c_access,
+            is_real.clone(),
+        );
+        builder.eval_register_access_read(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::B as u32),
+            AB::Expr::from_canonical_u32(4),
+            &local.op_b_access,
+            is_real.clone(),
+        );
+        builder.eval_register_access_write(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::A as u32),
+            AB::Expr::from_canonical_u32(2),
+            &local.op_a_access,
             is_real.clone(),
         );
 
@@ -94,19 +132,6 @@ where
             is_real.clone(),
         );
 
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
-
-        // SAFETY: Bind `is_real` to the row's actual fetched opcode, so a real-instruction row
-        // can't claim to be a SYSCALL while the program lookup fetched something else.
-        builder
-            .when(is_real.clone())
-            .assert_eq(local.instruction.opcode, Opcode::SYSCALL.as_field::<AB::F>());
-
         // `num_extra_cycles` is checked to be equal to the return value of `get_num_extra_syscall_cycles`
         builder.assert_eq::<AB::Var, AB::Expr>(
             local.num_extra_cycles,
@@ -135,21 +160,21 @@ where
 #[inline(always)]
 fn get_syscall_id<AB: ZKMAirBuilder>(local: &SyscallInstrColumns<AB::Var>) -> AB::Expr {
     // syscall id is stored in byte 0, 1.
-    let syscall_code = local.prev_a_value;
+    let syscall_code = local.op_a_access.prev_value;
     syscall_code[0] + syscall_code[1] * AB::Expr::from_canonical_u32(256)
 }
 
 #[inline(always)]
 fn get_send_table<AB: ZKMAirBuilder>(local: &SyscallInstrColumns<AB::Var>) -> AB::Var {
     // send_to_table is stored in byte 2
-    let syscall_code = local.prev_a_value;
+    let syscall_code = local.op_a_access.prev_value;
     syscall_code[2]
 }
 
 #[inline(always)]
 fn get_num_extra_cycles<AB: ZKMAirBuilder>(local: &SyscallInstrColumns<AB::Var>) -> AB::Var {
     // num_extra_cycles is stored in byte 3.
-    let syscall_code = local.prev_a_value;
+    let syscall_code = local.op_a_access.prev_value;
     syscall_code[3]
 }
 
@@ -183,7 +208,7 @@ impl SyscallInstrsChip {
         // is_sys_linux must be the inverse: 1 iff prev_a_value[1] != 0.
         IsZeroOperation::<AB::F>::eval(
             builder,
-            local.prev_a_value[1].into(),
+            local.op_a_access.prev_value[1].into(),
             local.is_prev_a1_zero,
             local.is_real.into(),
         );
@@ -215,13 +240,13 @@ impl SyscallInstrsChip {
 
         KoalaBearWordRangeChecker::<AB::F>::range_check::<AB>(
             builder,
-            local.op_b_value,
+            local.op_b_access.prev_value,
             local.op_b_range_check,
             local.op_b_check.into(),
         );
         KoalaBearWordRangeChecker::<AB::F>::range_check::<AB>(
             builder,
-            local.op_c_value,
+            local.op_c_access.prev_value,
             local.op_c_range_check,
             local.op_c_check.into(),
         );
@@ -230,8 +255,8 @@ impl SyscallInstrsChip {
             local.state.clk_high,
             clk_low_expr::<AB>(&local.state),
             syscall_id.clone(),
-            local.op_b_value.reduce::<AB>(),
-            local.op_c_value.reduce::<AB>(),
+            local.op_b_access.prev_value.reduce::<AB>(),
+            local.op_c_access.prev_value.reduce::<AB>(),
             send_to_table,
             LookupScope::Local,
         );
@@ -241,9 +266,9 @@ impl SyscallInstrsChip {
         builder.send_syscall_result(
             local.state.clk_high,
             clk_low_expr::<AB>(&local.state),
-            local.op_a_value,
-            local.op_b_value,
-            local.op_c_value,
+            local.op_a_access.value,
+            local.op_b_access.prev_value,
+            local.op_c_access.prev_value,
             local.is_sys_linux,
             LookupScope::Local,
         );
@@ -290,13 +315,13 @@ impl SyscallInstrsChip {
         builder
             .when(local.is_real)
             .when(is_enter_unconstrained)
-            .assert_word_eq(local.op_a_value, zero_word);
+            .assert_word_eq(local.op_a_access.value, zero_word);
 
         // When the syscall is not one of ENTER_UNCONSTRAINED or HINT_LEN, op_a shouldn't change.
         builder
             .when(local.is_real)
             .when_not(is_enter_unconstrained + is_hint_len + local.is_sys_linux)
-            .assert_word_eq(local.op_a_value, local.prev_a_value);
+            .assert_word_eq(local.op_a_access.value, local.op_a_access.prev_value);
 
         // is_sys_linux is now bidirectionally constrained via is_prev_a1_zero above.
         // When is_sys_linux = 0, prev_a[1] = 0 follows from the IsZero constraint.
@@ -344,14 +369,14 @@ impl SyscallInstrsChip {
             builder
                 .when(local.is_real)
                 .when(*bit)
-                .assert_eq(local.op_b_value[0], AB::Expr::from_canonical_u32(i as u32));
+                .assert_eq(local.op_b_access.prev_value[0], AB::Expr::from_canonical_u32(i as u32));
         }
         // Verify that the 3 upper bytes of the word_idx are 0.
         for i in 0..3 {
             builder
                 .when(local.is_real)
                 .when(is_commit.clone() + is_commit_deferred_proofs.clone())
-                .assert_zero(local.op_b_value[i + 1]);
+                .assert_zero(local.op_b_access.prev_value[i + 1]);
         }
 
         // Retrieve the expected public values digest word to check against the one passed into the
@@ -361,7 +386,7 @@ impl SyscallInstrsChip {
         // to not include the verification check of the expected public values digest word.
         let expected_pv_digest_word = builder.index_word_array(&commit_digest, &local.index_bitmap);
 
-        let digest_word = local.op_c_value;
+        let digest_word = local.op_c_access.prev_value;
 
         // Verify the public_values_digest_word.
         builder
@@ -393,7 +418,7 @@ impl SyscallInstrsChip {
         // Check that the `op_b_value` reduced is the `public_values.exit_code`.
         builder
             .when(local.is_halt)
-            .assert_eq(local.op_b_value.reduce::<AB>(), public_values.exit_code);
+            .assert_eq(local.op_b_access.prev_value.reduce::<AB>(), public_values.exit_code);
     }
 
     /// Returns a boolean expression indicating whether the instruction is a HALT instruction.

@@ -2,10 +2,11 @@ use std::mem::size_of;
 use zkm_derive::AlignedBorrow;
 #[cfg(feature = "picus")]
 use zkm_derive::PicusAnnotations;
-use zkm_hypercube::{air::PV_DIGEST_NUM_WORDS, word::Word};
+use zkm_hypercube::air::PV_DIGEST_NUM_WORDS;
 
 use crate::{
-    adapter::{CpuState, InstructionCols, RegisterReader},
+    adapter::CpuState,
+    memory::{RegisterAccessCols, RegisterWriteAccessCols},
     operations::{IsZeroOperation, KoalaBearWordRangeChecker},
 };
 
@@ -18,11 +19,16 @@ pub struct SyscallInstrColumns<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
+    /// `op_a`'s access (register `V0`, always register 2 -- a compile-time constant, never a
+    /// witnessed index, since SYSCALL always hardcodes its operand registers; see this chip's doc
+    /// comment). A read-modify-write: its witnessed `value` is masked/muxed depending on the
+    /// syscall kind (see `eval_syscall`), so it needs `RegisterWriteAccessCols` rather than a
+    /// directly-fed lookup value.
+    pub op_a_access: RegisterWriteAccessCols<T>,
+    /// `op_b`'s access (register `A0`, always register 4).
+    pub op_b_access: RegisterAccessCols<T>,
+    /// `op_c`'s access (register `A1`, always register 5).
+    pub op_c_access: RegisterAccessCols<T>,
 
     pub pc: T,
     pub next_pc: T,
@@ -44,11 +50,6 @@ pub struct SyscallInstrColumns<T: Copy> {
     pub is_prev_a1_zero: IsZeroOperation<T>,
 
     pub syscall_id: T,
-
-    pub op_a_value: Word<T>,
-    pub op_b_value: Word<T>,
-    pub op_c_value: Word<T>,
-    pub prev_a_value: Word<T>,
 
     pub is_enter_unconstrained: IsZeroOperation<T>,
     pub is_hint_len: IsZeroOperation<T>,

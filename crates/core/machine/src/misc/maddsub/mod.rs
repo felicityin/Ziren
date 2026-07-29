@@ -24,12 +24,9 @@ use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
     adapter::InstructionCols,
-    adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
-    },
+    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::{MemoryCols, MemoryReadWriteCols},
+    memory::{MemoryCols, MemoryReadWriteCols, RegisterAccessCols, RegisterWriteAccessCols},
     operations::{AddDoubleOperation, MulOperation},
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
@@ -43,8 +40,18 @@ pub const NUM_MADDSUB_COLS: usize = size_of::<MaddsubCols<u8>>();
 /// Every row is a real, retired instruction: nothing sends a synthetic dependency row into
 /// `maddsub_events`. All four opcodes share one circuit via `is_add`/`is_sub`/`is_sign`
 /// selectors (the same granularity `AddChip` uses for ADD/ADDU), so they stay one chip rather
-/// than splitting further. This is a read-modify-write of `op_a`/`HI` (the accumulate result adds
-/// onto the previous `{HI, op_a}` pair), so it needs `prev_a_value`.
+/// than splitting further.
+///
+/// MADD/MADDU/MSUB/MSUBU always decode with `op_a=32` (MIPS's HI/LO-style multiply-accumulate,
+/// register 32 being `LO`) -- a compile-time constant, never a witnessed index, and never
+/// register 0, so no `AluX0Chip` routing is needed. `op_b`/`op_c` are always registers (MIPS has
+/// no MADDI), so they use the cheap [`RegisterAccessCols`] scheme. This is a read-modify-write of
+/// `op_a`/`HI` (the accumulate result adds onto the previous `{HI, op_a}` pair): the written value
+/// is a masked/muxed expression (depending on `is_add`/`is_sub`), degree 2, which can't be sent
+/// directly as a lookup value the way an `RTypeReader`-style chip does (see
+/// `RegisterWriteAccessCols`'s doc comment), so `op_a` uses that instead. `HI`'s own
+/// read-modify-write stays on the general [`MemoryReadWriteCols`] scheme (unmigrated, matching
+/// `MulChip`/`DivRemChip`'s own HI access).
 #[derive(Default)]
 pub struct MaddsubChip;
 
@@ -56,23 +63,20 @@ pub struct MaddsubCols<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
-
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The value of the first operand.
-    pub op_a_value: Word<T>,
-    pub prev_a_value: Word<T>,
-    /// The value of the second operand.
-    pub op_b_value: Word<T>,
-    /// The value of the third operand.
-    pub op_c_value: Word<T>,
+    /// `op_a`'s access (register 32, a compile-time constant -- see this chip's doc comment). A
+    /// read-modify-write: its witnessed `value` is masked/muxed depending on `is_add`/`is_sub`,
+    /// so it needs `RegisterWriteAccessCols` rather than a directly-fed lookup value.
+    pub op_a_access: RegisterWriteAccessCols<T>,
+    /// The register index of `op_b` (read).
+    pub op_b: T,
+    pub op_b_access: RegisterAccessCols<T>,
+    /// The register index of `op_c` (read).
+    pub op_c: T,
+    pub op_c_access: RegisterAccessCols<T>,
 
     /// The `b * c` product, computed locally (no cross-chip lookup into `MulChip`).
     pub mul_operation: MulOperation<T>,
@@ -140,12 +144,6 @@ impl<F: PrimeField32> MachineAir<F> for MaddsubChip {
                     if idx < input.maddsub_events.len() {
                         let event = &input.maddsub_events[idx];
                         self.event_to_row(event, cols, &mut blu, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -178,30 +176,25 @@ impl MaddsubChip {
         cols.pc = F::from_canonical_u32(event.pc);
         cols.next_pc = F::from_canonical_u32(event.next_pc);
 
+        // Every `maddsub_events` row is a real, retired instruction -- nothing ever produces a
+        // synthetic dependency row here.
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
 
         if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
+            cols.op_a_access.populate(record, blu);
         }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
 
-        cols.op_a_value = event.a.into();
-        cols.op_b_value = event.b.into();
-        cols.op_c_value = event.c.into();
-        cols.prev_a_value = event.prev_a.into();
+        cols.op_b = F::from_canonical_u32(instruction.op_b);
+        if let Some(record) = event.b_record {
+            cols.op_b_access.populate(record, blu);
+        }
+
+        cols.op_c = F::from_canonical_u32(instruction.op_c);
+        if let Some(record) = event.c_record {
+            cols.op_c_access.populate(record, blu);
+        }
 
         cols.is_maddu = F::from_bool(matches!(event.opcode, Opcode::MADDU));
         cols.is_msubu = F::from_bool(matches!(event.opcode, Opcode::MSUBU));
@@ -254,24 +247,57 @@ where
         let is_add = local.is_maddu + local.is_madd;
         let is_sub = local.is_msubu + local.is_msub;
 
+        let op_b_val = local.op_b_access.prev_value;
+        let op_c_val = local.op_c_access.prev_value;
+        let written_value: Word<AB::Expr> = local.op_a_access.value.map(Into::into);
+        let prev_a_val: Word<AB::Expr> = local.op_a_access.prev_value.map(Into::into);
+
         // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.clone());
+        // The instruction word is reconstructed here rather than stored: `opcode` is a degree-1
+        // linear combination of the one-hot selectors above, `op_a`/`op_a_0`/`imm_b`/`imm_c` are
+        // compile-time constants (this chip only ever sees `op_a=32` and register-register
+        // MADD/MADDU/MSUB/MSUBU -- see this chip's doc comment), and `op_b`/`op_c` are
+        // zero-extended from their register-index columns.
+        let opcode = local.is_maddu * Opcode::MADDU.as_field::<AB::F>()
+            + local.is_msubu * Opcode::MSUBU.as_field::<AB::F>()
+            + local.is_madd * Opcode::MADD.as_field::<AB::F>()
+            + local.is_msub * Opcode::MSUB.as_field::<AB::F>();
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode,
+            op_a: AB::Expr::from_canonical_u32(32),
+            op_b: Word::extend_var::<AB>(local.op_b),
+            op_c: Word::extend_var::<AB>(local.op_c),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::zero(),
+        };
+        builder.send_program(local.pc, instruction, is_real.clone());
 
-        // MADD-family is a read-modify-write of `op_a` (`prev_a_value` cross-checked against the
-        // register's real previous value).
-        eval_register_reader(
-            builder,
-            &local.reader,
+        // Register positions must be read/written in the order C, B, A (see
+        // `MemoryAccessPosition`'s doc comment); each gets its own `clk_low` offset, matching the
+        // executor's own `rr_traced`/`rw_traced` timestamps for these accesses.
+        builder.eval_register_access_read(
             clk_high.clone(),
-            clk_low.clone(),
-            &local.instruction,
-            local.op_a_value.map(Into::into),
-            local.prev_a_value.map(Into::into),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::C as u32),
+            local.op_c.into(),
+            &local.op_c_access,
             is_real.clone(),
-            AB::Expr::zero(),
+        );
+        builder.eval_register_access_read(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::B as u32),
+            local.op_b.into(),
+            &local.op_b_access,
+            is_real.clone(),
+        );
+        builder.eval_register_access_write(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::A as u32),
+            AB::Expr::from_canonical_u32(32),
+            &local.op_a_access,
             is_real.clone(),
         );
 
@@ -290,33 +316,11 @@ where
             is_real.clone(),
         );
 
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
-
-        // Bind each opcode flag to the row's actual fetched opcode, so a row can't claim the
-        // wrong MADD-family variant while still passing the program lookup.
-        builder
-            .when(local.is_maddu)
-            .assert_eq(local.instruction.opcode, Opcode::MADDU.as_field::<AB::F>());
-        builder
-            .when(local.is_msubu)
-            .assert_eq(local.instruction.opcode, Opcode::MSUBU.as_field::<AB::F>());
-        builder
-            .when(local.is_madd)
-            .assert_eq(local.instruction.opcode, Opcode::MADD.as_field::<AB::F>());
-        builder
-            .when(local.is_msub)
-            .assert_eq(local.instruction.opcode, Opcode::MSUB.as_field::<AB::F>());
-
         // Compute b * c locally (no cross-chip lookup into `MulChip`).
         let (mul_lo, mul_hi) = MulOperation::<AB::F>::eval(
             builder,
-            local.op_b_value,
-            local.op_c_value,
+            op_b_val,
+            op_c_val,
             local.mul_operation,
             is_sign,
             is_real.clone(),
@@ -330,7 +334,7 @@ where
             );
             builder.when(is_real.clone()).assert_eq(
                 local.src2_lo[i],
-                local.prev_a_value[i] * is_add.clone() + local.op_a_value[i] * is_sub.clone(),
+                prev_a_val[i].clone() * is_add.clone() + written_value[i].clone() * is_sub.clone(),
             );
         }
 
@@ -344,12 +348,12 @@ where
             is_real.clone(),
         );
 
-        builder.when(is_add.clone()).assert_word_eq(local.op_a_value, local.add_operation.value);
+        builder.when(is_add.clone()).assert_word_eq(written_value.clone(), local.add_operation.value);
         builder
             .when(is_add)
             .assert_word_eq(*local.op_hi_access.value(), local.add_operation.value_hi);
 
-        builder.when(is_sub.clone()).assert_word_eq(local.prev_a_value, local.add_operation.value);
+        builder.when(is_sub.clone()).assert_word_eq(prev_a_val, local.add_operation.value);
         builder
             .when(is_sub)
             .assert_word_eq(local.op_hi_access.prev_value, local.add_operation.value_hi);
@@ -381,7 +385,7 @@ mod tests {
         let program = Program {
             instructions: vec![Instruction {
                 opcode: Opcode::MADDU,
-                op_a: 5,
+                op_a: 32,
                 op_b: 8,
                 op_c: 9,
                 imm_b: false,

@@ -81,20 +81,14 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_hypercube::{
-    air::MachineAir,
-    word::Word,
-};
+use zkm_hypercube::{air::MachineAir, word::Word};
 use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
     adapter::InstructionCols,
-    adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
-    },
+    adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::MemoryCols,
+    memory::{MemoryCols, RegisterAccessCols, RegisterWriteAccessCols},
     operations::{AddOperation, IsEqualWordOperation, IsZeroWordOperation, MulOperation},
     utils::next_power_of_two,
 };
@@ -115,6 +109,19 @@ const LONG_WORD_SIZE: usize = 2 * WORD_SIZE;
 /// ADD/MULT/MULTU/SLTU rows to those chips, see the `send_alu`/`send_alu_with_hi` calls below).
 /// Every row here is therefore a real, retired instruction -- no `is_real_instruction` split is
 /// needed, unlike the other migrated ALU chips.
+///
+/// `op_b`/`op_c` are always registers (MIPS has no DIVI), so they use the cheap
+/// [`RegisterAccessCols`] scheme. `op_a`'s write value is `quotient` for DIV/DIVU and `remainder`
+/// for MOD/MODU -- a masked mux between two stored columns, degree 2, which can't be sent
+/// directly as a lookup value the way `RTypeReader` does (see `RegisterWriteAccessCols`'s doc
+/// comment), so `op_a` uses that instead, with the mux separately asserted against its witnessed
+/// `value`. DIV/DIVU always decode with `op_a=32` (MIPS's HI/LO-style divide) and always also
+/// write HI (the remainder) -- unlike every other `AluX0Chip`-routed opcode, that HI write stays
+/// observable even when the LO destination is discarded, so DIV/DIVU can never be routed away and
+/// this chip must always fully verify their division. MOD/MODU have no such second register, so
+/// their `op_a==0` case *is* routed to `AluX0Chip` (see its doc comment), same reasoning as every
+/// other migrated ALU chip; this chip's own `op_a` is therefore always guaranteed non-zero and
+/// needs no `op_a_0` masking of its own.
 #[derive(Default)]
 pub struct DivRemChip;
 
@@ -130,17 +137,16 @@ pub struct DivRemCols<T: Copy> {
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction. Only meaningful when `is_real` is set.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`. Only meaningful when `is_real` is set.
-    pub reader: RegisterReader<T>,
-
-    /// The first input operand.
-    pub b: Word<T>,
-
-    /// The second input operand.
-    pub c: Word<T>,
+    /// The register index of `op_a` (written; DIV/DIVU always 32, MOD/MODU any register but
+    /// never register 0 -- see this chip's doc comment).
+    pub op_a: T,
+    pub op_a_access: RegisterWriteAccessCols<T>,
+    /// The register index of `op_b` (read).
+    pub op_b: T,
+    pub op_b_access: RegisterAccessCols<T>,
+    /// The register index of `op_c` (read).
+    pub op_c: T,
+    pub op_c_access: RegisterAccessCols<T>,
 
     /// Results of dividing `b` by `c`.
     pub quotient: Word<T>,
@@ -278,8 +284,6 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
 
             // Initialize cols with basic operands and flags derived from the current event.
             {
-                cols.b = Word::from(event.b);
-                cols.c = Word::from(event.c);
                 cols.pc = F::from_canonical_u32(event.pc);
                 cols.next_pc = F::from_canonical_u32(event.next_pc);
                 cols.is_divu = F::from_bool(event.opcode == Opcode::DIVU);
@@ -291,22 +295,20 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                 cols.state.populate(output, event.clk);
 
                 let instruction = input.program.fetch(event.pc);
-                cols.instruction.populate(&instruction);
-
-                *cols.reader.op_a_access.value_mut() = event.a.into();
-                *cols.reader.op_b_access.value_mut() = event.b.into();
-                *cols.reader.op_c_access.value_mut() = event.c.into();
-
+                cols.op_a = F::from_canonical_u8(instruction.op_a);
                 if let Some(record) = event.a_record {
-                    cols.reader.op_a_access.populate(record, output);
+                    cols.op_a_access.populate(record, output);
                 }
-                if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-                    cols.reader.op_b_access.populate(record, output);
+
+                cols.op_b = F::from_canonical_u32(instruction.op_b);
+                if let Some(record) = event.b_record {
+                    cols.op_b_access.populate(record, output);
                 }
-                if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-                    cols.reader.op_c_access.populate(record, output);
+
+                cols.op_c = F::from_canonical_u32(instruction.op_c);
+                if let Some(record) = event.c_record {
+                    cols.op_c_access.populate(record, output);
                 }
-                cols.reader.populate_op_a_range_checks(output);
 
                 if event.opcode == Opcode::DIVU || event.opcode == Opcode::DIV {
                     // DivRem Chip is only used for DIV and DIVU instruction currently.
@@ -343,7 +345,7 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
                     (get_msb(event.c) == 1, get_msb(remainder) == 1, abs_c, abs_remainder)
                 } else {
                     cols.abs_remainder = cols.remainder;
-                    cols.abs_c = cols.c;
+                    cols.abs_c = Word::from(event.c);
                     cols.max_abs_c_or_1 = Word::from(u32::max(1, event.c));
                     (false, false, event.c, remainder)
                 };
@@ -423,17 +425,12 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
             rows.push(row);
         }
 
-        // Pad the trace to a power of two depending on the proof shape in `input`.
-        let padded_row_template = {
-            let mut row = [F::ZERO; NUM_DIVREM_COLS];
-            let cols: &mut DivRemCols<F> = row.as_mut_slice().borrow_mut();
-            // Padding row: force the register reader's b/c memory-access multiplicities to zero
-            // (see cpuchip-migration-register-reader-gotchas memory).
-            cols.instruction.imm_b = F::ONE;
-            cols.instruction.imm_c = F::ONE;
-            row
-        };
-        rows.resize(padded_nb_rows, padded_row_template);
+        // Pad the trace to a power of two depending on the proof shape in `input`. A padding row
+        // is left all-zero: `is_div`/`is_divu`/`is_mod`/`is_modu` (and thus `is_real`, their sum)
+        // default to 0, which gates every interaction below to zero multiplicity on its own --
+        // unlike the generic `RegisterReader`, this needs no separate "force immediate flags"
+        // workaround.
+        rows.resize(padded_nb_rows, [F::ZERO; NUM_DIVREM_COLS]);
         debug_assert_eq!(rows.len(), padded_nb_rows);
         let _ = nb_rows;
 
@@ -468,8 +465,10 @@ where
         let one: AB::Expr = AB::F::ONE.into();
         let zero: AB::Expr = AB::F::ZERO.into();
 
-
         let is_real = local.is_div + local.is_divu + local.is_mod + local.is_modu;
+        let op_b_val = local.op_b_access.prev_value;
+        let op_c_val = local.op_c_access.prev_value;
+
         // Calculate whether b, remainder, and c are negative.
         {
             // Negative if and only if op code is signed & MSB = 1.
@@ -491,7 +490,7 @@ where
         let (c_times_quotient_lo, c_times_quotient_hi) = MulOperation::<AB::F>::eval(
             builder,
             local.quotient,
-            local.c,
+            op_c_val,
             local.mul_operation,
             local.is_div + local.is_mod,
             is_real.clone(),
@@ -511,7 +510,7 @@ where
         {
             IsEqualWordOperation::<AB::F>::eval(
                 builder,
-                local.b.map(|x| x.into()),
+                op_b_val.map(|x| x.into()),
                 Word::from(i32::MIN as u32).map(|x: AB::F| x.into()),
                 local.is_overflow_b,
                 is_real.clone(),
@@ -519,7 +518,7 @@ where
 
             IsEqualWordOperation::<AB::F>::eval(
                 builder,
-                local.c.map(|x| x.into()),
+                op_c_val.map(|x| x.into()),
                 Word::from(-1i32 as u32).map(|x: AB::F| x.into()),
                 local.is_overflow_c,
                 is_real.clone(),
@@ -566,7 +565,7 @@ where
             for i in 0..LONG_WORD_SIZE {
                 if i < WORD_SIZE {
                     // The lower 4 bytes of the result must match the corresponding bytes in b.
-                    builder.assert_eq(local.b[i], c_times_quotient_plus_remainder[i].clone());
+                    builder.assert_eq(op_b_val[i], c_times_quotient_plus_remainder[i].clone());
                 } else {
                     // The upper 4 bytes must reflect the sign of b in two's complement:
                     // - All 1s (0xff) for negative b.
@@ -600,7 +599,7 @@ where
             let mut b_byte_sum = zero.clone();
             for i in 0..WORD_SIZE {
                 rem_byte_sum = rem_byte_sum.clone() + local.remainder[i].into();
-                b_byte_sum = b_byte_sum + local.b[i].into();
+                b_byte_sum = b_byte_sum + op_b_val[i].into();
             }
 
             // 1. If remainder < 0, then b < 0.
@@ -625,7 +624,7 @@ where
             // Calculate whether c is 0.
             IsZeroWordOperation::<AB::F>::eval(
                 builder,
-                local.c.map(|x| x.into()),
+                op_c_val.map(|x| x.into()),
                 local.is_c_0,
                 is_real.clone(),
             );
@@ -639,7 +638,7 @@ where
             // For each of `c` and `rem`, assert that the absolute value is equal to the original
             // value, if the original value is non-negative or the minimum i32.
             for i in 0..WORD_SIZE {
-                builder.when_not(local.c_neg).assert_eq(local.c[i], local.abs_c[i]);
+                builder.when_not(local.c_neg).assert_eq(op_c_val[i], local.abs_c[i]);
                 builder
                     .when_not(local.rem_neg)
                     .assert_eq(local.remainder[i], local.abs_remainder[i]);
@@ -648,7 +647,7 @@ where
             // computed locally (no cross-chip lookup into `AddChip`).
             AddOperation::<AB::F>::eval(
                 builder,
-                local.c,
+                op_c_val,
                 local.abs_c,
                 local.add_operation_abs_c,
                 local.c_neg.into(),
@@ -706,8 +705,8 @@ where
         // Check that the MSBs are correct.
         {
             let msb_pairs = [
-                (local.b_msb, local.b[WORD_SIZE - 1]),
-                (local.c_msb, local.c[WORD_SIZE - 1]),
+                (local.b_msb, op_b_val[WORD_SIZE - 1]),
+                (local.c_msb, op_c_val[WORD_SIZE - 1]),
                 (local.rem_msb, local.remainder[WORD_SIZE - 1]),
             ];
             let opcode = AB::F::from_canonical_u32(ByteOpcode::MSB as u32);
@@ -722,8 +721,8 @@ where
         {
             // Constrain operands to byte limbs so extracted standalone modules
             // cannot pick non-byte witness values for word inputs.
-            builder.slice_range_check_u8(&local.b.0, is_real.clone());
-            builder.slice_range_check_u8(&local.c.0, is_real.clone());
+            builder.slice_range_check_u8(&op_b_val.0, is_real.clone());
+            builder.slice_range_check_u8(&op_c_val.0, is_real.clone());
             builder.slice_range_check_u8(&local.quotient.0, is_real.clone());
             builder.slice_range_check_u8(&local.remainder.0, is_real.clone());
 
@@ -767,28 +766,60 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.clone());
+        // The instruction word is reconstructed here rather than stored: `opcode` is a degree-1
+        // linear combination of the one-hot selectors above, `op_a_0`/`imm_b`/`imm_c` are
+        // compile-time constants (this chip only ever sees a non-zero destination and
+        // register-register DIV/DIVU/MOD/MODU -- see this chip's doc comment), and `op_b`/`op_c`
+        // are zero-extended from their register-index columns.
+        let opcode = local.is_div * Opcode::DIV.as_field::<AB::F>()
+            + local.is_divu * Opcode::DIVU.as_field::<AB::F>()
+            + local.is_mod * Opcode::MOD.as_field::<AB::F>()
+            + local.is_modu * Opcode::MODU.as_field::<AB::F>();
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode,
+            op_a: local.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.op_b),
+            op_c: Word::extend_var::<AB>(local.op_c),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::zero(),
+        };
+        builder.send_program(local.pc, instruction, is_real.clone());
 
-        // The register write is `quotient` for DIV/DIVU and `remainder` for MOD/MODU -- already
-        // zero by construction on non-real rows since `is_div + is_divu`/`is_mod + is_modu` are
-        // themselves zero there.
+        // The register write is `quotient` for DIV/DIVU and `remainder` for MOD/MODU -- a masked
+        // mux between two stored columns (degree 2), so it needs `RegisterWriteAccessCols`'s own
+        // witnessed `value` rather than a direct lookup-value feed (see this chip's doc comment).
         let is_div_or_divu: AB::Expr = local.is_div + local.is_divu;
         let is_mod_or_modu: AB::Expr = local.is_mod + local.is_modu;
-        let op_a_value: Word<AB::Expr> = Word(core::array::from_fn(|i| {
+        let op_a_computed_value: Word<AB::Expr> = Word(core::array::from_fn(|i| {
             is_div_or_divu.clone() * local.quotient[i].into()
                 + is_mod_or_modu.clone() * local.remainder[i].into()
         }));
+        let written_value: Word<AB::Expr> = local.op_a_access.value.map(Into::into);
+        builder.when(is_real.clone()).assert_word_eq(op_a_computed_value, written_value);
 
-        eval_register_reader(
-            builder,
-            &local.reader,
+        // Register positions must be read/written in the order C, B, A (see
+        // `MemoryAccessPosition`'s doc comment); each gets its own `clk_low` offset, matching the
+        // executor's own `rr_traced`/`rw_traced` timestamps for these accesses.
+        builder.eval_register_access_read(
             clk_high.clone(),
-            clk_low.clone(),
-            &local.instruction,
-            op_a_value,
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::C as u32),
+            local.op_c.into(),
+            &local.op_c_access,
+            is_real.clone(),
+        );
+        builder.eval_register_access_read(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::B as u32),
+            local.op_b.into(),
+            &local.op_b_access,
+            is_real.clone(),
+        );
+        builder.eval_register_access_write(
+            clk_high.clone(),
+            clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::A as u32),
+            local.op_a.into(),
+            &local.op_a_access,
             is_real.clone(),
         );
 
@@ -806,28 +837,6 @@ where
             AB::Expr::from_canonical_u32(5),
             is_real.clone(),
         );
-
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
-        builder
-            .when(is_real.clone())
-            .assert_word_eq(local.reader.op_c_val(), local.c.map(Into::into));
-
-        // Bind each opcode flag to the row's actual fetched opcode, so a real-instruction row
-        // can't claim the wrong div/mod variant while still passing the program lookup.
-        builder
-            .when(local.is_div)
-            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::DIV as u32));
-        builder
-            .when(local.is_divu)
-            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::DIVU as u32));
-        builder
-            .when(local.is_mod)
-            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::MOD as u32));
-        builder
-            .when(local.is_modu)
-            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::MODU as u32));
 
         // Write the HI register, the register can only be Register::HI（33）.
         builder.eval_memory_access(
@@ -860,7 +869,7 @@ mod tests {
         // comment), so trace-gen always does a real program lookup -- unlike the other migrated
         // ALU chips' tests, this needs an actual single-instruction `Program`, not `UNUSED_PC`.
         let program = Arc::new(Program {
-            instructions: vec![Instruction::new(Opcode::DIVU, 0, 0, 0, false, false)],
+            instructions: vec![Instruction::new(Opcode::DIVU, 32, 0, 0, false, false)],
             pc_start: 0,
             pc_base: 0,
             ..Default::default()

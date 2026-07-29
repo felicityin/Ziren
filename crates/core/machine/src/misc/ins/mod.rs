@@ -11,7 +11,7 @@ use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum, MiscEvent},
+    events::{ByteLookupEvent, ByteRecord, MiscEvent},
     ByteOpcode, ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
@@ -22,16 +22,12 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
-    adapter::InstructionCols,
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_i_type_reader_non_zero, eval_state_chain, CpuState,
+        ITypeReaderNonZero, InstructionCols,
     },
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::MemoryCols,
-    operations::{
-        AddOperation, FixedShiftRightOperation, ShiftLeftOperation, ShiftRightOperation,
-    },
+    air::ZKMCoreAirBuilder,
+    operations::{AddOperation, FixedShiftRightOperation, ShiftLeftOperation, ShiftRightOperation},
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -42,8 +38,15 @@ pub const NUM_INS_COLS: usize = size_of::<InsCols<u8>>();
 /// A chip that implements the MIPS bit-field insert instruction INS.
 ///
 /// Every row is a real, retired instruction: nothing sends a synthetic dependency row into
-/// `ins_events`. INS is a read-modify-write of `op_a` (it preserves the untouched bits of the
-/// previous value), so it needs `prev_a_value`.
+/// `ins_events`. `op_a` may be any register (including register 0 -- routed to `AluX0Chip`
+/// instead, see its doc comment, since the bit-inserted result is then unobservable and doesn't
+/// need the shift/rotate chain verified at all); `op_b` is always a register and `op_c` is always
+/// the instruction's own encoded immediate (`msb << 5 | lsb`) -- the same shape
+/// `ITypeReaderNonZero` covers. INS is a read-modify-write of `op_a` (it preserves the untouched
+/// bits of the previous value, read via the adapter's own `op_a_access.prev_value`), but its
+/// final written value is fed directly from the shift/rotate/add chain's own output (an affine
+/// expression, like `ShiftLeftChip`'s own migrated adapter feed), so no separate
+/// `RegisterWriteAccessCols`-style masking is needed once `op_a==0` is routed away.
 ///
 /// INS's shift-family intermediate steps (`ror_val`/`srl1_val`/`srl_val`/`sll_val`) are all
 /// verified locally via embedded shift operations (no cross-chip lookup into
@@ -61,23 +64,12 @@ pub struct InsCols<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
-
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The value of the first operand.
-    pub op_a_value: Word<T>,
-    pub prev_a_value: Word<T>,
-    /// The value of the second operand.
-    pub op_b_value: Word<T>,
-    /// The value of the third operand.
-    pub op_c_value: Word<T>,
+    /// Register operand access for `a`/`b`/`c`.
+    pub adapter: ITypeReaderNonZero<T>,
 
     /// Lsb/Msb of the insert field.
     pub lsb: T,
@@ -109,7 +101,7 @@ pub struct InsCols<T: Copy> {
 
     /// `31 - msb`, the shift amount for the final rotate step below.
     pub final_shift: T,
-    /// `op_a_value = rotate_right(add_val, 31 - msb)`.
+    /// `op_a`'s written value = rotate_right(add_val, 31 - msb)`.
     pub final_ror_operation: ShiftRightOperation<T>,
 
     /// Whether this row is a real, retired INS instruction (as opposed to padding).
@@ -163,12 +155,6 @@ impl<F: PrimeField32> MachineAir<F> for InsChip {
                     if idx < input.ins_events.len() {
                         let event = &input.ins_events[idx];
                         self.event_to_row(event, cols, &mut blu, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -205,27 +191,14 @@ impl InsChip {
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
-
-        if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
-
-        cols.op_a_value = event.a.into();
-        cols.op_b_value = event.b.into();
-        cols.op_c_value = event.c.into();
-        cols.prev_a_value = event.prev_a.into();
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+        );
 
         let lsb = event.c & 0x1f;
         let msb = event.c >> 5;
@@ -291,56 +264,32 @@ where
         let is_real = local.is_real;
         builder.assert_bool(is_real);
 
+        let prev_a_val = local.adapter.op_a_access.prev_value;
+        let op_b_val = local.adapter.op_b_val();
+        let op_c_val = local.adapter.op_c;
+
         // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.into());
+        // The instruction word is reconstructed here rather than stored: `opcode`/`op_a_0`/
+        // `imm_b` are compile-time constants (this chip only ever sees a non-zero destination
+        // and a register `op_b` -- see this chip's doc comment), `imm_c` is always set (INS's
+        // `op_c` is always the immediate `msb << 5 | lsb`), and `op_b`/`op_c` are the adapter's
+        // own columns.
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: Opcode::INS.as_field::<AB::F>().into(),
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: op_c_val.map(Into::into),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::one(),
+        };
+        builder.send_program(local.pc, instruction, is_real.into());
 
-        // INS is a read-modify-write of `op_a` (`prev_a_value` cross-checked against the
-        // register's real previous value).
-        eval_register_reader(
-            builder,
-            &local.reader,
-            clk_high.clone(),
-            clk_low.clone(),
-            &local.instruction,
-            local.op_a_value.map(Into::into),
-            local.prev_a_value.map(Into::into),
-            is_real.into(),
-            AB::Expr::zero(),
-            is_real.into(),
-        );
-
-        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.into());
-
-        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
-        eval_state_chain(
-            builder,
-            clk_high,
-            clk_low,
-            local.pc.into(),
-            local.next_pc.into(),
-            local.next_pc.into(),
-            next_next_pc,
-            AB::Expr::from_canonical_u32(5),
-            is_real.into(),
-        );
-
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
-
-        // Bind to the row's actual fetched opcode, so a row can't claim to be INS while still
-        // passing the program lookup with a different instruction.
-        builder
-            .when(is_real)
-            .assert_eq(local.instruction.opcode, Opcode::INS.as_field::<AB::F>());
-        builder.when(is_real).assert_zero(local.op_c_value[2]);
-        builder.when(is_real).assert_zero(local.op_c_value[3]);
+        builder.when(is_real).assert_zero(op_c_val[2]);
+        builder.when(is_real).assert_zero(op_c_val[3]);
 
         // Ins is decomposed into 6 sub-operations, each verified locally (no cross-chip lookup
         // into `ShiftLeft`/`ShiftRightChip`/`AddChip`):
@@ -352,7 +301,7 @@ where
         //    result   = rotate_right(add_val, 31 - msb)       [shift: ∈ 0..31]
         let ror_val = ShiftRightOperation::<AB::F>::eval(
             builder,
-            local.prev_a_value,
+            prev_a_val,
             // Only byte 0 of the shift-amount word is read by `eval`; the rest is unused padding.
             Word([local.lsb; 4]),
             local.ror_operation,
@@ -387,7 +336,7 @@ where
         );
         let sll_val = ShiftLeftOperation::<AB::F>::eval(
             builder,
-            local.op_b_value,
+            op_b_val,
             Word([local.sll_shift; 4]),
             local.sll_operation,
             is_real.into(),
@@ -408,11 +357,34 @@ where
             true,
             is_real.into(),
         );
-        builder.when(is_real).assert_word_eq(local.op_a_value, final_result);
+
+        eval_i_type_reader_non_zero(
+            builder,
+            &local.adapter,
+            clk_high.clone(),
+            clk_low.clone(),
+            final_result.map(Into::into),
+            is_real.into(),
+        );
+
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.into());
+
+        let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
+        eval_state_chain(
+            builder,
+            clk_high,
+            clk_low,
+            local.pc.into(),
+            local.next_pc.into(),
+            local.next_pc.into(),
+            next_next_pc,
+            AB::Expr::from_canonical_u32(5),
+            is_real.into(),
+        );
 
         // op_c = (msb << 5) + lsb
         builder.when(is_real).assert_eq(
-            local.op_c_value.reduce::<AB>(),
+            op_c_val.reduce::<AB>(),
             local.lsb + local.msb * AB::Expr::from_canonical_u32(32),
         );
 

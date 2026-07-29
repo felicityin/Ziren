@@ -26,13 +26,11 @@ use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
-use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
-    adapter::InstructionCols,
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_r_type_reader, eval_state_chain, CpuState,
+        InstructionCols, RTypeReader,
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::{MemoryCols, MemoryReadWriteCols},
@@ -45,6 +43,14 @@ use crate::{
 pub const NUM_MUL_COLS: usize = size_of::<MulCols<u8>>();
 
 /// A chip that implements multiplication for the opcode MUL, MULT and MULTU.
+///
+/// A real MUL whose destination is register 0 is routed to `AluX0Chip` instead (see its doc
+/// comment), since its result is unobservable and discarding it soundly requires a different
+/// (cheaper) register-write scheme than a real result does -- see `RTypeReader`'s doc comment.
+/// MULT/MULTU always decode with `op_a=32` (MIPS's HI/LO-style multiply, register 32 being `LO`),
+/// so they never reach `AluX0Chip`. Every real row reaching *this* chip therefore has a genuine,
+/// non-zero destination register, which is what lets it use the narrow `RTypeReader` (see its doc
+/// comment) instead of the generic `InstructionCols`+`RegisterReader` pair.
 #[derive(Default)]
 pub struct MulChip;
 
@@ -61,14 +67,8 @@ pub struct MulCols<T: Copy> {
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
     /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
-
-    /// The output operand.
-    pub a: Word<T>,
+    pub adapter: RTypeReader<T>,
 
     /// The `b * c` product (sign-aware): shared arithmetic with `DivRemChip`/`MaddsubChip`'s
     /// embedded copies, but computed locally here -- no cross-chip lookup.
@@ -85,8 +85,6 @@ pub struct MulCols<T: Copy> {
     /// Flag indicating whether the opcode is `MULTU`.
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_multu: T,
-
-    pub is_real: T,
 
     /// Access to hi register
     pub op_hi_access: MemoryReadWriteCols<T>,
@@ -141,13 +139,12 @@ impl<F: PrimeField32> MachineAir<F> for MulChip {
                         let mut byte_lookup_events = Vec::new();
                         let event = &input.mul_events[idx];
                         self.event_to_row(event, cols, &mut byte_lookup_events, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
+                    // A padding row is left all-zero: `is_mul`/`is_mult`/`is_multu` (and thus
+                    // `is_real`, their sum) default to 0, which gates every interaction below to
+                    // zero multiplicity on its own -- unlike the generic `RegisterReader`,
+                    // `RTypeReader` needs no separate "force immediate flags" workaround for
+                    // this.
                 });
             },
         );
@@ -205,22 +202,15 @@ impl MulChip {
         cols.next_pc = F::from_canonical_u32(event.next_pc);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
-
-        if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+            event.c_record,
+        );
 
         cols.hi_record_is_real = F::from_bool(event.hi_record_is_real);
         if event.hi_record_is_real {
@@ -233,8 +223,6 @@ impl MulChip {
         let is_signed = event.opcode == Opcode::MULT;
         cols.mul_operation.populate(blu, event.b, event.c, is_signed);
 
-        cols.a = Word(event.a.to_le_bytes().map(F::from_canonical_u8));
-        cols.is_real = F::ONE;
         cols.is_mul = F::from_bool(event.opcode == Opcode::MUL);
         cols.is_mult = F::from_bool(event.opcode == Opcode::MULT);
         cols.is_multu = F::from_bool(event.opcode == Opcode::MULTU);
@@ -256,52 +244,54 @@ where
         let local = main.row_slice(0);
         let local: &MulCols<AB::Var> = (*local).borrow();
 
-        builder.assert_bool(local.is_real);
-        let is_real: AB::Expr = local.is_real.into();
+        builder.assert_bool(local.is_mul);
+        builder.assert_bool(local.is_mult);
+        builder.assert_bool(local.is_multu);
+        let is_real = local.is_mul + local.is_mult + local.is_multu;
+        builder.assert_bool(is_real.clone());
+        builder.assert_bool(local.hi_record_is_real);
 
         // Constrain the multiplication operation over `op_b`/`op_c`. Only `MULT` sign-extends.
         let (lo, hi) = MulOperation::<AB::F>::eval(
             builder,
-            local.reader.op_b_val(),
-            local.reader.op_c_val(),
+            local.adapter.op_b_val(),
+            local.adapter.op_c_val(),
             local.mul_operation,
             local.is_mult.into(),
             is_real.clone(),
         );
 
-        // Compare the product's low word with the result.
-        for i in 0..WORD_SIZE {
-            builder.assert_eq(lo[i], local.a[i]);
-        }
-
-        // Check that the boolean values are indeed boolean values.
-        {
-            let booleans =
-                [local.is_mul, local.is_mult, local.is_multu, local.is_real, local.hi_record_is_real];
-            for boolean in booleans.iter() {
-                builder.assert_bool(*boolean);
-            }
-        }
-
-        // Exactly one of the op codes must be on.
-        builder.when(is_real.clone()).assert_one(local.is_mul + local.is_mult + local.is_multu);
-
         // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.clone());
+        // The instruction word is reconstructed here rather than stored: `opcode` is a degree-1
+        // linear combination of the one-hot selectors above (never a variable a malicious prover
+        // could substitute -- the program lookup against `ProgramChip`'s preprocessed ROM is what
+        // makes `op_a`/`op_b`/`op_c` trustworthy), `op_a_0`/`imm_b`/`imm_c` are compile-time
+        // constants (this chip only ever sees a non-zero destination and register-register
+        // MUL/MULT/MULTU -- see `RTypeReader`'s doc comment), and `op_b`/`op_c` are zero-extended
+        // from the adapter's register-index columns.
+        let opcode = local.is_mul * Opcode::MUL.as_field::<AB::F>()
+            + local.is_mult * Opcode::MULT.as_field::<AB::F>()
+            + local.is_multu * Opcode::MULTU.as_field::<AB::F>();
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode,
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: Word::extend_var::<AB>(local.adapter.op_c),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::zero(),
+        };
+        builder.send_program(local.pc, instruction, is_real.clone());
 
-        eval_register_reader(
+        eval_r_type_reader(
             builder,
-            &local.reader,
+            &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            &local.instruction,
-            local.a.map(|x| is_real.clone() * Into::<AB::Expr>::into(x)),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
+            lo.map(Into::into),
             is_real.clone(),
         );
 
@@ -320,18 +310,6 @@ where
             is_real.clone(),
         );
 
-        // Bind `is_real`'s selector to the row's actual fetched opcode, so a row can't claim the
-        // wrong multiply variant while still passing the program lookup.
-        builder
-            .when(is_real.clone() * local.is_mul)
-            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::MUL as u32));
-        builder
-            .when(is_real.clone() * local.is_mult)
-            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::MULT as u32));
-        builder
-            .when(is_real * local.is_multu)
-            .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::MULTU as u32));
-
         // Write the HI register, the register can only be Register::HI（33）.
         builder.eval_memory_access(
             clk_high,
@@ -343,11 +321,11 @@ where
 
         // Check hi_record_is_real.
         // hi_record_is_real can only be set for MULT and MULTU instruction when is_real = 1.
-        builder.when_not(local.is_real).assert_zero(local.hi_record_is_real);
+        builder.when_not(is_real.clone()).assert_zero(local.hi_record_is_real);
         builder.when(local.hi_record_is_real).assert_one(local.is_mult + local.is_multu);
         // A real MULT/MULTU retirement must always write HI.
         builder
-            .when(Into::<AB::Expr>::into(local.is_real) * (local.is_mult + local.is_multu))
+            .when(is_real * (local.is_mult + local.is_multu))
             .assert_one(local.hi_record_is_real);
         builder.when(local.hi_record_is_real).assert_word_eq(hi, *local.op_hi_access.value());
     }

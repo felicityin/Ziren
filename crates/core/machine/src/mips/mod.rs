@@ -27,7 +27,7 @@ pub(crate) mod mips_chips {
     pub use crate::{
         alu::{
             AddChip, AddNoopChip, AddiChip, AluX0Chip, BitwiseChip, CloClzChip, DivRemChip,
-            LtChip, MulChip, ShiftLeft, ShiftRightChip, SltiChip, SubChip,
+            LtChip, LuiChip, MulChip, ShiftLeft, ShiftRightChip, SltiChip, SubChip,
         },
         bytes::ByteChip,
         control_flow::{BranchChip, JumpChip, JumpDirectChip, JumpiChip},
@@ -106,6 +106,8 @@ pub enum MipsAir<F: PrimeField32> {
     CloClz(CloClzChip),
     /// An AIR for MIPS SLL instruction.
     ShiftLeft(ShiftLeft),
+    /// An AIR for the MIPS LUI instruction.
+    Lui(LuiChip),
     /// An AIR for MIPS SRL and SRA instruction.
     ShiftRight(ShiftRightChip),
     /// A lookup table for byte operations.
@@ -313,6 +315,7 @@ impl<F: PrimeField32> MipsAir<F> {
             Mul,
             ShiftRight,
             ShiftLeft,
+            Lui,
             Lt,
             Slti,
             DivRem,
@@ -647,6 +650,10 @@ impl<F: PrimeField32> MipsAir<F> {
         let shift_left = Chip::new(MipsAir::ShiftLeft(ShiftLeft::default()));
         costs.insert(shift_left.name(), shift_left.cost());
         chips.push(shift_left);
+
+        let lui = Chip::new(MipsAir::Lui(LuiChip::default()));
+        costs.insert(lui.name(), lui.cost());
+        chips.push(lui);
 
         let lt = Chip::new(MipsAir::Lt(LtChip::default()));
         costs.insert(lt.name(), lt.cost());
@@ -1192,6 +1199,37 @@ pub mod tests {
             let program = Program::new(instructions, 0, 0);
             run_test(program).unwrap();
         }
+
+        // SLL's immediate-shift-amount form and zero-destination cases (`AluTypeReader`
+        // migration): the loop above only exercises the register-shift-amount, non-zero-
+        // destination shape.
+        {
+            let instructions = vec![
+                Instruction::new(Opcode::ADD, 29, 0, 0x89ab_cdef, false, true),
+                Instruction::new(Opcode::ADD, 30, 0, 5, false, true),
+                // Immediate-shift-amount form, non-zero destination (`ShiftLeft`, `imm_c` path).
+                Instruction::new(Opcode::SLL, 31, 29, 7, false, true),
+                // Register-shift-amount form, zero destination (`AluX0Chip`).
+                Instruction::new(Opcode::SLL, 0, 29, 30, false, false),
+                // Immediate-shift-amount form, zero destination (`AluX0Chip`, `imm_c` path).
+                Instruction::new(Opcode::SLL, 0, 29, 7, false, true),
+            ];
+            let program = Program::new(instructions, 0, 0);
+            run_test(program).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_lui_prove() {
+        setup_logger();
+        let instructions = vec![
+            // Non-zero destination (`LuiChip`).
+            Instruction::new(Opcode::SLL, 29, 0x89ab, 16, true, true),
+            // Zero destination (`LuiChip`'s inline `op_a_0` masking).
+            Instruction::new(Opcode::SLL, 0, 0x1234, 16, true, true),
+        ];
+        let program = Program::new(instructions, 0, 0);
+        run_test(program).unwrap();
     }
 
     #[test]
@@ -1246,6 +1284,21 @@ pub mod tests {
                 let program = Program::new(instructions, 0, 0);
                 run_test(program).unwrap();
             }
+        }
+
+        // MUL/MOD/MODU's zero-destination case (`RTypeReader`/`DivRemChip` migration --
+        // `AluX0Chip`). MULT/MULTU/DIV/DIVU always decode with `op_a=32` and never reach
+        // `AluX0Chip` at all (see `test_mult_div_prove`).
+        {
+            let instructions = vec![
+                Instruction::new(Opcode::ADD, 29, 0, 1234, false, true),
+                Instruction::new(Opcode::ADD, 30, 0, 5678, false, true),
+                Instruction::new(Opcode::MUL, 0, 30, 29, false, false),
+                Instruction::new(Opcode::MOD, 0, 30, 29, false, false),
+                Instruction::new(Opcode::MODU, 0, 30, 29, false, false),
+            ];
+            let program = Program::new(instructions, 0, 0);
+            run_test(program).unwrap();
         }
     }
 
@@ -1415,6 +1468,14 @@ pub mod tests {
                 let program = Program::new(instructions, 0, 0);
                 run_test(program).unwrap();
             }
+
+            // CLZ/CLO's zero-destination case (`ITypeReaderNonZero` migration -- `AluX0Chip`).
+            let instructions = vec![
+                Instruction::new(Opcode::ADD, 29, 0, 0x1000, false, true),
+                Instruction::new(*clo_clz_op, 0, 29, 0, false, true),
+            ];
+            let program = Program::new(instructions, 0, 0);
+            run_test(program).unwrap();
         }
     }
 

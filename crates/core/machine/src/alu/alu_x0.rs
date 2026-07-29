@@ -34,18 +34,25 @@ pub const NUM_ALU_X0_COLS: usize = size_of::<AluX0Cols<u8>>();
 
 /// A chip that handles every real, retired `RTypeReader`/`AluTypeReader`-family instruction whose
 /// destination register (`op_a`) is register 0 (`$zero`) -- today, register-form `add $zero,
-/// ...`/`sub $zero, ...`, XOR/OR/AND/NOR (register- or immediate-form), and SRL/SRA/ROR
-/// (register- or immediate-shift-amount-form) with `op_a==0`. Since `$zero` is hardwired to
-/// always read as 0, the computed result is never observable by anything downstream (any later
-/// read of `$zero` yields 0 regardless), so this chip doesn't compute it at all: it only verifies
-/// the program lookup (opcode/operands match the ROM) and the register-consistency accesses
-/// (`op_b`/`op_c` reads, `op_a`'s write modeled as a no-op since `$zero`'s value never changes).
+/// ...`/`sub $zero, ...`, XOR/OR/AND/NOR (register- or immediate-form), SRL/SRA/ROR
+/// (register- or immediate-shift-amount-form), MEQ/MNE/WSBH, MOD/MODU, CLZ/CLO, and INS with
+/// `op_a==0`. Since `$zero` is hardwired to always read as 0, the computed result is never
+/// observable by anything downstream (any later read of `$zero` yields 0 regardless), so this
+/// chip doesn't compute it at all: it only verifies the program lookup (opcode/operands match the
+/// ROM) and the register-consistency accesses (`op_b`/`op_c` reads, `op_a`'s write modeled as a
+/// no-op since `$zero`'s value never changes). MOD/MODU never write a second register (unlike
+/// DIV/DIVU, which also always write HI and never reach this chip in the first place -- see
+/// `DivRemChip`'s doc comment), so their `op_a==0` case fits this "discard everything" model
+/// cleanly; same for CLZ/CLO and INS/EXT/SEXT (no second register at all, and INS/EXT/SEXT's
+/// computed result is entirely discarded/unobservable when `op_a==0`, so their shift
+/// chain/sign-extension need not be verified for that row).
 ///
-/// This is a growing catch-all: as more chips (CloClz, Mul, DivRem, MovCond) migrate to
-/// `RTypeReader`/`AluTypeReader`, their own `op_a==0` case gets added here too (extend the one-hot
-/// opcode selectors below and add a routing arm in `emit_alu_event`), rather than spinning up a
-/// new per-opcode chip each time. Currently supports: `ADD`, `SUB`, `SLT`, `SLTU`, `XOR`, `OR`,
-/// `AND`, `NOR`, `SRL`, `SRA`, `ROR`.
+/// This is a growing catch-all: as more chips migrate to `RTypeReader`/`AluTypeReader`/
+/// `ITypeReaderNonZero`, their own `op_a==0` case gets added here too (extend the one-hot opcode
+/// selectors below and add a routing arm in `emit_alu_event`/`emit_misc_event`), rather than
+/// spinning up a new per-opcode chip each time. Currently supports: `ADD`, `SUB`, `SLT`, `SLTU`,
+/// `XOR`, `OR`, `AND`, `NOR`, `SRL`, `SRA`, `ROR`, `SLL`, `MUL`, `MEQ`, `MNE`, `WSBH`, `MOD`,
+/// `MODU`, `CLZ`, `CLO`, `INS`, `EXT`, `SEXT`.
 ///
 /// The opcode is encoded as one witnessed boolean selector per supported opcode (`is_add`,
 /// `is_sub`, ...) rather than a single witnessed value plus a root-set validity check
@@ -99,6 +106,30 @@ pub struct AluX0Cols<T: Copy> {
     pub is_sra: T,
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_ror: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_sll: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_mul: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_meq: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_mne: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_wsbh: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_mod: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_modu: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_clz: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_clo: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_ins: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_ext: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_sext: T,
 
     /// Register 0's write access. Modeled as a no-op (the value never changes, since `$zero` is
     /// hardwired to always read as 0) -- see `RTypeReader`'s doc comment for why this chip exists.
@@ -109,9 +140,11 @@ pub struct AluX0Cols<T: Copy> {
     pub op_b_access: RegisterAccessCols<T>,
 
     /// Either the register index of `op_c` (byte 0, when `imm_c` is unset) or its immediate
-    /// value (when `imm_c` is set) -- only the bitwise and shift opcodes can have `imm_c` set
-    /// (MIPS has no ADDI/SUBI/SLTI-with-op_a==0 shape reaching this chip; see
-    /// `emit_alu_event`'s routing).
+    /// value (when `imm_c` is set) -- only the bitwise/shift opcodes, WSBH/CLZ/CLO (whose `op_c`
+    /// is always the immediate 0), INS/EXT (whose `op_c` is always the immediate `msb(d) << 5 |
+    /// lsb`), and SEXT (whose `op_c` is always the immediate 0 or 1, selecting SEB/SEH) can have
+    /// `imm_c` set (MIPS has no ADDI/SUBI/SLTI-with-op_a==0 shape reaching this chip; see
+    /// `emit_alu_event`/`emit_misc_event`'s routing).
     pub op_c: Word<T>,
     pub op_c_access: RegisterAccessCols<T>,
     pub imm_c: T,
@@ -225,6 +258,18 @@ impl AluX0Chip {
         cols.is_srl = F::from_bool(event.opcode == Opcode::SRL);
         cols.is_sra = F::from_bool(event.opcode == Opcode::SRA);
         cols.is_ror = F::from_bool(event.opcode == Opcode::ROR);
+        cols.is_sll = F::from_bool(event.opcode == Opcode::SLL);
+        cols.is_mul = F::from_bool(event.opcode == Opcode::MUL);
+        cols.is_meq = F::from_bool(event.opcode == Opcode::MEQ);
+        cols.is_mne = F::from_bool(event.opcode == Opcode::MNE);
+        cols.is_wsbh = F::from_bool(event.opcode == Opcode::WSBH);
+        cols.is_mod = F::from_bool(event.opcode == Opcode::MOD);
+        cols.is_modu = F::from_bool(event.opcode == Opcode::MODU);
+        cols.is_clz = F::from_bool(event.opcode == Opcode::CLZ);
+        cols.is_clo = F::from_bool(event.opcode == Opcode::CLO);
+        cols.is_ins = F::from_bool(event.opcode == Opcode::INS);
+        cols.is_ext = F::from_bool(event.opcode == Opcode::EXT);
+        cols.is_sext = F::from_bool(event.opcode == Opcode::SEXT);
 
         cols.state.populate(blu, event.clk);
 
@@ -285,6 +330,18 @@ where
         builder.assert_bool(local.is_srl);
         builder.assert_bool(local.is_sra);
         builder.assert_bool(local.is_ror);
+        builder.assert_bool(local.is_sll);
+        builder.assert_bool(local.is_mul);
+        builder.assert_bool(local.is_meq);
+        builder.assert_bool(local.is_mne);
+        builder.assert_bool(local.is_wsbh);
+        builder.assert_bool(local.is_mod);
+        builder.assert_bool(local.is_modu);
+        builder.assert_bool(local.is_clz);
+        builder.assert_bool(local.is_clo);
+        builder.assert_bool(local.is_ins);
+        builder.assert_bool(local.is_ext);
+        builder.assert_bool(local.is_sext);
         let is_real = local.is_add
             + local.is_sub
             + local.is_slt
@@ -295,7 +352,19 @@ where
             + local.is_nor
             + local.is_srl
             + local.is_sra
-            + local.is_ror;
+            + local.is_ror
+            + local.is_sll
+            + local.is_mul
+            + local.is_meq
+            + local.is_mne
+            + local.is_wsbh
+            + local.is_mod
+            + local.is_modu
+            + local.is_clz
+            + local.is_clo
+            + local.is_ins
+            + local.is_ext
+            + local.is_sext;
         builder.assert_bool(is_real.clone());
 
         // Only the bitwise and shift opcodes can ever have `imm_c` set (see `AluX0Cols::op_c`'s
@@ -338,7 +407,19 @@ where
             + local.is_nor * Opcode::NOR.as_field::<AB::F>()
             + local.is_srl * Opcode::SRL.as_field::<AB::F>()
             + local.is_sra * Opcode::SRA.as_field::<AB::F>()
-            + local.is_ror * Opcode::ROR.as_field::<AB::F>();
+            + local.is_ror * Opcode::ROR.as_field::<AB::F>()
+            + local.is_sll * Opcode::SLL.as_field::<AB::F>()
+            + local.is_mul * Opcode::MUL.as_field::<AB::F>()
+            + local.is_meq * Opcode::MEQ.as_field::<AB::F>()
+            + local.is_mne * Opcode::MNE.as_field::<AB::F>()
+            + local.is_wsbh * Opcode::WSBH.as_field::<AB::F>()
+            + local.is_mod * Opcode::MOD.as_field::<AB::F>()
+            + local.is_modu * Opcode::MODU.as_field::<AB::F>()
+            + local.is_clz * Opcode::CLZ.as_field::<AB::F>()
+            + local.is_clo * Opcode::CLO.as_field::<AB::F>()
+            + local.is_ins * Opcode::INS.as_field::<AB::F>()
+            + local.is_ext * Opcode::EXT.as_field::<AB::F>()
+            + local.is_sext * Opcode::SEXT.as_field::<AB::F>();
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
             opcode,
             op_a: AB::Expr::zero(),

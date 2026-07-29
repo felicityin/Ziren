@@ -93,8 +93,10 @@ pub enum MipsAirId {
     Mul = 31,
     /// The shift right chip.
     ShiftRight = 32,
-    /// The shift left chip.
+    /// The shift left chip (SLL, SLLV).
     ShiftLeft = 33,
+    /// The LUI chip (LUI decodes to `Opcode::SLL` with `imm_b=true`).
+    Lui = 75,
     /// The lt chip.
     Lt = 34,
     /// The immediate-form lt chip (SLTI, SLTIU).
@@ -203,6 +205,7 @@ impl MipsAirId {
             Self::Mul => "Mul",
             Self::ShiftRight => "ShiftRight",
             Self::ShiftLeft => "ShiftLeft",
+            Self::Lui => "Lui",
             Self::Lt => "Lt",
             Self::Slti => "Slti",
             Self::CloClz => "CloClz",

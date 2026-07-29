@@ -11,7 +11,7 @@ use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{ByteLookupEvent, ByteRecord, MemoryRecordEnum, MiscEvent},
+    events::{ByteLookupEvent, ByteRecord, MiscEvent},
     ByteOpcode, ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
@@ -22,13 +22,11 @@ use zkm_hypercube::air::PicusInfo;
 use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
-    adapter::InstructionCols,
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
+        clk_low_expr, eval_cpu_state, eval_i_type_reader_non_zero, eval_state_chain, CpuState,
+        ITypeReaderNonZero, InstructionCols,
     },
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
-    memory::MemoryCols,
+    air::ZKMCoreAirBuilder,
     operations::{ShiftLeftOperation, ShiftRightOperation},
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
@@ -40,8 +38,13 @@ pub const NUM_EXT_COLS: usize = size_of::<ExtCols<u8>>();
 /// A chip that implements the MIPS bit-field extract instruction EXT.
 ///
 /// Every row is a real, retired instruction: nothing sends a synthetic dependency row into
-/// `ext_events`. EXT is a fresh write of `op_a` (not read-modify-write), so it needs no
-/// `prev_a_value`.
+/// `ext_events`. `op_a` may be any register (including register 0 -- routed to `AluX0Chip`
+/// instead, see its doc comment, since the extracted result is then unobservable); `op_b` is
+/// always a register and `op_c` is always the instruction's own encoded immediate (`msbd << 5 |
+/// lsb`) -- the same shape `ITypeReaderNonZero` covers. EXT is a fresh write of `op_a` (not
+/// read-modify-write), so no `prev_a_value` is needed; its final written value is fed directly
+/// from the shift chain's own output (an affine expression, like `ShiftLeftChip`'s own migrated
+/// adapter feed), so no separate masking is needed once `op_a==0` is routed away.
 ///
 /// EXT's two intermediate shift steps (`sll_val = op_b << (31 - lsb - msbd)` then `op_a = sll_val
 /// >> (31 - msbd)`) are verified locally via embedded `ShiftLeftOperation`/`ShiftRightOperation`
@@ -57,22 +60,12 @@ pub struct ExtCols<T: Copy> {
     /// The current shard and clk.
     pub state: CpuState<T>,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
-
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The value of the first operand.
-    pub op_a_value: Word<T>,
-    /// The value of the second operand.
-    pub op_b_value: Word<T>,
-    /// The value of the third operand.
-    pub op_c_value: Word<T>,
+    /// Register operand access for `a`/`b`/`c`.
+    pub adapter: ITypeReaderNonZero<T>,
 
     /// Lsb/Msb of the extracted field.
     pub lsb: T,
@@ -85,8 +78,8 @@ pub struct ExtCols<T: Copy> {
 
     /// `31 - msbd`, the shift amount for the final SRL step below.
     pub srl_shift: T,
-    /// `op_a = sll_val >> srl_shift`, computed locally (no cross-chip lookup into
-    /// `ShiftRightChip`).
+    /// `op_a`'s written value = sll_val >> srl_shift`, computed locally (no cross-chip lookup
+    /// into `ShiftRightChip`).
     pub srl_operation: ShiftRightOperation<T>,
 
     /// Whether this row is a real, retired EXT instruction (as opposed to padding).
@@ -140,12 +133,6 @@ impl<F: PrimeField32> MachineAir<F> for ExtChip {
                     if idx < input.ext_events.len() {
                         let event = &input.ext_events[idx];
                         self.event_to_row(event, cols, &mut blu, &input.program);
-                    } else {
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
                 });
                 blu
@@ -182,26 +169,14 @@ impl ExtChip {
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
-
-        if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
-
-        cols.op_a_value = event.a.into();
-        cols.op_b_value = event.b.into();
-        cols.op_c_value = event.c.into();
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+        );
 
         let lsb = event.c & 0x1f;
         let msbd = event.c >> 5;
@@ -251,23 +226,63 @@ where
         let is_real = local.is_real;
         builder.assert_bool(is_real);
 
+        let op_b_val = local.adapter.op_b_val();
+        let op_c_val = local.adapter.op_c;
+
         // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.into());
+        // The instruction word is reconstructed here rather than stored: `opcode`/`op_a_0`/
+        // `imm_b` are compile-time constants (this chip only ever sees a non-zero destination
+        // and a register `op_b` -- see this chip's doc comment), `imm_c` is always set (EXT's
+        // `op_c` is always the immediate `msbd << 5 | lsb`), and `op_b`/`op_c` are the adapter's
+        // own columns.
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: Opcode::EXT.as_field::<AB::F>().into(),
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: op_c_val.map(Into::into),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: AB::Expr::one(),
+        };
+        builder.send_program(local.pc, instruction, is_real.into());
 
-        // EXT is a fresh write of `op_a` (not read-modify-write).
-        eval_register_reader(
+        builder.when(is_real).assert_zero(op_c_val[2]);
+        builder.when(is_real).assert_zero(op_c_val[3]);
+
+        // Ext can be divided into 2 operations, each verified locally (no cross-chip lookup):
+        //    sll_val = op_b << (31 - lsb - msbd)
+        //    result = sll_val >> (31 - msbd)
+        builder
+            .when(is_real)
+            .assert_eq(local.sll_shift, AB::Expr::from_canonical_u32(31) - local.msbd - local.lsb);
+        let sll_val = ShiftLeftOperation::<AB::F>::eval(
             builder,
-            &local.reader,
+            op_b_val,
+            // Only byte 0 of the shift-amount word is read by `eval`; the rest is unused padding.
+            Word([local.sll_shift; 4]),
+            local.sll_operation,
+            is_real.into(),
+        );
+
+        builder.when(is_real).assert_eq(local.srl_shift, AB::Expr::from_canonical_u32(31) - local.msbd);
+        let srl_result = ShiftRightOperation::<AB::F>::eval(
+            builder,
+            sll_val,
+            Word([local.srl_shift; 4]),
+            local.srl_operation,
+            false,
+            is_real.into(),
+        );
+
+        eval_i_type_reader_non_zero(
+            builder,
+            &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            &local.instruction,
-            local.op_a_value.map(Into::into),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
+            srl_result.map(Into::into),
             is_real.into(),
         );
 
@@ -286,50 +301,9 @@ where
             is_real.into(),
         );
 
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_b_val(), local.op_b_value.map(Into::into));
-        builder
-            .when(is_real)
-            .assert_word_eq(local.reader.op_c_val(), local.op_c_value.map(Into::into));
-
-        // Bind to the row's actual fetched opcode, so a row can't claim to be EXT while still
-        // passing the program lookup with a different instruction.
-        builder
-            .when(is_real)
-            .assert_eq(local.instruction.opcode, Opcode::EXT.as_field::<AB::F>());
-        builder.when(is_real).assert_zero(local.op_c_value[2]);
-        builder.when(is_real).assert_zero(local.op_c_value[3]);
-
-        // Ext can be divided into 2 operations, each verified locally (no cross-chip lookup):
-        //    sll_val = op_b << (31 - lsb - msbd)
-        //    result = sll_val >> (31 - msbd)
-        builder
-            .when(is_real)
-            .assert_eq(local.sll_shift, AB::Expr::from_canonical_u32(31) - local.msbd - local.lsb);
-        let sll_val = ShiftLeftOperation::<AB::F>::eval(
-            builder,
-            local.op_b_value,
-            // Only byte 0 of the shift-amount word is read by `eval`; the rest is unused padding.
-            Word([local.sll_shift; 4]),
-            local.sll_operation,
-            is_real.into(),
-        );
-
-        builder.when(is_real).assert_eq(local.srl_shift, AB::Expr::from_canonical_u32(31) - local.msbd);
-        let srl_result = ShiftRightOperation::<AB::F>::eval(
-            builder,
-            sll_val,
-            Word([local.srl_shift; 4]),
-            local.srl_operation,
-            false,
-            is_real.into(),
-        );
-        builder.when(is_real).assert_word_eq(local.op_a_value, srl_result);
-
         // op_c = (msbd << 5) + lsb
         builder.when(is_real).assert_eq(
-            local.op_c_value.reduce::<AB>(),
+            op_c_val.reduce::<AB>(),
             local.lsb + local.msbd * AB::Expr::from_canonical_u32(32),
         );
 
