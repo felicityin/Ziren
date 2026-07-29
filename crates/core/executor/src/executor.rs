@@ -237,6 +237,10 @@ pub struct LocalCounts {
     /// with `op_a==0` -- a subset of `event_counts[Opcode::XOR]`/`[Opcode::OR]`/`[Opcode::AND]`/
     /// `[Opcode::NOR]`, needed to split `Bitwise`'s estimate from `AluX0`'s.
     pub bitwise_x0_events: u64,
+    /// The number of real, retired SRL/SRA/ROR instructions (register- or immediate-shift-amount
+    /// form) with `op_a==0` -- a subset of `event_counts[Opcode::SRL]`/`[Opcode::SRA]`/
+    /// `[Opcode::ROR]`, needed to split `ShiftRight`'s estimate from `AluX0`'s.
+    pub shift_right_x0_events: u64,
     /// The number of real, retired LW instructions with `op_a==0` -- a subset of
     /// `event_counts[Opcode::LW]`, needed to split `LoadWord`'s estimate from `LoadX0`'s.
     pub load_x0_events: u64,
@@ -1225,16 +1229,17 @@ impl<'a> Executor<'a> {
             // SUB (always), every SLT/SLTU shape (register-form `LtChip`, immediate-form
             // `SltiChip`, and zero-destination `AluX0Chip`), every ADD shape (register-form
             // `AddChip`, immediate-form `AddiChip`, and fully-immediate SYNC/Pref via
-            // `AddNoopChip`), and every XOR/OR/AND/NOR shape (register- or immediate-form
-            // `BitwiseChip`, and zero-destination `AluX0Chip`) are migrated to the cheap
-            // register-access timestamp scheme so far (see
-            // `SubChip`/`AddChip`/`AddiChip`/`AddNoopChip`/`LtChip`/`SltiChip`/`BitwiseChip`'s doc
-            // comments); their register accesses are the only ones that need a `MemoryBumpChip`
-            // event when they cross a `clk_high` boundary. Every other ALU chip/shape still uses
-            // the general-purpose scheme, which handles an arbitrary gap on its own -- emitting a
-            // bump event for one of *those* accesses would double-validate the same transition on
-            // the shared memory argument and unbalance it. This condition must match
-            // `emit_alu_event`'s routing exactly.
+            // `AddNoopChip`), every XOR/OR/AND/NOR shape (register- or immediate-form
+            // `BitwiseChip`, and zero-destination `AluX0Chip`), and every SRL/SRA/ROR shape
+            // (register- or immediate-shift-amount-form `ShiftRightChip`, and zero-destination
+            // `AluX0Chip`) are migrated to the cheap register-access timestamp scheme so far (see
+            // `SubChip`/`AddChip`/`AddiChip`/`AddNoopChip`/`LtChip`/`SltiChip`/`BitwiseChip`/
+            // `ShiftRightChip`'s doc comments); their register accesses are the only ones that
+            // need a `MemoryBumpChip` event when they cross a `clk_high` boundary. Every other ALU
+            // chip/shape still uses the general-purpose scheme, which handles an arbitrary gap on
+            // its own -- emitting a bump event for one of *those* accesses would double-validate
+            // the same transition on the shared memory argument and unbalance it. This condition
+            // must match `emit_alu_event`'s routing exactly.
             let uses_cheap_register_scheme = matches!(
                 instruction.opcode,
                 Opcode::ADD
@@ -1245,6 +1250,9 @@ impl<'a> Executor<'a> {
                     | Opcode::OR
                     | Opcode::AND
                     | Opcode::NOR
+                    | Opcode::SRL
+                    | Opcode::SRA
+                    | Opcode::ROR
             );
             if uses_cheap_register_scheme {
                 self.emit_memory_bump_events(instruction, &record);
@@ -1469,6 +1477,9 @@ impl<'a> Executor<'a> {
             }
             Opcode::SLL => {
                 self.record.shift_left_events.push(event);
+            }
+            Opcode::SRL | Opcode::SRA | Opcode::ROR if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
             }
             Opcode::SRL | Opcode::SRA | Opcode::ROR => {
                 self.record.shift_right_events.push(event);
@@ -1893,6 +1904,14 @@ impl<'a> Executor<'a> {
                 && instruction.op_a == Register::ZERO as u8
             {
                 self.local_counts.bitwise_x0_events += 1;
+            }
+            // Same idea for real, retired SRL/SRA/ROR (register- or immediate-shift-amount form)
+            // with `op_a==0` (routed to `alu_x0_events` -- see `AluX0Chip`'s doc comment). Same
+            // reasoning as bitwise: `imm_c` doesn't affect which vec a shift event belongs to.
+            if matches!(instruction.opcode, Opcode::SRL | Opcode::SRA | Opcode::ROR)
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.shift_right_x0_events += 1;
             }
             // Same idea for real, retired `lw $zero, ...`/`ll $zero, ...` (routed to
             // `load_x0_events` -- see `LoadX0Chip`'s doc comment).
@@ -2929,6 +2948,7 @@ impl<'a> Executor<'a> {
                 self.local_counts.slt_x0_events,
                 self.local_counts.sltu_x0_events,
                 self.local_counts.bitwise_x0_events,
+                self.local_counts.shift_right_x0_events,
                 self.local_counts.load_x0_events,
                 *self.local_counts.event_counts,
             );
@@ -3157,7 +3177,7 @@ mod tests {
         opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
 
         let event_counts =
-            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
@@ -3180,7 +3200,7 @@ mod tests {
         opcode_counts[Opcode::ADD] = 1_000;
 
         let event_counts =
-            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 

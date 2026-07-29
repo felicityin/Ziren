@@ -1172,6 +1172,26 @@ pub mod tests {
                 run_test(program).unwrap();
             }
         }
+
+        // SRL/SRA/ROR's immediate-shift-amount form and zero-destination cases (`AluTypeReader`
+        // migration): the loop above only exercises the register-shift-amount, non-zero-
+        // destination shape.
+        let shift_right_ops = [Opcode::SRL, Opcode::SRA, Opcode::ROR];
+        for shift_op in shift_right_ops.iter() {
+            let instructions = vec![
+                Instruction::new(Opcode::ADD, 29, 0, 0x89ab_cdef, false, true),
+                Instruction::new(Opcode::ADD, 30, 0, 5, false, true),
+                // Immediate-shift-amount form, non-zero destination (`ShiftRightChip`, `imm_c`
+                // path).
+                Instruction::new(*shift_op, 31, 29, 7, false, true),
+                // Register-shift-amount form, zero destination (`AluX0Chip`).
+                Instruction::new(*shift_op, 0, 29, 30, false, false),
+                // Immediate-shift-amount form, zero destination (`AluX0Chip`, `imm_c` path).
+                Instruction::new(*shift_op, 0, 29, 7, false, true),
+            ];
+            let program = Program::new(instructions, 0, 0);
+            run_test(program).unwrap();
+        }
     }
 
     #[test]

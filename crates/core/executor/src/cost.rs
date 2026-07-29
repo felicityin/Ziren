@@ -446,6 +446,7 @@ pub fn estimate_mips_event_counts(
     slt_x0_events: u64,
     sltu_x0_events: u64,
     bitwise_x0_events: u64,
+    shift_right_x0_events: u64,
     load_x0_events: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
@@ -470,9 +471,14 @@ pub fn estimate_mips_event_counts(
     // with `op_a==0` (isolated via `sub_x0_events`, see `AluX0Chip`'s doc comment).
     events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB] - sub_x0_events;
 
-    // Compute the number of events in the shared add/sub/lt/bitwise-to-register-0 chip.
-    events_counts[MipsAirId::AluX0] =
-        add_x0_events + sub_x0_events + slt_x0_events + sltu_x0_events + bitwise_x0_events;
+    // Compute the number of events in the shared add/sub/lt/bitwise/shift-right-to-register-0
+    // chip.
+    events_counts[MipsAirId::AluX0] = add_x0_events
+        + sub_x0_events
+        + slt_x0_events
+        + sltu_x0_events
+        + bitwise_x0_events
+        + shift_right_x0_events;
 
     // Compute the number of events in the mul chip.
     events_counts[MipsAirId::Mul] =
@@ -490,9 +496,13 @@ pub fn estimate_mips_event_counts(
     // Compute the number of events in the shift left chip.
     events_counts[MipsAirId::ShiftLeft] = opcode_counts[Opcode::SLL];
 
-    // Compute the number of events in the shift right chip.
-    events_counts[MipsAirId::ShiftRight] =
-        opcode_counts[Opcode::SRL] + opcode_counts[Opcode::SRA] + opcode_counts[Opcode::ROR];
+    // Compute the number of events in the shift right chip. `opcode_counts[Opcode::SRL]`/`[SRA]`/
+    // `[ROR]` include real, retired `op_a==0` rows too (isolated via `shift_right_x0_events`, see
+    // `AluX0Chip`'s doc comment), so that's subtracted out here.
+    events_counts[MipsAirId::ShiftRight] = opcode_counts[Opcode::SRL]
+        + opcode_counts[Opcode::SRA]
+        + opcode_counts[Opcode::ROR]
+        - shift_right_x0_events;
 
     // Compute the number of events in the divrem chip.
     events_counts[MipsAirId::DivRem] = opcode_counts[Opcode::DIV] + opcode_counts[Opcode::DIVU];

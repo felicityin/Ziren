@@ -55,7 +55,7 @@ use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator, ParallelSlice};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{AluEvent, ByteLookupEvent, ByteRecord, MemoryRecordEnum},
+    events::{AluEvent, ByteLookupEvent, ByteRecord},
     ByteOpcode, ExecutionRecord, Opcode, Program, UNUSED_PC,
 };
 use zkm_derive::AlignedBorrow;
@@ -70,15 +70,13 @@ use zkm_hypercube::{
 use zkm_primitives::consts::WORD_SIZE;
 
 use crate::{
-    adapter::InstructionCols,
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
+        clk_low_expr, eval_alu_type_reader, eval_cpu_state, eval_state_chain, AluTypeReader,
+        CpuState, InstructionCols,
     },
-    air::{WordAirBuilder, ZKMCoreAirBuilder},
+    air::ZKMCoreAirBuilder,
     alu::sr::utils::{nb_bits_to_shift, nb_bytes_to_shift},
     bytes::utils::shr_carry,
-    memory::MemoryCols,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -97,7 +95,12 @@ const BYTE_SIZE: usize = 8;
 /// Every row is a real, retired instruction: `CloClzChip`/`ExtChip`/`InsChip` (the only other
 /// chips with an internal SRL/ROR dependency) each verify their own copy locally via an embedded
 /// `ShiftRightOperation`/`FixedShiftRightOperation` instead of a cross-chip lookup into this
-/// chip.
+/// chip. A real SRL/SRA/ROR whose destination is register 0 is routed to `AluX0Chip` instead (see
+/// its doc comment), since its result is unobservable and discarding it soundly requires a
+/// different (cheaper) register-write scheme than a real result does -- see `AluTypeReader`'s doc
+/// comment. Every real row reaching *this* chip therefore has a genuine, non-zero destination
+/// register, which is what lets it use the narrow `AluTypeReader` (see its doc comment) instead
+/// of the generic `InstructionCols`+`RegisterReader` pair.
 #[derive(Default)]
 pub struct ShiftRightChip;
 
@@ -106,25 +109,15 @@ pub struct ShiftRightChip;
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct ShiftRightCols<T: Copy> {
-    /// The current shard and clk. Only meaningful when this row is a real instruction.
+    /// The current shard and clk.
     pub state: CpuState<T>,
 
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction. Only meaningful when this row is a real instruction.
-    pub instruction: InstructionCols<T>,
-
-    /// Register operand access for `a`/`b`/`c`. Only meaningful when this row is a real
-    /// instruction.
-    pub reader: RegisterReader<T>,
-
-    /// The first input operand.
-    pub b: Word<T>,
-
-    /// The second input operand.
-    pub c: Word<T>,
+    /// Register operand access for `a`/`b`/`c`.
+    pub adapter: AluTypeReader<T>,
 
     /// A boolean array whose `i`th element indicates whether `num_bits_to_shift = i`.
     pub shift_by_n_bits: [T; BYTE_SIZE],
@@ -161,9 +154,6 @@ pub struct ShiftRightCols<T: Copy> {
     /// If the opcode is SRA.
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_sra: T,
-
-    /// Selector to know whether this row is enabled.
-    pub is_real: T,
 }
 
 impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
@@ -213,13 +203,15 @@ impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
                         let event = &input.shift_right_events[idx];
                         self.event_to_row(event, cols, &mut byte_lookup_events, &input.program);
                     } else {
+                        // Padding row: `shift_by_n_bits`/`shift_by_n_bytes` need a valid one-hot
+                        // selection even here, since their "exactly one is set" constraints are
+                        // unconditional (not gated by `is_real`). Everything else (including
+                        // `adapter`'s register-access multiplicities) is already correctly zeroed
+                        // by `is_real` (the sum of the opcode selectors, all zero here) -- unlike
+                        // the generic `RegisterReader`, `AluTypeReader` needs no separate "force
+                        // immediate flags" workaround for this.
                         cols.shift_by_n_bits[0] = F::ONE;
                         cols.shift_by_n_bytes[0] = F::ONE;
-                        // Padding row: force the register reader's b/c memory-access
-                        // multiplicities to zero (see cpuchip-migration-register-reader-gotchas
-                        // memory).
-                        cols.instruction.imm_b = F::ONE;
-                        cols.instruction.imm_c = F::ONE;
                     }
                 });
             },
@@ -276,16 +268,12 @@ impl ShiftRightChip {
         {
             cols.pc = F::from_canonical_u32(event.pc);
             cols.next_pc = F::from_canonical_u32(event.next_pc);
-            cols.b = Word::from(event.b);
-            cols.c = Word::from(event.c);
 
             cols.b_msb = F::from_canonical_u32((event.b >> 31) & 1);
 
             cols.is_srl = F::from_bool(event.opcode == Opcode::SRL);
             cols.is_sra = F::from_bool(event.opcode == Opcode::SRA);
             cols.is_ror = F::from_bool(event.opcode == Opcode::ROR);
-
-            cols.is_real = F::ONE;
 
             for i in 0..BYTE_SIZE {
                 cols.c_least_sig_byte[i] = F::from_canonical_u32((event.c >> i) & 1);
@@ -306,22 +294,16 @@ impl ShiftRightChip {
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
-
-        if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+            event.c_record,
+            instruction.imm_c,
+        );
 
         let num_bytes_to_shift = nb_bytes_to_shift(event.c);
         let num_bits_to_shift = nb_bits_to_shift(event.c);
@@ -414,13 +396,21 @@ where
         let zero: AB::Expr = AB::F::ZERO.into();
         let one: AB::Expr = AB::F::ONE.into();
 
+        builder.assert_bool(local.is_srl);
+        builder.assert_bool(local.is_sra);
+        builder.assert_bool(local.is_ror);
+        let is_real = local.is_srl + local.is_sra + local.is_ror;
+        builder.assert_bool(is_real.clone());
+
+        let op_b_val = local.adapter.op_b_val();
+        let op_c_val = local.adapter.op_c_val();
 
         // Check that the MSB of most_significant_byte matches local.b_msb using lookup.
         {
-            let byte = local.b[WORD_SIZE - 1];
+            let byte = op_b_val[WORD_SIZE - 1];
             let opcode = AB::F::from_canonical_u32(ByteOpcode::MSB as u32);
             let msb = local.b_msb;
-            builder.send_byte(opcode, msb, byte, zero.clone(), local.is_real);
+            builder.send_byte(opcode, msb, byte, zero.clone(), is_real.clone());
         }
 
         // Calculate the number of bits and bytes to shift by from c.
@@ -431,7 +421,7 @@ where
                 let val: AB::Expr = AB::F::from_canonical_u32(1 << i).into();
                 c_byte_sum = c_byte_sum.clone() + val * local.c_least_sig_byte[i];
             }
-            builder.assert_eq(c_byte_sum, local.c[0]);
+            builder.assert_eq(c_byte_sum, op_c_val[0]);
 
             // Number of bits to shift.
 
@@ -478,11 +468,11 @@ where
             // The leading bytes of b should be 0xff if b's MSB is 1 & opcode = SRA, 0 otherwise.
             let mut sign_extended_b: Vec<AB::Expr> = vec![];
             for i in 0..WORD_SIZE {
-                sign_extended_b.push(local.b[i].into());
+                sign_extended_b.push(op_b_val[i].into());
             }
             for i in 0..WORD_SIZE {
                 let leading_byte = local.is_sra * local.b_msb * AB::Expr::from_canonical_u8(0xff)
-                    + local.is_ror * local.b[i].into();
+                    + local.is_ror * op_b_val[i].into();
                 sign_extended_b.push(leading_byte.clone());
             }
 
@@ -522,7 +512,7 @@ where
                     local.shr_carry_output_carry[i],
                     local.byte_shift_result[i],
                     num_bits_to_shift.clone(),
-                    local.is_real,
+                    is_real.clone(),
                 );
             }
 
@@ -538,10 +528,7 @@ where
 
         // Check that the flags are indeed boolean.
         {
-            let flags = [local.is_srl, local.is_sra, local.is_ror, local.is_real, local.b_msb];
-            for flag in flags.iter() {
-                builder.assert_bool(*flag);
-            }
+            builder.assert_bool(local.b_msb);
             for shift_by_n_byte in local.shift_by_n_bytes.iter() {
                 builder.assert_bool(*shift_by_n_byte);
             }
@@ -563,12 +550,9 @@ where
             ];
 
             for long_word in long_words.iter() {
-                builder.slice_range_check_u8(long_word, local.is_real);
+                builder.slice_range_check_u8(long_word, is_real.clone());
             }
         }
-
-        // Check that is_real is the sum of the operation flags.
-        builder.assert_eq(local.is_srl + local.is_sra + local.is_ror, local.is_real);
 
         // Use bit_shift_result[0..4] directly as the output operand `a`, eliminating the
         // redundant `a` column since a[i] == bit_shift_result[i] is always true.
@@ -583,22 +567,37 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, local.is_real);
+        // The instruction word is reconstructed here rather than stored: `opcode` is a degree-1
+        // linear combination of the one-hot selectors above (never a variable a malicious prover
+        // could substitute -- the program lookup against `ProgramChip`'s preprocessed ROM is what
+        // makes `op_a`/`op_b`/`op_c` trustworthy, so there's no separate opcode-binding check
+        // needed), `op_a_0`/`imm_b` are compile-time constants (this chip only ever sees a
+        // non-zero destination and a register `op_b` -- see `AluTypeReader`'s doc comment), and
+        // `op_b` is zero-extended from the adapter's register-index column.
+        let cpu_opcode = local.is_srl * Opcode::SRL.as_field::<AB::F>()
+            + local.is_sra * Opcode::SRA.as_field::<AB::F>()
+            + local.is_ror * Opcode::ROR.as_field::<AB::F>();
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: cpu_opcode,
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: local.adapter.op_c.map(Into::into),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: local.adapter.imm_c.into(),
+        };
+        builder.send_program(local.pc, instruction, is_real.clone());
 
-        eval_register_reader(
+        eval_alu_type_reader(
             builder,
-            &local.reader,
+            &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            &local.instruction,
             a_word.map(Into::into),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.is_real.into(),
+            is_real.clone(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real.clone());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -610,27 +609,8 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            local.is_real.into(),
+            is_real,
         );
-
-        builder
-            .when(local.is_real)
-            .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
-        builder
-            .when(local.is_real)
-            .assert_word_eq(local.reader.op_c_val(), local.c.map(Into::into));
-
-        // Bind `is_X` to the row's actual fetched opcode, so a row can't claim the wrong shift
-        // variant while still passing the program lookup.
-        builder
-            .when(local.is_srl)
-            .assert_eq(local.instruction.opcode, Opcode::SRL.as_field::<AB::F>());
-        builder
-            .when(local.is_sra)
-            .assert_eq(local.instruction.opcode, Opcode::SRA.as_field::<AB::F>());
-        builder
-            .when(local.is_ror)
-            .assert_eq(local.instruction.opcode, Opcode::ROR.as_field::<AB::F>());
     }
 }
 

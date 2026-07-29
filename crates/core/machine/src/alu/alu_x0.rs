@@ -34,18 +34,18 @@ pub const NUM_ALU_X0_COLS: usize = size_of::<AluX0Cols<u8>>();
 
 /// A chip that handles every real, retired `RTypeReader`/`AluTypeReader`-family instruction whose
 /// destination register (`op_a`) is register 0 (`$zero`) -- today, register-form `add $zero,
-/// ...`/`sub $zero, ...`, and XOR/OR/AND/NOR (register- or immediate-form) with `op_a==0`. Since
-/// `$zero` is hardwired to always read as 0, the computed result is never observable by anything
-/// downstream (any later read of `$zero` yields 0 regardless), so this chip doesn't compute it at
-/// all: it only verifies the program lookup (opcode/operands match the ROM) and the
-/// register-consistency accesses (`op_b`/`op_c` reads, `op_a`'s write modeled as a no-op since
-/// `$zero`'s value never changes).
+/// ...`/`sub $zero, ...`, XOR/OR/AND/NOR (register- or immediate-form), and SRL/SRA/ROR
+/// (register- or immediate-shift-amount-form) with `op_a==0`. Since `$zero` is hardwired to
+/// always read as 0, the computed result is never observable by anything downstream (any later
+/// read of `$zero` yields 0 regardless), so this chip doesn't compute it at all: it only verifies
+/// the program lookup (opcode/operands match the ROM) and the register-consistency accesses
+/// (`op_b`/`op_c` reads, `op_a`'s write modeled as a no-op since `$zero`'s value never changes).
 ///
-/// This is a growing catch-all: as more chips (Shift, CloClz, Mul, DivRem, MovCond) migrate to
+/// This is a growing catch-all: as more chips (CloClz, Mul, DivRem, MovCond) migrate to
 /// `RTypeReader`/`AluTypeReader`, their own `op_a==0` case gets added here too (extend the one-hot
 /// opcode selectors below and add a routing arm in `emit_alu_event`), rather than spinning up a
 /// new per-opcode chip each time. Currently supports: `ADD`, `SUB`, `SLT`, `SLTU`, `XOR`, `OR`,
-/// `AND`, `NOR`.
+/// `AND`, `NOR`, `SRL`, `SRA`, `ROR`.
 ///
 /// The opcode is encoded as one witnessed boolean selector per supported opcode (`is_add`,
 /// `is_sub`, ...) rather than a single witnessed value plus a root-set validity check
@@ -93,6 +93,12 @@ pub struct AluX0Cols<T: Copy> {
     pub is_and: T,
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_nor: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_srl: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_sra: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_ror: T,
 
     /// Register 0's write access. Modeled as a no-op (the value never changes, since `$zero` is
     /// hardwired to always read as 0) -- see `RTypeReader`'s doc comment for why this chip exists.
@@ -103,8 +109,9 @@ pub struct AluX0Cols<T: Copy> {
     pub op_b_access: RegisterAccessCols<T>,
 
     /// Either the register index of `op_c` (byte 0, when `imm_c` is unset) or its immediate
-    /// value (when `imm_c` is set) -- only the bitwise opcodes can have `imm_c` set (MIPS has no
-    /// ADDI/SUBI/SLTI-with-op_a==0 shape reaching this chip; see `emit_alu_event`'s routing).
+    /// value (when `imm_c` is set) -- only the bitwise and shift opcodes can have `imm_c` set
+    /// (MIPS has no ADDI/SUBI/SLTI-with-op_a==0 shape reaching this chip; see
+    /// `emit_alu_event`'s routing).
     pub op_c: Word<T>,
     pub op_c_access: RegisterAccessCols<T>,
     pub imm_c: T,
@@ -215,6 +222,9 @@ impl AluX0Chip {
         cols.is_or = F::from_bool(event.opcode == Opcode::OR);
         cols.is_and = F::from_bool(event.opcode == Opcode::AND);
         cols.is_nor = F::from_bool(event.opcode == Opcode::NOR);
+        cols.is_srl = F::from_bool(event.opcode == Opcode::SRL);
+        cols.is_sra = F::from_bool(event.opcode == Opcode::SRA);
+        cols.is_ror = F::from_bool(event.opcode == Opcode::ROR);
 
         cols.state.populate(blu, event.clk);
 
@@ -272,6 +282,9 @@ where
         builder.assert_bool(local.is_or);
         builder.assert_bool(local.is_and);
         builder.assert_bool(local.is_nor);
+        builder.assert_bool(local.is_srl);
+        builder.assert_bool(local.is_sra);
+        builder.assert_bool(local.is_ror);
         let is_real = local.is_add
             + local.is_sub
             + local.is_slt
@@ -279,13 +292,17 @@ where
             + local.is_xor
             + local.is_or
             + local.is_and
-            + local.is_nor;
+            + local.is_nor
+            + local.is_srl
+            + local.is_sra
+            + local.is_ror;
         builder.assert_bool(is_real.clone());
 
-        // Only the bitwise opcodes can ever have `imm_c` set (see `AluX0Cols::op_c`'s doc
-        // comment); for the others, the program lookup below fails to find a matching ROM entry
-        // if a malicious prover set it anyway (ADD/SUB/SLT/SLTU never decode with `imm_c` true in
-        // a shape that reaches this chip), so no separate constraint is needed to rule it out.
+        // Only the bitwise and shift opcodes can ever have `imm_c` set (see `AluX0Cols::op_c`'s
+        // doc comment); for the others, the program lookup below fails to find a matching ROM
+        // entry if a malicious prover set it anyway (ADD/SUB/SLT/SLTU never decode with `imm_c`
+        // true in a shape that reaches this chip), so no separate constraint is needed to rule it
+        // out.
         builder.when(is_real.clone()).assert_bool(local.imm_c);
         // Defense-in-depth: force `imm_c` to 0 outside real rows too, so `is_real - imm_c` below
         // (an affine combination, required since lookup multiplicities must have degree <= 1)
@@ -318,7 +335,10 @@ where
             + local.is_xor * Opcode::XOR.as_field::<AB::F>()
             + local.is_or * Opcode::OR.as_field::<AB::F>()
             + local.is_and * Opcode::AND.as_field::<AB::F>()
-            + local.is_nor * Opcode::NOR.as_field::<AB::F>();
+            + local.is_nor * Opcode::NOR.as_field::<AB::F>()
+            + local.is_srl * Opcode::SRL.as_field::<AB::F>()
+            + local.is_sra * Opcode::SRA.as_field::<AB::F>()
+            + local.is_ror * Opcode::ROR.as_field::<AB::F>();
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
             opcode,
             op_a: AB::Expr::zero(),

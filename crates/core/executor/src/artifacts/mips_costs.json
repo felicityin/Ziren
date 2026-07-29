@@ -1,5 +1,5 @@
 {
-  "AluX0": 37,
+  "AluX0": 40,
   "LoadX0": 42,
   "Maddsub": 125,
   "Bn254Fp2MulAssign": 1486,
@@ -9,7 +9,7 @@
   "SyscallInstrs": 123,
   "Add": 31,
   "Secp256r1Decompress": 1379,
-  "ShiftRight": 114,
+  "ShiftRight": 86,
   "Sub": 40,
   "Secp256k1Decompress": 1379,
   "Bitwise": 38,
