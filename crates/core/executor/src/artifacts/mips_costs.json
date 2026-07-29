@@ -1,5 +1,5 @@
 {
-  "AluX0": 29,
+  "AluX0": 37,
   "LoadX0": 42,
   "Maddsub": 125,
   "Bn254Fp2MulAssign": 1486,
@@ -12,7 +12,7 @@
   "ShiftRight": 114,
   "Sub": 40,
   "Secp256k1Decompress": 1379,
-  "Bitwise": 57,
+  "Bitwise": 38,
   "Bn254AddAssign": 2050,
   "Sext": 66,
   "Program": 15,

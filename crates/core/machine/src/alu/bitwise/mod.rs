@@ -5,13 +5,12 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
-use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{IntoParallelRefIterator, ParallelIterator, ParallelSlice};
 use slop_air::{Air, AirBuilderWithPublicValues, BaseAir};
 use zkm_core_executor::{
-    events::{AluEvent, ByteLookupEvent, ByteRecord, MemoryRecordEnum},
+    events::{AluEvent, ByteLookupEvent, ByteRecord},
     ByteOpcode, ExecutionRecord, Opcode, Program,
 };
 use zkm_derive::AlignedBorrow;
@@ -19,19 +18,14 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
-use zkm_hypercube::{
-    air::MachineAir,
-    word::Word,
-};
+use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
-    adapter::InstructionCols,
     adapter::{
-        clk_low_expr, eval_cpu_state, eval_register_reader, eval_state_chain, CpuState,
-        RegisterReader,
+        clk_low_expr, eval_alu_type_reader, eval_cpu_state, eval_state_chain, AluTypeReader,
+        CpuState, InstructionCols,
     },
     air::ZKMCoreAirBuilder,
-    memory::MemoryCols,
     utils::{next_power_of_two, pad_rows_fixed},
     CoreChipError,
 };
@@ -42,7 +36,13 @@ pub const NUM_BITWISE_COLS: usize = size_of::<BitwiseCols<u8>>();
 /// A chip that implements bitwise operations for the opcodes XOR, OR, AND, and NOR.
 ///
 /// Every row is a real, retired instruction: nothing sends a synthetic dependency row into
-/// `bitwise_events`.
+/// `bitwise_events`. A real register-form or immediate-form XOR/OR/AND/NOR whose destination is
+/// register 0 is routed to `AluX0Chip` instead (see its doc comment), since its result is
+/// unobservable and discarding it soundly requires a different (cheaper) register-write scheme
+/// than a real result does -- see `AluTypeReader`'s doc comment. Every real row reaching *this*
+/// chip therefore has a genuine, non-zero destination register, which is what lets it use the
+/// narrow `AluTypeReader` (see its doc comment) instead of the generic
+/// `InstructionCols`+`RegisterReader` pair.
 #[derive(Default)]
 pub struct BitwiseChip;
 
@@ -58,11 +58,8 @@ pub struct BitwiseCols<T: Copy> {
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction.
-    pub instruction: InstructionCols<T>,
-
     /// Register operand access for `a`/`b`/`c`.
-    pub reader: RegisterReader<T>,
+    pub adapter: AluTypeReader<T>,
 
     /// The output operand.
     pub a: Word<T>,
@@ -129,15 +126,7 @@ impl<F: PrimeField32> MachineAir<F> for BitwiseChip {
         // Pad the trace to a power of two.
         pad_rows_fixed(
             &mut rows,
-            || {
-                let mut row = [F::ZERO; NUM_BITWISE_COLS];
-                let cols: &mut BitwiseCols<F> = row.as_mut_slice().borrow_mut();
-                // Padding row: force the register reader's b/c memory-access multiplicities to
-                // zero (see cpuchip-migration-register-reader-gotchas memory).
-                cols.instruction.imm_b = F::ONE;
-                cols.instruction.imm_c = F::ONE;
-                row
-            },
+            || [F::ZERO; NUM_BITWISE_COLS],
             None,
             <BitwiseChip as MachineAir<F>>::name(self).as_str(),
         );
@@ -201,22 +190,16 @@ impl BitwiseChip {
         cols.state.populate(blu, event.clk);
 
         let instruction = program.fetch(event.pc);
-        cols.instruction.populate(&instruction);
-
-        *cols.reader.op_a_access.value_mut() = event.a.into();
-        *cols.reader.op_b_access.value_mut() = event.b.into();
-        *cols.reader.op_c_access.value_mut() = event.c.into();
-
-        if let Some(record) = event.a_record {
-            cols.reader.op_a_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-            cols.reader.op_b_access.populate(record, blu);
-        }
-        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-            cols.reader.op_c_access.populate(record, blu);
-        }
-        cols.reader.populate_op_a_range_checks(blu);
+        cols.adapter.populate(
+            blu,
+            instruction.op_a,
+            event.a_record,
+            instruction.op_b,
+            event.b_record,
+            instruction.op_c,
+            event.c_record,
+            instruction.imm_c,
+        );
 
         let a = event.a.to_le_bytes();
         let b = event.b.to_le_bytes();
@@ -256,34 +239,50 @@ where
         builder.assert_bool(local.is_nor);
         builder.assert_bool(is_real.clone());
 
-        // Get the opcode for the operation.
-        let opcode = local.is_xor * ByteOpcode::XOR.as_field::<AB::F>()
+        // Get the byte-table opcode for the operation.
+        let byte_opcode = local.is_xor * ByteOpcode::XOR.as_field::<AB::F>()
             + local.is_or * ByteOpcode::OR.as_field::<AB::F>()
             + local.is_and * ByteOpcode::AND.as_field::<AB::F>()
             + local.is_nor * ByteOpcode::NOR.as_field::<AB::F>();
 
         for ((a, b), c) in
-            local.a.into_iter().zip(local.reader.op_b_val()).zip(local.reader.op_c_val())
+            local.a.into_iter().zip(local.adapter.op_b_val()).zip(local.adapter.op_c_val())
         {
-            builder.send_byte(opcode.clone(), a, b, c, is_real.clone());
+            builder.send_byte(byte_opcode.clone(), a, b, c, is_real.clone());
         }
 
         // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real.clone());
+        // The instruction word is reconstructed here rather than stored: `opcode` is a degree-1
+        // linear combination of the one-hot selectors above (never a variable a malicious prover
+        // could substitute -- the program lookup against `ProgramChip`'s preprocessed ROM is what
+        // makes `op_a`/`op_b`/`op_c` trustworthy, so there's no separate opcode-binding check
+        // needed), `op_a_0`/`imm_b` are compile-time constants (this chip only ever sees a
+        // non-zero destination and a register `op_b` -- see `AluTypeReader`'s doc comment), and
+        // `op_b` is zero-extended from the adapter's register-index column.
+        let cpu_opcode = local.is_xor * Opcode::XOR.as_field::<AB::F>()
+            + local.is_or * Opcode::OR.as_field::<AB::F>()
+            + local.is_and * Opcode::AND.as_field::<AB::F>()
+            + local.is_nor * Opcode::NOR.as_field::<AB::F>();
+        let instruction: InstructionCols<AB::Expr> = InstructionCols {
+            opcode: cpu_opcode,
+            op_a: local.adapter.op_a.into(),
+            op_b: Word::extend_var::<AB>(local.adapter.op_b),
+            op_c: local.adapter.op_c.map(Into::into),
+            op_a_0: AB::Expr::zero(),
+            imm_b: AB::Expr::zero(),
+            imm_c: local.adapter.imm_c.into(),
+        };
+        builder.send_program(local.pc, instruction, is_real.clone());
 
-        eval_register_reader(
+        eval_alu_type_reader(
             builder,
-            &local.reader,
+            &local.adapter,
             clk_high.clone(),
             clk_low.clone(),
-            &local.instruction,
-            local.a.map(|x| is_real.clone() * Into::<AB::Expr>::into(x)),
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
+            local.a.map(Into::into),
             is_real.clone(),
         );
 
@@ -299,23 +298,8 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            is_real.clone(),
+            is_real,
         );
-
-        // Bind `is_X` to the row's actual fetched opcode, so a row can't claim the wrong bitwise
-        // variant while still passing the program lookup.
-        builder
-            .when(is_real.clone() * local.is_xor)
-            .assert_eq(local.instruction.opcode, Opcode::XOR.as_field::<AB::F>());
-        builder
-            .when(is_real.clone() * local.is_or)
-            .assert_eq(local.instruction.opcode, Opcode::OR.as_field::<AB::F>());
-        builder
-            .when(is_real.clone() * local.is_and)
-            .assert_eq(local.instruction.opcode, Opcode::AND.as_field::<AB::F>());
-        builder
-            .when(is_real * local.is_nor)
-            .assert_eq(local.instruction.opcode, Opcode::NOR.as_field::<AB::F>());
     }
 }
 
@@ -368,6 +352,15 @@ mod tests {
                     imm_c: false,
                     raw: None,
                 },
+                Instruction {
+                    opcode: Opcode::XOR,
+                    op_a: 5,
+                    op_b: 8,
+                    op_c: 19,
+                    imm_b: false,
+                    imm_c: true,
+                    raw: None,
+                },
             ],
             pc_start: 0,
             pc_base: 0,
@@ -380,6 +373,7 @@ mod tests {
             AluEvent::new(4, Opcode::OR, 27, 10, 19),
             AluEvent::new(8, Opcode::AND, 2, 10, 19),
             AluEvent::new(12, Opcode::NOR, 228, 10, 19),
+            AluEvent::new(16, Opcode::XOR, 25, 10, 19),
         ];
         let chip = BitwiseChip::default();
         let trace: RowMajorMatrix<KoalaBear> =

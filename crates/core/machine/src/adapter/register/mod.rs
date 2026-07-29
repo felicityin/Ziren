@@ -1,3 +1,4 @@
+pub mod alu_type;
 pub mod generic;
 pub mod i_type;
 pub mod j_type;

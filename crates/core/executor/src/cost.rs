@@ -445,6 +445,7 @@ pub fn estimate_mips_event_counts(
     sltu_i_events: u64,
     slt_x0_events: u64,
     sltu_x0_events: u64,
+    bitwise_x0_events: u64,
     load_x0_events: u64,
     opcode_counts: EnumMap<Opcode, u64>,
 ) -> EnumMap<MipsAirId, u64> {
@@ -469,18 +470,22 @@ pub fn estimate_mips_event_counts(
     // with `op_a==0` (isolated via `sub_x0_events`, see `AluX0Chip`'s doc comment).
     events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB] - sub_x0_events;
 
-    // Compute the number of events in the shared add/sub/lt-to-register-0 chip.
-    events_counts[MipsAirId::AluX0] = add_x0_events + sub_x0_events + slt_x0_events + sltu_x0_events;
+    // Compute the number of events in the shared add/sub/lt/bitwise-to-register-0 chip.
+    events_counts[MipsAirId::AluX0] =
+        add_x0_events + sub_x0_events + slt_x0_events + sltu_x0_events + bitwise_x0_events;
 
     // Compute the number of events in the mul chip.
     events_counts[MipsAirId::Mul] =
         opcode_counts[Opcode::MUL] + opcode_counts[Opcode::MULT] + opcode_counts[Opcode::MULTU];
 
-    // Compute the number of events in the bitwise chip.
+    // Compute the number of events in the bitwise chip. `opcode_counts[Opcode::XOR]`/`[OR]`/
+    // `[AND]`/`[NOR]` include real, retired `op_a==0` rows too (isolated via `bitwise_x0_events`,
+    // see `AluX0Chip`'s doc comment), so that's subtracted out here.
     events_counts[MipsAirId::Bitwise] = opcode_counts[Opcode::XOR]
         + opcode_counts[Opcode::OR]
         + opcode_counts[Opcode::AND]
-        + opcode_counts[Opcode::NOR];
+        + opcode_counts[Opcode::NOR]
+        - bitwise_x0_events;
 
     // Compute the number of events in the shift left chip.
     events_counts[MipsAirId::ShiftLeft] = opcode_counts[Opcode::SLL];

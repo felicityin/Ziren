@@ -1266,13 +1266,21 @@ pub mod tests {
     #[test]
     fn test_bitwise_prove() {
         setup_logger();
-        let bitwise_opcodes = [Opcode::XOR, Opcode::OR, Opcode::AND];
+        let bitwise_opcodes = [Opcode::XOR, Opcode::OR, Opcode::AND, Opcode::NOR];
 
         for bitwise_op in bitwise_opcodes.iter() {
             let instructions = vec![
                 Instruction::new(Opcode::ADD, 29, 0, 5, false, true),
                 Instruction::new(Opcode::ADD, 30, 0, 8, false, true),
+                // Register-form, non-zero destination (`BitwiseChip`).
                 Instruction::new(*bitwise_op, 31, 30, 29, false, false),
+                // Immediate-form (XORI/ORI/ANDI/NORI-shaped), non-zero destination
+                // (`BitwiseChip`, `imm_c` path).
+                Instruction::new(*bitwise_op, 31, 30, 19, false, true),
+                // Register-form, zero destination (`AluX0Chip`).
+                Instruction::new(*bitwise_op, 0, 30, 29, false, false),
+                // Immediate-form, zero destination (`AluX0Chip`, `imm_c` path).
+                Instruction::new(*bitwise_op, 0, 30, 19, false, true),
             ];
             let program = Program::new(instructions, 0, 0);
             run_test(program).unwrap();

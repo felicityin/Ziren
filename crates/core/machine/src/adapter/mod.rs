@@ -5,6 +5,7 @@ pub mod state;
 
 pub use bump::StateBumpChip;
 pub use instruction::InstructionCols;
+pub use register::alu_type::{eval_alu_type_reader, AluTypeReader};
 pub use register::generic::{eval_register_reader, RegisterReader};
 pub use register::i_type::{
     eval_i_type_immutable_reader, eval_i_type_reader, eval_i_type_reader_non_zero,

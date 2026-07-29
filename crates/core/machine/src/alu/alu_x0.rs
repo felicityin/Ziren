@@ -5,6 +5,7 @@ use core::{
 
 use hashbrown::HashMap;
 use itertools::Itertools;
+use p3_air::AirBuilder;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
@@ -22,7 +23,7 @@ use zkm_hypercube::{air::MachineAir, word::Word};
 
 use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
-    air::ZKMCoreAirBuilder,
+    air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::RegisterAccessCols,
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
@@ -31,18 +32,20 @@ use crate::{
 /// The number of main trace columns for `AluX0Chip`.
 pub const NUM_ALU_X0_COLS: usize = size_of::<AluX0Cols<u8>>();
 
-/// A chip that handles every real, retired `RTypeReader`-family instruction whose destination
-/// register (`op_a`) is register 0 (`$zero`) -- today, register-form `add $zero, ...`/
-/// `sub $zero, ...`. Since `$zero` is hardwired to always read as 0, the computed arithmetic
-/// result is never observable by anything downstream (any later read of `$zero` yields 0
-/// regardless), so this chip doesn't compute it at all: it only verifies the program lookup
-/// (opcode/operands match the ROM) and the register-consistency accesses (`op_b`/`op_c` reads,
-/// `op_a`'s write modeled as a no-op since `$zero`'s value never changes).
+/// A chip that handles every real, retired `RTypeReader`/`AluTypeReader`-family instruction whose
+/// destination register (`op_a`) is register 0 (`$zero`) -- today, register-form `add $zero,
+/// ...`/`sub $zero, ...`, and XOR/OR/AND/NOR (register- or immediate-form) with `op_a==0`. Since
+/// `$zero` is hardwired to always read as 0, the computed result is never observable by anything
+/// downstream (any later read of `$zero` yields 0 regardless), so this chip doesn't compute it at
+/// all: it only verifies the program lookup (opcode/operands match the ROM) and the
+/// register-consistency accesses (`op_b`/`op_c` reads, `op_a`'s write modeled as a no-op since
+/// `$zero`'s value never changes).
 ///
-/// This is a growing catch-all: as more chips (Bitwise, Shift, CloClz, Mul, DivRem, MovCond)
-/// migrate to `RTypeReader`, their own `op_a==0` case gets added here too (extend the one-hot
+/// This is a growing catch-all: as more chips (Shift, CloClz, Mul, DivRem, MovCond) migrate to
+/// `RTypeReader`/`AluTypeReader`, their own `op_a==0` case gets added here too (extend the one-hot
 /// opcode selectors below and add a routing arm in `emit_alu_event`), rather than spinning up a
-/// new per-opcode chip each time. Currently supports: `ADD`, `SUB`, `SLT`, `SLTU`.
+/// new per-opcode chip each time. Currently supports: `ADD`, `SUB`, `SLT`, `SLTU`, `XOR`, `OR`,
+/// `AND`, `NOR`.
 ///
 /// The opcode is encoded as one witnessed boolean selector per supported opcode (`is_add`,
 /// `is_sub`, ...) rather than a single witnessed value plus a root-set validity check
@@ -82,6 +85,14 @@ pub struct AluX0Cols<T: Copy> {
     pub is_slt: T,
     #[cfg_attr(feature = "picus", picus(selector))]
     pub is_sltu: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_xor: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_or: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_and: T,
+    #[cfg_attr(feature = "picus", picus(selector))]
+    pub is_nor: T,
 
     /// Register 0's write access. Modeled as a no-op (the value never changes, since `$zero` is
     /// hardwired to always read as 0) -- see `RTypeReader`'s doc comment for why this chip exists.
@@ -91,9 +102,12 @@ pub struct AluX0Cols<T: Copy> {
     pub op_b: T,
     pub op_b_access: RegisterAccessCols<T>,
 
-    /// The register index of `op_c` (read).
-    pub op_c: T,
+    /// Either the register index of `op_c` (byte 0, when `imm_c` is unset) or its immediate
+    /// value (when `imm_c` is set) -- only the bitwise opcodes can have `imm_c` set (MIPS has no
+    /// ADDI/SUBI/SLTI-with-op_a==0 shape reaching this chip; see `emit_alu_event`'s routing).
+    pub op_c: Word<T>,
     pub op_c_access: RegisterAccessCols<T>,
+    pub imm_c: T,
 }
 
 impl<F: PrimeField32> MachineAir<F> for AluX0Chip {
@@ -197,6 +211,10 @@ impl AluX0Chip {
         cols.is_sub = F::from_bool(event.opcode == Opcode::SUB);
         cols.is_slt = F::from_bool(event.opcode == Opcode::SLT);
         cols.is_sltu = F::from_bool(event.opcode == Opcode::SLTU);
+        cols.is_xor = F::from_bool(event.opcode == Opcode::XOR);
+        cols.is_or = F::from_bool(event.opcode == Opcode::OR);
+        cols.is_and = F::from_bool(event.opcode == Opcode::AND);
+        cols.is_nor = F::from_bool(event.opcode == Opcode::NOR);
 
         cols.state.populate(blu, event.clk);
 
@@ -217,8 +235,11 @@ impl AluX0Chip {
             cols.op_b_access.populate(record, blu);
         }
 
-        cols.op_c = F::from_canonical_u32(instruction.op_c);
-        if let Some(record) = event.c_record {
+        cols.imm_c = F::from_bool(instruction.imm_c);
+        cols.op_c = Word::from(instruction.op_c);
+        if instruction.imm_c {
+            cols.op_c_access.prev_value = cols.op_c;
+        } else if let Some(record) = event.c_record {
             cols.op_c_access.populate(record, blu);
         }
     }
@@ -247,8 +268,35 @@ where
         builder.assert_bool(local.is_sub);
         builder.assert_bool(local.is_slt);
         builder.assert_bool(local.is_sltu);
-        let is_real = local.is_add + local.is_sub + local.is_slt + local.is_sltu;
+        builder.assert_bool(local.is_xor);
+        builder.assert_bool(local.is_or);
+        builder.assert_bool(local.is_and);
+        builder.assert_bool(local.is_nor);
+        let is_real = local.is_add
+            + local.is_sub
+            + local.is_slt
+            + local.is_sltu
+            + local.is_xor
+            + local.is_or
+            + local.is_and
+            + local.is_nor;
         builder.assert_bool(is_real.clone());
+
+        // Only the bitwise opcodes can ever have `imm_c` set (see `AluX0Cols::op_c`'s doc
+        // comment); for the others, the program lookup below fails to find a matching ROM entry
+        // if a malicious prover set it anyway (ADD/SUB/SLT/SLTU never decode with `imm_c` true in
+        // a shape that reaches this chip), so no separate constraint is needed to rule it out.
+        builder.when(is_real.clone()).assert_bool(local.imm_c);
+        // Defense-in-depth: force `imm_c` to 0 outside real rows too, so `is_real - imm_c` below
+        // (an affine combination, required since lookup multiplicities must have degree <= 1)
+        // can only ever land on 0 or 1.
+        builder.when_not(is_real.clone()).assert_zero(local.imm_c);
+
+        // If `op_c` is an immediate, assert its value is copied into `op_c_access.prev_value` (so
+        // the interaction skip below is sound).
+        builder
+            .when(is_real.clone() * Into::<AB::Expr>::into(local.imm_c))
+            .assert_word_eq(local.op_c_access.prev_value, local.op_c);
 
         // The written value is always the constant zero -- `$zero` never actually changes, so
         // writing to it is representationally a no-op; see `RTypeReader`'s doc comment.
@@ -258,33 +306,40 @@ where
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        // The instruction word is reconstructed here: `op_a=0`/`op_a_0=1`/`imm_b=0`/`imm_c=0` are
-        // compile-time constants (this shape is always register-register with a zero
-        // destination); `opcode` is a degree-1 linear combination of the one-hot selectors above;
-        // `op_b`/`op_c` are zero-extended from the register-index columns.
+        // The instruction word is reconstructed here: `op_a=0`/`op_a_0=1`/`imm_b=0` are
+        // compile-time constants (this shape always has a zero destination and never an
+        // immediate `op_b`); `opcode` is a degree-1 linear combination of the one-hot selectors
+        // above; `op_b` is zero-extended from its register-index column, `op_c` is already a
+        // full word (register-index-in-byte0 or immediate, per `imm_c`).
         let opcode = local.is_add * Opcode::ADD.as_field::<AB::F>()
             + local.is_sub * Opcode::SUB.as_field::<AB::F>()
             + local.is_slt * Opcode::SLT.as_field::<AB::F>()
-            + local.is_sltu * Opcode::SLTU.as_field::<AB::F>();
+            + local.is_sltu * Opcode::SLTU.as_field::<AB::F>()
+            + local.is_xor * Opcode::XOR.as_field::<AB::F>()
+            + local.is_or * Opcode::OR.as_field::<AB::F>()
+            + local.is_and * Opcode::AND.as_field::<AB::F>()
+            + local.is_nor * Opcode::NOR.as_field::<AB::F>();
         let instruction: InstructionCols<AB::Expr> = InstructionCols {
             opcode,
             op_a: AB::Expr::zero(),
             op_b: Word::extend_var::<AB>(local.op_b),
-            op_c: Word::extend_var::<AB>(local.op_c),
+            op_c: local.op_c.map(Into::into),
             op_a_0: AB::Expr::one(),
             imm_b: AB::Expr::zero(),
-            imm_c: AB::Expr::zero(),
+            imm_c: local.imm_c.into(),
         };
         builder.send_program(local.pc, instruction, is_real.clone());
 
         // Register positions must be read/written in the order C, B, A (see
-        // `MemoryAccessPosition`'s doc comment).
+        // `MemoryAccessPosition`'s doc comment). `op_c`'s access is skipped (zero multiplicity)
+        // when it's an immediate -- `is_real - imm_c` (not `is_real * (1 - imm_c)`) to keep this
+        // an affine lookup multiplicity (see the `imm_c`-boolean defense-in-depth check above).
         builder.eval_register_access_read(
             clk_high.clone(),
             clk_low.clone() + AB::Expr::from_canonical_u32(MemoryAccessPosition::C as u32),
-            local.op_c.into(),
+            local.op_c[0].into(),
             &local.op_c_access,
-            is_real.clone(),
+            is_real.clone() - Into::<AB::Expr>::into(local.imm_c),
         );
         builder.eval_register_access_read(
             clk_high.clone(),

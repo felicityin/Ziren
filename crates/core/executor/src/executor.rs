@@ -233,6 +233,10 @@ pub struct LocalCounts {
     /// The number of real, retired register-form SLTU instructions with `op_a==0` -- a subset of
     /// `event_counts[Opcode::SLTU]`, needed to split `Lt`'s estimate from `AluX0`'s.
     pub sltu_x0_events: u64,
+    /// The number of real, retired XOR/OR/AND/NOR instructions (register- or immediate-form)
+    /// with `op_a==0` -- a subset of `event_counts[Opcode::XOR]`/`[Opcode::OR]`/`[Opcode::AND]`/
+    /// `[Opcode::NOR]`, needed to split `Bitwise`'s estimate from `AluX0`'s.
+    pub bitwise_x0_events: u64,
     /// The number of real, retired LW instructions with `op_a==0` -- a subset of
     /// `event_counts[Opcode::LW]`, needed to split `LoadWord`'s estimate from `LoadX0`'s.
     pub load_x0_events: u64,
@@ -1219,18 +1223,29 @@ impl<'a> Executor<'a> {
 
         if instruction.is_alu_instruction() {
             // SUB (always), every SLT/SLTU shape (register-form `LtChip`, immediate-form
-            // `SltiChip`, and zero-destination `AluX0Chip`), and every ADD shape (register-form
+            // `SltiChip`, and zero-destination `AluX0Chip`), every ADD shape (register-form
             // `AddChip`, immediate-form `AddiChip`, and fully-immediate SYNC/Pref via
-            // `AddNoopChip`) are migrated to the cheap register-access timestamp scheme so far
-            // (see `SubChip`/`AddChip`/`AddiChip`/`AddNoopChip`/`LtChip`/`SltiChip`'s doc
+            // `AddNoopChip`), and every XOR/OR/AND/NOR shape (register- or immediate-form
+            // `BitwiseChip`, and zero-destination `AluX0Chip`) are migrated to the cheap
+            // register-access timestamp scheme so far (see
+            // `SubChip`/`AddChip`/`AddiChip`/`AddNoopChip`/`LtChip`/`SltiChip`/`BitwiseChip`'s doc
             // comments); their register accesses are the only ones that need a `MemoryBumpChip`
             // event when they cross a `clk_high` boundary. Every other ALU chip/shape still uses
             // the general-purpose scheme, which handles an arbitrary gap on its own -- emitting a
             // bump event for one of *those* accesses would double-validate the same transition on
             // the shared memory argument and unbalance it. This condition must match
             // `emit_alu_event`'s routing exactly.
-            let uses_cheap_register_scheme =
-                matches!(instruction.opcode, Opcode::ADD | Opcode::SUB | Opcode::SLT | Opcode::SLTU);
+            let uses_cheap_register_scheme = matches!(
+                instruction.opcode,
+                Opcode::ADD
+                    | Opcode::SUB
+                    | Opcode::SLT
+                    | Opcode::SLTU
+                    | Opcode::XOR
+                    | Opcode::OR
+                    | Opcode::AND
+                    | Opcode::NOR
+            );
             if uses_cheap_register_scheme {
                 self.emit_memory_bump_events(instruction, &record);
             }
@@ -1445,6 +1460,9 @@ impl<'a> Executor<'a> {
             }
             Opcode::SUB => {
                 self.record.sub_events.push(event);
+            }
+            Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
             }
             Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR => {
                 self.record.bitwise_events.push(event);
@@ -1865,6 +1883,16 @@ impl<'a> Executor<'a> {
                 && instruction.op_a == Register::ZERO as u8
             {
                 self.local_counts.sltu_x0_events += 1;
+            }
+            // Same idea for real, retired XOR/OR/AND/NOR (register- or immediate-form) with
+            // `op_a==0` (routed to `alu_x0_events` -- see `AluX0Chip`'s doc comment). Unlike
+            // ADD/SLT, there's no separate immediate-form-vs-register-form split to worry about
+            // here first: `imm_c` doesn't affect which vec a bitwise event belongs to, only
+            // whether it's a `$zero`-destination row (this counter) or not (`bitwise_events`).
+            if matches!(instruction.opcode, Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR)
+                && instruction.op_a == Register::ZERO as u8
+            {
+                self.local_counts.bitwise_x0_events += 1;
             }
             // Same idea for real, retired `lw $zero, ...`/`ll $zero, ...` (routed to
             // `load_x0_events` -- see `LoadX0Chip`'s doc comment).
@@ -2900,6 +2928,7 @@ impl<'a> Executor<'a> {
                 self.local_counts.sltu_i_events,
                 self.local_counts.slt_x0_events,
                 self.local_counts.sltu_x0_events,
+                self.local_counts.bitwise_x0_events,
                 self.local_counts.load_x0_events,
                 *self.local_counts.event_counts,
             );
@@ -3128,7 +3157,7 @@ mod tests {
         opcode_counts[Opcode::ADD] = CORE_SHARD_HEIGHT_THRESHOLD;
 
         let event_counts =
-            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
@@ -3151,7 +3180,7 @@ mod tests {
         opcode_counts[Opcode::ADD] = 1_000;
 
         let event_counts =
-            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
+            estimate_mips_event_counts(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, opcode_counts);
         let padded_event_counts = pad_mips_event_counts(event_counts, 16);
         let max_chip_height = padded_event_counts.iter().map(|(_, h)| *h).max().unwrap();
 
