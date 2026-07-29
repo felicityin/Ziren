@@ -29,6 +29,7 @@ use crate::{
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
+    operations::{ShiftLeftOperation, ShiftRightOperation},
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -42,12 +43,9 @@ pub const NUM_EXT_COLS: usize = size_of::<ExtCols<u8>>();
 /// `ext_events`. EXT is a fresh write of `op_a` (not read-modify-write), so it needs no
 /// `prev_a_value`.
 ///
-/// EXT still sends its two intermediate shift steps (`sll_val = op_b << (31 - lsb - msbd)` then
-/// `op_a = sll_val >> (31 - msbd)`) to `ShiftLeft`/`ShiftRightChip` via `send_alu` rather than
-/// embedding them locally -- unlike the ADD/MUL dependencies removed earlier this session,
-/// embedding shift logic here is a separate, later step, now unblocked by this chip's split from
-/// `SextChip`/`InsChip`/`MaddsubChip`/`TeqChip` (each opcode's width no longer inflates the
-/// others').
+/// EXT's two intermediate shift steps (`sll_val = op_b << (31 - lsb - msbd)` then `op_a = sll_val
+/// >> (31 - msbd)`) are verified locally via embedded `ShiftLeftOperation`/`ShiftRightOperation`
+/// (no cross-chip lookup into `ShiftLeft`/`ShiftRightChip`).
 #[derive(Default)]
 pub struct ExtChip;
 
@@ -80,8 +78,16 @@ pub struct ExtCols<T: Copy> {
     pub lsb: T,
     pub msbd: T,
 
-    /// Result value of the intermediate SLL operation.
-    pub sll_val: Word<T>,
+    /// `31 - lsb - msbd`, the shift amount for the intermediate SLL step below.
+    pub sll_shift: T,
+    /// `sll_val = op_b << sll_shift`, computed locally (no cross-chip lookup into `ShiftLeft`).
+    pub sll_operation: ShiftLeftOperation<T>,
+
+    /// `31 - msbd`, the shift amount for the final SRL step below.
+    pub srl_shift: T,
+    /// `op_a = sll_val >> srl_shift`, computed locally (no cross-chip lookup into
+    /// `ShiftRightChip`).
+    pub srl_operation: ShiftRightOperation<T>,
 
     /// Whether this row is a real, retired EXT instruction (as opposed to padding).
     pub is_real: T,
@@ -199,10 +205,16 @@ impl ExtChip {
 
         let lsb = event.c & 0x1f;
         let msbd = event.c >> 5;
-        let shift_left = event.b << (31 - lsb - msbd);
         cols.lsb = F::from_canonical_u32(lsb);
         cols.msbd = F::from_canonical_u32(msbd);
-        cols.sll_val = Word::from(shift_left);
+
+        let sll_shift = 31 - lsb - msbd;
+        cols.sll_shift = F::from_canonical_u32(sll_shift);
+        let shift_left = cols.sll_operation.populate(blu, event.b, sll_shift);
+
+        let srl_shift = 31 - msbd;
+        cols.srl_shift = F::from_canonical_u32(srl_shift);
+        cols.srl_operation.populate(blu, shift_left, srl_shift, false);
 
         blu.add_byte_lookup_event(ByteLookupEvent {
             opcode: ByteOpcode::U8Range,
@@ -289,34 +301,31 @@ where
         builder.when(is_real).assert_zero(local.op_c_value[2]);
         builder.when(is_real).assert_zero(local.op_c_value[3]);
 
-        // Ext can be divided into 2 operations:
+        // Ext can be divided into 2 operations, each verified locally (no cross-chip lookup):
         //    sll_val = op_b << (31 - lsb - msbd)
         //    result = sll_val >> (31 - msbd)
-        builder.send_alu(
-            Opcode::SLL.as_field::<AB::F>(),
-            local.sll_val,
+        builder
+            .when(is_real)
+            .assert_eq(local.sll_shift, AB::Expr::from_canonical_u32(31) - local.msbd - local.lsb);
+        let sll_val = ShiftLeftOperation::<AB::F>::eval(
+            builder,
             local.op_b_value,
-            Word([
-                AB::Expr::from_canonical_u32(31) - local.msbd - local.lsb,
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-            ]),
-            is_real,
+            // Only byte 0 of the shift-amount word is read by `eval`; the rest is unused padding.
+            Word([local.sll_shift; 4]),
+            local.sll_operation,
+            is_real.into(),
         );
 
-        builder.send_alu(
-            Opcode::SRL.as_field::<AB::F>(),
-            local.op_a_value,
-            local.sll_val,
-            Word([
-                AB::Expr::from_canonical_u32(31) - local.msbd,
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-            ]),
-            is_real,
+        builder.when(is_real).assert_eq(local.srl_shift, AB::Expr::from_canonical_u32(31) - local.msbd);
+        let srl_result = ShiftRightOperation::<AB::F>::eval(
+            builder,
+            sll_val,
+            Word([local.srl_shift; 4]),
+            local.srl_operation,
+            false,
+            is_real.into(),
         );
+        builder.when(is_real).assert_word_eq(local.op_a_value, srl_result);
 
         // op_c = (msbd << 5) + lsb
         builder.when(is_real).assert_eq(

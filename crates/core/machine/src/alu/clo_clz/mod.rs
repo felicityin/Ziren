@@ -41,6 +41,7 @@ use crate::{
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
+    operations::ShiftRightOperation,
     utils::{next_power_of_two, pad_rows_fixed},
     CoreChipError,
 };
@@ -52,10 +53,10 @@ pub const NUM_CLOCLZ_COLS: usize = size_of::<CloClzCols<u8>>();
 ///
 /// As with `AddChip`, not every row is a real retired instruction -- though as of this
 /// writing no other chip emits a synthetic dependency row into `cloclz_events`, the
-/// `is_real_instruction` flag is kept for consistency with the other opcode-family chips. Note
-/// this chip is itself a synthetic-dependency *producer* for `ShiftRightChip` (the `send_alu`
-/// call below verifying `bb >> (31 - result) == 1`), which is unrelated to and untouched by this
-/// real/synthetic split.
+/// `is_real_instruction` flag is kept for consistency with the other opcode-family chips.
+///
+/// `bb >> (31 - result) == 1` is verified locally via an embedded `ShiftRightOperation` (no
+/// cross-chip lookup into `ShiftRightChip`).
 #[derive(Default)]
 pub struct CloClzChip;
 
@@ -96,6 +97,14 @@ pub struct CloClzCols<T: Copy> {
 
     /// whether the `bb` is zero.
     pub is_bb_zero: T,
+
+    /// `31 - a[0]`, the shift amount used to verify `bb >> shift_amount == 1` below. Only
+    /// meaningful when `is_bb_zero` is unset (when `is_bb_zero` is set, `a[0] == 32` and this
+    /// would underflow, but the shift check is gated off in that case anyway).
+    pub shift_amount: T,
+
+    /// `bb >> shift_amount`, computed locally (no cross-chip lookup into `ShiftRightChip`).
+    pub shift_right_operation: ShiftRightOperation<T>,
 
     /// Flag to indicate whether the opcode is CLZ.
     #[cfg_attr(feature = "picus", picus(selector))]
@@ -188,7 +197,8 @@ impl<F: PrimeField32> MachineAir<F> for CloClzChip {
             cols.bb = Word::from(bb);
 
             // if bb == 0, then result is 32.
-            cols.is_bb_zero = F::from_bool(bb == 0);
+            let is_bb_zero = bb == 0;
+            cols.is_bb_zero = F::from_bool(is_bb_zero);
 
             // Range check.
             output.add_u8_range_checks(&bb.to_le_bytes());
@@ -199,6 +209,17 @@ impl<F: PrimeField32> MachineAir<F> for CloClzChip {
                 b: event.a as u8,
                 c: 33,
             });
+
+            // Verify `bb >> shift_amount == 1` locally (no cross-chip lookup into
+            // `ShiftRightChip`). Only meaningful when `bb != 0`; default to 0 otherwise since
+            // `31 - 32` would underflow. `populate` is only called when `!is_bb_zero`, matching
+            // `eval`'s gating exactly -- otherwise its (unconditionally emitted) byte-lookup
+            // events would have no matching send, unbalancing the lookup argument.
+            if !is_bb_zero {
+                let shift_amount = 31 - event.a;
+                cols.shift_amount = F::from_canonical_u32(shift_amount);
+                cols.shift_right_operation.populate(output, bb, shift_amount, false);
+            }
 
             rows.push(row);
         }
@@ -221,7 +242,7 @@ impl<F: PrimeField32> MachineAir<F> for CloClzChip {
             let mut row = [F::ZERO; NUM_CLOCLZ_COLS];
             let cols: &mut CloClzCols<F> = row.as_mut_slice().borrow_mut();
             // Padding rows: is_real=0, is_clz=0, is_bb_zero=1, a=32.
-            // is_bb_zero=1 ensures send_alu for SRL has zero multiplicity.
+            // is_bb_zero=1 gates off the embedded `ShiftRightOperation`'s constraints.
             cols.a = Word::from(32);
             cols.is_bb_zero = F::ONE;
             cols.instruction.imm_b = F::ONE;
@@ -387,20 +408,27 @@ where
         }
 
         {
-            // Use the SRL table to verify bb >> (31 - result) == 1.
-            // Since sr1 is always 1 when bb != 0, we hardcode the expected result
-            // as Word([1, 0, 0, 0]) directly, eliminating 4 witness columns.
-            builder.send_alu(
-                Opcode::SRL.as_field::<AB::F>(),
-                Word([one.clone(), zero.clone(), zero.clone(), zero.clone()]),
+            // Verify bb >> (31 - result) == 1 locally, embedding `ShiftRightOperation` rather
+            // than a cross-chip lookup into `ShiftRightChip`. Since the result is always 1 when
+            // bb != 0, we hardcode the expected value as Word([1, 0, 0, 0]) directly, eliminating
+            // 4 witness columns. `a[1]`/`a[2]`/`a[3]` are already proven zero whenever `is_real`
+            // (below), so they're reused as the upper 3 (zero) bytes of the shift amount.
+            let shift_is_real = one.clone() - local.is_bb_zero;
+            builder
+                .when(shift_is_real.clone())
+                .assert_eq(local.shift_amount, AB::Expr::from_canonical_u32(31) - local.a[0]);
+
+            let shift_result = ShiftRightOperation::<AB::F>::eval(
+                builder,
                 local.bb,
-                Word([
-                    AB::Expr::from_canonical_u32(31) - local.a[0],
-                    zero.clone(),
-                    zero.clone(),
-                    zero.clone(),
-                ]),
-                one.clone() - local.is_bb_zero,
+                Word([local.shift_amount, local.a[1], local.a[2], local.a[3]]),
+                local.shift_right_operation,
+                false,
+                shift_is_real.clone(),
+            );
+            builder.when(shift_is_real).assert_word_eq(
+                shift_result,
+                Word([one.clone(), zero.clone(), zero.clone(), zero.clone()]),
             );
         }
 

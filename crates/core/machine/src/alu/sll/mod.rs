@@ -77,9 +77,9 @@ pub const BYTE_SIZE: usize = 8;
 
 /// A chip that implements bitwise operations for the opcodes SLL and SLLI.
 ///
-/// As with `AddChip`, not every row is a real retired instruction: `ExtChip`/`InsChip`'s
-/// dependency checks reuse this chip's arithmetic circuit for internal SLL checks at the
-/// `UNUSED_PC` sentinel. `is_real_instruction` distinguishes the two.
+/// Every row is a real, retired instruction: `ExtChip`/`InsChip` (the only other chips with an
+/// internal SLL dependency) each verify their own copy locally via an embedded
+/// `ShiftLeftOperation` instead of a cross-chip lookup into this chip.
 #[derive(Default)]
 pub struct ShiftLeft;
 
@@ -88,23 +88,18 @@ pub struct ShiftLeft;
 #[cfg_attr(feature = "picus", derive(PicusAnnotations))]
 #[repr(C)]
 pub struct ShiftLeftCols<T: Copy> {
-    /// The current shard and clk. Only meaningful when `is_real_instruction` is set.
+    /// The current shard and clk. Only meaningful when `is_real` is set.
     pub state: CpuState<T>,
 
     /// The current/next pc, used for instruction lookup table.
     pub pc: T,
     pub next_pc: T,
 
-    /// The raw fetched instruction. Only meaningful when `is_real_instruction` is set.
+    /// The raw fetched instruction. Only meaningful when `is_real` is set.
     pub instruction: InstructionCols<T>,
 
-    /// Register operand access for `a`/`b`/`c`. Only meaningful when `is_real_instruction` is
-    /// set.
+    /// Register operand access for `a`/`b`/`c`. Only meaningful when `is_real` is set.
     pub reader: RegisterReader<T>,
-
-    /// Whether this row is a real, retired SLL instruction (as opposed to an internal
-    /// dependency check from another chip, or padding).
-    pub is_real_instruction: T,
 
     /// The output operand.
     pub a: Word<T>,
@@ -266,35 +261,26 @@ impl ShiftLeft {
         cols.c = Word(c.map(F::from_canonical_u8));
         cols.is_real = F::ONE;
 
-        // Default: not a real instruction, so the register reader's b/c memory accesses have
-        // zero multiplicity unless overwritten by a real fetched instruction's actual immediate
-        // flags just below.
-        cols.instruction.imm_b = F::ONE;
-        cols.instruction.imm_c = F::ONE;
+        debug_assert!(event.pc != UNUSED_PC, "every ShiftLeft row is now a real instruction");
+        cols.state.populate(blu, event.clk);
 
-        let is_real_instruction = event.pc != UNUSED_PC;
-        cols.is_real_instruction = F::from_bool(is_real_instruction);
-        if is_real_instruction {
-            cols.state.populate(blu, event.clk);
+        let instruction = program.fetch(event.pc);
+        cols.instruction.populate(&instruction);
 
-            let instruction = program.fetch(event.pc);
-            cols.instruction.populate(&instruction);
+        *cols.reader.op_a_access.value_mut() = event.a.into();
+        *cols.reader.op_b_access.value_mut() = event.b.into();
+        *cols.reader.op_c_access.value_mut() = event.c.into();
 
-            *cols.reader.op_a_access.value_mut() = event.a.into();
-            *cols.reader.op_b_access.value_mut() = event.b.into();
-            *cols.reader.op_c_access.value_mut() = event.c.into();
-
-            if let Some(record) = event.a_record {
-                cols.reader.op_a_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-                cols.reader.op_b_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-                cols.reader.op_c_access.populate(record, blu);
-            }
-            cols.reader.populate_op_a_range_checks(blu);
+        if let Some(record) = event.a_record {
+            cols.reader.op_a_access.populate(record, blu);
         }
+        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+            cols.reader.op_b_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+            cols.reader.op_c_access.populate(record, blu);
+        }
+        cols.reader.populate_op_a_range_checks(blu);
 
         for i in 0..BYTE_SIZE {
             cols.c_least_sig_byte[i] = F::from_canonical_u32((event.c >> i) & 1);
@@ -467,14 +453,12 @@ where
         );
 
         builder.assert_bool(local.is_real);
-        builder.assert_bool(local.is_real_instruction);
-        builder.when_not(local.is_real).assert_zero(local.is_real_instruction);
 
-        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, local.is_real_instruction);
+        builder.send_program(local.pc, local.instruction, local.is_real);
 
         eval_register_reader(
             builder,
@@ -482,19 +466,14 @@ where
             clk_high.clone(),
             clk_low.clone(),
             &local.instruction,
-            // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
-            // reader.op_a_val())` fires unconditionally whenever `op_a_0` is unset, which it is
-            // by default on synthetic rows (their `instruction` column is never populated) --
-            // an ungated `op_a_value` would then have to equal `reader.op_a_val()` (always zero
-            // on synthetic rows) even when the true result is nonzero.
-            local.a.map(|x| local.is_real_instruction.into() * Into::<AB::Expr>::into(x)),
+            local.a.map(Into::into),
             Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
             AB::Expr::zero(),
             AB::Expr::zero(),
-            local.is_real_instruction.into(),
+            local.is_real.into(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real_instruction.into());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -506,40 +485,18 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            local.is_real_instruction.into(),
+            local.is_real.into(),
         );
 
         builder
-            .when(local.is_real_instruction)
+            .when(local.is_real)
             .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
         builder
-            .when(local.is_real_instruction)
+            .when(local.is_real)
             .assert_word_eq(local.reader.op_c_val(), local.c.map(Into::into));
         builder
-            .when(local.is_real_instruction)
+            .when(local.is_real)
             .assert_eq(local.instruction.opcode, AB::F::from_canonical_u32(Opcode::SLL as u32));
-
-        // ---- Synthetic dependency path: matches whichever chip generated this internal check via
-        // `send_alu` (always at the `UNUSED_PC` sentinel, shard/clk zero). ----
-        builder.receive_instruction(
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            AB::F::from_canonical_u32(Opcode::SLL as u32),
-            local.a,
-            local.b,
-            local.c,
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
-            local.is_real - local.is_real_instruction,
-        );
     }
 }
 
@@ -549,7 +506,7 @@ mod tests {
     // use crate::utils::{uni_stark_prove as prove, uni_stark_verify as verify};
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode, UNUSED_PC};
+    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Instruction, Opcode, Program};
     use zkm_hypercube::air::MachineAir;
     // use zkm_stark::{
     //     air::MachineAir, koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig,
@@ -559,8 +516,23 @@ mod tests {
 
     #[test]
     fn generate_trace() {
-        let mut shard = ExecutionRecord::default();
-        shard.shift_left_events = vec![AluEvent::new(UNUSED_PC, Opcode::SLL, 16, 8, 1)];
+        let program = Program {
+            instructions: vec![Instruction {
+                opcode: Opcode::SLL,
+                op_a: 5,
+                op_b: 8,
+                op_c: 1,
+                imm_b: false,
+                imm_c: true,
+                raw: None,
+            }],
+            pc_start: 0,
+            pc_base: 0,
+            next_pc: 4,
+            image: Default::default(),
+        };
+        let mut shard = ExecutionRecord { program: program.into(), ..Default::default() };
+        shard.shift_left_events = vec![AluEvent::new(0, Opcode::SLL, 16, 8, 1)];
         let chip = ShiftLeft::default();
         let trace: RowMajorMatrix<KoalaBear> =
             chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();

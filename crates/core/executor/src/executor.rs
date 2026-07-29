@@ -14,10 +14,7 @@ use zkm_stark::{ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
 
 use crate::{
     context::ZKMContext,
-    dependencies::{
-        emit_branch_dependencies, emit_cloclz_dependencies, emit_divrem_dependencies,
-        emit_memory_dependencies, emit_misc_dependencies,
-    },
+    dependencies::{emit_branch_dependencies, emit_divrem_dependencies, emit_memory_dependencies},
     estimate_mips_event_counts, estimate_mips_lde_size,
     events::{
         AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, CpuEvent, JumpEvent,
@@ -1481,8 +1478,10 @@ impl<'a> Executor<'a> {
                 emit_divrem_dependencies(self, event);
             }
             Opcode::CLZ | Opcode::CLO => {
+                // `bb >> (31 - result) == 1` is now verified locally by `CloClzChip` via an
+                // embedded `ShiftRightOperation`, so no dependency send into `shift_right_events`
+                // is needed here at all.
                 self.record.cloclz_events.push(event);
-                emit_cloclz_dependencies(self, event);
             }
             _ => {}
         }
@@ -1659,6 +1658,10 @@ impl<'a> Executor<'a> {
             event.a_record = record.a;
             event.b_record = record.b;
             event.c_record = record.c;
+            // Every misc opcode's intermediate steps (shift/rotate chains for EXT/INS, the
+            // multiply for MADD/MADDU/MSUB/MSUBU) are now verified locally by their own chip via
+            // embedded operations, so no dependency send into `shift_left_events`/
+            // `shift_right_events`/`mul_events` is needed here at all.
             match opcode {
                 Opcode::SEXT => self.record.sext_events.push(event),
                 Opcode::INS => self.record.ins_events.push(event),
@@ -1672,7 +1675,6 @@ impl<'a> Executor<'a> {
                      above"
                 ),
             }
-            emit_misc_dependencies(self, event);
         }
     }
 

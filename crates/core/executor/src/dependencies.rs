@@ -1,5 +1,5 @@
 use crate::{
-    events::{AluEvent, BranchEvent, MemInstrEvent, MemoryRecord, MiscEvent},
+    events::{AluEvent, BranchEvent, MemInstrEvent, MemoryRecord},
     utils::{get_quotient_and_remainder, is_signed_operation},
     Executor, Opcode, DEFAULT_PC_INC, UNUSED_PC,
 };
@@ -46,29 +46,6 @@ pub fn emit_divrem_dependencies(executor: &mut Executor, event: AluEvent) {
 
     if event.c != 0 {
         executor.record.lt_events.push(lt_event);
-    }
-}
-
-/// Emits the dependencies for clo and clz operations.
-#[allow(clippy::too_many_lines)]
-pub fn emit_cloclz_dependencies(executor: &mut Executor, event: AluEvent) {
-    let b = if event.opcode == Opcode::CLZ { event.b } else { !event.b };
-    if b != 0 {
-        let srl_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::SRL,
-            hi: 0,
-            a: b >> (31 - event.a),
-            b,
-            c: 31 - event.a,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-
-        executor.record.shift_right_events.push(srl_event);
     }
 }
 
@@ -159,138 +136,4 @@ pub fn emit_branch_dependencies(executor: &mut Executor, event: BranchEvent) {
     executor.record.lt_events.push(gt_comp_event);
     // The taken-branch `next_next_pc = next_pc + c` is now verified locally by `BranchChip` via an
     // embedded `AddOperation`, so no dependency send into `add_events` is needed here at all.
-}
-
-/// Emit the dependencies for misc instructions.
-pub fn emit_misc_dependencies(executor: &mut Executor, event: MiscEvent) {
-    // MADD/MADDU/MSUB/MSUBU's `b * c` is now verified locally by `MaddsubChip` via an embedded
-    // `MulOperation` (see `misc/maddsub/mod.rs`), so no dependency send into `mul_events` is
-    // needed here at all.
-    if matches!(event.opcode, Opcode::EXT) {
-        let lsb = event.c & 0x1f;
-        let msbd = event.c >> 5;
-        // `execute_ext` rejects encodings with `lsb + msbd >= 32`, so the `31 - lsb - msbd`
-        // shift amounts below cannot underflow.
-        debug_assert!(
-            lsb + msbd < 32,
-            "EXT with lsb + msbd >= 32 must be rejected during execution"
-        );
-        let sll_val = event.b << (31 - lsb - msbd);
-        let sll_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::SLL,
-            hi: 0,
-            a: sll_val,
-            b: event.b,
-            c: 31 - lsb - msbd,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.shift_left_events.push(sll_event);
-        let srl_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::SRL,
-            hi: 0,
-            a: event.a,
-            b: sll_val,
-            c: 31 - msbd,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        assert_eq!(event.a, sll_val >> (31 - msbd));
-        executor.record.shift_right_events.push(srl_event);
-    } else if matches!(event.opcode, Opcode::INS) {
-        let lsb = event.c & 0x1f;
-        let msb = event.c >> 5;
-        let ror_val = event.prev_a.rotate_right(lsb);
-        let ror_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::ROR,
-            hi: 0,
-            a: ror_val,
-            b: event.prev_a,
-            c: lsb,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.shift_right_events.push(ror_event);
-
-        let srl1_val = ror_val >> 1;
-        let srl1_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::SRL,
-            hi: 0,
-            a: srl1_val,
-            b: ror_val,
-            c: 1,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.shift_right_events.push(srl1_event);
-
-        let srl_val = srl1_val >> (msb - lsb);
-        let srl_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::SRL,
-            hi: 0,
-            a: srl_val,
-            b: srl1_val,
-            c: msb - lsb,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.shift_right_events.push(srl_event);
-
-        let sll_val = event.b << (31 - msb + lsb);
-        let sll_event = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::SLL,
-            hi: 0,
-            a: sll_val,
-            b: event.b,
-            c: 31 - msb + lsb,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        executor.record.shift_left_events.push(sll_event);
-
-        // `extra_shift = srl_val + sll_val` is now verified locally by `InsChip` via an embedded
-        // `AddOperation` (see `misc/ins/mod.rs`), so no dependency send into `add_events` is
-        // needed here at all.
-        let extra_shift = srl_val + sll_val;
-
-        let ror_event2 = AluEvent {
-            clk: 0,
-            pc: UNUSED_PC,
-            next_pc: UNUSED_PC + DEFAULT_PC_INC,
-            opcode: Opcode::ROR,
-            hi: 0,
-            a: event.a,
-            b: extra_shift,
-            c: 31 - msb,
-            a_record: None,
-            b_record: None,
-            c_record: None,
-        };
-        assert_eq!(event.a, extra_shift.rotate_right(31 - msb));
-        executor.record.shift_right_events.push(ror_event2);
-    }
 }

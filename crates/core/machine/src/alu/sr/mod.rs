@@ -41,7 +41,7 @@
 //! # inaccurate.
 //! assert a = result[0..WORD_SIZE]
 
-mod utils;
+pub(crate) mod utils;
 
 use core::{
     borrow::{Borrow, BorrowMut},
@@ -94,11 +94,10 @@ const BYTE_SIZE: usize = 8;
 
 /// A chip that implements bitwise operations for the opcodes SRL, SRA, and ROR.
 ///
-/// As with `AddChip`, not every row is a real retired instruction: `CloClz` and
-/// `ExtChip`/`InsChip`'s dependency checks reuse this chip's arithmetic circuit for internal
-/// SRL/ROR checks at the `UNUSED_PC` sentinel (SRA currently has no synthetic producer, but the
-/// `is_real_sra` flag is kept for uniformity). `is_real_srl`/`is_real_sra`/`is_real_ror`
-/// distinguish real instructions from synthetic dependency rows.
+/// Every row is a real, retired instruction: `CloClzChip`/`ExtChip`/`InsChip` (the only other
+/// chips with an internal SRL/ROR dependency) each verify their own copy locally via an embedded
+/// `ShiftRightOperation`/`FixedShiftRightOperation` instead of a cross-chip lookup into this
+/// chip.
 #[derive(Default)]
 pub struct ShiftRightChip;
 
@@ -120,15 +119,6 @@ pub struct ShiftRightCols<T: Copy> {
     /// Register operand access for `a`/`b`/`c`. Only meaningful when this row is a real
     /// instruction.
     pub reader: RegisterReader<T>,
-
-    /// Whether this row is a real, retired SRL instruction.
-    pub is_real_srl: T,
-
-    /// Whether this row is a real, retired SRA instruction.
-    pub is_real_sra: T,
-
-    /// Whether this row is a real, retired ROR instruction.
-    pub is_real_ror: T,
 
     /// The first input operand.
     pub b: Word<T>,
@@ -312,38 +302,26 @@ impl ShiftRightChip {
             }]);
         }
 
-        // Default: not a real instruction, so the register reader's b/c memory accesses have
-        // zero multiplicity unless overwritten by a real fetched instruction's actual immediate
-        // flags just below.
-        cols.instruction.imm_b = F::ONE;
-        cols.instruction.imm_c = F::ONE;
+        debug_assert!(event.pc != UNUSED_PC, "every ShiftRight row is now a real instruction");
+        cols.state.populate(blu, event.clk);
 
-        let is_real_instruction = event.pc != UNUSED_PC;
-        if is_real_instruction {
-            cols.is_real_srl = cols.is_srl;
-            cols.is_real_sra = cols.is_sra;
-            cols.is_real_ror = cols.is_ror;
+        let instruction = program.fetch(event.pc);
+        cols.instruction.populate(&instruction);
 
-            cols.state.populate(blu, event.clk);
+        *cols.reader.op_a_access.value_mut() = event.a.into();
+        *cols.reader.op_b_access.value_mut() = event.b.into();
+        *cols.reader.op_c_access.value_mut() = event.c.into();
 
-            let instruction = program.fetch(event.pc);
-            cols.instruction.populate(&instruction);
-
-            *cols.reader.op_a_access.value_mut() = event.a.into();
-            *cols.reader.op_b_access.value_mut() = event.b.into();
-            *cols.reader.op_c_access.value_mut() = event.c.into();
-
-            if let Some(record) = event.a_record {
-                cols.reader.op_a_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
-                cols.reader.op_b_access.populate(record, blu);
-            }
-            if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
-                cols.reader.op_c_access.populate(record, blu);
-            }
-            cols.reader.populate_op_a_range_checks(blu);
+        if let Some(record) = event.a_record {
+            cols.reader.op_a_access.populate(record, blu);
         }
+        if let Some(MemoryRecordEnum::Read(record)) = event.b_record {
+            cols.reader.op_b_access.populate(record, blu);
+        }
+        if let Some(MemoryRecordEnum::Read(record)) = event.c_record {
+            cols.reader.op_c_access.populate(record, blu);
+        }
+        cols.reader.populate_op_a_range_checks(blu);
 
         let num_bytes_to_shift = nb_bytes_to_shift(event.c);
         let num_bits_to_shift = nb_bits_to_shift(event.c);
@@ -560,16 +538,7 @@ where
 
         // Check that the flags are indeed boolean.
         {
-            let flags = [
-                local.is_srl,
-                local.is_sra,
-                local.is_ror,
-                local.is_real,
-                local.b_msb,
-                local.is_real_srl,
-                local.is_real_sra,
-                local.is_real_ror,
-            ];
+            let flags = [local.is_srl, local.is_sra, local.is_ror, local.is_real, local.b_msb];
             for flag in flags.iter() {
                 builder.assert_bool(*flag);
             }
@@ -601,28 +570,20 @@ where
         // Check that is_real is the sum of the operation flags.
         builder.assert_eq(local.is_srl + local.is_sra + local.is_ror, local.is_real);
 
-        // `is_real_X` can only be set alongside the matching `is_X` selector.
-        builder.when_not(local.is_srl).assert_zero(local.is_real_srl);
-        builder.when_not(local.is_sra).assert_zero(local.is_real_sra);
-        builder.when_not(local.is_ror).assert_zero(local.is_real_ror);
-        let is_real_instruction = local.is_real_srl + local.is_real_sra + local.is_real_ror;
-
         // Use bit_shift_result[0..4] directly as the output operand `a`, eliminating the
         // redundant `a` column since a[i] == bit_shift_result[i] is always true.
-        let a_word = || -> Word<AB::Expr> {
-            Word([
-                local.bit_shift_result[0].into(),
-                local.bit_shift_result[1].into(),
-                local.bit_shift_result[2].into(),
-                local.bit_shift_result[3].into(),
-            ])
-        };
+        let a_word = Word([
+            local.bit_shift_result[0],
+            local.bit_shift_result[1],
+            local.bit_shift_result[2],
+            local.bit_shift_result[3],
+        ]);
 
-        // ---- Real-instruction path: program lookup, state chain, register access. ----
+        // ---- Program lookup, state chain, register access. ----
         let clk_low = clk_low_expr::<AB>(&local.state);
         let clk_high: AB::Expr = local.state.clk_high.into();
 
-        builder.send_program(local.pc, local.instruction, is_real_instruction.clone());
+        builder.send_program(local.pc, local.instruction, local.is_real);
 
         eval_register_reader(
             builder,
@@ -630,21 +591,14 @@ where
             clk_high.clone(),
             clk_low.clone(),
             &local.instruction,
-            // Gated by `is_real_instruction`: `register.rs`'s `assert_word_eq(op_a_value,
-            // reader.op_a_val())` fires unconditionally whenever `op_a_0` is unset, which it is
-            // by default on synthetic rows (their `instruction` column is never populated) --
-            // an ungated `op_a_value` would then have to equal `reader.op_a_val()` (always zero
-            // on synthetic rows) even when the true result is nonzero. The `receive_instruction`
-            // call below keeps the unconditional `a_word()` since it must match the producer's
-            // sent value regardless of real/synthetic status.
-            Word(a_word().0.map(|e| is_real_instruction.clone() * e)),
+            a_word.map(Into::into),
             Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
             AB::Expr::zero(),
             AB::Expr::zero(),
-            is_real_instruction.clone(),
+            local.is_real.into(),
         );
 
-        eval_cpu_state(builder, &local.state, clk_low.clone(), is_real_instruction.clone());
+        eval_cpu_state(builder, &local.state, clk_low.clone(), local.is_real.into());
 
         let next_next_pc = local.next_pc + AB::Expr::from_canonical_u32(4);
         eval_state_chain(
@@ -656,56 +610,27 @@ where
             local.next_pc.into(),
             next_next_pc,
             AB::Expr::from_canonical_u32(5),
-            is_real_instruction.clone(),
+            local.is_real.into(),
         );
 
         builder
-            .when(is_real_instruction.clone())
+            .when(local.is_real)
             .assert_word_eq(local.reader.op_b_val(), local.b.map(Into::into));
         builder
-            .when(is_real_instruction.clone())
+            .when(local.is_real)
             .assert_word_eq(local.reader.op_c_val(), local.c.map(Into::into));
 
-        // Bind `is_real_X` to the row's actual fetched opcode, so a real-instruction row can't
-        // claim the wrong shift variant while still passing the program lookup.
+        // Bind `is_X` to the row's actual fetched opcode, so a row can't claim the wrong shift
+        // variant while still passing the program lookup.
         builder
-            .when(local.is_real_srl)
+            .when(local.is_srl)
             .assert_eq(local.instruction.opcode, Opcode::SRL.as_field::<AB::F>());
         builder
-            .when(local.is_real_sra)
+            .when(local.is_sra)
             .assert_eq(local.instruction.opcode, Opcode::SRA.as_field::<AB::F>());
         builder
-            .when(local.is_real_ror)
+            .when(local.is_ror)
             .assert_eq(local.instruction.opcode, Opcode::ROR.as_field::<AB::F>());
-
-        // Same opcode mux as before -- depends only on which `is_X` selector is set, identical
-        // for real-instruction and synthetic rows.
-        let cpu_opcode = local.is_srl * AB::F::from_canonical_u32(Opcode::SRL as u32)
-            + local.is_sra * AB::F::from_canonical_u32(Opcode::SRA as u32)
-            + local.is_ror * AB::F::from_canonical_u32(Opcode::ROR as u32);
-
-        // ---- Synthetic dependency path: matches whichever chip generated this internal check via
-        // `send_alu` (always at the `UNUSED_PC` sentinel, shard/clk zero). SRA currently has no
-        // synthetic producer, so `local.is_sra - local.is_real_sra` is always zero in practice. ----
-        builder.receive_instruction(
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            local.pc,
-            local.next_pc,
-            local.next_pc + AB::Expr::from_canonical_u32(4),
-            AB::Expr::zero(),
-            cpu_opcode,
-            a_word(),
-            local.b,
-            local.c,
-            Word([AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::zero(),
-            AB::Expr::one(),
-            local.is_real - is_real_instruction,
-        );
     }
 }
 
@@ -714,7 +639,7 @@ mod tests {
     // use crate::utils::{uni_stark_prove as prove, uni_stark_verify as verify};
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Opcode, UNUSED_PC};
+    use zkm_core_executor::{events::AluEvent, ExecutionRecord, Instruction, Opcode, Program};
     use zkm_hypercube::air::MachineAir;
     // use zkm_stark::{
     //     air::MachineAir, koala_bear_poseidon2::KoalaBearPoseidon2, StarkGenericConfig,
@@ -724,8 +649,23 @@ mod tests {
 
     #[test]
     fn generate_trace() {
-        let mut shard = ExecutionRecord::default();
-        shard.shift_right_events = vec![AluEvent::new(UNUSED_PC, Opcode::SRL, 6, 12, 1)];
+        let program = Program {
+            instructions: vec![Instruction {
+                opcode: Opcode::SRL,
+                op_a: 5,
+                op_b: 12,
+                op_c: 1,
+                imm_b: false,
+                imm_c: true,
+                raw: None,
+            }],
+            pc_start: 0,
+            pc_base: 0,
+            next_pc: 4,
+            image: Default::default(),
+        };
+        let mut shard = ExecutionRecord { program: program.into(), ..Default::default() };
+        shard.shift_right_events = vec![AluEvent::new(0, Opcode::SRL, 6, 12, 1)];
         let chip = ShiftRightChip::default();
         let trace: RowMajorMatrix<KoalaBear> =
             chip.generate_trace(&shard, &mut ExecutionRecord::default()).unwrap();

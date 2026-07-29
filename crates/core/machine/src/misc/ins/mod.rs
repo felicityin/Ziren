@@ -29,7 +29,9 @@ use crate::{
     },
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::MemoryCols,
-    operations::AddOperation,
+    operations::{
+        AddOperation, FixedShiftRightOperation, ShiftLeftOperation, ShiftRightOperation,
+    },
     utils::{next_power_of_two, zeroed_f_vec},
     CoreChipError,
 };
@@ -43,11 +45,11 @@ pub const NUM_INS_COLS: usize = size_of::<InsCols<u8>>();
 /// `ins_events`. INS is a read-modify-write of `op_a` (it preserves the untouched bits of the
 /// previous value), so it needs `prev_a_value`.
 ///
-/// INS still sends its shift-family intermediate steps (`ror_val`/`srl1_val`/`srl_val`/`sll_val`)
-/// to `ShiftLeft`/`ShiftRightChip` via `send_alu` rather than embedding them locally -- unlike the
-/// ADD dependency (already embedded as `add_operation` below), embedding the 4 chained
-/// shift/rotate steps is a separate, later step now that this chip's own width no longer inflates
-/// SEXT/EXT/MADD/TEQ's rows too (the reason this split exists in the first place).
+/// INS's shift-family intermediate steps (`ror_val`/`srl1_val`/`srl_val`/`sll_val`) are all
+/// verified locally via embedded shift operations (no cross-chip lookup into
+/// `ShiftLeft`/`ShiftRightChip`). `srl1_val`'s shift amount is the compile-time constant `1`, so
+/// it uses the cheaper `FixedShiftRightOperation`; the other three use a witnessed (runtime)
+/// shift amount, so they use `ShiftLeftOperation`/`ShiftRightOperation`.
 #[derive(Default)]
 pub struct InsChip;
 
@@ -81,18 +83,34 @@ pub struct InsCols<T: Copy> {
     pub lsb: T,
     pub msb: T,
 
-    /// Result value of intermediate operations.
-    ///
     /// The INS decomposition extracts the upper bits of prev_a via a right shift by `width =
-    /// msb - lsb + 1`. Since the ShiftRight chip only supports shift amounts 0-31, we split this
-    /// into two steps: `>> 1` then `>> (msb - lsb)`, each of which is always in range [0, 31].
-    pub ror_val: Word<T>,
-    pub srl1_val: Word<T>,
-    pub srl_val: Word<T>,
-    pub sll_val: Word<T>,
+    /// msb - lsb + 1`. Since `ShiftRightOperation` only supports shift amounts 0-31, we split
+    /// this into two steps: `>> 1` then `>> (msb - lsb)`, each of which is always in range
+    /// [0, 31]. All shift/rotate sub-steps are computed locally (no cross-chip lookup into
+    /// `ShiftLeft`/`ShiftRightChip`).
+
+    /// `ror_val = rotate_right(prev_a, lsb)`.
+    pub ror_operation: ShiftRightOperation<T>,
+    /// `srl1_val = ror_val >> 1` (compile-time-constant shift amount).
+    pub srl1_operation: FixedShiftRightOperation<T>,
+
+    /// `msb - lsb`, the shift amount for the `srl_val` step below.
+    pub msb_minus_lsb: T,
+    /// `srl_val = srl1_val >> (msb - lsb)`.
+    pub srl_operation: ShiftRightOperation<T>,
+
+    /// `31 - msb + lsb`, the shift amount for the `sll_val` step below.
+    pub sll_shift: T,
+    /// `sll_val = op_b << (31 - msb + lsb)`.
+    pub sll_operation: ShiftLeftOperation<T>,
 
     /// `add_val = srl_val + sll_val`, computed locally (no cross-chip lookup into `AddChip`).
     pub add_operation: AddOperation<T>,
+
+    /// `31 - msb`, the shift amount for the final rotate step below.
+    pub final_shift: T,
+    /// `op_a_value = rotate_right(add_val, 31 - msb)`.
+    pub final_ror_operation: ShiftRightOperation<T>,
 
     /// Whether this row is a real, retired INS instruction (as opposed to padding).
     pub is_real: T,
@@ -211,17 +229,25 @@ impl InsChip {
 
         let lsb = event.c & 0x1f;
         let msb = event.c >> 5;
-        let ror_val = event.prev_a.rotate_right(lsb);
-        let srl1_val = ror_val >> 1;
-        let srl_val = srl1_val >> (msb - lsb);
-        let sll_val = event.b << (31 - msb + lsb);
         cols.lsb = F::from_canonical_u32(lsb);
         cols.msb = F::from_canonical_u32(msb);
-        cols.ror_val = Word::from(ror_val);
-        cols.srl1_val = Word::from(srl1_val);
-        cols.srl_val = Word::from(srl_val);
-        cols.sll_val = Word::from(sll_val);
-        cols.add_operation.populate(blu, srl_val, sll_val);
+
+        let ror_val = cols.ror_operation.populate(blu, event.prev_a, lsb, true);
+        let srl1_val = cols.srl1_operation.populate(blu, ror_val, 1);
+
+        let msb_minus_lsb = msb - lsb;
+        cols.msb_minus_lsb = F::from_canonical_u32(msb_minus_lsb);
+        let srl_val = cols.srl_operation.populate(blu, srl1_val, msb_minus_lsb, false);
+
+        let sll_shift = 31 - msb + lsb;
+        cols.sll_shift = F::from_canonical_u32(sll_shift);
+        let sll_val = cols.sll_operation.populate(blu, event.b, sll_shift);
+
+        let add_val = cols.add_operation.populate(blu, srl_val, sll_val);
+
+        let final_shift = 31 - msb;
+        cols.final_shift = F::from_canonical_u32(final_shift);
+        cols.final_ror_operation.populate(blu, add_val, final_shift, true);
 
         blu.add_byte_lookup_event(ByteLookupEvent {
             opcode: ByteOpcode::U8Range,
@@ -316,84 +342,73 @@ where
         builder.when(is_real).assert_zero(local.op_c_value[2]);
         builder.when(is_real).assert_zero(local.op_c_value[3]);
 
-        // Ins is decomposed into 6 ALU sub-operations:
+        // Ins is decomposed into 6 sub-operations, each verified locally (no cross-chip lookup
+        // into `ShiftLeft`/`ShiftRightChip`/`AddChip`):
         //    ror_val  = rotate_right(prev_a, lsb)            [shift: lsb ∈ 0..31]
-        //    srl1_val = ror_val >> 1                          [shift: 1]
+        //    srl1_val = ror_val >> 1                          [shift: 1, fixed]
         //    srl_val  = srl1_val >> (msb - lsb)               [shift: msb-lsb ∈ 0..31]
         //    sll_val  = op_b << (31 - msb + lsb)              [shift: ∈ 0..31]
         //    add_val  = srl_val + sll_val
         //    result   = rotate_right(add_val, 31 - msb)       [shift: ∈ 0..31]
-        builder.send_alu(
-            Opcode::ROR.as_field::<AB::F>(),
-            local.ror_val,
+        let ror_val = ShiftRightOperation::<AB::F>::eval(
+            builder,
             local.prev_a_value,
-            Word([
-                AB::Expr::from_canonical_u32(0) + local.lsb,
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-            ]),
-            is_real,
+            // Only byte 0 of the shift-amount word is read by `eval`; the rest is unused padding.
+            Word([local.lsb; 4]),
+            local.ror_operation,
+            true,
+            is_real.into(),
         );
 
-        // SRL step 1: shift right by 1 (always in range).
-        builder.send_alu(
-            Opcode::SRL.as_field::<AB::F>(),
-            local.srl1_val,
-            local.ror_val,
-            Word([AB::Expr::one(), AB::Expr::zero(), AB::Expr::zero(), AB::Expr::zero()]),
-            is_real,
+        FixedShiftRightOperation::<AB::F>::eval(
+            builder,
+            ror_val,
+            1,
+            local.srl1_operation,
+            is_real.into(),
+        );
+        let srl1_val = local.srl1_operation.value;
+
+        builder
+            .when(is_real)
+            .assert_eq(local.msb_minus_lsb, Into::<AB::Expr>::into(local.msb) - local.lsb);
+        let srl_val = ShiftRightOperation::<AB::F>::eval(
+            builder,
+            srl1_val,
+            Word([local.msb_minus_lsb; 4]),
+            local.srl_operation,
+            false,
+            is_real.into(),
         );
 
-        // SRL step 2: shift right by msb - lsb (range [0, 31]).
-        builder.send_alu(
-            Opcode::SRL.as_field::<AB::F>(),
-            local.srl_val,
-            local.srl1_val,
-            Word([
-                AB::Expr::from_canonical_u32(0) + local.msb - local.lsb,
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-            ]),
-            is_real,
+        builder.when(is_real).assert_eq(
+            local.sll_shift,
+            AB::Expr::from_canonical_u32(31) - local.msb + local.lsb,
         );
-
-        builder.send_alu(
-            Opcode::SLL.as_field::<AB::F>(),
-            local.sll_val,
+        let sll_val = ShiftLeftOperation::<AB::F>::eval(
+            builder,
             local.op_b_value,
-            Word([
-                AB::Expr::from_canonical_u32(31) - local.msb + local.lsb,
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-            ]),
-            is_real,
+            Word([local.sll_shift; 4]),
+            local.sll_operation,
+            is_real.into(),
         );
 
         // `add_val = srl_val + sll_val`, computed locally (no cross-chip lookup into `AddChip`).
-        AddOperation::<AB::F>::eval(
-            builder,
-            local.srl_val,
-            local.sll_val,
-            local.add_operation,
-            is_real.into(),
-        );
+        AddOperation::<AB::F>::eval(builder, srl_val, sll_val, local.add_operation, is_real.into());
         let add_val = local.add_operation.value;
 
-        builder.send_alu(
-            Opcode::ROR.as_field::<AB::F>(),
-            local.op_a_value,
+        builder
+            .when(is_real)
+            .assert_eq(local.final_shift, AB::Expr::from_canonical_u32(31) - local.msb);
+        let final_result = ShiftRightOperation::<AB::F>::eval(
+            builder,
             add_val,
-            Word([
-                AB::Expr::from_canonical_u32(31) - local.msb,
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-                AB::Expr::zero(),
-            ]),
-            is_real,
+            Word([local.final_shift; 4]),
+            local.final_ror_operation,
+            true,
+            is_real.into(),
         );
+        builder.when(is_real).assert_word_eq(local.op_a_value, final_result);
 
         // op_c = (msb << 5) + lsb
         builder.when(is_real).assert_eq(
