@@ -155,11 +155,11 @@ impl JumpDirectChip {
         cols.reader.populate(blu, instruction.op_a, event.a_record, instruction.op_b);
 
         cols.next_pc = Word::from(event.next_pc);
-        cols.next_pc_range_checker.populate(event.next_pc);
+        cols.next_pc_range_checker.populate(blu, event.next_pc);
         let target_pc = cols.add_operation.populate(blu, event.next_pc, event.b);
-        cols.next_next_pc_range_checker.populate(target_pc);
+        cols.next_next_pc_range_checker.populate(blu, target_pc);
         cols.op_a_value = Word::from(event.a);
-        cols.op_a_range_checker.populate(event.a);
+        cols.op_a_range_checker.populate(blu, event.a);
     }
 }
 

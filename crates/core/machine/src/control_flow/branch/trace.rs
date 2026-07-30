@@ -147,8 +147,8 @@ impl BranchChip {
 
         cols.next_pc = Word::from(event.next_pc);
         cols.next_next_pc = Word::from(event.next_next_pc);
-        cols.next_pc_range_checker.populate(event.next_pc);
-        cols.next_next_pc_range_checker.populate(event.next_next_pc);
+        cols.next_pc_range_checker.populate(blu, event.next_pc);
+        cols.next_next_pc_range_checker.populate(blu, event.next_next_pc);
         cols.is_branching = F::from_bool(branching);
         if branching {
             // `next_next_pc = next_pc + op_c`: only populated (and its byte-range-check

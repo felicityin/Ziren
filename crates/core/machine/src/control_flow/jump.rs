@@ -153,9 +153,9 @@ impl JumpChip {
         cols.reader.populate(blu, instruction.op_a, event.a_record, instruction.op_b, event.b_record);
 
         cols.next_pc = Word::from(event.next_pc);
-        cols.next_pc_range_checker.populate(event.next_pc);
+        cols.next_pc_range_checker.populate(blu, event.next_pc);
         cols.op_a_value = Word::from(event.a);
-        cols.op_a_range_checker.populate(event.a);
+        cols.op_a_range_checker.populate(blu, event.a);
     }
 }
 

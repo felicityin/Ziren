@@ -47,7 +47,7 @@ impl<F: PrimeField32> UnalignedWordAddressOperation<F> {
     /// address.
     pub fn populate(&mut self, blu: &mut impl ByteRecord, base: u32, offset: u32) -> u32 {
         let memory_addr = self.add_operation.populate(blu, base, offset);
-        self.addr_word_range_checker.populate(memory_addr);
+        self.addr_word_range_checker.populate(blu, memory_addr);
 
         let addr_ls_two_bits = (memory_addr % 4) as u8;
         let aligned_addr = memory_addr - addr_ls_two_bits as u32;

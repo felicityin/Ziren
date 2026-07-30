@@ -108,6 +108,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
             blu.add_u8_range_checks(&event.addr.to_le_bytes());
             blu.add_u8_range_checks(&event.value.to_le_bytes());
             blu.add_u8_range_checks(&prev_addr.to_le_bytes());
+            KoalaBearWordRangeChecker::<F>::default().populate(&mut blu, event.addr);
 
             let is_comp = prev_addr != 0 || i != 0 || event.addr != 0;
             if is_comp {
@@ -178,7 +179,6 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
                 let mut row = [F::ZERO; NUM_MEMORY_INIT_COLS];
                 let cols: &mut MemoryInitCols<F> = row.as_mut_slice().borrow_mut();
                 cols.addr = Word::from(addr);
-                cols.addr_range_checker.populate(addr);
                 cols.clk_high = F::from_canonical_u64(timestamp >> 24);
                 cols.clk_low = F::from_canonical_u64(timestamp & 0xffffff);
                 cols.value = Word::from(value);
@@ -204,6 +204,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
             blu.add_u8_range_checks(&addr.to_le_bytes());
             blu.add_u8_range_checks(&value.to_le_bytes());
             blu.add_u8_range_checks(&prev_addr.to_le_bytes());
+            cols.addr_range_checker.populate(&mut blu, addr);
 
             cols.index = F::from_canonical_u32(i as u32);
             cols.prev_addr = Word::from(prev_addr);
@@ -345,27 +346,7 @@ where
         for i in 0..4 {
             builder.when_not(local.is_real).assert_zero(local.lt_cols.byte_flags[i]);
         }
-        for i in 0..8 {
-            builder.when_not(local.is_real).assert_zero(local.addr_range_checker.most_sig_byte_decomp[i]);
-        }
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_2);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_3);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_4);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_5);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_6);
-        builder
-            .when_not(local.is_real)
-            .assert_zero(local.addr_range_checker.and_most_sig_byte_decomp_0_to_7);
+        builder.when_not(local.is_real).assert_zero(local.addr_range_checker.high16_lt_top_limb);
 
         if self.kind == MemoryChipType::Initialize {
             // Send the lookup to the global table.
