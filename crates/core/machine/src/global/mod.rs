@@ -33,6 +33,7 @@ use zkm_derive::AlignedBorrow;
 use zkm_derive::PicusAnnotations;
 
 const NUM_GLOBAL_COLS: usize = size_of::<GlobalCols<u8>>();
+const NUM_GLOBAL_LOOKUP_COLS: usize = size_of::<GlobalLookupOperation<u8>>();
 
 /// Creates the column map for the CPU.
 const fn make_col_map() -> GlobalCols<usize> {
@@ -44,7 +45,7 @@ const GLOBAL_COL_MAP: GlobalCols<usize> = make_col_map();
 
 pub const GLOBAL_INITIAL_DIGEST_POS: usize = GLOBAL_COL_MAP.accumulation.initial_digest[0].0[0];
 
-pub const GLOBAL_INITIAL_DIGEST_POS_COPY: usize = 65;
+pub const GLOBAL_INITIAL_DIGEST_POS_COPY: usize = 38;
 
 #[repr(C)]
 pub struct Ghost {
@@ -104,6 +105,19 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
                 let mut blu: Vec<ByteLookupEvent> = Vec::new();
                 events.iter().for_each(|event| {
                     blu.add_u16_range_check(event.message[0].try_into().unwrap());
+                    // Registers the `y6_byte_decomp` sign/magnitude range-check lookups (see
+                    // `GlobalLookupOperation::eval_single_digest`) -- `ByteChip::generate_trace`
+                    // reads its multiplicities from here, not from `generate_trace`'s own output
+                    // (see `MemoryGlobalChip` for the same pattern).
+                    let mut lookup_row = [F::ZERO; NUM_GLOBAL_LOOKUP_COLS];
+                    let lookup: &mut GlobalLookupOperation<F> = lookup_row.as_mut_slice().borrow_mut();
+                    lookup.populate(
+                        &mut blu,
+                        SepticBlock(event.message),
+                        event.is_receive,
+                        true,
+                        event.kind,
+                    );
                 });
                 blu
             })
@@ -172,6 +186,10 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
                 if i == 0 {
                     point_chunks.push(SepticCurveComplete::Affine(SepticDigest::<F>::zero().0));
                 }
+                // This function's own byte-lookup output is discarded by the real shard-proving
+                // driver (see `generate_dependencies`'s doc comment), so this `blu` only needs to
+                // satisfy `populate`'s signature.
+                let mut blu: Vec<ByteLookupEvent> = Vec::new();
                 rows.chunks_mut(NUM_GLOBAL_COLS).enumerate().for_each(|(j, row)| {
                     let idx = i * chunk_size + j;
                     let cols: &mut GlobalCols<F> = row.borrow_mut();
@@ -180,6 +198,7 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
                     cols.kind = F::from_canonical_u8(event.kind);
                     cols.index = F::from_canonical_u32(idx as u32);
                     cols.lookup.populate(
+                        &mut blu,
                         SepticBlock(event.message),
                         event.is_receive,
                         true,

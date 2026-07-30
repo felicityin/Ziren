@@ -627,19 +627,28 @@ impl<F: Field> SepticExtension<F> {
 
 impl<F: PrimeField32> SepticExtension<F> {
     /// Returns whether the extension field element viewed as an y-coordinate of a digest represents a receive lookup.
+    ///
+    /// Narrower than the full lower half (`1..=(p-1)/2`) so the sign range check can be done via
+    /// a cheap 4-byte decomposition (see `GlobalLookupOperation`) instead of a full bit
+    /// decomposition -- `lift_x`'s try-and-increment search treats anything outside this tighter
+    /// band as an exception and moves on to the next offset.
     pub fn is_receive(&self) -> bool {
-        1 <= self.0[6].as_canonical_u32() && self.0[6].as_canonical_u32() <= (F::ORDER_U32 - 1) / 2
+        1 <= self.0[6].as_canonical_u32() && self.0[6].as_canonical_u32() <= 63 * (1 << 24)
     }
 
     /// Returns whether the extension field element viewed as an y-coordinate of a digest represents a send lookup.
+    ///
+    /// See `is_receive`'s doc comment for why this is narrower than the full upper half.
     pub fn is_send(&self) -> bool {
-        F::ORDER_U32.div_ceil(2) <= self.0[6].as_canonical_u32()
+        F::ORDER_U32 - 63 * (1 << 24) <= self.0[6].as_canonical_u32()
             && self.0[6].as_canonical_u32() <= (F::ORDER_U32 - 1)
     }
 
     /// Returns whether the extension field element viewed as an y-coordinate of a digest cannot represent anything.
     pub fn is_exception(&self) -> bool {
         self.0[6].as_canonical_u32() == 0
+            || (63 * (1 << 24) < self.0[6].as_canonical_u32()
+                && self.0[6].as_canonical_u32() < F::ORDER_U32 - 63 * (1 << 24))
     }
 }
 

@@ -50,7 +50,7 @@
   "MemoryLocal": 14,
   "Jumpi": 31,
   "Secp256k1AddAssign": 2050,
-  "Global": 93,
+  "Global": 66,
   "AddNoop": 16,
   "Poseidon2Permute": 572,
   "Mul": 63,

@@ -3,7 +3,10 @@ use p3_field::Field;
 use p3_field::FieldAlgebra;
 use p3_field::FieldExtensionAlgebra;
 use p3_field::PrimeField32;
-use zkm_core_executor::ByteOpcode;
+use zkm_core_executor::{
+    events::{ByteLookupEvent, ByteRecord},
+    ByteOpcode,
+};
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::ZKMAirBuilder;
 use zkm_hypercube::{
@@ -18,8 +21,11 @@ pub struct GlobalLookupOperation<T: Copy> {
     pub offset_bits: [T; 8],
     pub x_coordinate: SepticBlock<T>,
     pub y_coordinate: SepticBlock<T>,
-    pub y6_bit_decomp: [T; 30],
-    pub range_check_witness: T,
+    /// Little-endian byte decomposition of the y-coordinate's sign/magnitude range check value
+    /// (see `eval_single_digest`) -- range-checked via the shared byte table (`U8Range`/`LTU`)
+    /// instead of a full bit decomposition, since `is_receive`/`is_send`/`is_exception` (see their
+    /// doc comments) guarantee it fits in `[0, 63 * 2^24)`.
+    pub y6_byte_decomp: [T; 4],
 }
 
 impl<F: PrimeField32> GlobalLookupOperation<F> {
@@ -39,6 +45,7 @@ impl<F: PrimeField32> GlobalLookupOperation<F> {
 
     pub fn populate(
         &mut self,
+        blu: &mut impl ByteRecord,
         values: SepticBlock<u32>,
         is_receive: bool,
         is_real: bool,
@@ -54,17 +61,32 @@ impl<F: PrimeField32> GlobalLookupOperation<F> {
             let range_check_value = if is_receive {
                 point.y.0[6].as_canonical_u32() - 1
             } else {
-                point.y.0[6].as_canonical_u32() - F::ORDER_U32.div_ceil(2)
+                F::ORDER_U32 - point.y.0[6].as_canonical_u32() - 1
             };
-            let mut top_7_bits = F::ZERO;
-            for i in 0..30 {
-                self.y6_bit_decomp[i] = F::from_canonical_u32((range_check_value >> i) & 1);
-                if i >= 23 {
-                    top_7_bits += self.y6_bit_decomp[i];
-                }
-            }
-            top_7_bits -= F::from_canonical_u32(7);
-            self.range_check_witness = top_7_bits.inverse();
+            assert!(range_check_value < 63 * (1 << 24));
+            let bytes = range_check_value.to_le_bytes();
+            self.y6_byte_decomp = core::array::from_fn(|i| F::from_canonical_u8(bytes[i]));
+            blu.add_byte_lookup_event(ByteLookupEvent {
+                opcode: ByteOpcode::U8Range,
+                a1: 0,
+                a2: 0,
+                b: bytes[0],
+                c: bytes[1],
+            });
+            blu.add_byte_lookup_event(ByteLookupEvent {
+                opcode: ByteOpcode::U8Range,
+                a1: 0,
+                a2: 0,
+                b: bytes[2],
+                c: 0,
+            });
+            blu.add_byte_lookup_event(ByteLookupEvent {
+                opcode: ByteOpcode::LTU,
+                a1: 1,
+                a2: 0,
+                b: bytes[3],
+                c: 63,
+            });
         } else {
             self.populate_dummy();
         }
@@ -80,10 +102,7 @@ impl<F: PrimeField32> GlobalLookupOperation<F> {
         self.y_coordinate = SepticBlock::<F>::from_base_fn(|i| {
             F::from_canonical_u32(CURVE_WITNESS_DUMMY_POINT_Y[i])
         });
-        for i in 0..30 {
-            self.y6_bit_decomp[i] = F::ZERO;
-        }
-        self.range_check_witness = F::ZERO;
+        self.y6_byte_decomp = [F::ZERO; 4];
     }
 }
 
@@ -146,31 +165,41 @@ impl<F: Field> GlobalLookupOperation<F> {
         let x3_3zx_m3 = SepticCurve::<AB::Expr>::curve_formula(x);
         builder.assert_septic_ext_eq(y2, x3_3zx_m3);
 
-        // Constrain that `0 <= y6_value < (p - 1) / 2 = 2^30 - 2^23`.
-        // Decompose `y6_value` into 30 bits, and then constrain that the top 7 bits cannot be all 1.
-        // To do this, check that the sum of the top 7 bits is not equal to 7, which can be done by providing an inverse.
+        // Constrain that `0 <= y6_value < 63 * 2^24 < (p - 1) / 2`, via a 4-byte decomposition
+        // range-checked against the shared byte table (`U8Range` on the low 3 bytes, `LTU` on the
+        // top byte) instead of a full bit decomposition -- `is_receive`/`is_send`'s narrower bands
+        // (see their doc comments) guarantee this always fits.
         let mut y6_value = AB::Expr::zero();
-        let mut top_7_bits = AB::Expr::zero();
-        for i in 0..30 {
-            builder.assert_bool(cols.y6_bit_decomp[i]);
-            y6_value = y6_value.clone() + cols.y6_bit_decomp[i] * AB::F::from_canonical_u32(1 << i);
-            if i >= 23 {
-                top_7_bits = top_7_bits.clone() + cols.y6_bit_decomp[i];
-            }
+        for i in 0..4 {
+            y6_value =
+                y6_value.clone() + cols.y6_byte_decomp[i] * AB::F::from_canonical_u32(1 << (8 * i));
         }
-        // If `is_real` is true, check that `top_7_bits - 7` is non-zero, by checking `range_check_witness` is an inverse of it.
-        builder.when(is_real).assert_eq(
-            cols.range_check_witness * (top_7_bits - AB::Expr::from_canonical_u8(7)),
+        builder.send_byte(
+            ByteOpcode::U8Range.as_field::<AB::F>(),
+            AB::Expr::zero(),
+            cols.y6_byte_decomp[0].into(),
+            cols.y6_byte_decomp[1].into(),
+            is_real,
+        );
+        builder.send_byte(
+            ByteOpcode::U8Range.as_field::<AB::F>(),
+            AB::Expr::zero(),
+            cols.y6_byte_decomp[2].into(),
+            AB::Expr::zero(),
+            is_real,
+        );
+        builder.send_byte(
+            ByteOpcode::LTU.as_field::<AB::F>(),
             AB::Expr::one(),
+            cols.y6_byte_decomp[3].into(),
+            AB::Expr::from_canonical_u32(63),
+            is_real,
         );
 
         // Constrain that y has correct sign.
-        // If it's a receive: `1 <= y_6 <= (p - 1) / 2`, so `0 <= y_6 - 1 = y6_value < (p - 1) / 2`.
-        // If it's a send: `(p + 1) / 2 <= y_6 <= p - 1`, so `0 <= y_6 - (p + 1) / 2 = y6_value < (p - 1) / 2`.
+        // If it's a receive: `1 <= y_6 <= 63 * 2^24`, so `0 <= y_6 - 1 = y6_value < 63 * 2^24`.
+        // If it's a send: `p - 63 * 2^24 <= y_6 <= p - 1`, so `0 <= p - 1 - y_6 = y6_value < 63 * 2^24`.
         builder.when(is_receive).assert_eq(y.0[6].clone(), AB::Expr::one() + y6_value.clone());
-        builder.when(is_send).assert_eq(
-            y.0[6].clone(),
-            AB::Expr::from_canonical_u32((1 << 30) - (1 << 23) + 1) + y6_value.clone(),
-        );
+        builder.when(is_send).assert_zero(y.0[6].clone() + AB::Expr::one() + y6_value);
     }
 }
