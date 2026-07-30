@@ -22,7 +22,7 @@ pub const CORE_LOG_STACKING_HEIGHT: u32 = CORE_MAX_LOG_ROW_COUNT as u32 - 1;
 
 /// The max log row count the recursion (compress/shrink/wrap) machines' jagged PCS is configured
 /// for. Mirrors `ZKMCoreOpts::recursion().shard_size`'s log2 (`RECURSION_MAX_SHARD_SIZE` below).
-pub const RECURSION_MAX_LOG_ROW_COUNT: usize = 22;
+pub const RECURSION_MAX_LOG_ROW_COUNT: usize = 21;
 
 /// The log2 of the number of rows each stacked-PCS column is grouped into for the recursion
 /// (compress/shrink/wrap) machines. One less than `RECURSION_MAX_LOG_ROW_COUNT`, per the same
