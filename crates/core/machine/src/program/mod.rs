@@ -13,7 +13,7 @@ use p3_air::{Air, BaseAir, PairBuilder};
 use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
-use zkm_core_executor::{ExecutionRecord, Program, UNUSED_PC};
+use zkm_core_executor::{ExecutionRecord, Program};
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::{MachineAir, ZKMAirBuilder};
 
@@ -119,16 +119,16 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
         // Collect the number of times each instruction is called. Most opcodes still route
         // through `cpu_events`, but opcodes whose chip has been migrated off of `CpuChip` (see
         // `zkm_core_machine::adapter`) do their own `send_program` and must be counted from
-        // their own event list instead -- `add_events` still contains synthetic dependency-check
-        // rows at the `UNUSED_PC` sentinel, which don't consume a real program-lookup slot and
-        // are excluded here.
+        // their own event list instead.
         // Store it as a map of PC -> count.
         let mut instruction_counts = HashMap::new();
         input.cpu_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.add_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `add_events` is always real instructions (`AddChip` has no synthetic-dependency role
+        // -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.add_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
@@ -157,7 +157,9 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.shift_left_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `shift_left_events` is always real instructions (`ShiftLeftChip` has no synthetic-
+        // dependency role -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.shift_left_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
@@ -167,11 +169,15 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.bitwise_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `bitwise_events` is always real instructions (`BitwiseChip` has no synthetic-
+        // dependency role -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.bitwise_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.shift_right_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `shift_right_events` is always real instructions (`ShiftRightChip` has no synthetic-
+        // dependency role -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.shift_right_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
@@ -188,15 +194,21 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.cloclz_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `cloclz_events` is always real instructions (`CloClzChip` has no synthetic-dependency
+        // role -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.cloclz_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.mul_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `mul_events` is always real instructions (`MulChip` has no synthetic-dependency role
+        // -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.mul_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.divrem_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `divrem_events` is always real instructions (`DivRemChip` has no synthetic-dependency
+        // role -- see its doc comment), so no `UNUSED_PC` filter is needed here.
+        input.divrem_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });

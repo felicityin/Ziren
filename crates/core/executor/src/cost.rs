@@ -670,13 +670,10 @@ pub fn pad_mips_event_counts(
     num_cycles: u64,
 ) -> EnumMap<MipsAirId, u64> {
     event_counts.iter_mut().for_each(|(k, v)| match k {
-        // At most one instruction retires per cycle, so only one of the mutually-exclusive
-        // dependency-row producers below can fire per cycle. Add's worst case is a DIVREM
-        // retiring with both its `c`/remainder sign-correction checks active (2 ADD dependency
-        // rows, `emit_divrem_dependencies`); Branch/Jump/`EXT`-flavored MiscInstrs each emit at
-        // most 1 ADD dependency row, and a real retired ADD is also just 1 -- all below the
-        // DIVREM worst case. `+1` margin over the derived worst case of 2.
-        MipsAirId::Add => *v += 3 * num_cycles,
+        // No dependency-row producer ever targets this shape anymore (`AddChip` has no
+        // synthetic-dependency role -- see its doc comment), so a real instruction's worst-case
+        // growth is 1 per cycle.
+        MipsAirId::Add => *v += num_cycles,
         // At most one real instruction retires per cycle, so a real ADDI's worst-case growth
         // is 1 per cycle (unlike Add/Sub, which also absorb dependency rows injected by other
         // instructions -- see the multipliers above/below for those).
