@@ -119,9 +119,9 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
         // Collect the number of times each instruction is called. Most opcodes still route
         // through `cpu_events`, but opcodes whose chip has been migrated off of `CpuChip` (see
         // `zkm_core_machine::adapter`) do their own `send_program` and must be counted from
-        // their own event list instead -- `add_events`/`sub_events` also contain synthetic
-        // dependency-check rows (see `AddChip`/`SubChip`'s doc comments) at the `UNUSED_PC`
-        // sentinel, which don't consume a real program-lookup slot and are excluded here.
+        // their own event list instead -- `add_events` still contains synthetic dependency-check
+        // rows at the `UNUSED_PC` sentinel, which don't consume a real program-lookup slot and
+        // are excluded here.
         // Store it as a map of PC -> count.
         let mut instruction_counts = HashMap::new();
         input.cpu_events.iter().for_each(|event| {
@@ -132,7 +132,10 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });
-        input.sub_events.iter().filter(|event| event.pc != UNUSED_PC).for_each(|event| {
+        // `sub_events` is always real instructions now (`LoadByteChip`/`LoadHalfChip`'s LB/LH
+        // sign-extension check is a direct byte assertion local to those chips instead -- see
+        // `SubChip`'s doc comment), so no `UNUSED_PC` filter is needed here.
+        input.sub_events.iter().for_each(|event| {
             let pc = event.pc;
             instruction_counts.entry(pc).and_modify(|count| *count += 1).or_insert(1);
         });

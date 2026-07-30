@@ -14,7 +14,6 @@ use zkm_stark::{ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
 
 use crate::{
     context::ZKMContext,
-    dependencies::emit_memory_dependencies,
     estimate_mips_event_counts, estimate_mips_lde_size,
     events::{
         AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, CpuEvent, JumpEvent,
@@ -1653,11 +1652,10 @@ impl<'a> Executor<'a> {
                 "emit_mem_instr_event is only called for memory load/store opcodes, all of which are handled above"
             ),
         }
-        emit_memory_dependencies(
-            self,
-            event,
-            self.memory_accesses.memory.expect("Must have memory access").current_record(),
-        );
+        // Every memory opcode verifies `addr == b + c` locally via an embedded `AddOperation`
+        // (see `WordAddressOperation`/`UnalignedWordAddressOperation`), and LB/LH's sign
+        // extension is a direct byte assertion in `LoadByteChip`/`LoadHalfChip` -- so no
+        // dependency send is needed here at all.
     }
 
     /// Emit a branch event.

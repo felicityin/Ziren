@@ -279,14 +279,18 @@ where
         );
         builder.assert_eq(local.most_sig_byte, local.is_lb * local.unsigned_mem_val[0]);
 
-        let signed_value = Word([AB::Expr::zero(), local.is_lb.into(), AB::Expr::zero(), AB::Expr::zero()]);
-        builder.send_alu(
-            Opcode::SUB.as_field::<AB::F>(),
-            local.adapter.op_a_access.value.map(Into::into),
-            local.unsigned_mem_val,
-            signed_value,
-            local.mem_value_is_neg.into(),
-        );
+        // A negative byte's sign-extended 32-bit value is just `unsigned_mem_val[0]` with the
+        // upper 3 (always-zero) bytes replaced by `0xFF` -- a direct byte assertion, not an
+        // arithmetic dependency on another chip's SUB circuit.
+        let sign_extended_value = Word([
+            local.unsigned_mem_val[0].into(),
+            AB::Expr::from_canonical_u32(0xFF),
+            AB::Expr::from_canonical_u32(0xFF),
+            AB::Expr::from_canonical_u32(0xFF),
+        ]);
+        builder
+            .when(local.mem_value_is_neg)
+            .assert_word_eq(sign_extended_value, local.adapter.op_a_access.value.map(Into::into));
 
         let mem_value_is_pos = (local.is_lb.into() - local.mem_value_is_neg.into()) + local.is_lbu.into();
         builder

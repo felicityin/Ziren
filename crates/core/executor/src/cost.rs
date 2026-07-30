@@ -482,8 +482,8 @@ pub fn estimate_mips_event_counts(
     events_counts[MipsAirId::AddNoop] = add_noop_events;
 
     // Compute the number of events in the sub chip. MIPS has no SUBI, so every SUB opcode
-    // occurrence (real or a dependency row from another chip) belongs here, except a real SUB
-    // with `op_a==0` (isolated via `sub_x0_events`, see `AluX0Chip`'s doc comment).
+    // occurrence belongs here, except a real SUB with `op_a==0` (isolated via `sub_x0_events`,
+    // see `AluX0Chip`'s doc comment).
     events_counts[MipsAirId::Sub] = opcode_counts[Opcode::SUB] - sub_x0_events;
 
     // Compute the number of events in the shared
@@ -687,10 +687,11 @@ pub fn pad_mips_event_counts(
         // Same reasoning as Addi/AddNoop: no dependency-row producer ever targets this shape (see
         // `AluX0Chip`'s doc comment), so a real instruction's worst-case growth is 1 per cycle.
         MipsAirId::AluX0 => *v += num_cycles,
-        // MIPS has no SUBI, so Sub's only dependency-row producer is `emit_memory_dependencies`'
-        // LB/LH sign-extension check (at most 1 per retiring memory instruction), same order as
-        // a real retired SUB. `+1` margin over the derived worst case of 1.
-        MipsAirId::Sub => *v += 2 * num_cycles,
+        // Same reasoning as Addi/AddNoop/AluX0: no dependency-row producer ever targets this
+        // shape anymore (`LoadByteChip`/`LoadHalfChip`'s former LB/LH sign-extension sends are
+        // now a direct byte assertion local to those chips -- see `SubChip`'s doc comment), so a
+        // real instruction's worst-case growth is 1 per cycle.
+        MipsAirId::Sub => *v += num_cycles,
         MipsAirId::Mul => *v += 4 * num_cycles,
         MipsAirId::Bitwise => *v += 3 * num_cycles,
         MipsAirId::ShiftLeft => *v += num_cycles,

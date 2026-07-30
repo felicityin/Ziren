@@ -10,7 +10,7 @@
   "Add": 31,
   "Secp256r1Decompress": 1379,
   "ShiftRight": 86,
-  "Sub": 40,
+  "Sub": 35,
   "Secp256k1Decompress": 1379,
   "Bitwise": 38,
   "Bn254AddAssign": 2050,
