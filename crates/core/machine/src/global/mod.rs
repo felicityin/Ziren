@@ -207,12 +207,13 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
             .scan(|a, b| *a + *b, SepticCurveComplete::Infinity)
             .collect::<Vec<SepticCurveComplete<F>>>();
 
-        let final_digest = match cumulative_sum.last() {
-            Some(digest) => digest.point(),
-            None => SepticCurve::<F>::dummy(),
-        };
+        // Padding rows populate a genuine `start_digest + dummy` curve addition (not a repeat of
+        // the real chain's end), so `GlobalAccumulationOperation`'s `sum_checker_x` check holds
+        // unconditionally there without a witnessed column -- see its doc comment. Their
+        // interaction multiplicity is zero regardless, so this never needs to match the real
+        // chain's values.
         let dummy = SepticCurve::<F>::dummy();
-        let final_sum_checker = SepticCurve::<F>::sum_checker_x(final_digest, dummy, final_digest);
+        let start_digest = SepticDigest::<F>::zero().0;
 
         let chunk_size = std::cmp::max(padded_nb_rows / num_cpus::get(), 0) + 1;
         values.chunks_mut(chunk_size * NUM_GLOBAL_COLS).enumerate().par_bridge().for_each(
@@ -221,14 +222,10 @@ impl<F: PrimeField32> MachineAir<F> for GlobalChip {
                     let idx = i * chunk_size + j;
                     let cols: &mut GlobalCols<F> = row.borrow_mut();
                     if idx < nb_rows {
-                        cols.accumulation.populate_real(
-                            &cumulative_sum[idx..idx + 2],
-                            final_digest,
-                            final_sum_checker,
-                        );
+                        cols.accumulation.populate_real(&cumulative_sum[idx..idx + 2]);
                     } else {
                         cols.lookup.populate_dummy();
-                        cols.accumulation.populate_dummy(final_digest, final_sum_checker);
+                        cols.accumulation.populate_dummy(start_digest, dummy);
                     }
                 });
             },
