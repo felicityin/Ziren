@@ -15,8 +15,13 @@
 //! This pass also drops the shape-quantization caches the old FRI-era prover used
 //! (`lift_programs_lru`/`join_programs_map`, keyed by `ZKMRecursionShape`/`ZKMCompressWithVkeyShape`
 //! wrapper types that no longer exist -- see `shapes.rs`) and the `CoreShapeConfig`-driven
-//! preprocessed-shape fixing (deleted in task #24). Recursion/compress/shrink programs are now
-//! compiled fresh on every call instead of served from a warm cache; slower, not less correct.
+//! preprocessed-shape fixing (deleted in task #24). `ZKMProver` does keep a lighter-weight,
+//! shape-keyed cache of *compiled* recursion/compress/deferred `RecursionProgram`s
+//! (`recursion_program_cache`/`compress_program_cache`/`deferred_program_cache`), populated
+//! lazily on first use per distinct shape key -- unrelated to the deleted VK-quantization
+//! system, this purely avoids re-running `AsmCompiler::compile` on a >1M-instruction DSL
+//! program for every single node when an earlier node already compiled the identical one.
+//! `shrink_program`/`wrap_*` are unaffected (each is built once per top-level proof already).
 
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::new_without_default)]
@@ -29,7 +34,13 @@ pub mod types;
 pub mod utils;
 pub mod verify;
 
-use std::{borrow::Borrow, collections::BTreeMap, env, path::Path, sync::Arc};
+use std::{
+    borrow::Borrow,
+    collections::{BTreeMap, BTreeSet, HashMap},
+    env,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_koala_bear::KoalaBear;
@@ -136,6 +147,22 @@ pub struct ZKMProver<C: ZKMProverComponents = DefaultProverComponents> {
 
     /// Whether to verify verification keys.
     pub vk_verification: bool,
+
+    /// Compiled first-layer (Normalize) recursion programs, keyed by the verified shard's
+    /// active chip-name set plus its total witness-value count (see
+    /// `recursion_program_shape_key`). Populated lazily: a cache hit skips
+    /// `AsmCompiler::compile` entirely and returns a program byte-identical to what fresh
+    /// compilation would produce.
+    recursion_program_cache: Mutex<HashMap<(BTreeSet<String>, usize), Arc<RecursionProgram<KoalaBear>>>>,
+
+    /// Compiled reduce-layer (Compress) recursion programs, keyed by batch arity plus total
+    /// witness-value count. Populated lazily; `REDUCE_BATCH_SIZE` bounds the real key space to
+    /// a handful of entries.
+    compress_program_cache: Mutex<HashMap<(usize, usize), Arc<RecursionProgram<KoalaBear>>>>,
+
+    /// The compiled deferred-proof recursion program, alongside the witness-value count it was
+    /// compiled for. Populated lazily on first use.
+    deferred_program_cache: Mutex<Option<(usize, Arc<RecursionProgram<KoalaBear>>)>>,
 }
 
 impl ZKMProver<DefaultProverComponents> {
@@ -203,6 +230,9 @@ impl ZKMProver<DefaultProverComponents> {
             recursion_vk_tree: merkle_tree,
             compress_shape_config,
             vk_verification,
+            recursion_program_cache: Mutex::new(HashMap::new()),
+            compress_program_cache: Mutex::new(HashMap::new()),
+            deferred_program_cache: Mutex::new(None),
         }
     }
 
@@ -309,10 +339,37 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         )
     }
 
+    /// The recursion program's cache key: the verified shard's active chip-name set, plus its
+    /// total witness-value count. The chip-name set alone is NOT a sound cache key -- two
+    /// shards can share the exact same active chips yet still compile to structurally
+    /// different programs (e.g. the LogUp GKR argument's round count depends on real per-shard
+    /// data, not just which chips are present), which reproduced as a "read from empty witness
+    /// stream" runtime panic on a real proof despite an exact chip-set cache hit. The witness
+    /// count is the exact invariant `RecursionRuntime` enforces (one `Block` push per `read_*`
+    /// instruction the compiled program contains), so two inputs sharing this full key are
+    /// guaranteed to produce byte-identical programs.
+    fn recursion_program_shape_key(
+        input: &ZKMRecursionWitnessValues<CoreSC, CorePcsProof>,
+    ) -> (BTreeSet<String>, usize) {
+        let chip_names: BTreeSet<String> = input
+            .shard_proofs
+            .iter()
+            .flat_map(|proof| proof.opened_values.chips.keys().cloned())
+            .collect();
+        let mut witness_stream = Vec::new();
+        Witnessable::<InnerConfig>::write(input, &mut witness_stream);
+        (chip_names, witness_stream.len())
+    }
+
     pub fn recursion_program(
         &self,
         input: &ZKMRecursionWitnessValues<CoreSC, CorePcsProof>,
     ) -> Arc<RecursionProgram<KoalaBear>> {
+        let shape_key = Self::recursion_program_shape_key(input);
+        if let Some(program) = self.recursion_program_cache.lock().unwrap().get(&shape_key) {
+            return program.clone();
+        }
+
         let builder_span = tracing::debug_span!("build recursion program").entered();
         let mut builder = Builder::<InnerConfig>::default();
 
@@ -330,6 +387,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         }
         let program = Arc::new(program);
         compiler_span.exit();
+        self.recursion_program_cache.lock().unwrap().insert(shape_key, program.clone());
         program
     }
 
@@ -337,12 +395,24 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         &self,
         input: &ZKMCompressWithVKeyWitnessValues<InnerSC, CorePcsProof>,
     ) -> Arc<RecursionProgram<KoalaBear>> {
-        Arc::new(compress_program_from_input::<C>(
+        let arity = input.compress_val.vks_and_proofs.len();
+        // See `recursion_program_shape_key`: arity alone isn't a sound cache key, since the
+        // compiled program's instruction count also depends on real per-child-proof witness
+        // data, not just how many children there are.
+        let mut witness_stream = Vec::new();
+        Witnessable::<InnerConfig>::write(input, &mut witness_stream);
+        let key = (arity, witness_stream.len());
+        if let Some(program) = self.compress_program_cache.lock().unwrap().get(&key) {
+            return program.clone();
+        }
+        let program = Arc::new(compress_program_from_input::<C>(
             self.compress_shape_config.as_ref(),
             &self.compress_circuit_verifier(),
             self.vk_verification,
             input,
-        ))
+        ));
+        self.compress_program_cache.lock().unwrap().insert(key, program.clone());
+        program
     }
 
     pub fn shrink_program(
@@ -377,6 +447,19 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         &self,
         input: &ZKMDeferredWitnessValues<InnerSC, CorePcsProof>,
     ) -> Arc<RecursionProgram<KoalaBear>> {
+        // See `recursion_program_shape_key`: the deferred chip set is fixed, but the compiled
+        // program's instruction count still depends on real per-input witness data, so the
+        // cache must be validated by witness length rather than reused unconditionally.
+        let mut witness_stream = Vec::new();
+        Witnessable::<InnerConfig>::write(input, &mut witness_stream);
+        let witness_len = witness_stream.len();
+        if let Some((cached_len, program)) = self.deferred_program_cache.lock().unwrap().as_ref()
+        {
+            if *cached_len == witness_len {
+                return program.clone();
+            }
+        }
+
         let operations_span =
             tracing::debug_span!("get operations for the deferred program").entered();
         let mut builder = Builder::<InnerConfig>::default();
@@ -399,6 +482,7 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         }
         let program = Arc::new(program);
         compiler_span.exit();
+        *self.deferred_program_cache.lock().unwrap() = Some((witness_len, program.clone()));
         program
     }
 

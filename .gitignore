@@ -9,6 +9,7 @@ bins
 *.txt
 *.codex
 picus_out
+simple-go
 
 # Proofs
 **/proof-with-pis.bin
