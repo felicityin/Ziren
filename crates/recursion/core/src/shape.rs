@@ -140,22 +140,30 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
         // exceeding it pads to more real rows than the PCS config can hold, panicking in
         // `PaddedMle::padded`/`padded_with_zeros`.
         //
-        // "Fastest" covers small/simple shards (few active core chips, e.g. `fibonacci`), with
-        // headroom over real measured heights. "Fallback" covers larger, more chip-diverse
-        // shards (e.g. `tendermint`), every dimension capped at the hard `RECURSION_MAX_LOG_ROW_COUNT`
-        // ceiling -- the most headroom obtainable under that limit. If a real shard's measured
-        // height still exceeds even this tier, `fix_shape` panics with "no shape found". These
-        // have not yet been validated against deferred proofs, which could plausibly need a
-        // larger `RECURSION_MAX_LOG_ROW_COUNT` outright.
+        // `fix_shape` tries each entry in order and only errors if every one is too small for
+        // the real program, so an undersized "fastest" entry costs a fallback to a bigger tier
+        // for that one program, not a crash -- "fastest" can stay calibrated tight to real
+        // measured data rather than needing its own independent safety margin. `select` is
+        // already at its real measured ceiling (no slack observed across sampled programs).
+        // `prefix_sum_checks` is kept above its measured ceiling deliberately: real usage swings
+        // by over an order of magnitude across sampled programs depending on precompile/syscall
+        // mix, the widest per-program variance of any dimension here, so it's the one entry
+        // where an unsampled program is most likely to exceed what's been measured so far.
+        // "Fallback" covers shards whose real heights don't fit "fastest", every dimension
+        // capped at the hard `RECURSION_MAX_LOG_ROW_COUNT` ceiling -- the most headroom
+        // obtainable under that limit. If a real shard's measured height still exceeds even
+        // this tier, `fix_shape` panics with "no shape found". These have not yet been
+        // validated against deferred proofs, which could plausibly need a larger
+        // `RECURSION_MAX_LOG_ROW_COUNT` outright.
         let allowed_shapes = [
             // Fastest shape.
             [
-                (mem_var.clone(), 20),
+                (mem_var.clone(), 19),
                 (select.clone(), 20),
-                (mem_const.clone(), 19),
-                (base_alu.clone(), 18),
-                (ext_alu.clone(), 20),
-                (poseidon2_wide.clone(), 18),
+                (mem_const.clone(), 17),
+                (base_alu.clone(), 17),
+                (ext_alu.clone(), 18),
+                (poseidon2_wide.clone(), 17),
                 (prefix_sum_checks.clone(), 19),
                 (public_values.clone(), PUB_VALUES_LOG_HEIGHT),
             ],
