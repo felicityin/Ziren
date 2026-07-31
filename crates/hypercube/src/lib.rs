@@ -1,5 +1,5 @@
 /// The maximum number of public values a Ziren shard proof can have.
-pub const PROOF_MAX_NUM_PVS: usize = 117;
+pub const PROOF_MAX_NUM_PVS: usize = 121;
 
 pub mod air;
 pub mod chip;

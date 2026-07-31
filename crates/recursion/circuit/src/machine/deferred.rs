@@ -181,6 +181,12 @@ where
         // Set initial_pc and end_pc to be the hinted values.
         deferred_public_values.start_pc = end_pc;
         deferred_public_values.next_pc = end_pc;
+        // Deferred proofs don't represent real execution-time progression, so they're spliced
+        // into the clk chain as a no-op at the genesis clk value.
+        deferred_public_values.initial_clk_high = builder.eval(C::F::ZERO);
+        deferred_public_values.initial_clk_low = builder.eval(C::F::ONE);
+        deferred_public_values.last_clk_high = builder.eval(C::F::ZERO);
+        deferred_public_values.last_clk_low = builder.eval(C::F::ONE);
         deferred_public_values.start_execution_shard = end_execution_shard;
         deferred_public_values.next_execution_shard = end_execution_shard;
         // Set the init and finalize address bits to be the hinted values.

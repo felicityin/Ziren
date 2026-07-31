@@ -113,6 +113,12 @@ where
         let mut start_pc: Felt<_> = builder.uninit();
         let mut current_pc: Felt<_> = builder.uninit();
 
+        // Initialize clock variables.
+        let mut initial_clk_high: Felt<_> = builder.uninit();
+        let mut initial_clk_low: Felt<_> = builder.uninit();
+        let mut current_clk_high: Felt<_> = builder.uninit();
+        let mut current_clk_low: Felt<_> = builder.uninit();
+
         // Initialize memory initialization and finalization variables.
         let mut initial_previous_init_addr: [Felt<_>; 4] =
             array::from_fn(|_| builder.uninit());
@@ -159,6 +165,12 @@ where
                 // Program counter.
                 start_pc = public_values.start_pc;
                 current_pc = public_values.start_pc;
+
+                // Clock.
+                initial_clk_high = public_values.initial_clk_high;
+                initial_clk_low = public_values.initial_clk_low;
+                current_clk_high = public_values.initial_clk_high;
+                current_clk_low = public_values.initial_clk_low;
 
                 // Memory initialization & finalization.
                 for ((bit, pub_bit), first_bit) in current_init_addr
@@ -277,6 +289,17 @@ where
 
                 // Update current_pc to be the end_pc of the current proof.
                 current_pc = public_values.next_pc;
+            }
+
+            // Clock constraints.
+            {
+                // Assert that the initial clk of the proof is equal to the current clk.
+                builder.assert_felt_eq(current_clk_high, public_values.initial_clk_high);
+                builder.assert_felt_eq(current_clk_low, public_values.initial_clk_low);
+
+                // Update current clk to be the last clk of the current proof.
+                current_clk_high = public_values.last_clk_high;
+                current_clk_low = public_values.last_clk_low;
             }
 
             // Exit code constraints.
@@ -478,6 +501,10 @@ where
             recursion_public_values.deferred_proofs_digest = deferred_proofs_digest;
             recursion_public_values.start_pc = start_pc;
             recursion_public_values.next_pc = current_pc;
+            recursion_public_values.initial_clk_high = initial_clk_high;
+            recursion_public_values.initial_clk_low = initial_clk_low;
+            recursion_public_values.last_clk_high = current_clk_high;
+            recursion_public_values.last_clk_low = current_clk_low;
             recursion_public_values.start_execution_shard = initial_execution_shard;
             recursion_public_values.next_execution_shard = current_execution_shard;
             recursion_public_values.previous_init_addr = initial_previous_init_addr;

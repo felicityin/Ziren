@@ -89,6 +89,18 @@ pub struct RecursionPublicValues<T> {
     /// The expected start pc for the next shard.
     pub next_pc: T,
 
+    /// The `clk_high` of the first shard's first real CPU row.
+    pub initial_clk_high: T,
+
+    /// The `clk_low` of the first shard's first real CPU row.
+    pub initial_clk_low: T,
+
+    /// The expected `clk_high` of the next shard's first real CPU row.
+    pub last_clk_high: T,
+
+    /// The expected `clk_low` of the next shard's first real CPU row.
+    pub last_clk_low: T,
+
     /// First execution shard being proven.
     pub start_execution_shard: T,
 

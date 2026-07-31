@@ -102,6 +102,8 @@ where
         // Initialize the consistency check variables.
         let mut zkm_vk_digest: [Felt<_>; DIGEST_SIZE] = array::from_fn(|_| builder.uninit());
         let mut pc: Felt<_> = builder.uninit();
+        let mut clk_high: Felt<_> = builder.uninit();
+        let mut clk_low: Felt<_> = builder.uninit();
 
         let mut exit_code: Felt<_> = builder.uninit();
 
@@ -173,6 +175,12 @@ where
                 compress_public_values.start_pc = current_public_values.start_pc;
                 pc = current_public_values.start_pc;
 
+                // Initialize start clk.
+                compress_public_values.initial_clk_high = current_public_values.initial_clk_high;
+                compress_public_values.initial_clk_low = current_public_values.initial_clk_low;
+                clk_high = current_public_values.initial_clk_high;
+                clk_low = current_public_values.initial_clk_low;
+
                 // Initialize start execution shard.
                 compress_public_values.start_execution_shard =
                     current_public_values.start_execution_shard;
@@ -237,6 +245,10 @@ where
 
             // Assert that the start pc is equal to the current pc.
             builder.assert_felt_eq(pc, current_public_values.start_pc);
+
+            // Assert that the initial clk of the proof is equal to the current clk.
+            builder.assert_felt_eq(clk_high, current_public_values.initial_clk_high);
+            builder.assert_felt_eq(clk_low, current_public_values.initial_clk_low);
 
             // Execution shard constraints.
             {
@@ -394,6 +406,10 @@ where
             // Update pc to be the next pc.
             pc = current_public_values.next_pc;
 
+            // Update clk to be the last clk.
+            clk_high = current_public_values.last_clk_high;
+            clk_low = current_public_values.last_clk_low;
+
             // Update the MemoryInitialize address bits.
             for (bit, next_bit) in
                 init_addr.iter_mut().zip(current_public_values.last_init_addr.iter())
@@ -419,6 +435,9 @@ where
         compress_public_values.zkm_vk_digest = zkm_vk_digest;
         // Set next_pc to be the last pc (which is the same as accumulated pc)
         compress_public_values.next_pc = pc;
+        // Set last clk to be the accumulated clk.
+        compress_public_values.last_clk_high = clk_high;
+        compress_public_values.last_clk_low = clk_low;
         // Set next execution shard to be the last execution shard
         compress_public_values.next_execution_shard = execution_shard;
         // Set the MemoryInitialize address bits to be the last MemoryInitialize address bits.
