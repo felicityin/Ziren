@@ -130,47 +130,44 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
 
         // Specify allowed shapes.
         //
-        // The recursion verifier circuit's size is dominated by protocol-fixed jagged/basefold
-        // verification overhead tied to `core_max_log_row_count()` (currently 22 -- see
-        // `crates/hypercube/src/config.rs`) plus the number of distinct chips active in the core
-        // shard being verified, not by the guest program's cycle count directly. A trivial,
-        // single-chip guest program and a large, many-chip guest program stress different chips
-        // in this table: the former needs `ExtAlu` at its ceiling with little else, the latter
-        // needs far more `BaseAlu`/`Select` than the former ever exercises. Every entry here is
-        // calibrated to comfortably cover both extremes, with headroom for real per-shard
-        // variance on top of the larger of the two.
+        // Each chip's real per-program row count is measured by `heights()` above and compared
+        // against these entries by `fix_shape`; a chip's actual padded row count at runtime is
+        // driven by the *shape* entry selected here (`fixed_log2_rows`, `chips/alu_ext.rs` and
+        // siblings), not by the real measured height directly -- so an oversized entry wastes
+        // real rows, and every entry must stay `<= RECURSION_MAX_LOG_ROW_COUNT`
+        // (`crates/stark/src/opts.rs`): the jagged PCS's `PaddedMle` storage is fixed to
+        // `2^RECURSION_MAX_LOG_ROW_COUNT` regardless of what a shape entry claims, so an entry
+        // exceeding it pads to more real rows than the PCS config can hold, panicking in
+        // `PaddedMle::padded`/`padded_with_zeros`.
         //
-        // Every entry here must also stay `<= recursion_max_log_row_count()` (currently 22,
-        // `crates/stark/src/opts.rs`'s `RECURSION_MAX_SHARD_SIZE`): a chip's actual row count at
-        // runtime is driven by the *shape* assigned here (the recursion runtime pads each chip's
-        // event count up to it), while the jagged PCS's `PaddedMle` storage is fixed to
-        // `2^recursion_max_log_row_count()` regardless of what the shape claims -- a shape entry
-        // exceeding that ceiling pads to more real rows than the PCS config could ever hold.
-        // `ExtAlu`'s natural requirement already equals that ceiling, so it has zero slack in
-        // every tier. These have not yet been validated against deferred proofs, which could
-        // plausibly need a larger `recursion_max_log_row_count()` outright (see
-        // [[stage4-1-verifier-migration]] for the broader pattern of still-provisional
-        // recursion-layer constants in this migration).
+        // "Fastest" covers small/simple shards (few active core chips, e.g. `fibonacci`), with
+        // headroom over real measured heights. "Fallback" covers larger, more chip-diverse
+        // shards (e.g. `tendermint`), every dimension capped at the hard `RECURSION_MAX_LOG_ROW_COUNT`
+        // ceiling -- the most headroom obtainable under that limit. If a real shard's measured
+        // height still exceeds even this tier, `fix_shape` panics with "no shape found". These
+        // have not yet been validated against deferred proofs, which could plausibly need a
+        // larger `RECURSION_MAX_LOG_ROW_COUNT` outright.
         let allowed_shapes = [
             // Fastest shape.
             [
-                (mem_var.clone(), 22),
+                (mem_var.clone(), 20),
                 (select.clone(), 20),
-                (mem_const.clone(), 21),
-                (base_alu.clone(), 17),
-                (ext_alu.clone(), 22),
-                (poseidon2_wide.clone(), 19),
-                (prefix_sum_checks.clone(), 18),
+                (mem_const.clone(), 19),
+                (base_alu.clone(), 18),
+                (ext_alu.clone(), 20),
+                (poseidon2_wide.clone(), 18),
+                (prefix_sum_checks.clone(), 19),
                 (public_values.clone(), PUB_VALUES_LOG_HEIGHT),
             ],
             // Fallback shape, with more headroom on the dimensions with the most real
-            // per-program variance (`BaseAlu`, `Select`, `Poseidon2WideDeg3`).
+            // per-program variance (`BaseAlu`, `Select`, `Poseidon2WideDeg3`). Every dimension
+            // capped at 21 (`RECURSION_MAX_LOG_ROW_COUNT`) -- the maximum this tier can offer.
             [
-                (mem_var.clone(), 22),
+                (mem_var.clone(), 21),
                 (select.clone(), 21),
-                (mem_const.clone(), 22),
+                (mem_const.clone(), 21),
                 (base_alu.clone(), 18),
-                (ext_alu.clone(), 22),
+                (ext_alu.clone(), 21),
                 (poseidon2_wide.clone(), 20),
                 (prefix_sum_checks.clone(), 19),
                 (public_values.clone(), PUB_VALUES_LOG_HEIGHT),

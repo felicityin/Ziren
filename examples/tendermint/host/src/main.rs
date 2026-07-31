@@ -47,7 +47,7 @@ pub fn main() {
     let (_, report) = client.execute(TENDERMINT_ELF, &stdin).run().unwrap();
     println!("executed program with {} cycles", report.total_instruction_count());
 
-    let proof = client.prove(&pk, stdin).run().expect("proving failed");
+    let proof = client.prove(&pk, stdin).compressed().run().expect("proving failed");
 
     // Verify proof.
     client.verify(&proof, &vk).expect("verification failed");
