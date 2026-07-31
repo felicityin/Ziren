@@ -186,8 +186,15 @@ pub fn prove_with_context(
             Vec<ExecutionRecord>,
             Vec<ZkmShardData>,
             Vec<ProverPermit>,
+            Vec<u32>,
         )>(opts.records_and_traces_channel_capacity);
         let p2_records_and_traces_tx = Arc::new(Mutex::new(p2_records_and_traces_tx));
+        // A purely host-side, globally monotonic sequence number, unrelated to any in-circuit
+        // public value: `trace_gen_sync`'s turn-based ordering guarantees records are sent into
+        // this channel in strict submission order, but phase-2 proving below is itself
+        // parallelized across shards and completes out of order, so this tags each record for
+        // re-sorting back into submission order afterward.
+        let p2_shard_sequence = Arc::new(Mutex::new(0u32));
 
         let report_aggregate = Arc::new(Mutex::new(ExecutionReport::default()));
         let state = Arc::new(Mutex::new(PublicValues::<u32, u32>::default().reset()));
@@ -202,6 +209,7 @@ pub fn prove_with_context(
             let report_aggregate = Arc::clone(&report_aggregate);
             let state = Arc::clone(&state);
             let deferred = Arc::clone(&deferred);
+            let shard_sequence = Arc::clone(&p2_shard_sequence);
             let program = program.clone();
             let shard_prover = Arc::clone(&shard_prover);
             let machine = shard_prover.machine().clone();
@@ -246,7 +254,6 @@ pub fn prove_with_context(
                             // retired instructions.
                             let mut state = state.lock().unwrap();
                             for record in records.iter_mut() {
-                                state.shard += 1;
                                 state.execution_shard = record.public_values.execution_shard;
                                 state.is_execution_shard = record.contains_cpu() as u32;
                                 if let Some(first_pc) = record.first_instruction_pc {
@@ -307,7 +314,6 @@ pub fn prove_with_context(
                                     state.execution_shard += 1;
                                 }
                                 for record in deferred.iter_mut() {
-                                    state.shard += 1;
                                     state.is_execution_shard = 0;
                                     state.previous_init_addr =
                                         record.public_values.previous_init_addr;
@@ -362,7 +368,6 @@ pub fn prove_with_context(
                                     state.execution_shard += 1;
                                 }
                                 for record in deferred.iter_mut() {
-                                    state.shard += 1;
                                     state.is_execution_shard = 0;
                                     state.previous_init_addr =
                                         record.public_values.previous_init_addr;
@@ -445,10 +450,21 @@ pub fn prove_with_context(
                                             prover_permits.clone(),
                                         ));
                                     let shard_data = ZkmShardData { pk: Arc::clone(&pk), main_trace_data };
+                                    let sequence = {
+                                        let mut sequence = shard_sequence.lock().unwrap();
+                                        let this_sequence = *sequence;
+                                        *sequence += 1;
+                                        this_sequence
+                                    };
                                     records_and_traces_tx
                                         .lock()
                                         .unwrap()
-                                        .send((vec![record], vec![shard_data], vec![budget_permit]))
+                                        .send((
+                                            vec![record],
+                                            vec![shard_data],
+                                            vec![budget_permit],
+                                            vec![sequence],
+                                        ))
                                         .unwrap();
                                 }
                             });
@@ -481,9 +497,9 @@ pub fn prove_with_context(
         // above, so multiple shards' `prove_shard_with_data` calls (each itself already
         // using rayon internally) can run concurrently, sharing rayon's global thread pool
         // rather than competing with each other for whole worker threads. Proofs finish out
-        // of order across workers, so tag each with its `ExecutionRecord`'s `shard` index
-        // and sort by it afterward -- downstream verification requires proofs in strictly
-        // increasing shard order.
+        // of order across workers, so tag each with the host-side submission sequence number
+        // assigned above and sort by it afterward -- downstream verification requires proofs
+        // in strictly increasing shard order.
         let p2_prover_span = tracing::Span::current().clone();
         let p2_records_and_traces_rx = Arc::new(Mutex::new(p2_records_and_traces_rx));
         let all_shard_proofs_unordered = Arc::new(Mutex::new(Vec::new()));
@@ -497,13 +513,12 @@ pub fn prove_with_context(
                 let _span = span.enter();
                 tracing::debug_span!("phase 2 prover").in_scope(|| loop {
                     let received = { rx.lock().unwrap().recv() };
-                    let Ok((records, shard_data, budget_permits)) = received else {
+                    let Ok((records, shard_data, budget_permits, sequences)) = received else {
                         break;
                     };
-                    for ((record, data), budget_permit) in
-                        records.into_iter().zip(shard_data).zip(budget_permits)
+                    for (((_record, data), budget_permit), shard_index) in
+                        records.into_iter().zip(shard_data).zip(budget_permits).zip(sequences)
                     {
-                        let shard_index = record.public_values.shard;
                         let shard_start = Instant::now();
                         let mut challenger = ZkmGlobalContext::default_challenger();
                         data.pk.vk.observe_into(&mut challenger);

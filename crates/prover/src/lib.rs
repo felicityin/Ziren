@@ -451,7 +451,6 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
                 is_complete: false,
                 zkm_vk_digest: vk.hash_koalabear(),
                 end_pc: KoalaBear::ZERO,
-                end_shard: last_proof_pv.shard + KoalaBear::ONE,
                 end_execution_shard: last_proof_pv.execution_shard,
                 init_addr: last_proof_pv.last_init_addr.0,
                 finalize_addr: last_proof_pv.last_finalize_addr.0,

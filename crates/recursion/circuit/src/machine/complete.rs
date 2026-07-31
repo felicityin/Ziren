@@ -18,8 +18,6 @@ pub(crate) fn assert_complete<C: Config<F = KoalaBear>>(
     let RecursionPublicValues {
         deferred_proofs_digest,
         next_pc,
-        start_shard,
-        next_shard,
         start_execution_shard,
         start_reconstruct_deferred_digest,
         end_reconstruct_deferred_digest,
@@ -33,15 +31,6 @@ pub(crate) fn assert_complete<C: Config<F = KoalaBear>>(
 
     // Assert that `next_pc` is equal to zero (so program execution has completed)
     builder.assert_felt_eq(is_complete * *next_pc, C::F::ZERO);
-
-    // Assert that start shard is equal to 1.
-    builder.assert_felt_eq(is_complete * (*start_shard - C::F::ONE), C::F::ZERO);
-
-    // Assert that the next shard is not equal to one. This guarantees that there is at least one
-    // shard that contains CPU.
-    //
-    // TODO: figure out if this is needed.
-    builder.assert_felt_ne(is_complete * *next_shard, C::F::ONE);
 
     // Assert that that an execution shard is present.
     builder.assert_felt_eq(is_complete * (*contains_execution_shard - C::F::ONE), C::F::ZERO);

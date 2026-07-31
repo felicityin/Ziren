@@ -37,9 +37,6 @@ pub struct PublicValues<W, T> {
     /// The exit code of the program. Only valid if halt has been executed.
     pub exit_code: T,
 
-    /// The shard number.
-    pub shard: T,
-
     /// The execution shard number.
     pub execution_shard: T,
 
@@ -118,7 +115,6 @@ impl PublicValues<u32, u32> {
     #[must_use]
     pub fn reset(&self) -> Self {
         let mut copy = *self;
-        copy.shard = 0;
         copy.execution_shard = 0;
         copy.is_execution_shard = 0;
         copy.start_pc = 0;
@@ -174,7 +170,6 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             start_pc,
             next_pc,
             exit_code,
-            shard,
             execution_shard,
             is_execution_shard,
             previous_init_addr,
@@ -202,7 +197,6 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
         let start_pc = F::from_canonical_u32(start_pc);
         let next_pc = F::from_canonical_u32(next_pc);
         let exit_code = F::from_canonical_u32(exit_code);
-        let shard = F::from_canonical_u32(shard);
         let execution_shard = F::from_canonical_u32(execution_shard);
         let is_execution_shard = F::from_canonical_u32(is_execution_shard);
         let previous_init_addr = Word::from(previous_init_addr);
@@ -225,7 +219,6 @@ impl<F: FieldAlgebra> From<PublicValues<u32, u32>> for PublicValues<Word<F>, F> 
             start_pc,
             next_pc,
             exit_code,
-            shard,
             execution_shard,
             is_execution_shard,
             previous_init_addr,

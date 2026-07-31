@@ -7,7 +7,7 @@ use p3_koala_bear::KoalaBear;
 use serde::{Deserialize, Serialize};
 use slop_air::Air;
 use slop_challenger::IopCtx;
-use zkm_core_machine::mips::{MipsAir, MAX_LOG_NUMBER_OF_SHARDS};
+use zkm_core_machine::mips::MipsAir;
 
 use zkm_hypercube::{
     air::{PublicValues, PV_DIGEST_NUM_WORDS},
@@ -21,7 +21,7 @@ use zkm_hypercube::{
 
 use zkm_recursion_compiler::{
     circuit::CircuitV2Builder,
-    ir::{Builder, Config, Felt, SymbolicFelt},
+    ir::{Builder, Config, Felt},
 };
 
 use zkm_recursion_core::air::{RecursionPublicValues, RECURSIVE_PROOF_NUM_PV_ELTS};
@@ -105,10 +105,6 @@ where
         let ZKMRecursionWitnessVariable { vk, shard_proofs, is_complete, is_first_shard, vk_root } =
             input;
 
-        // Initialize shard variables.
-        let mut initial_shard: Felt<_> = builder.uninit();
-        let mut current_shard: Felt<_> = builder.uninit();
-
         // Initialize execution shard variables.
         let mut initial_execution_shard: Felt<_> = builder.uninit();
         let mut current_execution_shard: Felt<_> = builder.uninit();
@@ -156,10 +152,6 @@ where
 
             // If this is the first proof in the batch, initialize the variables.
             if i == 0 {
-                // Shard.
-                initial_shard = public_values.shard;
-                current_shard = public_values.shard;
-
                 // Execution shard.
                 initial_execution_shard = public_values.execution_shard;
                 current_execution_shard = public_values.execution_shard;
@@ -211,15 +203,8 @@ where
                 // flag, and make assertions for that are specific to the first shard using that
                 // flag.
 
-                // Assert that the shard is boolean.
+                // Assert that the flag is boolean.
                 builder.assert_felt_eq(is_first_shard * (is_first_shard - C::F::ONE), C::F::ZERO);
-                // Assert that if the flag is set to `1`, then the shard index is `1`.
-                builder.assert_felt_eq(is_first_shard * (initial_shard - C::F::ONE), C::F::ZERO);
-                // Assert that if the flag is set to `0`, then the shard index is not `1`.
-                builder.assert_felt_ne(
-                    (SymbolicFelt::ONE - is_first_shard) * initial_shard,
-                    C::F::ONE,
-                );
 
                 // If it's the first shard (which is the first execution shard), then the `start_pc`
                 // should be vk.pc_start.
@@ -256,21 +241,6 @@ where
             // verify_shard`), so it must not be pre-observed here -- doing so would desync the
             // in-circuit Fiat-Shamir transcript from the native prover's.
             machine.verify_shard(builder, &vk, &shard_proof, &mut challenger);
-
-            // Assert that first shard has a "CPU". Equivalently, assert that if the shard does
-            // not have a "CPU", then the current shard is not 1.
-            if !contains_cpu {
-                builder.assert_felt_ne(current_shard, C::F::ONE);
-            }
-
-            // Shard constraints.
-            {
-                // Assert that the shard of the proof is equal to the current shard.
-                builder.assert_felt_eq(current_shard, public_values.shard);
-
-                // Increment the current shard by one.
-                current_shard = builder.eval(current_shard + C::F::ONE);
-            }
 
             // Execution shard constraints.
             {
@@ -468,10 +438,6 @@ where
                 deferred_proofs_digest.copy_from_slice(&public_values.deferred_proofs_digest);
             }
 
-            // Verify that the number of shards is not too large, i.e. that for every shard, we
-            // have shard < 2^{MAX_LOG_NUMBER_OF_SHARDS}.
-            C::range_check_felt(builder, public_values.shard, MAX_LOG_NUMBER_OF_SHARDS);
-
             // The old FRI backend additionally asserted `log_degree_cpu() <= MAX_CPU_LOG_DEGREE`
             // here, using a plain usize the circuit-side ShardProofVariable carried as shape
             // metadata. The new backend's ChipOpenedValues::degree is itself an in-circuit witness
@@ -512,8 +478,6 @@ where
             recursion_public_values.deferred_proofs_digest = deferred_proofs_digest;
             recursion_public_values.start_pc = start_pc;
             recursion_public_values.next_pc = current_pc;
-            recursion_public_values.start_shard = initial_shard;
-            recursion_public_values.next_shard = current_shard;
             recursion_public_values.start_execution_shard = initial_execution_shard;
             recursion_public_values.next_execution_shard = current_execution_shard;
             recursion_public_values.previous_init_addr = initial_previous_init_addr;
@@ -613,14 +577,6 @@ mod tests {
         // single-shard program like this one, that's exactly one record.
         assert_eq!(runtime.records.len(), 1, "expected fibonacci to execute as exactly one shard");
         let mut record = runtime.records.remove(0);
-        // Work around a currently-unrelated gap in `zkm_core_executor::Executor`: unlike
-        // `public_values.execution_shard` (correctly back-filled from `state.current_shard`,
-        // 1-indexed), `public_values.shard` itself is never assigned anywhere in the executor and
-        // stays at its `Default` value of `0`. `ZKMRecursiveVerifier::verify` (this crate)
-        // expects 1-indexed shards, matching `execution_shard`'s convention, so patch it here.
-        // This field isn't read or constrained anywhere in trace generation, so setting it after
-        // execution is safe.
-        record.public_values.shard = 1;
         // `Executor::execute` never back-fills `initial_timestamp`/`last_timestamp` either
         // (unlike `start_pc`/`next_pc`, which it does set from the same events) -- mirrors the
         // `state.initial_clk_low`/`state.last_clk_low` computation in

@@ -22,7 +22,7 @@ use zkm_hypercube::{
 };
 
 use crate::{
-    challenger::{CanObserveVariable, DuplexChallengerVariable},
+    challenger::DuplexChallengerVariable,
     machine::{
         assert_complete, assert_recursion_public_values_valid, recursion_public_values_digest,
         root_public_values_digest,
@@ -102,7 +102,6 @@ where
         // Initialize the consistency check variables.
         let mut zkm_vk_digest: [Felt<_>; DIGEST_SIZE] = array::from_fn(|_| builder.uninit());
         let mut pc: Felt<_> = builder.uninit();
-        let mut shard: Felt<_> = builder.uninit();
 
         let mut exit_code: Felt<_> = builder.uninit();
 
@@ -131,12 +130,10 @@ where
             // Observe the vk and start pc.
             vk.observe_into(builder, &mut challenger);
 
-            // Observe the main commitment and public values.
-            challenger.observe_slice(
-                builder,
-                shard_proof.public_values[0..machine.machine.num_pv_elts()].iter().copied(),
-            );
-
+            // Note: `verify_shard` observes the full `public_values` slice itself as the first
+            // step of its transcript (matching `zkm_hypercube::verifier::shard::ShardVerifier::
+            // verify_shard`), so it must not be pre-observed here -- doing so would desync the
+            // in-circuit Fiat-Shamir transcript from the native prover's.
             machine.verify_shard(builder, &vk, &shard_proof, &mut challenger);
 
             // Get the current public values.
@@ -175,10 +172,6 @@ where
                 // Initialize start pc.
                 compress_public_values.start_pc = current_public_values.start_pc;
                 pc = current_public_values.start_pc;
-
-                // Initialize start shard.
-                compress_public_values.start_shard = current_public_values.start_shard;
-                shard = current_public_values.start_shard;
 
                 // Initialize start execution shard.
                 compress_public_values.start_execution_shard =
@@ -244,9 +237,6 @@ where
 
             // Assert that the start pc is equal to the current pc.
             builder.assert_felt_eq(pc, current_public_values.start_pc);
-
-            // Verify that the shard is equal to the current shard.
-            builder.assert_felt_eq(shard, current_public_values.start_shard);
 
             // Execution shard constraints.
             {
@@ -404,9 +394,6 @@ where
             // Update pc to be the next pc.
             pc = current_public_values.next_pc;
 
-            // Update the shard to be the next shard.
-            shard = current_public_values.next_shard;
-
             // Update the MemoryInitialize address bits.
             for (bit, next_bit) in
                 init_addr.iter_mut().zip(current_public_values.last_init_addr.iter())
@@ -432,8 +419,6 @@ where
         compress_public_values.zkm_vk_digest = zkm_vk_digest;
         // Set next_pc to be the last pc (which is the same as accumulated pc)
         compress_public_values.next_pc = pc;
-        // Set next shard to be the last shard
-        compress_public_values.next_shard = shard;
         // Set next execution shard to be the last execution shard
         compress_public_values.next_execution_shard = execution_shard;
         // Set the MemoryInitialize address bits to be the last MemoryInitialize address bits.

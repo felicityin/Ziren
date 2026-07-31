@@ -134,7 +134,6 @@ where
         let committed_value_digest = self.committed_value_digest.read(builder);
         let deferred_proofs_digest = self.deferred_proofs_digest.read(builder);
         let end_pc = self.end_pc.read(builder);
-        let end_shard = self.end_shard.read(builder);
         let end_execution_shard = self.end_execution_shard.read(builder);
         let init_addr = self.init_addr.read(builder);
         let finalize_addr = self.finalize_addr.read(builder);
@@ -148,7 +147,6 @@ where
             committed_value_digest,
             deferred_proofs_digest,
             end_pc,
-            end_shard,
             end_execution_shard,
             init_addr,
             finalize_addr,
@@ -164,7 +162,6 @@ where
         self.committed_value_digest.write(witness);
         self.deferred_proofs_digest.write(witness);
         self.end_pc.write(witness);
-        self.end_shard.write(witness);
         self.end_execution_shard.write(witness);
         self.init_addr.write(witness);
         self.finalize_addr.write(witness);

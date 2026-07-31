@@ -89,12 +89,6 @@ pub struct RecursionPublicValues<T> {
     /// The expected start pc for the next shard.
     pub next_pc: T,
 
-    /// First shard being proven.
-    pub start_shard: T,
-
-    /// Next shard that should be proven.
-    pub next_shard: T,
-
     /// First execution shard being proven.
     pub start_execution_shard: T,
 

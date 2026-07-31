@@ -93,22 +93,6 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
             return Err(ZKMVerificationError::MissingCpuInFirstShard);
         }
 
-        // Shard constraints.
-        //
-        // Initialization: shard should start at one.
-        // Transition: shard should increment by one for each shard.
-        let mut current_shard = KoalaBear::ZERO;
-        for shard_proof in proof.0.iter() {
-            let public_values: &PublicValues<Word<_>, _> =
-                shard_proof.public_values.as_slice().borrow();
-            current_shard += KoalaBear::ONE;
-            if public_values.shard != current_shard {
-                return Err(ZKMVerificationError::InvalidPublicValues(
-                    "shard index should be the previous shard index + 1 and start at 1",
-                ));
-            }
-        }
-
         // Execution shard constraints.
         let mut current_execution_shard = KoalaBear::ZERO;
         for shard_proof in proof.0.iter() {

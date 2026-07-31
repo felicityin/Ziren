@@ -27,7 +27,7 @@ use zkm_recursion_core::{
 };
 
 use crate::{
-    challenger::{CanObserveVariable, DuplexChallengerVariable},
+    challenger::DuplexChallengerVariable,
     hash::{FieldHasher, FieldHasherVariable},
     machine::assert_recursion_public_values_valid,
     shard::{MachineVerifyingKeyVariable, RecursiveShardVerifier, ShardProofVariable},
@@ -60,7 +60,6 @@ pub struct ZKMDeferredWitnessValues<GC: IopCtx<F = KoalaBear> + FieldHasher<Koal
     pub committed_value_digest: [Word<GC::F>; PV_DIGEST_NUM_WORDS],
     pub deferred_proofs_digest: [GC::F; POSEIDON_NUM_WORDS],
     pub end_pc: GC::F,
-    pub end_shard: GC::F,
     pub end_execution_shard: GC::F,
     pub init_addr: [GC::F; 4],
     pub finalize_addr: [GC::F; 4],
@@ -76,7 +75,6 @@ pub struct ZKMDeferredWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt
     pub committed_value_digest: [Word<Felt<C::F>>; PV_DIGEST_NUM_WORDS],
     pub deferred_proofs_digest: [Felt<C::F>; POSEIDON_NUM_WORDS],
     pub end_pc: Felt<C::F>,
-    pub end_shard: Felt<C::F>,
     pub end_execution_shard: Felt<C::F>,
     pub init_addr: [Felt<C::F>; 4],
     pub finalize_addr: [Felt<C::F>; 4],
@@ -111,7 +109,6 @@ where
             committed_value_digest,
             deferred_proofs_digest,
             end_pc,
-            end_shard,
             end_execution_shard,
             init_addr,
             finalize_addr,
@@ -142,12 +139,10 @@ where
             // Observe the vk and start pc.
             vk.observe_into(builder, &mut challenger);
 
-            // Observe the and public values.
-            challenger.observe_slice(
-                builder,
-                shard_proof.public_values[0..machine.machine.num_pv_elts()].iter().copied(),
-            );
-
+            // Note: `verify_shard` observes the full `public_values` slice itself as the first
+            // step of its transcript (matching `zkm_hypercube::verifier::shard::ShardVerifier::
+            // verify_shard`), so it must not be pre-observed here -- doing so would desync the
+            // in-circuit Fiat-Shamir transcript from the native prover's.
             machine.verify_shard(builder, &vk, &shard_proof, &mut challenger);
 
             // Get the current public values.
@@ -183,11 +178,9 @@ where
 
         // Set the public values.
 
-        // Set initial_pc, end_pc, initial_shard, and end_shard to be the hinted values.
+        // Set initial_pc and end_pc to be the hinted values.
         deferred_public_values.start_pc = end_pc;
         deferred_public_values.next_pc = end_pc;
-        deferred_public_values.start_shard = end_shard;
-        deferred_public_values.next_shard = end_shard;
         deferred_public_values.start_execution_shard = end_execution_shard;
         deferred_public_values.next_execution_shard = end_execution_shard;
         // Set the init and finalize address bits to be the hinted values.
