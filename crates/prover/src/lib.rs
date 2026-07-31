@@ -703,35 +703,24 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         input: ZKMCompressWitnessValues<CoreSC, CorePcsProof>,
     ) -> ZKMCompressWithVKeyWitnessValues<CoreSC, CorePcsProof> {
         let num_vks = self.recursion_vk_map.len();
-        let (vk_indices, vk_digest_values): (Vec<_>, Vec<_>) = if self.vk_verification {
-            input
-                .vks_and_proofs
-                .iter()
-                .map(|(vk, _)| {
-                    let vk_digest = vk.hash_koalabear();
-                    let index = self.recursion_vk_map.get(&vk_digest).expect("vk not allowed");
-                    (index, vk_digest)
-                })
-                .unzip()
-        } else {
-            input
-                .vks_and_proofs
-                .iter()
-                .map(|(vk, _)| {
-                    let vk_digest = vk.hash_koalabear();
-                    let index = (vk_digest[0].as_canonical_u32() as usize) % num_vks;
-                    (index, [KoalaBear::from_canonical_usize(index); 8])
-                })
-                .unzip()
-        };
-
-        let proofs = vk_indices
+        let (vk_digest_values, proofs): (Vec<_>, Vec<_>) = input
+            .vks_and_proofs
             .iter()
-            .map(|index| {
-                let (_, proof) = MerkleTree::open(&self.recursion_vk_tree, *index);
-                proof
+            .map(|(vk, _)| {
+                let vk_digest = vk.hash_koalabear();
+                let index = if self.vk_verification {
+                    *self.recursion_vk_map.get(&vk_digest).expect("vk not allowed")
+                } else {
+                    (vk_digest[0].as_canonical_u32() as usize) % num_vks
+                };
+                // The Merkle proof only verifies (in-circuit) that `value` is the leaf actually
+                // stored in `self.recursion_vk_tree` at `index` -- it must come from `open`
+                // itself, not be reconstructed separately, or the path check is against a value
+                // that was never committed to the tree.
+                let (value, proof) = MerkleTree::open(&self.recursion_vk_tree, index);
+                (value, proof)
             })
-            .collect();
+            .unzip();
 
         let merkle_val = ZKMMerkleProofWitnessValues {
             root: self.recursion_vk_root,
