@@ -66,7 +66,7 @@ pub struct ZKMDeferredWitnessValues<GC: IopCtx<F = KoalaBear> + FieldHasher<Koal
     pub is_complete: bool,
 }
 
-pub struct ZKMDeferredWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> {
+pub struct ZKMDeferredWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect> {
     pub vks_and_proofs:
         Vec<(MachineVerifyingKeyVariable<C, ZkmGlobalContext>, ShardProofVariable<C, ZkmGlobalContext>)>,
     pub vk_merkle_data: ZKMMerkleProofWitnessVariable<C, ZkmGlobalContext>,
@@ -83,7 +83,7 @@ pub struct ZKMDeferredWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt
 
 impl<C, A> ZKMDeferredVerifier<C, A>
 where
-    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect,
     A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     /// Verify a batch of deferred proofs.

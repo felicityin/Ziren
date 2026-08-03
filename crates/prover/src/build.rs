@@ -1,20 +1,20 @@
 //! Outer/Bn254 wrap-circuit artifact building (Plonk/Groth16/DvSnark).
 //!
-//! Every non-trivial function below builds the gnark wrap circuit (`build_outer_circuit`,
-//! removed) or produces a template proof to build it from (`dummy_proof`), both of which need
-//! `OuterSC` to implement `slop_challenger::IopCtx` so it can flow through
-//! `zkm_recursion_circuit::machine`'s now-hypercube-native `ZKMCompressWitnessValues`/
-//! `ZKMWrapVerifier`/`OuterWitness` machinery. `OuterSC` still aliases the old FRI-era
-//! `KoalaBearPoseidon2Outer`, which has no such impl -- a real replacement (`ZkmOuterGlobalContext`,
-//! wired through `slop_bn254::Poseidon2Bn254GlobalConfig`) is task #57 and is out of scope for
-//! 阶段5.1 (the user explicitly deferred regenerating VK/wrap artifacts). The public signatures
-//! here are kept intact (crates/sdk's cpu/cuda provers call them directly), but the bodies that
-//! actually need the missing `IopCtx` impl are stubbed out until task #57 lands.
+//! `build_constraints_and_witness`/`dummy_proof` build a circuit that verifies a
+//! `ZkmOuterGlobalContext`-committed wrap proof (`ZKMProver::wrap_bn254`'s output) from within an
+//! outer/Bn254-bit circuit, compiled directly to gnark's `Vec<Constraint>` format (no
+//! intermediate `RecursionProgram`/STARK re-proving -- gnark is the final verification layer).
+//! That needs `FieldHasherVariable<OuterConfig> for ZkmOuterGlobalContext` (mirroring
+//! `KoalaBearPoseidon2Outer`'s existing impl in `zkm_recursion_circuit::hash`, for the same
+//! Bn254-Poseidon2 scheme but on the new `slop_bn254`-backed context) and an outer-verifying
+//! counterpart to `ZKMWrapVerifier::verify`, neither of which exist yet -- both bodies are
+//! stubbed out until that lands.
 use std::{
     fs::{metadata, File},
     io::Write,
     path::PathBuf,
 };
+use zkm_hypercube::{config::ZkmOuterGlobalContext, verifier::ShardProof, MachineVerifyingKey};
 use zkm_recursion_compiler::{config::OuterConfig, constraints::Constraint};
 
 pub use zkm_recursion_core::stark::{outer_perm, zkm_dev_mode, zkm_imm_wrap_vk_mode};
@@ -22,16 +22,15 @@ pub use zkm_recursion_core::stark::{outer_perm, zkm_dev_mode, zkm_imm_wrap_vk_mo
 pub use zkm_recursion_circuit::witness::{OuterWitness, Witnessable};
 
 use zkm_recursion_gnark_ffi::{DvSnarkBn254Prover, Groth16Bn254Prover, PlonkBn254Prover};
-use zkm_stark::{ShardProof, StarkVerifyingKey};
 
-use crate::OuterSC;
+use crate::ZKMOuterPcsProof;
 
 pub const PART_STARK_VK_PATH: &str = "part_stark_vk.bin";
 
 /// Tries to build the PLONK artifacts inside the development directory.
 pub fn try_build_plonk_bn254_artifacts_dev(
-    template_vk: &StarkVerifyingKey<OuterSC>,
-    template_proof: &ShardProof<OuterSC>,
+    template_vk: &MachineVerifyingKey<ZkmOuterGlobalContext>,
+    template_proof: &ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>,
 ) -> PathBuf {
     let build_dir = plonk_bn254_artifacts_dev_dir();
     println!("[zkm] building plonk bn254 artifacts in development mode");
@@ -41,8 +40,8 @@ pub fn try_build_plonk_bn254_artifacts_dev(
 
 /// Tries to build the groth16 bn254 artifacts in the current environment.
 pub fn try_build_groth16_bn254_artifacts_dev(
-    template_vk: &StarkVerifyingKey<OuterSC>,
-    template_proof: &ShardProof<OuterSC>,
+    template_vk: &MachineVerifyingKey<ZkmOuterGlobalContext>,
+    template_proof: &ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>,
 ) -> PathBuf {
     let build_dir = groth16_bn254_artifacts_dev_dir();
     println!("[zkm] building groth16 bn254 artifacts in development mode");
@@ -52,8 +51,8 @@ pub fn try_build_groth16_bn254_artifacts_dev(
 
 /// Tries to build the dv-snark bn254 artifacts in the current environment.
 pub fn try_build_dvsnark_bn254_artifacts_dev(
-    template_vk: &StarkVerifyingKey<OuterSC>,
-    template_proof: &ShardProof<OuterSC>,
+    template_vk: &MachineVerifyingKey<ZkmOuterGlobalContext>,
+    template_proof: &ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>,
     store_dir: &PathBuf,
 ) -> PathBuf {
     tracing::info!("build dvsnark artifacts dev");
@@ -104,8 +103,8 @@ pub fn dvsnark_bn254_artifacts_dev_dir() -> PathBuf {
 /// Build the plonk bn254 artifacts to the given directory for the given verification key and
 /// template proof.
 pub fn build_plonk_bn254_artifacts(
-    template_vk: &StarkVerifyingKey<OuterSC>,
-    template_proof: &ShardProof<OuterSC>,
+    template_vk: &MachineVerifyingKey<ZkmOuterGlobalContext>,
+    template_proof: &ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>,
     build_dir: impl Into<PathBuf>,
 ) {
     let build_dir = build_dir.into();
@@ -117,8 +116,8 @@ pub fn build_plonk_bn254_artifacts(
 /// Build the groth16 bn254 artifacts to the given directory for the given verification key and
 /// template proof.
 pub fn build_groth16_bn254_artifacts(
-    template_vk: &StarkVerifyingKey<OuterSC>,
-    template_proof: &ShardProof<OuterSC>,
+    template_vk: &MachineVerifyingKey<ZkmOuterGlobalContext>,
+    template_proof: &ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>,
     build_dir: impl Into<PathBuf>,
 ) {
     let build_dir = build_dir.into();
@@ -126,8 +125,9 @@ pub fn build_groth16_bn254_artifacts(
     let (constraints, witness) = build_constraints_and_witness(template_vk, template_proof);
     Groth16Bn254Prover::build(constraints, witness, build_dir.clone());
 
-    // Serialize the part vk to a file
-    let serialized = bincode::serialize(&template_vk.part_vk()).unwrap();
+    // Serialize the vk to a file (the old FRI-era `StarkVerifyingKey::part_vk` this used to
+    // serialize a reduced projection of has no equivalent on `MachineVerifyingKey` yet).
+    let serialized = bincode::serialize(&template_vk).unwrap();
     let path = build_dir.join(PART_STARK_VK_PATH);
     let mut file = File::create(path).unwrap();
     file.write_all(&serialized).unwrap();
@@ -136,8 +136,8 @@ pub fn build_groth16_bn254_artifacts(
 /// Build the dv-snark bn254 artifacts to the given directory for the given verification key and
 /// template proof.
 pub fn build_dvsnark_bn254_artifacts(
-    template_vk: &StarkVerifyingKey<OuterSC>,
-    template_proof: &ShardProof<OuterSC>,
+    template_vk: &MachineVerifyingKey<ZkmOuterGlobalContext>,
+    template_proof: &ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>,
     build_dir: impl Into<PathBuf>,
     store_dir: impl Into<PathBuf>,
 ) {
@@ -169,22 +169,30 @@ pub fn build_groth16_bn254_artifacts_with_dummy(build_dir: impl Into<PathBuf>) {
 
 /// Build the verifier constraints and template witness for the circuit.
 ///
-/// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
+/// Blocked on writing an outer-verifying counterpart to `ZKMWrapVerifier::verify` plus
+/// `FieldHasherVariable<OuterConfig> for ZkmOuterGlobalContext` -- see the module doc comment.
 pub fn build_constraints_and_witness(
-    _template_vk: &StarkVerifyingKey<OuterSC>,
-    _template_proof: &ShardProof<OuterSC>,
+    _template_vk: &MachineVerifyingKey<ZkmOuterGlobalContext>,
+    _template_proof: &ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>,
 ) -> (Vec<Constraint>, OuterWitness<OuterConfig>) {
     unimplemented!(
-        "outer/Bn254 wrap circuit construction is blocked on task #57 (ZkmOuterGlobalContext)"
+        "outer/Bn254 gnark circuit construction needs an outer-verifying ZKMWrapVerifier \
+         counterpart and FieldHasherVariable<OuterConfig> for ZkmOuterGlobalContext, neither of \
+         which exist yet"
     )
 }
 
 /// Generate a dummy proof that we can use to build the circuit. We need this to know the shape of
 /// the proof.
 ///
-/// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
-pub fn dummy_proof() -> (StarkVerifyingKey<OuterSC>, ShardProof<OuterSC>) {
+/// Blocked on the same missing pieces as `build_constraints_and_witness` -- see the module doc
+/// comment.
+pub fn dummy_proof(
+) -> (MachineVerifyingKey<ZkmOuterGlobalContext>, ShardProof<ZkmOuterGlobalContext, ZKMOuterPcsProof>)
+{
     unimplemented!(
-        "outer/Bn254 wrap circuit construction is blocked on task #57 (ZkmOuterGlobalContext)"
+        "outer/Bn254 gnark circuit construction needs an outer-verifying ZKMWrapVerifier \
+         counterpart and FieldHasherVariable<OuterConfig> for ZkmOuterGlobalContext, neither of \
+         which exist yet"
     )
 }

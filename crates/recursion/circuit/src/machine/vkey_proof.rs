@@ -83,7 +83,7 @@ pub struct ZKMCompressWithVKeyVerifier<C, A> {
 }
 
 /// Witness layout for the verifier of the proof shape phase of the compress stage.
-pub struct ZKMCompressWithVKeyWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> {
+pub struct ZKMCompressWithVKeyWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect> {
     pub compress_var: ZKMCompressWitnessVariable<C>,
     pub merkle_var: ZKMMerkleProofWitnessVariable<C, ZkmGlobalContext>,
 }
@@ -99,7 +99,7 @@ pub struct ZKMCompressWithVKeyWitnessValues<
 
 impl<C, A> ZKMCompressWithVKeyVerifier<C, A>
 where
-    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect,
     A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     /// Verify the proof shape phase of the compress stage.
@@ -122,7 +122,7 @@ where
     }
 }
 
-impl<C: CircuitConfig<F = KoalaBear, EF = zkm_stark::InnerChallenge, Bit = Felt<KoalaBear>>>
+impl<C: CircuitConfig<F = KoalaBear, EF = zkm_stark::InnerChallenge, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect>
     Witnessable<C> for ZKMCompressWithVKeyWitnessValues<ZkmGlobalContext, slop_stacked::StackedBasefoldProof<ZkmGlobalContext>>
 {
     type WitnessVariable = ZKMCompressWithVKeyWitnessVariable<C>;

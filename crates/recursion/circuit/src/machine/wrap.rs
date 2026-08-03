@@ -8,7 +8,7 @@ use zkm_recursion_compiler::ir::{Builder, Felt};
 use zkm_hypercube::{air::MachineAir, config::ZkmGlobalContext};
 
 use crate::{
-    challenger::{CanObserveVariable, DuplexChallengerVariable},
+    challenger::DuplexChallengerVariable,
     machine::{assert_complete, assert_root_public_values_valid, RootPublicValues},
     shard::RecursiveShardVerifier,
     zerocheck::RecursiveVerifierConstraintFolder,
@@ -18,13 +18,6 @@ use crate::{
 use super::ZKMCompressWitnessVariable;
 
 /// A program that recursively verifies a proof made by [super::ZKMRootVerifier].
-///
-/// Note: this only covers the inner (KoalaBear-bit) wrap step. The outer BN254/Groth16-Plonk SNARK
-/// wrap commit path (`zkm_imm_wrap_vk_mode`/`commit_recursion_public_values_imm_wrap_vk`) is not
-/// yet ported -- FieldHasherVariable<C> for ZkmGlobalContext (hash.rs) is only implemented for
-/// `C::Bit = Felt<KoalaBear>`, so the new verification gadgets can't run with the outer config's
-/// `Bit = Var<Bn254Fr>` yet. That's a separate, later concern (gnark-ffi/Groth16 circuit
-/// regeneration), not a FRI-vs-jagged backend question.
 #[derive(Debug, Clone, Copy)]
 pub struct ZKMWrapVerifier<C, A> {
     _phantom: PhantomData<(C, A)>,
@@ -32,7 +25,7 @@ pub struct ZKMWrapVerifier<C, A> {
 
 impl<C, A> ZKMWrapVerifier<C, A>
 where
-    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect,
     A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     /// Verify a batch of recursive proofs and aggregate their public values.
@@ -66,12 +59,12 @@ where
         // Observe the vk and start pc.
         vk.observe_into(builder, &mut challenger);
 
-        // Observe the main commitment and public values.
-        challenger.observe_slice(
-            builder,
-            proof.public_values[0..machine.machine.num_pv_elts()].iter().copied(),
-        );
-
+        // Note: `verify_shard` observes the full `public_values` slice itself as the first step
+        // of its transcript (matching `zkm_hypercube::verifier::shard::ShardVerifier::
+        // verify_shard`), so it must not be pre-observed here -- doing so desyncs the in-circuit
+        // Fiat-Shamir transcript from the native prover's (the same bug already fixed in
+        // `ZKMCompressVerifier::verify`/the deferred verifier; this call site was missed since it
+        // had no caller until `ZKMProver::wrap_bn254` was added).
         machine.verify_shard(builder, &vk, &proof, &mut challenger);
 
         // Get the public values, and assert that they are valid.
@@ -84,3 +77,10 @@ where
         builder.commit_public_values_v2(public_values.inner);
     }
 }
+
+// An outer-verifying counterpart (verifying a `ZkmOuterGlobalContext`-committed wrap proof --
+// `ZKMProver::wrap_bn254`'s output -- from within an outer/Bn254-bit circuit, compiled directly
+// to gnark constraints) does not exist yet. It needs `FieldHasherVariable<OuterConfig> for
+// ZkmOuterGlobalContext` (mirroring `KoalaBearPoseidon2Outer`'s existing impl in `crate::hash`
+// for the same Bn254-Poseidon2 scheme, but on the new `slop_bn254`-backed context), which also
+// doesn't exist yet. `crates/prover/src/build.rs::build_constraints_and_witness` needs both.

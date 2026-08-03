@@ -825,4 +825,86 @@ mod tests {
 
         prove_and_verify(program, runtime.record);
     }
+
+    /// Calls `WrapConfig::poseidon2_permute_v2` many times within a single builder/program,
+    /// checking every call's output against the reference immediately (so a runtime panic
+    /// pinpoints exactly which repetition -- if any -- first diverges). No proving, just DSL
+    /// build + runtime execution, to iterate fast.
+    #[test]
+    fn test_wrap_poseidon2_permute_repeated() {
+        setup_logger();
+
+        const ITERS: usize = 1000;
+        let mut builder = Builder::<WrapConfig>::default();
+        let mut rng = StdRng::seed_from_u64(0xBEEFCAFE)
+            .sample_iter::<[F; PERMUTATION_WIDTH], _>(rand::distributions::Standard);
+
+        for _ in 0..ITERS {
+            let input: [F; PERMUTATION_WIDTH] = rng.next().unwrap();
+            let expected = inner_perm().permute(input);
+            let input_felts = input.map(|x| builder.eval(x));
+            let output_felts = WrapConfig::poseidon2_permute_v2(&mut builder, input_felts);
+            let expected_felts: [Felt<_>; PERMUTATION_WIDTH] = expected.map(|x| builder.eval(x));
+            for (lhs, rhs) in output_felts.into_iter().zip(expected_felts) {
+                builder.assert_felt_eq(lhs, rhs);
+            }
+        }
+
+        let mut compiler = AsmCompiler::<WrapConfig>::default();
+        let program = Arc::new(compiler.compile(builder.into_operations()));
+
+        let mut runtime = Runtime::<F, EF, Poseidon2InternalLayerKoalaBear<16>>::new(
+            program,
+            KoalaBearPoseidon2::new().perm,
+        );
+        runtime.run().unwrap();
+    }
+
+    /// Checks `WrapConfig`'s `poseidon2_hash` (the sponge built on top of
+    /// `poseidon2_permute_v2`, used for e.g. root public values digests) against a native
+    /// reference sponge over `inner_perm()`, for an input spanning multiple `HASH_RATE`-sized
+    /// chunks -- unlike `test_wrap_poseidon2_permute`, which only exercises a single permutation
+    /// call on a full-width input.
+    #[test]
+    fn test_wrap_poseidon2_hash_sponge() {
+        use crate::hash::Poseidon2KoalaBearHasherVariable;
+        use zkm_hypercube::config::ZkmGlobalContext;
+
+        setup_logger();
+
+        let mut builder = Builder::<WrapConfig>::default();
+        let mut rng = StdRng::seed_from_u64(0xBEEFCAFE).sample_iter::<F, _>(rand::distributions::Standard);
+        let input: [F; 40] = core::array::from_fn(|_| rng.next().unwrap());
+
+        // Native reference sponge (rate = HASH_RATE, capacity = PERMUTATION_WIDTH - HASH_RATE,
+        // overwrite-mode, matching `Poseidon2KoalaBearHasherVariable::poseidon2_hash`).
+        let mut state = [F::ZERO; PERMUTATION_WIDTH];
+        for chunk in input.chunks(zkm_recursion_core::HASH_RATE) {
+            state[..chunk.len()].copy_from_slice(chunk);
+            state = inner_perm().permute(state);
+        }
+        let expected: [F; DIGEST_SIZE] = state[..DIGEST_SIZE].try_into().unwrap();
+
+        let input_felts: Vec<Felt<F>> = input.iter().map(|x| builder.eval(*x)).collect();
+        let output_felts =
+            <ZkmGlobalContext as Poseidon2KoalaBearHasherVariable<WrapConfig>>::poseidon2_hash(
+                &mut builder,
+                &input_felts,
+            );
+        let expected_felts: [Felt<F>; DIGEST_SIZE] = expected.map(|x| builder.eval(x));
+        for (lhs, rhs) in output_felts.into_iter().zip(expected_felts) {
+            builder.assert_felt_eq(lhs, rhs);
+        }
+
+        let mut compiler = AsmCompiler::<WrapConfig>::default();
+        let program = Arc::new(compiler.compile(builder.into_operations()));
+
+        let mut runtime = Runtime::<F, EF, Poseidon2InternalLayerKoalaBear<16>>::new(
+            program.clone(),
+            KoalaBearPoseidon2::new().perm,
+        );
+        runtime.run().unwrap();
+
+        prove_and_verify(program, runtime.record);
+    }
 }

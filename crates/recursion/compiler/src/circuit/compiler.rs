@@ -762,15 +762,16 @@ where
         self.next_addr = Default::default();
         self.virtual_to_physical.clear();
         // Place constant-initializing instructions at the top.
-        let (instructions, traces) = tracing::debug_span!("construct program").in_scope(|| {
-            if debug_mode {
-                let instrs_all = instrs_consts.chain(instrs);
-                let traces_all = std::iter::repeat_n(None, total_consts).chain(traces);
-                (instrs_all.collect(), traces_all.collect())
-            } else {
-                (instrs_consts.chain(instrs).collect(), traces)
-            }
-        });
+        let (instructions, traces): (Vec<_>, Vec<_>) =
+            tracing::debug_span!("construct program").in_scope(|| {
+                if debug_mode {
+                    let instrs_all = instrs_consts.chain(instrs);
+                    let traces_all = std::iter::repeat_n(None, total_consts).chain(traces);
+                    (instrs_all.collect(), traces_all.collect())
+                } else {
+                    (instrs_consts.chain(instrs).collect(), traces)
+                }
+            });
         RecursionProgram { instructions, total_memory, traces, shape: None }
     }
 }

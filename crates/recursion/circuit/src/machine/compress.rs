@@ -44,7 +44,7 @@ pub enum PublicValuesOutputDigest {
 }
 
 /// Witness layout for the compress stage verifier.
-pub struct ZKMCompressWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> {
+pub struct ZKMCompressWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect> {
     /// The shard proofs to verify.
     pub vks_and_proofs:
         Vec<(MachineVerifyingKeyVariable<C, ZkmGlobalContext>, ShardProofVariable<C, ZkmGlobalContext>)>,
@@ -62,7 +62,7 @@ pub struct ZKMCompressWitnessValues<GC: IopCtx, Proof> {
 
 impl<C, A> ZKMCompressVerifier<C, A>
 where
-    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect,
     A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     /// Verify a batch of recursive proofs and aggregate their public values.

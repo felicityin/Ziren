@@ -400,6 +400,16 @@ impl<C: Config> CanObserveVariable<C, Felt<C::F>> for MultiField32ChallengerVari
     }
 }
 
+impl<C: Config, const N: usize> CanObserveVariable<C, [Felt<C::F>; N]>
+    for MultiField32ChallengerVariable<C>
+{
+    fn observe(&mut self, builder: &mut Builder<C>, values: [Felt<C::F>; N]) {
+        for value in values {
+            self.observe(builder, value);
+        }
+    }
+}
+
 impl<C: Config> CanObserveVariable<C, [Var<C::N>; OUTER_MULTI_FIELD_CHALLENGER_DIGEST_SIZE]>
     for MultiField32ChallengerVariable<C>
 {

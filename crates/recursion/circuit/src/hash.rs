@@ -174,9 +174,65 @@ impl<C: CircuitConfig<F = KoalaBear>> Poseidon2KoalaBearHasherVariable<C> for Zk
     }
 }
 
-impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> FieldHasherVariable<C>
-    for ZkmGlobalContext
-{
+/// Selects between two `Felt<KoalaBear>` values given a condition of the implementor's own
+/// native bit type. `ZkmGlobalContext`'s `FieldHasherVariable<C>` impl below needs to work for
+/// both the inner (`Bit = Felt<KoalaBear>`) and outer (`Bit = Var<Bn254Fr>`) circuits -- a
+/// single blanket impl bound on two different `CircuitConfig<Bit = ...>` constraints isn't
+/// possible (rustc's coherence check treats the two associated-type bounds as potentially
+/// overlapping even though no real `C` satisfies both), so the actual select operation is
+/// factored out here and implemented concretely per config, letting `FieldHasherVariable`'s own
+/// impl stay single and generic over this trait instead.
+pub trait KoalaBearFeltSelect: CircuitConfig<F = KoalaBear> {
+    /// Swaps `input` if `should_swap`: returns `[input[1], input[0]]` if `should_swap`, else
+    /// `input` unchanged. Matches `DslIr::Select`'s dual-output swap semantics.
+    fn select_koalabear_felt_swap(
+        builder: &mut Builder<Self>,
+        should_swap: Self::Bit,
+        input: [Felt<KoalaBear>; 2],
+    ) -> [Felt<KoalaBear>; 2];
+}
+
+impl KoalaBearFeltSelect for zkm_recursion_compiler::config::InnerConfig {
+    fn select_koalabear_felt_swap(
+        builder: &mut Builder<Self>,
+        should_swap: Self::Bit,
+        input: [Felt<KoalaBear>; 2],
+    ) -> [Felt<KoalaBear>; 2] {
+        let result0 = builder.uninit();
+        let result1 = builder.uninit();
+        builder.push_op(DslIr::Select(should_swap, result0, result1, input[0], input[1]));
+        [result0, result1]
+    }
+}
+
+impl KoalaBearFeltSelect for crate::WrapConfig {
+    fn select_koalabear_felt_swap(
+        builder: &mut Builder<Self>,
+        should_swap: Self::Bit,
+        input: [Felt<KoalaBear>; 2],
+    ) -> [Felt<KoalaBear>; 2] {
+        let result0 = builder.uninit();
+        let result1 = builder.uninit();
+        builder.push_op(DslIr::Select(should_swap, result0, result1, input[0], input[1]));
+        [result0, result1]
+    }
+}
+
+impl KoalaBearFeltSelect for zkm_recursion_compiler::config::OuterConfig {
+    fn select_koalabear_felt_swap(
+        builder: &mut Builder<Self>,
+        should_swap: Self::Bit,
+        input: [Felt<KoalaBear>; 2],
+    ) -> [Felt<KoalaBear>; 2] {
+        let result0 = builder.uninit();
+        builder.push_op(DslIr::CircuitSelectF(should_swap, input[1], input[0], result0));
+        let result1 = builder.uninit();
+        builder.push_op(DslIr::CircuitSelectF(should_swap, input[0], input[1], result1));
+        [result0, result1]
+    }
+}
+
+impl<C: KoalaBearFeltSelect> FieldHasherVariable<C> for ZkmGlobalContext {
     type DigestVariable = [Felt<KoalaBear>; DIGEST_SIZE];
 
     fn hash(builder: &mut Builder<C>, input: &[Felt<<C as Config>::F>]) -> Self::DigestVariable {
@@ -187,7 +243,12 @@ impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> FieldHasherVariable
         builder: &mut Builder<C>,
         input: [Self::DigestVariable; 2],
     ) -> Self::DigestVariable {
-        C::poseidon2_compress_v2(builder, input.into_iter().flatten())
+        let mut pre_iter =
+            input.into_iter().flatten().chain(repeat(builder.eval(KoalaBear::ZERO)));
+        let pre: [Felt<KoalaBear>; PERMUTATION_WIDTH] =
+            core::array::from_fn(move |_| pre_iter.next().unwrap());
+        let post = <Self as Poseidon2KoalaBearHasherVariable<C>>::poseidon2_permute(builder, pre);
+        post[..DIGEST_SIZE].try_into().unwrap()
     }
 
     fn assert_digest_eq(
@@ -203,18 +264,15 @@ impl<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> FieldHasherVariable
         should_swap: <C as CircuitConfig>::Bit,
         input: [Self::DigestVariable; 2],
     ) -> [Self::DigestVariable; 2] {
-        let result0: [Felt<KoalaBear>; DIGEST_SIZE] = core::array::from_fn(|_| builder.uninit());
-        let result1: [Felt<KoalaBear>; DIGEST_SIZE] = core::array::from_fn(|_| builder.uninit());
+        let mut result0: [Felt<KoalaBear>; DIGEST_SIZE] = core::array::from_fn(|_| builder.uninit());
+        let mut result1: [Felt<KoalaBear>; DIGEST_SIZE] = core::array::from_fn(|_| builder.uninit());
 
-        (0..DIGEST_SIZE).for_each(|i| {
-            builder.push_op(DslIr::Select(
-                should_swap,
-                result0[i],
-                result1[i],
-                input[0][i],
-                input[1][i],
-            ));
-        });
+        for i in 0..DIGEST_SIZE {
+            let [r0, r1] =
+                C::select_koalabear_felt_swap(builder, should_swap, [input[0][i], input[1][i]]);
+            result0[i] = r0;
+            result1[i] = r1;
+        }
 
         [result0, result1]
     }
@@ -303,3 +361,4 @@ impl<C: CircuitConfig<F = KoalaBear, N = Bn254Fr, Bit = Var<Bn254Fr>>> FieldHash
         }
     }
 }
+

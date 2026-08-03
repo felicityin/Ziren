@@ -1,10 +1,10 @@
 use slop_challenger::IopCtx;
-use slop_merkle_tree::Poseidon2KoalaBear16Prover;
+use slop_merkle_tree::{BnProver, Poseidon2KoalaBear16Prover};
 use slop_multilinear::MultilinearPcsVerifier;
 use slop_stacked::StackedPcsProver;
 
 use crate::{
-    config::{ZkmGlobalContext, ZkmStackedPcs},
+    config::{ZkmExtensionField, ZkmField, ZkmGlobalContext, ZkmOuterGlobalContext, ZkmOuterStackedPcs, ZkmStackedPcs},
     shard_context::ShardContextImpl,
     GkrProverImpl, LogupGkrCpuTraceGenerator, ShardVerifier, ZerocheckAir,
 };
@@ -24,6 +24,18 @@ pub type ZkmInnerPcsProver = StackedPcsProver<ZkmMerkleTreeProver, ZkmGlobalCont
 
 /// Ziren's own CPU shard prover, instantiated with its stacked-basefold PCS over `KoalaBear`.
 pub type ZkmShardProver<A> = CpuShardProver<ZkmGlobalContext, ZkmStackedPcs, ZkmInnerPcsProver, A>;
+
+/// The Merkle-tree prover used for the outer/wrap stage's stacked-basefold PCS: chip values stay
+/// `KoalaBear`-typed, but the tree itself is committed with a Bn254-native Poseidon2 sponge (see
+/// [`ZkmOuterGlobalContext`]'s doc comment).
+pub type ZkmOuterMerkleTreeProver = BnProver<ZkmField, ZkmExtensionField>;
+
+/// The concrete PCS prover components used by Ziren's wrap-stage shard prover.
+pub type ZkmOuterPcsProver = StackedPcsProver<ZkmOuterMerkleTreeProver, ZkmOuterGlobalContext>;
+
+/// Ziren's wrap-stage CPU shard prover, instantiated with its stacked-basefold PCS over the
+/// Bn254-bridged outer context.
+pub type ZkmOuterShardProver<A> = CpuShardProver<ZkmOuterGlobalContext, ZkmOuterStackedPcs, ZkmOuterPcsProver, A>;
 
 impl<GC, Verifier, A, PcsComponents> CpuShardProver<GC, Verifier, PcsComponents, A>
 where

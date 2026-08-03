@@ -20,6 +20,7 @@ use zkm_hypercube::{
 };
 use zkm_primitives::{consts::WORD_SIZE, io::ZKMPublicValues};
 
+use zkm_recursion_circuit::machine::RootPublicValues;
 use zkm_recursion_core::air::RecursionPublicValues;
 use zkm_recursion_gnark_ffi::{
     Groth16Bn254Proof, Groth16Bn254Prover, PlonkBn254Proof, PlonkBn254Prover,
@@ -27,9 +28,10 @@ use zkm_recursion_gnark_ffi::{
 
 use crate::{
     build::zkm_imm_wrap_vk_mode, components::ZKMProverComponents, core_max_log_row_count,
-    recursion_max_log_row_count, utils::is_recursion_public_values_valid, CompressAir,
-    HashableKey, ShrinkAir, ZKMCoreProofData, ZKMProver, ZKMReduceProofWrapper, ZKMVerifyingKey,
-    ZKMWrapProof,
+    recursion_max_log_row_count,
+    utils::{is_recursion_public_values_valid, is_root_public_values_valid},
+    CompressAir, HashableKey, ShrinkAir, ZKMCoreProofData, ZKMProver, ZKMReduceProofWrapper,
+    ZKMVerifyingKey, ZKMWrapProof,
 };
 
 /// Errors that can occur when verifying a native (KoalaBear) STARK-level Ziren proof.
@@ -335,10 +337,15 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
             .verify_shard(shrink_vk, shard_proof, &mut challenger)
             .map_err(|e| ZKMVerificationError::ShardVerification(format!("{e:?}")))?;
 
-        // Validate public values.
+        // Validate public values. Shrink (and, by forwarding, wrap) produces a root-level digest
+        // (see `shrink_program`'s `PublicValuesOutputDigest::Root`), not the intermediate-
+        // compress-round one, so this must check against `RootPublicValues`'s digest, not
+        // `RecursionPublicValues`'s.
         let public_values: &RecursionPublicValues<_> =
             shard_proof.public_values.as_slice().borrow();
-        if !is_recursion_public_values_valid(public_values) {
+        let root_public_values: &RootPublicValues<KoalaBear> =
+            shard_proof.public_values.as_slice().borrow();
+        if !is_root_public_values_valid(root_public_values) {
             return Err(ZKMVerificationError::InvalidPublicValues(
                 "recursion public values are invalid",
             ));
@@ -374,15 +381,63 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
     /// Verify a wrap bn254 proof.
     ///
-    /// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see `lib.rs`'s module doc comment.
+    /// Unlike [`Self::verify_shrink`], there's no `vk_merkle_proof`/`recursion_vk_map` membership
+    /// check: the wrap proof's own vk was never given a real membership proof to begin with
+    /// (`ZKMProver::wrap_bn254`'s doc comment), since it's never itself an input to a further
+    /// recursion step.
     pub fn verify_wrap_bn254(
         &self,
-        _proof: &ZKMWrapProof,
-        _vk: &ZKMVerifyingKey,
+        proof: &ZKMWrapProof,
+        vk: &ZKMVerifyingKey,
     ) -> Result<(), ZKMVerificationError> {
-        unimplemented!(
-            "outer/Bn254 wrap verification is blocked on task #57 (ZkmOuterGlobalContext)"
-        )
+        let ZKMWrapProof { vk: wrap_vk, proof: shard_proof, .. } = proof;
+
+        let shard_verifier: ShardVerifier<
+            zkm_hypercube::config::ZkmOuterGlobalContext,
+            zkm_hypercube::shard_context::ShardContextImpl<
+                zkm_hypercube::config::ZkmOuterGlobalContext,
+                zkm_hypercube::config::ZkmOuterStackedPcs,
+                crate::WrapAir<KoalaBear>,
+            >,
+        > = ShardVerifier {
+            jagged_pcs_verifier: zkm_hypercube::config::ZkmOuterPcsVerifier::new_from_basefold_params(
+                ultra_compressed_fri_config(),
+                zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
+                recursion_max_log_row_count(),
+                zkm_hypercube::config::NUM_ZKM_COMMITMENTS,
+            ),
+            machine: crate::WrapAir::<KoalaBear>::wrap_machine(),
+        };
+        let mut challenger = zkm_hypercube::config::ZkmOuterGlobalContext::default_challenger();
+        wrap_vk.observe_into(&mut challenger);
+        shard_verifier
+            .verify_shard(wrap_vk, shard_proof, &mut challenger)
+            .map_err(|e| ZKMVerificationError::ShardVerification(format!("{e:?}")))?;
+
+        // Wrap forwards the shrink proof's public values unchanged (see
+        // `ZKMWrapVerifier::verify`'s `commit_public_values_v2`), so its digest is still the
+        // root-level one `shrink_program`'s `PublicValuesOutputDigest::Root` produces, not the
+        // intermediate-compress-round one.
+        let public_values: &RecursionPublicValues<_> =
+            shard_proof.public_values.as_slice().borrow();
+        let root_public_values: &RootPublicValues<KoalaBear> =
+            shard_proof.public_values.as_slice().borrow();
+        if !is_root_public_values_valid(root_public_values) {
+            return Err(ZKMVerificationError::InvalidPublicValues(
+                "recursion public values are invalid",
+            ));
+        }
+
+        if public_values.vk_root != self.recursion_vk_root {
+            return Err(ZKMVerificationError::InvalidPublicValues("vk_root mismatch"));
+        }
+
+        let vkey_hash = vk.hash_koalabear();
+        if public_values.zkm_vk_digest != vkey_hash {
+            return Err(ZKMVerificationError::InvalidPublicValues("Ziren vk hash mismatch"));
+        }
+
+        Ok(())
     }
 
     /// Verifies a PLONK proof using the circuit artifacts in the build directory.

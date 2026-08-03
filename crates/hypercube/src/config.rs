@@ -1,3 +1,4 @@
+use slop_bn254::BNGC;
 use slop_challenger::IopCtx;
 use slop_jagged::JaggedPcsVerifier;
 use slop_koala_bear::KoalaBearDegree4Duplex;
@@ -13,6 +14,16 @@ pub type ZkmExtensionField = <ZkmGlobalContext as IopCtx>::EF;
 pub type ZkmStackedPcs = StackedPcsVerifier<ZkmGlobalContext>;
 
 pub type ZkmPcsVerifier = JaggedPcsVerifier<ZkmGlobalContext, ZkmStackedPcs>;
+
+/// The Bn254-bridged `IopCtx` used for the outer/wrap stage: chip values stay KoalaBear-typed
+/// (`ZkmField`/`ZkmExtensionField`, same as [`ZkmGlobalContext`]), but commitments/challenges are
+/// computed with a Bn254-native Poseidon2 sponge instead of a KoalaBear one, so the wrap proof's
+/// own commitments are cheap to re-verify inside a Bn254-native PLONK/Groth16 circuit.
+pub type ZkmOuterGlobalContext = BNGC<ZkmField, ZkmExtensionField>;
+
+pub type ZkmOuterStackedPcs = StackedPcsVerifier<ZkmOuterGlobalContext>;
+
+pub type ZkmOuterPcsVerifier = JaggedPcsVerifier<ZkmOuterGlobalContext, ZkmOuterStackedPcs>;
 
 pub const NUM_ZKM_COMMITMENTS: usize = 2;
 

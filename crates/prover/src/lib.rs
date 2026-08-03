@@ -53,7 +53,7 @@ use zkm_core_machine::{
 };
 use zkm_hypercube::{
     config::{compressed_fri_config, default_fri_config, ultra_compressed_fri_config, ZkmGlobalContext},
-    prover::{AirProver, ProverSemaphore, ZkmShardProver},
+    prover::{AirProver, ProverSemaphore, ZkmOuterShardProver, ZkmShardProver},
     verifier::ShardVerifier,
     word::Word,
     ZKMReduceProof, DIGEST_SIZE,
@@ -66,12 +66,13 @@ use zkm_recursion_circuit::{
         PublicValuesOutputDigest, ZKMCompressRootVerifierWithVKey, ZKMCompressWithVKeyVerifier,
         ZKMCompressWithVKeyWitnessValues, ZKMCompressWitnessValues, ZKMDeferredVerifier,
         ZKMDeferredWitnessValues, ZKMMerkleProofWitnessValues, ZKMRecursionWitnessValues,
-        ZKMRecursiveVerifier,
+        ZKMRecursiveVerifier, ZKMWrapVerifier,
     },
     merkle_tree::MerkleTree,
     shard::RecursiveShardVerifier,
     witness::Witnessable,
 };
+use zkm_recursion_circuit::WrapConfig;
 use zkm_recursion_compiler::{circuit::AsmCompiler, config::InnerConfig, ir::Builder};
 use zkm_recursion_core::{
     air::RecursionPublicValues,
@@ -132,6 +133,9 @@ pub struct ZKMProver<C: ZKMProverComponents = DefaultProverComponents> {
 
     /// The machine used for proving the shrink step.
     pub shrink_prover: C::ShrinkProver,
+
+    /// The machine used for proving the outer (Bn254-bridged) wrap step.
+    pub wrap_prover: C::WrapProver,
 
     /// The root of the allowed recursion verification keys.
     pub recursion_vk_root: <ZkmGlobalContext as FieldHasher<KoalaBear>>::Digest,
@@ -201,6 +205,16 @@ impl ZKMProver<DefaultProverComponents> {
             ),
         );
 
+        let wrap_prover = ZkmOuterShardProver::<WrapAir<KoalaBear>>::new(ShardVerifier {
+            jagged_pcs_verifier: zkm_hypercube::config::ZkmOuterPcsVerifier::new_from_basefold_params(
+                ultra_compressed_fri_config(),
+                zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
+                recursion_max_log_row_count(),
+                zkm_hypercube::config::NUM_ZKM_COMMITMENTS,
+            ),
+            machine: WrapAir::<KoalaBear>::wrap_machine(),
+        });
+
         let vk_verification =
             env::var("VERIFY_VK").map(|v| v.eq_ignore_ascii_case("true")).unwrap_or(true);
 
@@ -225,6 +239,7 @@ impl ZKMProver<DefaultProverComponents> {
             core_prover,
             compress_prover,
             shrink_prover,
+            wrap_prover,
             recursion_vk_root: root,
             recursion_vk_map: allowed_vk_map,
             recursion_vk_tree: merkle_tree,
@@ -424,12 +439,17 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         let mut builder = Builder::<InnerConfig>::default();
         let input_var = input.read(&mut builder);
         let machine = self.compress_circuit_verifier();
+        // Shrink is the last reduce-tower stage before wrap, so its output must carry the small,
+        // fixed-size root digest (`zkm_vk_digest` + `committed_value_digest` only) that
+        // `ZKMWrapVerifier::verify` (`RootPublicValues`/`root_public_values_digest`) expects --
+        // not the larger intermediate-compress-round digest `Reduce` produces, which covers the
+        // whole `RecursionPublicValues` struct and never matched wrap's re-verification.
         ZKMCompressRootVerifierWithVKey::verify(
             &mut builder,
             &machine,
             input_var,
             self.vk_verification,
-            PublicValuesOutputDigest::Reduce,
+            PublicValuesOutputDigest::Root,
         );
         let operations = builder.into_operations();
         builder_span.exit();
@@ -747,16 +767,89 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
 
     /// Wrap a reduce proof into a STARK proven over a SNARK-friendly (Bn254) field.
     ///
-    /// Blocked on task #57 (`ZkmOuterGlobalContext`) -- see the module doc comment.
+    /// The circuit itself is unchanged from the inner wrap step (`ZKMWrapVerifier::verify`, same
+    /// as every other recursion stage), except it's built with `WrapConfig` instead of
+    /// `InnerConfig`: `wrap_prover`'s machine (`WrapAir`, `WRAP_DEGREE = 9`) uses row-local
+    /// Poseidon2 S-box/linear-layer chips instead of the wide monolithic-permutation chip
+    /// compress/shrink use, and only `WrapConfig::poseidon2_permute_v2` emits instructions
+    /// matching that chip set (`WrapConfig`'s own doc comment) -- using `InnerConfig` compiles
+    /// and runs fine but produces a trace shaped for the wrong chips, caught downstream as an
+    /// `assertion left == right` panic during `generate_dependencies`. `WrapConfig::N == F`
+    /// still (same as `InnerConfig`), so `AsmCompiler::compile` (which requires `C::N == C::F`)
+    /// still applies; only the Poseidon2 gadget differs. What makes the *resulting proof* outer
+    /// is which prover commits it: `self.wrap_prover`'s own context is `ZkmOuterGlobalContext`,
+    /// so its commitments are Bn254-native even though the circuit that produced the trace never
+    /// mentions Bn254 at all. `Program<GC, SC>`/`Record<GC, SC>` (used by
+    /// `AirProver::setup_and_prove_shard`) only depend on `SC::Air`'s own associated types, not on
+    /// `GC`, so the exact same `RecursionProgram<KoalaBear>`/`ExecutionRecord<KoalaBear>` that
+    /// `self.shrink_prover` would consume is valid input for `self.wrap_prover` too.
     #[instrument(name = "wrap_bn254", level = "info", skip_all)]
     pub fn wrap_bn254(
         &self,
-        _compressed_proof: ZKMReduceProofWrapper,
+        compressed_proof: ZKMReduceProofWrapper,
         _opts: ZKMProverOpts,
     ) -> Result<ZKMWrapProof, ZKMRecursionProverError> {
-        unimplemented!(
-            "outer/Bn254 wrap proving is blocked on task #57 (ZkmOuterGlobalContext)"
-        )
+        let ZKMReduceProof { vk: compressed_vk, proof: compressed_proof, .. } = compressed_proof;
+        let input = ZKMCompressWitnessValues {
+            vks_and_proofs: vec![(compressed_vk, compressed_proof)],
+            is_complete: true,
+        };
+
+        let mut builder = Builder::<WrapConfig>::default();
+        let input_var = input.read(&mut builder);
+        // The verifier here checks the *input* proof, i.e. what `self.shrink_prover` produced --
+        // not what `self.wrap_prover` will later prove. Passing `self.wrap_prover`'s own machine
+        // instead panics deep in `RecursiveLogUpGkrVerifier` (a dimension mismatch between the
+        // shrink proof's real chip/interaction count and `WrapAir`'s), the same
+        // verify-vs-prove-machine distinction `shrink()` makes via `compress_circuit_verifier()`
+        // (verify) vs `self.shrink_prover` (prove).
+        let machine = RecursiveShardVerifier::from_basefold_parameters(
+            ultra_compressed_fri_config(),
+            zkm_stark::RECURSION_LOG_STACKING_HEIGHT,
+            recursion_max_log_row_count(),
+            self.shrink_prover.machine().clone(),
+        );
+        ZKMWrapVerifier::verify(&mut builder, &machine, input_var);
+        let operations = builder.into_operations();
+
+        let mut compiler = AsmCompiler::<WrapConfig>::default();
+        let program = compiler.compile(operations);
+
+        let mut witness_stream = Vec::new();
+        Witnessable::<WrapConfig>::write(&input, &mut witness_stream);
+
+        let mut runtime =
+            RecursionRuntime::<KoalaBear, zkm_stark::InnerChallenge, _>::new(
+                program.clone().into(),
+                inner_perm(),
+            );
+        runtime.witness_stream = witness_stream.into();
+        runtime.run().map_err(|e| ZKMRecursionProverError::RuntimeError(e.to_string())).unwrap();
+        runtime.print_stats();
+        let mut record = runtime.record;
+
+        self.wrap_prover
+            .machine()
+            .generate_dependencies(std::iter::once(&mut record), None)
+            .unwrap();
+
+        let async_rt =
+            tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (wrap_vk, wrap_proof, _permit) = async_rt.block_on(
+            self.wrap_prover.setup_and_prove_shard(
+                program.into(),
+                record,
+                None,
+                ProverSemaphore::new(1),
+            ),
+        );
+
+        // Unlike a recursion-stage `ZKMReduceProofWrapper`, the wrap proof's own vk is never
+        // itself an input to a further recursion step, so there's no "is this vk allowed"
+        // membership check for it to carry -- the field exists only because `ZKMWrapProof`
+        // reuses `ZKMReduceProof`'s shape.
+        let vk_merkle_proof = zkm_hypercube::verifier::MerkleProof { index: 0, path: vec![] };
+        Ok(ZKMWrapProof { vk: wrap_vk, proof: wrap_proof, vk_merkle_proof })
     }
 
     /// Wrap the STARK proven over a SNARK-friendly field into a PLONK proof.
@@ -1315,6 +1408,33 @@ pub mod tests {
         let shrink_proof = prover.shrink(compressed_proof, opts)?;
         prover.verify_shrink(&shrink_proof, &vk)?;
         println!("shrink proof generated and verified");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn measure_wrap_proof() -> Result<()> {
+        setup_logger();
+        let elf = test_artifacts::HELLO_WORLD_ELF;
+        let opts = ZKMProverOpts::default();
+        let mut prover = ZKMProver::<DefaultProverComponents>::new();
+        prover.vk_verification = false;
+        let context = ZKMContext::default();
+
+        let (_, program, vk) = prover.setup(elf);
+        let core_proof = prover.prove_core(program, &ZKMStdin::default(), opts, context)?;
+        prover.verify(&core_proof.proof, &vk)?;
+
+        let compressed_proof = prover.compress(&vk, core_proof, vec![], opts)?;
+        prover.verify_compressed(&compressed_proof, &vk)?;
+
+        let shrink_proof = prover.shrink(compressed_proof, opts)?;
+        prover.verify_shrink(&shrink_proof, &vk)?;
+
+        let wrap_proof = prover.wrap_bn254(shrink_proof, opts)?;
+        prover.verify_wrap_bn254(&wrap_proof, &vk)?;
+        println!("wrap bn254 proof generated and verified");
         Ok(())
     }
 

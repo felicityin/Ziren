@@ -152,6 +152,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
             RecursionAir::Poseidon2SBox(Poseidon2SBoxChip),
             RecursionAir::ExtFeltConvert(ConvertChip),
             RecursionAir::Select(SelectChip),
+            RecursionAir::PrefixSumChecks(PrefixSumChecksChip),
             RecursionAir::PublicValues(PublicValuesChip),
         ]
         .map(Chip::new)

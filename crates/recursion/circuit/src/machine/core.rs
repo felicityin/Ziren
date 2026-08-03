@@ -34,7 +34,7 @@ use crate::{
     CircuitConfig,
 };
 
-pub struct ZKMRecursionWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>> {
+pub struct ZKMRecursionWitnessVariable<C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect> {
     pub vk: MachineVerifyingKeyVariable<C, ZkmGlobalContext>,
     pub shard_proofs: Vec<ShardProofVariable<C, ZkmGlobalContext>>,
     pub is_complete: Felt<C::F>,
@@ -61,7 +61,7 @@ pub struct ZKMRecursiveVerifier<C: Config> {
 
 impl<C> ZKMRecursiveVerifier<C>
 where
-    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect,
 {
     /// Verify a batch of Ziren shard proofs and aggregate their public values.
     ///

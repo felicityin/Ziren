@@ -21,6 +21,7 @@ slop-multilinear = { workspace = true }
 slop-challenger = { workspace = true }
 slop-matrix = { workspace = true }
 slop-koala-bear = { workspace = true }
+slop-bn254 = { workspace = true }
 slop-symmetric = { workspace = true }
 slop-stacked = { workspace = true }
 slop-merkle-tree = { workspace = true }

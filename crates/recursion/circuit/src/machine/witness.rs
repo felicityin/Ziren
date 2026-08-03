@@ -78,7 +78,7 @@ where
 
 impl<C> Witnessable<C> for ZKMRecursionWitnessValues<ZkmGlobalContext, StackedBasefoldProof<ZkmGlobalContext>>
 where
-    C: CircuitConfig<F = InnerVal, EF = InnerChallenge, Bit = Felt<InnerVal>>,
+    C: CircuitConfig<F = InnerVal, EF = InnerChallenge, Bit = Felt<InnerVal>> + crate::hash::KoalaBearFeltSelect,
 {
     type WitnessVariable = ZKMRecursionWitnessVariable<C>;
 
@@ -102,7 +102,7 @@ where
 
 impl<C> Witnessable<C> for ZKMCompressWitnessValues<ZkmGlobalContext, StackedBasefoldProof<ZkmGlobalContext>>
 where
-    C: CircuitConfig<F = InnerVal, EF = InnerChallenge, Bit = Felt<InnerVal>>,
+    C: CircuitConfig<F = InnerVal, EF = InnerChallenge, Bit = Felt<InnerVal>> + crate::hash::KoalaBearFeltSelect,
 {
     type WitnessVariable = ZKMCompressWitnessVariable<C>;
 
@@ -121,7 +121,7 @@ where
 
 impl<C> Witnessable<C> for ZKMDeferredWitnessValues<ZkmGlobalContext, StackedBasefoldProof<ZkmGlobalContext>>
 where
-    C: CircuitConfig<F = InnerVal, EF = InnerChallenge, Bit = Felt<InnerVal>>,
+    C: CircuitConfig<F = InnerVal, EF = InnerChallenge, Bit = Felt<InnerVal>> + crate::hash::KoalaBearFeltSelect,
 {
     type WitnessVariable = ZKMDeferredWitnessVariable<C>;
 

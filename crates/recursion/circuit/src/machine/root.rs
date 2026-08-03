@@ -36,7 +36,7 @@ pub struct ZKMCompressRootVerifierWithVKey<C, A> {
 
 impl<C, A> ZKMCompressRootVerifier<C, A>
 where
-    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect,
     A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     pub fn verify(
@@ -60,7 +60,7 @@ where
 
 impl<C, A> ZKMCompressRootVerifierWithVKey<C, A>
 where
-    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>>,
+    C: CircuitConfig<F = KoalaBear, Bit = Felt<KoalaBear>> + crate::hash::KoalaBearFeltSelect,
     A: MachineAir<C::F> + for<'a> Air<RecursiveVerifierConstraintFolder<'a, C>>,
 {
     pub fn verify(
