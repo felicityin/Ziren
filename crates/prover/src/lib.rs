@@ -104,7 +104,7 @@ const COMPRESS_DEGREE: usize = 3;
 const SHRINK_DEGREE: usize = 3;
 const WRAP_DEGREE: usize = 9;
 
-pub const REDUCE_BATCH_SIZE: usize = 2;
+pub const REDUCE_BATCH_SIZE: usize = 4;
 
 pub type CompressAir<F> = RecursionAir<F, COMPRESS_DEGREE>;
 pub type ShrinkAir<F> = RecursionAir<F, SHRINK_DEGREE>;
@@ -884,6 +884,8 @@ pub mod tests {
     use super::*;
 
     use anyhow::Result;
+    use slop_air::BaseAir;
+    use zkm_hypercube::air::MachineAir;
 
     #[cfg(test)]
     use serial_test::serial;
@@ -1204,6 +1206,60 @@ pub mod tests {
             opts,
             Test::All,
         )
+    }
+
+    #[test]
+    #[serial]
+    #[ignore]
+    fn measure_compress_arity_heights() -> Result<()> {
+        setup_logger();
+        let elf = test_artifacts::HELLO_WORLD_ELF;
+        let opts = ZKMProverOpts::default();
+        let mut prover = ZKMProver::<DefaultProverComponents>::new();
+        prover.vk_verification = false;
+        let context = ZKMContext::default();
+
+        let (_, program, vk) = prover.setup(elf);
+        let core_proof = prover.prove_core(program, &ZKMStdin::default(), opts, context)?;
+        let shard_proofs = &core_proof.proof.0;
+        println!("core shard count: {}", shard_proofs.len());
+
+        let first_layer_inputs = prover.get_first_layer_inputs(&vk, shard_proofs, &[], 1);
+        let first = first_layer_inputs.into_iter().next().expect("at least one shard");
+        let real_pair = prover.prove_compress_witness(first);
+
+        let machine = CompressAir::<KoalaBear>::compress_machine();
+        let width_of = |name: &str| -> usize {
+            machine
+                .chips()
+                .iter()
+                .find(|c| c.name() == name)
+                .map(|c| c.width() + c.preprocessed_width())
+                .unwrap_or(0)
+        };
+
+        for arity in [2usize, 4usize] {
+            let vks_and_proofs = vec![real_pair.clone(); arity];
+            let input = ZKMCompressWitnessValues { vks_and_proofs, is_complete: false };
+            let input_with_merkle = prover.make_merkle_proofs(input);
+            let program = compress_program_from_input::<DefaultProverComponents>(
+                None,
+                &prover.compress_circuit_verifier(),
+                prover.vk_verification,
+                &input_with_merkle,
+            );
+            let heights = CompressAir::<KoalaBear>::heights(&program);
+            let mut total_cells = 0usize;
+            println!("=== arity={arity} ===");
+            for (name, height) in &heights {
+                let tight = height.next_multiple_of(32);
+                let cells = tight * width_of(name);
+                total_cells += cells;
+                println!("{name}: real={height} tight32={tight} width={} cells={cells}", width_of(name));
+            }
+            println!("arity={arity} total_cells={total_cells}");
+        }
+        Ok(())
     }
 
     /// Tests an end-to-end workflow of proving a program across the entire proof generation

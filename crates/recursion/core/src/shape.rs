@@ -188,10 +188,19 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
         // by over an order of magnitude across sampled programs depending on precompile/syscall
         // mix, the widest per-program variance of any dimension here, so it's the one entry
         // where an unsampled program is most likely to exceed what's been measured so far.
-        // "Fallback" covers shards whose real heights don't fit "fastest", every dimension
-        // capped at the hard `1 << RECURSION_MAX_LOG_ROW_COUNT` ceiling -- the most headroom
-        // obtainable under that limit. If a real shard's measured height still exceeds even
-        // this tier, `fix_shape` panics with "no shape found". These have not yet been
+        // "Fastest x2" sits between "fastest" and "fallback": every dimension is exactly double
+        // "fastest"'s. `heights()` scales almost exactly linearly with `REDUCE_BATCH_SIZE` (each
+        // additional child in a compress node is an independent verify-shard sub-circuit, so this
+        // is a structural property of the circuit, not data-dependent) -- measured directly via a
+        // real compress-node compile at arity 2 vs 4, every non-PublicValues dimension came out
+        // within 0.02% of exactly 2x. "Fastest" itself stays calibrated to `REDUCE_BATCH_SIZE`'s
+        // arity for `recursion_program`'s always-arity-1 case, which this tier leaves untouched
+        // (it's still the first, tightest entry `fix_shape` tries).
+        //
+        // "Fallback" covers shards whose real heights don't fit "fastest" or "fastest x2", every
+        // dimension capped at the hard `1 << RECURSION_MAX_LOG_ROW_COUNT` ceiling -- the most
+        // headroom obtainable under that limit. If a real shard's measured height still exceeds
+        // even this tier, `fix_shape` panics with "no shape found". These have not yet been
         // validated against deferred proofs, which could plausibly need a larger
         // `RECURSION_MAX_LOG_ROW_COUNT` outright.
         let allowed_shapes = [
@@ -204,6 +213,17 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
                 (ext_alu.clone(), 262_144),
                 (poseidon2_wide.clone(), 131_072),
                 (prefix_sum_checks.clone(), 524_288),
+                (public_values.clone(), PUB_VALUES_NUM_ROWS),
+            ],
+            // Fastest x2 shape.
+            [
+                (mem_var.clone(), 1_048_576),
+                (select.clone(), 2_097_152),
+                (mem_const.clone(), 262_144),
+                (base_alu.clone(), 262_144),
+                (ext_alu.clone(), 524_288),
+                (poseidon2_wide.clone(), 262_144),
+                (prefix_sum_checks.clone(), 1_048_576),
                 (public_values.clone(), PUB_VALUES_NUM_ROWS),
             ],
             // Fallback shape, with more headroom on the dimensions with the most real

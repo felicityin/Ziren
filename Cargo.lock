@@ -8441,6 +8441,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "slop-air",
  "slop-challenger",
  "test-artifacts",
  "thiserror 1.0.69",
