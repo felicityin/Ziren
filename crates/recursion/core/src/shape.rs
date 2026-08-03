@@ -14,12 +14,44 @@ use crate::{
         mem::{MemoryConstChip, MemoryVarChip},
         poseidon2_wide::Poseidon2WideChip,
         prefix_sum_checks::PrefixSumChecksChip,
-        public_values::{PublicValuesChip, PUB_VALUES_LOG_HEIGHT},
+        public_values::PublicValuesChip,
         select::SelectChip,
     },
     machine::RecursionAir,
     RecursionProgram, D,
 };
+
+/// The exact row count `PublicValues` gets padded to when a shape is configured. Real content is
+/// tiny and essentially constant across programs (a handful of rows), so no tier variance is
+/// needed here.
+const PUB_VALUES_NUM_ROWS: usize = 16;
+
+/// Pads `rows` in place to a target row count, mirroring
+/// `zkm_core_machine::utils::pad_rows_fixed` -- except `fixed_num_rows` (when set) is an exact
+/// row count rather than a log2 exponent, matching `RecursionProgram::fixed_num_rows`. Recursion
+/// chips use this instead of the core-machine version specifically to avoid that log2
+/// reinterpretation; core-machine's own shape-quantization mechanism was removed separately
+/// (task #24) and every core-machine call site now always passes `None`.
+pub fn pad_rows_fixed<R: Clone>(
+    rows: &mut Vec<R>,
+    row_fn: impl Fn() -> R,
+    fixed_num_rows: Option<usize>,
+    chip: &str,
+) {
+    let nb_rows = rows.len();
+    let dummy_row = row_fn();
+    let target = match fixed_num_rows {
+        Some(target) => {
+            assert!(
+                nb_rows <= target,
+                "{chip}: fixed rows is too small: got {nb_rows}, expected {target}"
+            );
+            target
+        }
+        None => nb_rows.next_power_of_two().max(16),
+    };
+    rows.resize(target, dummy_row);
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RecursionShape {
@@ -55,7 +87,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize>
             // If any of the heights is greater than the shape, continue.
             let mut valid = true;
             for (name, height) in heights.iter() {
-                if *height > (1 << shape.get(name).unwrap()) {
+                if *height > *shape.get(name).unwrap() {
                     valid = false;
                 }
             }
@@ -98,8 +130,11 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize>
                 map.insert(key.clone(), *current.max(shape.get(key).unwrap()));
             }
         }
-        map.values_mut().for_each(|x| *x += 2);
-        map.insert("PublicValues".to_string(), 4);
+        // 4x headroom over the union of every tier (mirrors the old log2 representation's
+        // `+= 2`, i.e. two extra power-of-two doublings, now expressed directly since entries
+        // are exact row counts rather than exponents).
+        map.values_mut().for_each(|x| *x *= 4);
+        map.insert("PublicValues".to_string(), PUB_VALUES_NUM_ROWS);
         Self { allowed_shapes: vec![map], _marker: PhantomData }
     }
 
@@ -132,12 +167,16 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
         //
         // Each chip's real per-program row count is measured by `heights()` above and compared
         // against these entries by `fix_shape`; a chip's actual padded row count at runtime is
-        // driven by the *shape* entry selected here (`fixed_log2_rows`, `chips/alu_ext.rs` and
+        // driven by the *shape* entry selected here (`fixed_num_rows`, `chips/alu_ext.rs` and
         // siblings), not by the real measured height directly -- so an oversized entry wastes
-        // real rows, and every entry must stay `<= RECURSION_MAX_LOG_ROW_COUNT`
-        // (`crates/stark/src/opts.rs`): the jagged PCS's `PaddedMle` storage is fixed to
-        // `2^RECURSION_MAX_LOG_ROW_COUNT` regardless of what a shape entry claims, so an entry
-        // exceeding it pads to more real rows than the PCS config can hold, panicking in
+        // real rows. Entries are exact row counts, not log2 exponents: the underlying `Mle`/
+        // `Tensor` machinery accepts any row count, and the jagged/stacked PCS's own alignment
+        // requirement applies to the aggregate committed area across all chips, not any
+        // individual chip's row count (see `RecursionProgram::fixed_num_rows`'s doc comment).
+        // Every entry must still stay `<= 1 << RECURSION_MAX_LOG_ROW_COUNT`
+        // (`crates/stark/src/opts.rs`): the jagged PCS's `PaddedMle` storage is fixed to that
+        // size regardless of what a shape entry claims, so an entry exceeding it pads to more
+        // real rows than the PCS config can hold, panicking in
         // `PaddedMle::padded`/`padded_with_zeros`.
         //
         // `fix_shape` tries each entry in order and only errors if every one is too small for
@@ -150,7 +189,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
         // mix, the widest per-program variance of any dimension here, so it's the one entry
         // where an unsampled program is most likely to exceed what's been measured so far.
         // "Fallback" covers shards whose real heights don't fit "fastest", every dimension
-        // capped at the hard `RECURSION_MAX_LOG_ROW_COUNT` ceiling -- the most headroom
+        // capped at the hard `1 << RECURSION_MAX_LOG_ROW_COUNT` ceiling -- the most headroom
         // obtainable under that limit. If a real shard's measured height still exceeds even
         // this tier, `fix_shape` panics with "no shape found". These have not yet been
         // validated against deferred proofs, which could plausibly need a larger
@@ -158,27 +197,28 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> Default
         let allowed_shapes = [
             // Fastest shape.
             [
-                (mem_var.clone(), 19),
-                (select.clone(), 20),
-                (mem_const.clone(), 17),
-                (base_alu.clone(), 17),
-                (ext_alu.clone(), 18),
-                (poseidon2_wide.clone(), 17),
-                (prefix_sum_checks.clone(), 19),
-                (public_values.clone(), PUB_VALUES_LOG_HEIGHT),
+                (mem_var.clone(), 524_288),
+                (select.clone(), 1_048_576),
+                (mem_const.clone(), 131_072),
+                (base_alu.clone(), 131_072),
+                (ext_alu.clone(), 262_144),
+                (poseidon2_wide.clone(), 131_072),
+                (prefix_sum_checks.clone(), 524_288),
+                (public_values.clone(), PUB_VALUES_NUM_ROWS),
             ],
             // Fallback shape, with more headroom on the dimensions with the most real
             // per-program variance (`BaseAlu`, `Select`, `Poseidon2WideDeg3`). Every dimension
-            // capped at 21 (`RECURSION_MAX_LOG_ROW_COUNT`) -- the maximum this tier can offer.
+            // capped at `1 << 21` (`RECURSION_MAX_LOG_ROW_COUNT`) -- the maximum this tier can
+            // offer.
             [
-                (mem_var.clone(), 21),
-                (select.clone(), 21),
-                (mem_const.clone(), 21),
-                (base_alu.clone(), 18),
-                (ext_alu.clone(), 21),
-                (poseidon2_wide.clone(), 20),
-                (prefix_sum_checks.clone(), 19),
-                (public_values.clone(), PUB_VALUES_LOG_HEIGHT),
+                (mem_var.clone(), 2_097_152),
+                (select.clone(), 2_097_152),
+                (mem_const.clone(), 2_097_152),
+                (base_alu.clone(), 262_144),
+                (ext_alu.clone(), 2_097_152),
+                (poseidon2_wide.clone(), 1_048_576),
+                (prefix_sum_checks.clone(), 524_288),
+                (public_values.clone(), PUB_VALUES_NUM_ROWS),
             ],
         ]
         .map(HashMap::from)

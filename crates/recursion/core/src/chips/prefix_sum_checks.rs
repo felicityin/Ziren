@@ -77,9 +77,9 @@ impl<F: PrimeField32> MachineAir<F> for PrefixSumChecksChip {
     }
 
     fn preprocessed_num_rows(&self, program: &Self::Program, instrs_len: usize) -> Option<usize> {
-        let fixed_log2_rows = program.fixed_log2_rows(self);
-        Some(match fixed_log2_rows {
-            Some(log2_rows) => 1 << log2_rows,
+        let fixed_num_rows = program.fixed_num_rows(self);
+        Some(match fixed_num_rows {
+            Some(num_rows) => num_rows,
             None => next_power_of_two(
                 instrs_len,
                 None,
@@ -147,11 +147,14 @@ impl<F: PrimeField32> MachineAir<F> for PrefixSumChecksChip {
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let events = &input.prefix_sum_checks_events;
-        Some(next_power_of_two(
-            events.len(),
-            input.fixed_log2_rows(self),
-            <PrefixSumChecksChip as MachineAir<F>>::name(self).as_str(),
-        ))
+        Some(match input.fixed_num_rows(self) {
+            Some(num_rows) => num_rows,
+            None => next_power_of_two(
+                events.len(),
+                None,
+                <PrefixSumChecksChip as MachineAir<F>>::name(self).as_str(),
+            ),
+        })
     }
 
     fn generate_trace(

@@ -84,9 +84,9 @@ impl<F: PrimeField32> MachineAir<F> for BaseAluChip {
 
     fn preprocessed_num_rows(&self, program: &Self::Program, instrs_len: usize) -> Option<usize> {
         let nb_rows = instrs_len.div_ceil(NUM_BASE_ALU_ENTRIES_PER_ROW);
-        let fixed_log2_rows = program.fixed_log2_rows(self);
-        Some(match fixed_log2_rows {
-            Some(log2_rows) => 1 << log2_rows,
+        let fixed_num_rows = program.fixed_num_rows(self);
+        Some(match fixed_num_rows {
+            Some(num_rows) => num_rows,
             None => next_power_of_two(
                 nb_rows,
                 None,
@@ -192,9 +192,9 @@ impl<F: PrimeField32> MachineAir<F> for BaseAluChip {
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = input.base_alu_events.len().div_ceil(NUM_BASE_ALU_ENTRIES_PER_ROW);
-        let fixed_log2_rows = input.fixed_log2_rows(self);
-        Some(match fixed_log2_rows {
-            Some(log2_rows) => 1 << log2_rows,
+        let fixed_num_rows = input.fixed_num_rows(self);
+        Some(match fixed_num_rows {
+            Some(num_rows) => num_rows,
             None => next_power_of_two(
                 nb_rows,
                 None,

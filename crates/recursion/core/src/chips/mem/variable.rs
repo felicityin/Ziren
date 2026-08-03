@@ -5,11 +5,11 @@ use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::*;
 use std::{borrow::BorrowMut, iter::zip, marker::PhantomData};
-use zkm_core_machine::utils::{next_power_of_two, pad_rows_fixed};
+use zkm_core_machine::utils::next_power_of_two;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::MachineAir;
 
-use crate::{builder::ZKMRecursionAirBuilder, *};
+use crate::{builder::ZKMRecursionAirBuilder, shape::pad_rows_fixed, *};
 
 use super::{MemoryAccessCols, NUM_MEM_ACCESS_COLS};
 
@@ -81,8 +81,8 @@ impl<F: PrimeField32> MachineAir<F> for MemoryChip<F> {
             .collect::<Vec<_>>();
 
         let nb_rows = accesses.len().div_ceil(NUM_VAR_MEM_ENTRIES_PER_ROW);
-        let padded_nb_rows = match program.fixed_log2_rows(self) {
-            Some(log2_rows) => 1 << log2_rows,
+        let padded_nb_rows = match program.fixed_num_rows(self) {
+            Some(num_rows) => num_rows,
             None => next_power_of_two(
                 nb_rows,
                 None,
@@ -133,7 +133,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryChip<F> {
         pad_rows_fixed(
             &mut rows,
             || [F::ZERO; NUM_MEM_INIT_COLS],
-            input.fixed_log2_rows(self),
+            input.fixed_num_rows(self),
             <MemoryChip<F> as MachineAir<F>>::name(self).as_str(),
         );
 

@@ -115,7 +115,7 @@ impl<F: PrimeField32> MachineRecord for ExecutionRecord<F> {
 
 impl<F: Field> ExecutionRecord<F> {
     #[inline]
-    pub fn fixed_log2_rows<A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
-        self.program.fixed_log2_rows(air)
+    pub fn fixed_num_rows<A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
+        self.program.fixed_num_rows(air)
     }
 }

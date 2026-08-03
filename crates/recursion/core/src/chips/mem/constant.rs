@@ -4,11 +4,10 @@ use p3_air::{Air, BaseAir, PairBuilder};
 use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use std::{borrow::BorrowMut, iter::zip, marker::PhantomData};
-use zkm_core_machine::utils::pad_rows_fixed;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::MachineAir;
 
-use crate::{builder::ZKMRecursionAirBuilder, *};
+use crate::{builder::ZKMRecursionAirBuilder, shape::pad_rows_fixed, *};
 
 use super::MemoryAccessCols;
 
@@ -88,7 +87,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryChip<F> {
         pad_rows_fixed(
             &mut rows,
             || [F::ZERO; NUM_MEM_PREPROCESSED_INIT_COLS],
-            program.fixed_log2_rows(self),
+            program.fixed_num_rows(self),
             <MemoryChip<F> as MachineAir<F>>::name(self).as_str(),
         );
 
@@ -128,7 +127,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryChip<F> {
         pad_rows_fixed(
             &mut rows,
             || [F::ZERO; NUM_MEM_INIT_COLS],
-            input.fixed_log2_rows(self),
+            input.fixed_num_rows(self),
             <MemoryChip<F> as MachineAir<F>>::name(self).as_str(),
         );
 

@@ -27,8 +27,18 @@ impl<F: Field> MachineProgram<F> for RecursionProgram<F> {
 }
 
 impl<F: Field> RecursionProgram<F> {
+    /// The exact target row count for `air`'s trace, if a shape is configured. This is a real
+    /// row count, not a log2 exponent: the underlying `Mle`/`Tensor` machinery accepts any row
+    /// count (`slop/crates/multilinear/src/base.rs`'s `num_variables` computes
+    /// `next_power_of_two().ilog2()` on demand rather than requiring the stored data to already
+    /// have that many rows), and the jagged/stacked PCS's own alignment requirement applies to
+    /// the aggregate committed area across all chips, not any individual chip's row count
+    /// (`slop/crates/stacked/src/{prover,fixed_rate}.rs`). The shape mechanism exists to make
+    /// different real programs converge onto a small, stable set of trace sizes for a
+    /// consistent circuit/VK shape across runs, not because padding to a power of two is
+    /// itself required.
     #[inline]
-    pub fn fixed_log2_rows<A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
+    pub fn fixed_num_rows<A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
         self.shape
             .as_ref()
             .map(|shape| {
