@@ -620,44 +620,76 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         (vk, proof)
     }
 
+    /// Proves a batch of circuit witnesses concurrently across up to `num_workers` OS threads,
+    /// each pulling from a shared work queue (mirroring `main`'s threaded compress pipeline,
+    /// simplified from its separate checkpoint/trace-gen/prove worker pools down to a single
+    /// pool since `prove_compress_witness` already does all of that per witness). Results are
+    /// returned in the same order as `witnesses`, since callers rely on that order (e.g. to
+    /// chain `is_complete`/deferred-digest state across the original shard sequence).
+    fn prove_compress_witnesses_parallel(
+        &self,
+        witnesses: Vec<ZKMCircuitWitness>,
+        num_workers: usize,
+    ) -> Vec<(zkm_hypercube::MachineVerifyingKey<InnerSC>, zkm_hypercube::ShardProof<InnerSC, CorePcsProof>)>
+    {
+        let num_workers = num_workers.max(1).min(witnesses.len().max(1));
+        let queue = Mutex::new(witnesses.into_iter().enumerate());
+        let results = Mutex::new(Vec::new());
+        std::thread::scope(|s| {
+            for _ in 0..num_workers {
+                s.spawn(|| loop {
+                    let next = queue.lock().unwrap().next();
+                    let Some((index, witness)) = next else { break };
+                    let result = self.prove_compress_witness(witness);
+                    results.lock().unwrap().push((index, result));
+                });
+            }
+        });
+        let mut results = results.into_inner().unwrap();
+        results.sort_by_key(|(index, _)| *index);
+        results.into_iter().map(|(_, result)| result).collect()
+    }
+
     /// Reduce shard proofs to a single shard proof using the recursion prover.
     ///
-    /// This performs the binary-tree reduction sequentially, one witness at a time. The old
-    /// FRI-era prover ran this as a multi-stage threaded pipeline (separate checkpoint/trace-gen/
-    /// prove worker threads communicating over channels); that pipeline has not been ported
-    /// forward in this migration pass -- it's a performance optimization, not a correctness
-    /// requirement, and re-threading it against the new `AirProver` API is left as a follow-up.
+    /// Each tree level is proved as one parallel batch (bounded by
+    /// `opts.recursion_opts.shard_batch_size` concurrent workers) before the next level's
+    /// batches are built from its outputs -- a level's nodes are independent of each other but
+    /// the next level depends on this one's outputs, so the parallelism is within a level, not
+    /// across levels. `main`'s threaded pipeline additionally streamed trace-gen for one level
+    /// ahead of proving the previous one; that cross-level pipelining is not reproduced here.
     #[instrument(name = "compress", level = "info", skip_all)]
     pub fn compress(
         &self,
         vk: &ZKMVerifyingKey,
         proof: ZKMCoreProof,
         deferred_proofs: Vec<ZKMReduceProofWrapper>,
-        _opts: ZKMProverOpts,
+        opts: ZKMProverOpts,
     ) -> Result<ZKMReduceProofWrapper, ZKMRecursionProverError> {
         let batch_size = REDUCE_BATCH_SIZE;
         let first_layer_batch_size = 1;
+        let num_workers = opts.recursion_opts.shard_batch_size;
 
         let shard_proofs = &proof.proof.0;
         let first_layer_inputs =
             self.get_first_layer_inputs(vk, shard_proofs, &deferred_proofs, first_layer_batch_size);
 
-        let mut layer: Vec<_> =
-            first_layer_inputs.into_iter().map(|w| self.prove_compress_witness(w)).collect();
+        let mut layer = self.prove_compress_witnesses_parallel(first_layer_inputs, num_workers);
 
         while layer.len() > 1 {
             let num_chunks = layer.len().div_ceil(batch_size);
-            let mut next_layer = Vec::with_capacity(num_chunks);
-            for chunk in layer.chunks(batch_size) {
-                let is_complete = num_chunks == 1;
-                let vks_and_proofs = chunk.to_vec();
-                let witness = ZKMCircuitWitness::Compress(ZKMCompressWitnessValues {
-                    vks_and_proofs,
-                    is_complete,
-                });
-                next_layer.push(self.prove_compress_witness(witness));
-            }
-            layer = next_layer;
+            let level_witnesses = layer
+                .chunks(batch_size)
+                .map(|chunk| {
+                    let is_complete = num_chunks == 1;
+                    let vks_and_proofs = chunk.to_vec();
+                    ZKMCircuitWitness::Compress(ZKMCompressWitnessValues {
+                        vks_and_proofs,
+                        is_complete,
+                    })
+                })
+                .collect::<Vec<_>>();
+            layer = self.prove_compress_witnesses_parallel(level_witnesses, num_workers);
         }
 
         let (vk, proof) = layer.into_iter().next().unwrap();
