@@ -1294,6 +1294,30 @@ pub mod tests {
         Ok(())
     }
 
+    #[test]
+    #[serial]
+    #[ignore]
+    fn measure_shrink_proof() -> Result<()> {
+        setup_logger();
+        let elf = test_artifacts::HELLO_WORLD_ELF;
+        let opts = ZKMProverOpts::default();
+        let mut prover = ZKMProver::<DefaultProverComponents>::new();
+        prover.vk_verification = false;
+        let context = ZKMContext::default();
+
+        let (_, program, vk) = prover.setup(elf);
+        let core_proof = prover.prove_core(program, &ZKMStdin::default(), opts, context)?;
+        prover.verify(&core_proof.proof, &vk)?;
+
+        let compressed_proof = prover.compress(&vk, core_proof, vec![], opts)?;
+        prover.verify_compressed(&compressed_proof, &vk)?;
+
+        let shrink_proof = prover.shrink(compressed_proof, opts)?;
+        prover.verify_shrink(&shrink_proof, &vk)?;
+        println!("shrink proof generated and verified");
+        Ok(())
+    }
+
     /// Tests an end-to-end workflow of proving a program across the entire proof generation
     /// pipeline in addition to verifying deferred proofs.
     #[test]

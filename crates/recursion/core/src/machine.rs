@@ -26,7 +26,7 @@ use crate::{
         select::SelectChip,
     },
     instruction::{HintAddCurveInstr, HintBitsInstr, HintExt2FeltsInstr, HintInstr},
-    shape::RecursionShape,
+    shape::{RecursionShape, PUB_VALUES_NUM_ROWS},
     Instruction, RecursionProgram, D,
 };
 
@@ -161,18 +161,33 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize> RecursionAi
         Machine::new(chips, crate::air::RECURSIVE_PROOF_NUM_PV_ELTS, shape)
     }
 
+    /// The shrink machine has no fallback tier of its own (`shrink_program` assigns this
+    /// unconditionally, unlike `RecursionShapeConfig::fix_shape`'s tiered retry), but blanket
+    /// maxing out every dimension (e.g. matching `RecursionShapeConfig::default()`'s "fallback"
+    /// tier) oversizes shrink's real need by 7-40x and can balloon memory well past what's
+    /// actually needed (a real run at these values hit 50GB RSS on a small guest program).
+    ///
+    /// Shrink verifies exactly one compress-shaped proof, which is structurally the same
+    /// per-proof `verify_shard` sub-circuit that a compress node runs once per child -- real
+    /// measured shrink heights land almost exactly at a compress node's real height divided by
+    /// its arity (e.g. `MemoryConst` measured at 51,665 here vs ~51,593 per child in a real
+    /// arity-4 compress node). `RecursionShapeConfig::default()`'s "fastest" tier is itself
+    /// calibrated against real per-program compress heights at arity 2 (i.e. two children's
+    /// worth), so reusing those same values here keeps a comfortable 2.5x-16x margin over
+    /// shrink's real single-child-scale need without re-deriving a new set of constants.
     pub fn shrink_shape() -> RecursionShape {
         let shape = HashMap::from(
             [
-                (Self::MemoryVar(MemoryVarChip::default()), 18),
-                (Self::Select(SelectChip), 18),
-                (Self::MemoryConst(MemoryConstChip::default()), 17),
-                (Self::BaseAlu(BaseAluChip), 17),
-                (Self::ExtAlu(ExtAluChip), 15),
-                (Self::Poseidon2Wide(Poseidon2WideChip::<DEGREE>), 16),
-                (Self::PublicValues(PublicValuesChip), PUB_VALUES_LOG_HEIGHT),
+                (Self::MemoryVar(MemoryVarChip::default()), 524_288),
+                (Self::Select(SelectChip), 1_048_576),
+                (Self::MemoryConst(MemoryConstChip::default()), 131_072),
+                (Self::BaseAlu(BaseAluChip), 131_072),
+                (Self::ExtAlu(ExtAluChip), 262_144),
+                (Self::Poseidon2Wide(Poseidon2WideChip::<DEGREE>), 131_072),
+                (Self::PrefixSumChecks(PrefixSumChecksChip), 524_288),
+                (Self::PublicValues(PublicValuesChip), PUB_VALUES_NUM_ROWS),
             ]
-            .map(|(chip, log_height)| (chip.name(), log_height)),
+            .map(|(chip, num_rows)| (chip.name(), num_rows)),
         );
         RecursionShape { inner: shape }
     }

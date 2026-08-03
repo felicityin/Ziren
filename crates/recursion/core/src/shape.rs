@@ -24,7 +24,7 @@ use crate::{
 /// The exact row count `PublicValues` gets padded to when a shape is configured. Real content is
 /// tiny and essentially constant across programs (a handful of rows), so no tier variance is
 /// needed here.
-const PUB_VALUES_NUM_ROWS: usize = 16;
+pub(crate) const PUB_VALUES_NUM_ROWS: usize = 16;
 
 /// Pads `rows` in place to a target row count, mirroring
 /// `zkm_core_machine::utils::pad_rows_fixed` -- except `fixed_num_rows` (when set) is an exact
