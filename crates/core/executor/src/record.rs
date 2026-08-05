@@ -462,6 +462,7 @@ impl MachineRecord for ExecutionRecord {
             self.global_memory_finalize_events.len(),
         );
         stats.insert("local_memory_access_events".to_string(), self.cpu_local_memory_access.len());
+        stats.insert("bump_memory_events".to_string(), self.bump_memory_events.len());
         stats.insert("byte_lookups".to_string(), self.byte_lookups.len());
         // Filter out the empty events.
         stats.retain(|_, v| *v != 0);

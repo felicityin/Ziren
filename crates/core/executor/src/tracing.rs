@@ -6,12 +6,14 @@
 //! legacy `Executor` exactly.
 //!
 //! Per-operand `MemoryRecordEnum`/`MemoryWriteRecord` fields on each event (the register/memory
-//! timestamp bookkeeping the AIR's memory-consistency argument needs for real proving) are left at
-//! placeholder values (the correct *value*, a `0`/current-`clk` timestamp) rather than the
-//! precise, chased-through-every-access values the legacy executor computes. Likewise
-//! `bump_memory_events`/`cpu_local_memory_access`/`global_memory_initialize_events`/
-//! `global_memory_finalize_events`/`global_lookup_events` are not populated at all yet. Real
-//! proving needs all of this to be exact; it is not built here yet.
+//! timestamp bookkeeping the AIR's memory-consistency argument needs for real proving) carry real
+//! chased-through-every-access values, matching the legacy executor exactly, as does
+//! `bump_memory_events`. `cpu_local_memory_access`/`global_memory_initialize_events`/
+//! `global_memory_finalize_events`/`global_lookup_events` are not populated yet: the first needs a
+//! per-shard first/last-touch map threaded through every access site, and the latter three need a
+//! whole-run pass over `MinimalExecutor`'s own backing memory (this scoped, one-shard-at-a-time
+//! `TracingVM` has no view of addresses touched in other shards, or of whether this is the last
+//! shard at all) -- both are follow-up work, not built here yet.
 
 #![allow(dead_code)]
 
@@ -201,6 +203,46 @@ impl<'a> TracingVM<'a> {
         }
     }
 
+    /// Emits a `MemoryBumpChip` event if `record`'s own `clk_high` differs from that register's
+    /// previous access -- i.e. a real access that would otherwise violate the cheap
+    /// register-access scheme's `clk_high`-alignment invariant. Mirrors
+    /// `Executor::emit_memory_bump_events`; only call this for opcodes whose chip has actually
+    /// been migrated to that cheap scheme (see the call sites' own comments for exactly which).
+    fn maybe_bump(&mut self, addr: Register, record: &MemoryRecordEnum) {
+        let prev = record.previous_record();
+        let current = record.current_record();
+        if prev.timestamp >> 24 != current.timestamp >> 24 {
+            self.record.bump_memory_events.push((
+                MemoryRecordEnum::Read(MemoryReadRecord {
+                    value: prev.value,
+                    timestamp: (current.timestamp >> 24) << 24,
+                    prev_timestamp: prev.timestamp,
+                }),
+                addr as u32,
+            ));
+        }
+    }
+
+    /// Emits `MemoryBumpChip` events for `a`/`b`/`c`'s records where present -- convenience
+    /// wrapper for the instruction families whose entire register-operand set unconditionally
+    /// uses the cheap scheme (memory load/store, branch, jump, misc, syscall).
+    fn maybe_bump_abc(
+        &mut self,
+        a: Option<(Register, &MemoryRecordEnum)>,
+        b: Option<(Register, &MemoryRecordEnum)>,
+        c: Option<(Register, &MemoryRecordEnum)>,
+    ) {
+        if let Some((r, record)) = a {
+            self.maybe_bump(r, record);
+        }
+        if let Some((r, record)) = b {
+            self.maybe_bump(r, record);
+        }
+        if let Some((r, record)) = c {
+            self.maybe_bump(r, record);
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn execute_operation(&mut self, instruction: &Instruction, clk: u64) -> Result<(), ExecutionError> {
         let pc = self.core.pc();
@@ -235,6 +277,13 @@ impl<'a> TracingVM<'a> {
                 (src2, Some(self.read_op_b(rt, src2, clk)))
             };
             let offset = instruction.op_c;
+            // Every branch opcode's register operands use the cheap register-access scheme (see
+            // `Executor::emit_memory_bump_events`'s call site comment), so this is unconditional.
+            self.maybe_bump(rs, &a_record);
+            if let Some(rec) = &b_record {
+                let rt: Register = (instruction.op_b as u8).into();
+                self.maybe_bump(rt, rec);
+            }
             if crate::vm::branch_taken(instruction.opcode, src1, src2) {
                 next_next_pc = crate::vm::branch_target(next_pc_in, offset);
             }
@@ -280,6 +329,13 @@ impl<'a> TracingVM<'a> {
                 _ => unreachable!("not a jump opcode: {:?}", instruction.opcode),
             };
             let a_record = self.write_op_a(link, return_pc, clk);
+            // Every jump opcode's register operands use the cheap register-access scheme (see
+            // `Executor::emit_memory_bump_events`'s call site comment), so this is unconditional.
+            self.maybe_bump(link, &a_record);
+            if let (Opcode::Jump, Some(rec)) = (instruction.opcode, &b_record) {
+                let target_reg: Register = (instruction.op_b as u8).into();
+                self.maybe_bump(target_reg, rec);
+            }
             next_next_pc = target;
             self.core.set_next_is_delayslot(true);
             let mut event =
@@ -307,6 +363,10 @@ impl<'a> TracingVM<'a> {
             let c_record = self.read_op_c(rt, c, clk);
             let a = crate::vm::condmov_result(instruction.opcode, prev_a, b, c);
             let a_record = self.write_op_a(rd, a, clk);
+            // MEQ/MNE/WSBH are dispatched through the legacy `Executor`'s misc branch, whose
+            // register operands unconditionally use the cheap register-access scheme (see
+            // `Executor::emit_memory_bump_events`'s call site comment).
+            self.maybe_bump_abc(Some((rd, &a_record)), Some((rs, &b_record)), Some((rt, &c_record)));
             if op_a_is_zero {
                 let mut event = AluEvent::new(pc, instruction.opcode, a, b, c);
                 event.clk = clk;
@@ -398,6 +458,47 @@ impl<'a> TracingVM<'a> {
             let a_record = self.write_op_a(rd, a, clk);
             (a_record, MemoryWriteRecord::default(), false)
         };
+
+        // Mirrors `Executor::emit_memory_bump_events`'s `uses_cheap_register_scheme` gating --
+        // must match this function's own opcode routing exactly.
+        if matches!(
+            instruction.opcode,
+            Opcode::ADD
+                | Opcode::SUB
+                | Opcode::SLT
+                | Opcode::SLTU
+                | Opcode::XOR
+                | Opcode::OR
+                | Opcode::AND
+                | Opcode::NOR
+                | Opcode::SRL
+                | Opcode::SRA
+                | Opcode::ROR
+                | Opcode::SLL
+                | Opcode::MUL
+                | Opcode::MULT
+                | Opcode::MULTU
+                | Opcode::DIV
+                | Opcode::DIVU
+                | Opcode::MOD
+                | Opcode::MODU
+                | Opcode::CLZ
+                | Opcode::CLO
+        ) {
+            let a_addr = if instruction.opcode.is_use_lo_hi_alu() { Register::LO } else { rd };
+            self.maybe_bump(a_addr, &a_record);
+            if hi_record_is_real {
+                self.maybe_bump(Register::HI, &MemoryRecordEnum::Write(hi_record));
+            }
+            if let Some(rec) = &b_record {
+                let b_reg: Register = (instruction.op_b as u8).into();
+                self.maybe_bump(b_reg, rec);
+            }
+            if let Some(rec) = &c_record {
+                let c_reg: Register = (instruction.op_c as u8).into();
+                self.maybe_bump(c_reg, rec);
+            }
+        }
 
         let event = AluEvent {
             clk,
@@ -519,6 +620,9 @@ impl<'a> TracingVM<'a> {
             _ => unreachable!("not a load opcode: {:?}", instruction.opcode),
         };
         let a_record = self.write_op_a(rt_reg, val, clk);
+        // Every memory-load opcode's register operands use the cheap register-access scheme
+        // (see `Executor::emit_memory_bump_events`'s call site comment), so this is unconditional.
+        self.maybe_bump_abc(Some((rt_reg, &a_record)), Some((rs_reg, &b_record)), None);
 
         let mut event = MemInstrEvent::new(
             clk,
@@ -617,6 +721,9 @@ impl<'a> TracingVM<'a> {
         } else {
             (rt, self.read_op_a(rt_reg, rt, clk))
         };
+        // Every memory-store opcode's register operands use the cheap register-access scheme
+        // (see `Executor::emit_memory_bump_events`'s call site comment), so this is unconditional.
+        self.maybe_bump_abc(Some((rt_reg, &a_record)), Some((rs_reg, &b_record)), None);
         let mut event = MemInstrEvent::new(
             clk,
             pc,
@@ -661,6 +768,7 @@ impl<'a> TracingVM<'a> {
             let b_record = self.read_op_b(rt, b, clk);
             let a = crate::vm::wsbh(b);
             let a_record = self.write_op_a(rd, a, clk);
+            self.maybe_bump_abc(Some((rd, &a_record)), Some((rt, &b_record)), None);
             if op_a_is_zero {
                 let mut event = AluEvent::new(pc, instruction.opcode, a, b, 0);
                 event.clk = clk;
@@ -686,6 +794,7 @@ impl<'a> TracingVM<'a> {
                 let b_record = self.read_op_b(rt, b, clk);
                 let a = crate::vm::sext(b, c);
                 let a_record = self.write_op_a(rd, a, clk);
+                self.maybe_bump_abc(Some((rd, &a_record)), Some((rt, &b_record)), None);
                 self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0, a_record, Some(b_record));
             }
             Opcode::EXT => {
@@ -693,6 +802,7 @@ impl<'a> TracingVM<'a> {
                 let b_record = self.read_op_b(rt, b, clk);
                 let a = crate::vm::ext(b, c)?;
                 let a_record = self.write_op_a(rd, a, clk);
+                self.maybe_bump_abc(Some((rd, &a_record)), Some((rt, &b_record)), None);
                 self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0, a_record, Some(b_record));
             }
             Opcode::INS => {
@@ -705,6 +815,7 @@ impl<'a> TracingVM<'a> {
                 let prev_a = self.core.reg(rd);
                 let a = crate::vm::ins(prev_a, b, c)?;
                 let a_record = self.write_op_a(rd, a, clk);
+                self.maybe_bump_abc(Some((rd, &a_record)), Some((rt, &b_record)), None);
                 self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, prev_a, a_record, Some(b_record));
             }
             Opcode::TEQ => {
@@ -714,6 +825,7 @@ impl<'a> TracingVM<'a> {
                 let src2_record = self.read_op_b(rt, src2, clk);
                 let src1 = self.core.reg(rs);
                 let src1_record = self.read_op_a(rs, src1, clk);
+                self.maybe_bump_abc(Some((rs, &src1_record)), Some((rt, &src2_record)), None);
                 crate::vm::teq(src1, src2)?;
                 let mut event = MiscEvent::new(clk, pc, next_pc, instruction.opcode, src1, src2, 0, 0, MemoryWriteRecord::default());
                 event.a_record = Some(src1_record);
@@ -738,6 +850,8 @@ impl<'a> TracingVM<'a> {
                 };
                 let a_record = self.write_op_a(lo_reg, out_lo, clk);
                 let hi_record = self.write_hi(out_hi, clk);
+                self.maybe_bump_abc(Some((lo_reg, &a_record)), Some((rt, &b_record)), Some((rs, &c_record)));
+                self.maybe_bump(Register::HI, &MemoryRecordEnum::Write(hi_record));
                 let mut event = MiscEvent::new(
                     clk,
                     pc,
@@ -2135,6 +2249,11 @@ impl<'a> TracingVM<'a> {
             MemoryRecordEnum::Write(r) => r,
             MemoryRecordEnum::Read(_) => unreachable!("write_op_a always returns a Write record"),
         };
+        // SYSCALL's register operands (always V0/A0/A1) use the cheap register-access scheme
+        // (see `Executor::emit_memory_bump_events`'s call site comment), so this is unconditional.
+        self.maybe_bump(Register::V0, &MemoryRecordEnum::Write(a_record));
+        self.maybe_bump(Register::A0, &b_record);
+        self.maybe_bump(Register::A1, &c_record);
         self.core.advance_clk_extra(extra_cycles);
         self.record.syscall_events.push(SyscallEvent {
             pc,
@@ -2183,7 +2302,6 @@ mod tests {
     /// global-memory-init/finalize/lookup events) -- see the module doc. Excluded from the
     /// count comparison below; every other field must match the legacy `Executor` exactly.
     const DEFERRED_FIELDS: &[&str] = &[
-        "bump_memory_events",
         "local_memory_access_events",
         "global_memory_initialize_events",
         "global_memory_finalize_events",
