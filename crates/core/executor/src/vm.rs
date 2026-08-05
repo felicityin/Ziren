@@ -26,7 +26,7 @@ use crate::{
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
     syscalls::SyscallCode,
-    trace::{MemReads, MinimalTrace},
+    trace::{MemReads, MemValue, MinimalTrace},
     ExecutionError, Instruction, Program, CORE_SHARD_CLK_LIMIT,
 };
 use num::{BigUint, Integer};
@@ -841,13 +841,18 @@ impl<'a> CoreVM<'a> {
     /// stores (the returned value is the preimage; the new value is a pure function of it + a
     /// live register, recomputed identically to `MinimalExecutor::execute_store`, never oracled).
     pub(crate) fn next_oracle_value(&mut self) -> u32 {
-        self.mem_reads
-            .next()
-            .expect(
-                "oracle log exhausted before replay finished -- MinimalExecutor and CoreVM have \
-                 desynced on how many entries a memory access logs",
-            )
-            .value
+        self.next_oracle_entry().value
+    }
+
+    /// Pops the next oracle-log entry in full (value *and* its `clk`) -- needed to recover a real
+    /// `prev_timestamp` for a RAM `MemoryReadRecord`/`MemoryWriteRecord` (`next_oracle_value`
+    /// discards the `clk`, which is fine for the many callers that only need the value to
+    /// recompute a result).
+    pub(crate) fn next_oracle_entry(&mut self) -> MemValue {
+        self.mem_reads.next().expect(
+            "oracle log exhausted before replay finished -- MinimalExecutor and CoreVM have \
+             desynced on how many entries a memory access logs",
+        )
     }
 
     /// Pops `len` consecutive oracle-log entries -- see `next_oracle_value`'s doc comment.

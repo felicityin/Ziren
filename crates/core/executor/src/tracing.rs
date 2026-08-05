@@ -466,10 +466,15 @@ impl<'a> TracingVM<'a> {
         let rs_reg: Register = (instruction.op_b as u8).into();
         let offset = instruction.op_c;
         let rs_raw = self.core.reg(rs_reg);
+        let b_record = self.read_op_b(rs_reg, rs_raw, clk);
+        // `rt`'s current value is an untracked live peek (only needed for LWL/LWR's byte-merge)
+        // -- matches `Executor::execute_load`'s identical comment: the real `a_record` comes
+        // entirely from the write below, which captures this same value as its own `prev_value`.
         let rt = self.core.reg(rt_reg);
 
         let addr = rs_raw.wrapping_add(offset);
-        let mem = self.core.next_oracle_value();
+        let mem_entry = self.core.next_oracle_entry();
+        let mem = mem_entry.value;
         let rs = addr;
 
         let val = match instruction.opcode {
@@ -513,9 +518,9 @@ impl<'a> TracingVM<'a> {
             Opcode::LB => sign_extend::<8>((mem >> ((rs & 3) * 8)) & 0xff),
             _ => unreachable!("not a load opcode: {:?}", instruction.opcode),
         };
-        self.core.set_reg(rt_reg, val, MemoryAccessPosition::A);
+        let a_record = self.write_op_a(rt_reg, val, clk);
 
-        let event = MemInstrEvent::new(
+        let mut event = MemInstrEvent::new(
             clk,
             pc,
             next_pc,
@@ -523,9 +528,15 @@ impl<'a> TracingVM<'a> {
             val,
             rs_raw,
             offset,
-            MemoryRecordEnum::Read(MemoryReadRecord { value: mem, timestamp: clk, prev_timestamp: 0 }),
+            MemoryRecordEnum::Read(MemoryReadRecord {
+                value: mem,
+                timestamp: clk,
+                prev_timestamp: mem_entry.clk,
+            }),
             rt,
         );
+        event.a_record = Some(a_record);
+        event.b_record = Some(b_record);
         match instruction.opcode {
             Opcode::LW | Opcode::LL if op_a_is_zero => self.record.load_x0_events.push(event),
             Opcode::LW | Opcode::LL => self.record.load_word_events.push(event),
@@ -548,10 +559,15 @@ impl<'a> TracingVM<'a> {
         let rs_reg: Register = (instruction.op_b as u8).into();
         let offset = instruction.op_c;
         let rs = self.core.reg(rs_reg);
+        let b_record = self.read_op_b(rs_reg, rs, clk);
+        // `SC`'s `rt` (the value about to be stored) is an untracked live peek -- unlike every
+        // other store, which reads it as a real record at A (see the real `a_record` built after
+        // `val` below: SC's own A-slot is a *write* of the success flag, not a read of `rt`).
         let rt = self.core.reg(rt_reg);
 
         let addr = rs.wrapping_add(offset);
-        let mem = self.core.next_oracle_value();
+        let mem_entry = self.core.next_oracle_entry();
+        let mem = mem_entry.value;
 
         let val = match instruction.opcode {
             Opcode::SB => {
@@ -596,13 +612,12 @@ impl<'a> TracingVM<'a> {
             _ => unreachable!("not a store opcode: {:?}", instruction.opcode),
         };
 
-        let a = if instruction.opcode == Opcode::SC {
-            self.core.set_reg(rt_reg, 1, MemoryAccessPosition::A);
-            1
+        let (a, a_record) = if instruction.opcode == Opcode::SC {
+            (1, self.write_op_a(rt_reg, 1, clk))
         } else {
-            rt
+            (rt, self.read_op_a(rt_reg, rt, clk))
         };
-        let event = MemInstrEvent::new(
+        let mut event = MemInstrEvent::new(
             clk,
             pc,
             next_pc,
@@ -610,9 +625,16 @@ impl<'a> TracingVM<'a> {
             a,
             rs,
             offset,
-            MemoryRecordEnum::Write(MemoryWriteRecord { value: val, timestamp: clk, prev_value: mem, prev_timestamp: 0 }),
+            MemoryRecordEnum::Write(MemoryWriteRecord {
+                value: val,
+                timestamp: clk,
+                prev_value: mem,
+                prev_timestamp: mem_entry.clk,
+            }),
             rt,
         );
+        event.a_record = Some(a_record);
+        event.b_record = Some(b_record);
         match instruction.opcode {
             Opcode::SW => self.record.store_word_events.push(event),
             Opcode::SB => self.record.store_byte_events.push(event),
@@ -1078,8 +1100,13 @@ impl<'a> TracingVM<'a> {
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
         let syscall_id = self.core.reg(Register::V0);
         let code = SyscallCode::from_u32(syscall_id);
+        // Mirrors `Executor::execute_operation`'s `SYSCALL` branch exactly: `A0`/`A1` are read at
+        // B/C (the syscall instruction's own op_b/op_c slots); `V0` is written at A once the
+        // result is known, at the bottom of this function.
         let arg1 = self.core.reg(Register::A0);
+        let b_record = self.read_op_b(Register::A0, arg1, clk);
         let arg2 = self.core.reg(Register::A1);
+        let c_record = self.read_op_c(Register::A1, arg2, clk);
 
         let mut next_pc = pc.wrapping_add(4);
         let mut extra_cycles = 0u32;
@@ -1862,16 +1889,19 @@ impl<'a> TracingVM<'a> {
         };
 
         let a0 = a0_result.unwrap_or(syscall_id);
-        self.core.set_reg(Register::V0, a0, MemoryAccessPosition::A);
+        let a_record = match self.write_op_a(Register::V0, a0, clk) {
+            MemoryRecordEnum::Write(r) => r,
+            MemoryRecordEnum::Read(_) => unreachable!("write_op_a always returns a Write record"),
+        };
         self.core.advance_clk_extra(extra_cycles);
         self.record.syscall_events.push(SyscallEvent {
             pc,
             next_pc,
             clk,
-            a_record: MemoryWriteRecord { value: a0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+            a_record,
             a_record_is_real: true,
-            b_record: None,
-            c_record: None,
+            b_record: Some(b_record),
+            c_record: Some(c_record),
             syscall_id,
             arg1,
             arg2,
