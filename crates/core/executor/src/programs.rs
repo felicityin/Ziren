@@ -7,10 +7,10 @@ pub mod tests {
 
     use test_artifacts::{
         BLS12381_ADD_ELF, BLS12381_DECOMPRESS_ELF, BLS12381_DOUBLE_ELF, BN254_ADD_ELF,
-        BN254_DOUBLE_ELF, FIBONACCI_ELF, HELLO_WORLD_ELF, KECCAK_SPONGE_ELF, MAX_MEMORY_ELF,
-        PANIC_ELF, SECP256K1_ADD_ELF, SECP256K1_DECOMPRESS_ELF, SECP256K1_DOUBLE_ELF,
-        SECP256R1_ADD_ELF, SECP256R1_DECOMPRESS_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF,
-        SHA_COMPRESS_ELF, SHA_EXTEND_ELF, U256XU2048_MUL_ELF, UNCONSTRAINED_ELF,
+        BN254_DOUBLE_ELF, ED_ADD_ELF, ED_DECOMPRESS_ELF, FIBONACCI_ELF, HELLO_WORLD_ELF,
+        KECCAK_SPONGE_ELF, MAX_MEMORY_ELF, PANIC_ELF, SECP256K1_ADD_ELF, SECP256K1_DECOMPRESS_ELF,
+        SECP256K1_DOUBLE_ELF, SECP256R1_ADD_ELF, SECP256R1_DECOMPRESS_ELF, SECP256R1_DOUBLE_ELF,
+        SHA3_CHAIN_ELF, SHA_COMPRESS_ELF, SHA_EXTEND_ELF, U256XU2048_MUL_ELF, UNCONSTRAINED_ELF,
     };
 
     #[must_use]
@@ -94,6 +94,26 @@ pub mod tests {
     #[must_use]
     pub fn sha_compress_program() -> Program {
         Program::from(SHA_COMPRESS_ELF).unwrap()
+    }
+
+    /// Get the ed25519 add program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn ed_add_program() -> Program {
+        Program::from(ED_ADD_ELF).unwrap()
+    }
+
+    /// Get the ed25519 decompress program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn ed_decompress_program() -> Program {
+        Program::from(ED_DECOMPRESS_ELF).unwrap()
     }
 
     /// Get the secp256k1 add program.

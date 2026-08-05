@@ -31,6 +31,11 @@ use crate::{
 };
 use typenum::Unsigned;
 use zkm_curves::{
+    curve25519_dalek::CompressedEdwardsY,
+    edwards::{
+        ed25519::{decompress as ed25519_decompress_point, Ed25519},
+        WORDS_FIELD_ELEMENT,
+    },
     params::{NumLimbs, NumWords},
     weierstrass::{
         bls12_381::{bls12381_decompress, Bls12381},
@@ -38,7 +43,8 @@ use zkm_curves::{
         secp256k1::{secp256k1_decompress, Secp256k1},
         secp256r1::{secp256r1_decompress, Secp256r1},
     },
-    AffinePoint, CurveError, CurveType, EllipticCurve,
+    AffinePoint, CurveError, CurveType, EllipticCurve, COMPRESSED_POINT_BYTES,
+    NUM_BYTES_FIELD_ELEMENT,
 };
 use zkm_primitives::consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT};
 
@@ -411,6 +417,25 @@ pub(crate) fn ec_decompress<E: EllipticCurve>(
     let mut y_bytes = computed_point.y.to_bytes_le();
     y_bytes.resize(num_limbs, 0u8);
     Ok(y_bytes)
+}
+
+/// Decompresses an Ed25519 point's `x` coordinate from its compressed `y` (already has the sign
+/// bit re-inserted at bit 255 by the caller) -- mirrors `EdwardsDecompressSyscall::execute`'s
+/// compute step (`syscalls/precompiles/edwards/decompress.rs`) exactly, split from the memory
+/// accesses that gather `y_bytes`.
+pub(crate) fn ed25519_decompress(
+    y_bytes: [u8; COMPRESSED_POINT_BYTES],
+    sign: u32,
+) -> Result<[u8; NUM_BYTES_FIELD_ELEMENT], CurveError> {
+    let mut compressed_edwards_y = y_bytes;
+    let last = compressed_edwards_y.len() - 1;
+    compressed_edwards_y[last] &= 0b0111_1111;
+    compressed_edwards_y[last] |= (sign as u8) << 7;
+
+    let decompressed = ed25519_decompress_point(&CompressedEdwardsY(compressed_edwards_y))?;
+    let mut decompressed_x_bytes = decompressed.x.to_bytes_le();
+    decompressed_x_bytes.resize(NUM_BYTES_FIELD_ELEMENT, 0u8);
+    Ok(decompressed_x_bytes.try_into().unwrap())
 }
 
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
@@ -1061,6 +1086,15 @@ impl<'a> CoreVM<'a> {
                 self.ec_decompress_replay::<Bls12381>(arg2)?;
                 None
             }
+            SyscallCode::ED_ADD => {
+                self.ec_add_replay::<Ed25519>();
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::ED_DECOMPRESS => {
+                self.ed_decompress_replay(arg2)?;
+                None
+            }
             _ => None,
         };
 
@@ -1098,6 +1132,19 @@ impl<'a> CoreVM<'a> {
         x_bytes_be.reverse();
         ec_decompress::<E>(&x_bytes_be, sign_bit).map_err(ExecutionError::CurveError)?;
         for _ in 0..num_words_field_element {
+            self.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+        }
+        Ok(())
+    }
+
+    /// Replays an `ed25519_decompress`: pops `y`'s reads (used), then `x`'s write-preimage
+    /// (discarded).
+    fn ed_decompress_replay(&mut self, sign: u32) -> Result<(), ExecutionError> {
+        let y_vec = self.next_oracle_values(WORDS_FIELD_ELEMENT);
+        let y_bytes: [u8; COMPRESSED_POINT_BYTES] =
+            zkm_primitives::consts::words_to_bytes_le_vec(&y_vec).try_into().unwrap();
+        ed25519_decompress(y_bytes, sign).map_err(ExecutionError::CurveError)?;
+        for _ in 0..WORDS_FIELD_ELEMENT {
             self.next_oracle_value(); // write preimage; see SHA_COMPRESS.
         }
         Ok(())

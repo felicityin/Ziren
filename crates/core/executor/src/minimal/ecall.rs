@@ -4,8 +4,9 @@
 use super::MinimalExecutor;
 use crate::{register::Register, syscalls::SyscallCode, vm, ExecutionError};
 use zkm_curves::{
+    edwards::{ed25519::Ed25519, WORDS_FIELD_ELEMENT},
     weierstrass::{bls12_381::Bls12381, bn254::Bn254, secp256k1::Secp256k1, secp256r1::Secp256r1},
-    EllipticCurve,
+    EllipticCurve, COMPRESSED_POINT_BYTES,
 };
 use zkm_primitives::consts::{
     bytes_to_words_le_vec, fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT}, words_to_bytes_le_vec,
@@ -48,6 +49,19 @@ impl MinimalExecutor {
             vm::ec_decompress::<E>(&x_bytes_be, sign_bit).map_err(ExecutionError::CurveError)?;
         let y_words = bytes_to_words_le_vec(&y_bytes);
         self.mw_slice(slice_ptr, &y_words);
+        Ok(())
+    }
+
+    /// Reads the compressed `y` coordinate at `slice_ptr + COMPRESSED_POINT_BYTES`, decompresses
+    /// `x`, and writes `x` back to `slice_ptr`.
+    fn ed_decompress_dispatch(&mut self, slice_ptr: u32, sign: u32) -> Result<(), ExecutionError> {
+        let y_vec = self.mr_slice(slice_ptr + COMPRESSED_POINT_BYTES as u32, WORDS_FIELD_ELEMENT);
+        let y_bytes: [u8; COMPRESSED_POINT_BYTES] =
+            words_to_bytes_le_vec(&y_vec).try_into().unwrap();
+        let x_bytes =
+            vm::ed25519_decompress(y_bytes, sign).map_err(ExecutionError::CurveError)?;
+        let x_words = bytes_to_words_le_vec(&x_bytes);
+        self.mw_slice(slice_ptr, &x_words);
         Ok(())
     }
 
@@ -222,6 +236,15 @@ impl MinimalExecutor {
             }
             SyscallCode::BLS12381_DECOMPRESS => {
                 self.ec_decompress_dispatch::<Bls12381>(arg1, arg2)?;
+                None
+            }
+            SyscallCode::ED_ADD => {
+                self.ec_add_dispatch::<Ed25519>(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::ED_DECOMPRESS => {
+                self.ed_decompress_dispatch(arg1, arg2)?;
                 None
             }
             // Everything else (precompiles, other Linux shims, hints, unconstrained, VERIFY): a

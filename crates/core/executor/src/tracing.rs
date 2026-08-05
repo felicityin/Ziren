@@ -19,25 +19,26 @@ use std::sync::Arc;
 
 use crate::{
     events::{
-        AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, EllipticCurveAddEvent,
-        EllipticCurveDecompressEvent, EllipticCurveDoubleEvent, JumpEvent, KeccakSpongeEvent,
-        MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
-        MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
+        AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, EdDecompressEvent,
+        EllipticCurveAddEvent, EllipticCurveDecompressEvent, EllipticCurveDoubleEvent, JumpEvent,
+        KeccakSpongeEvent, MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord,
+        MiscEvent, MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
     },
     opcode::Opcode,
     register::Register,
     syscalls::SyscallCode,
     trace::MinimalTrace,
     vm::{
-        ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, keccak_xor_block,
-        keccakf, sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus,
+        ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, ed25519_decompress,
+        keccak_xor_block, keccakf, sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus,
         KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
     },
     ExecutionError, ExecutionRecord, Instruction, Program,
 };
 use zkm_curves::{
+    edwards::{ed25519::Ed25519, WORDS_FIELD_ELEMENT},
     weierstrass::{bls12_381::Bls12381, bn254::Bn254, secp256k1::Secp256k1, secp256r1::Secp256r1},
-    EllipticCurve,
+    EllipticCurve, COMPRESSED_POINT_BYTES,
 };
 
 pub(crate) struct TracingVM<'a> {
@@ -659,6 +660,48 @@ impl<'a> TracingVM<'a> {
         })
     }
 
+    /// Builds an `EdDecompressEvent`: pops `y`'s reads (used), then `x`'s write-preimage
+    /// (discarded).
+    fn ed_decompress_event(
+        &mut self,
+        clk: u64,
+        ptr: u32,
+        sign: u32,
+    ) -> Result<EdDecompressEvent, ExecutionError> {
+        let y = self.core.next_oracle_values(WORDS_FIELD_ELEMENT);
+        let y_memory_records: [MemoryReadRecord; WORDS_FIELD_ELEMENT] = y
+            .iter()
+            .map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        let y_bytes: [u8; COMPRESSED_POINT_BYTES] =
+            zkm_primitives::consts::words_to_bytes_le_vec(&y).try_into().unwrap();
+        let decompressed_x_bytes =
+            ed25519_decompress(y_bytes, sign).map_err(ExecutionError::CurveError)?;
+        let x_words = zkm_primitives::consts::bytes_to_words_le_vec(&decompressed_x_bytes);
+        let x_memory_records: [MemoryWriteRecord; WORDS_FIELD_ELEMENT] = x_words
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap();
+        for _ in &x_words {
+            self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+        }
+        Ok(EdDecompressEvent {
+            shard: 0,
+            clk,
+            ptr,
+            sign: sign != 0,
+            y_bytes,
+            decompressed_x_bytes,
+            x_memory_records,
+            y_memory_records,
+            local_mem_access: Vec::new(),
+        })
+    }
+
     /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
@@ -1085,6 +1128,37 @@ impl<'a> TracingVM<'a> {
                 );
                 None
             }
+            SyscallCode::ED_ADD => {
+                let event = self.ec_add_event::<Ed25519>(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::EdAdd(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::ED_DECOMPRESS => {
+                let event = self.ed_decompress_event(clk, arg1, arg2)?;
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::EdDecompress(event),
+                );
+                None
+            }
             _ => None,
         };
 
@@ -1120,9 +1194,10 @@ mod tests {
         minimal::MinimalExecutor,
         programs::tests::{
             bls12381_add_program, bls12381_double_program, bn254_add_program, bn254_double_program,
-            fibonacci_program, halt_only_program, hello_world_program, secp256k1_add_program,
-            secp256k1_double_program, secp256r1_add_program, secp256r1_double_program,
-            sha_compress_program, sha_extend_program, simple_program, ssz_withdrawals_program,
+            ed_add_program, ed_decompress_program, fibonacci_program, halt_only_program,
+            hello_world_program, secp256k1_add_program, secp256k1_double_program,
+            secp256r1_add_program, secp256r1_double_program, sha_compress_program,
+            sha_extend_program, simple_program, ssz_withdrawals_program,
         },
         register::NUM_REGISTERS,
     };
@@ -1254,4 +1329,13 @@ mod tests {
         assert_matches_golden(bls12381_double_program, "bls12381_double_program");
     }
 
+    #[test]
+    fn matches_golden_ed_add_real_elf() {
+        assert_matches_golden(ed_add_program, "ed_add_program");
+    }
+
+    #[test]
+    fn matches_golden_ed_decompress_real_elf() {
+        assert_matches_golden(ed_decompress_program, "ed_decompress_program");
+    }
 }

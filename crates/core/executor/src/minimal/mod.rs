@@ -585,7 +585,10 @@ mod tests {
     use super::*;
     use crate::{
         golden::run_golden,
-        programs::tests::{fibonacci_program, halt_only_program, hello_world_program, simple_program},
+        programs::tests::{
+            ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
+            simple_program,
+        },
         Program,
     };
 
@@ -642,6 +645,11 @@ mod tests {
     #[test]
     fn matches_golden_hello_world_real_elf() {
         assert_matches_golden(hello_world_program, "hello_world_program");
+    }
+
+    #[test]
+    fn matches_golden_ed_decompress_real_elf() {
+        assert_matches_golden(ed_decompress_program, "ed_decompress_program");
     }
 
     /// The chunk-size cutoff must never split a branch/jump from its delay slot. `fibonacci` is
