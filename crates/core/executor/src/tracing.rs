@@ -63,10 +63,12 @@ pub(crate) struct TracingVM<'a> {
     core: CoreVM<'a>,
     record: &'a mut ExecutionRecord,
     /// Per-shard first/last-touch bookkeeping, drained into `record.cpu_local_memory_access` at
-    /// the end of `execute()` -- mirrors `Executor::local_memory_access`. Currently fed only by
-    /// register touches and load/store's own RAM access (both have an address available without
-    /// extra bookkeeping); precompile-internal RAM touches (SHA/EC/Keccak/etc's oracle-popped
-    /// words) are not wired in yet -- see `touch_local`'s doc comment.
+    /// the end of `execute()` -- mirrors `Executor::local_memory_access`. Fed by register touches,
+    /// load/store's own RAM access, and `execute_syscall`'s own register-only touches (A2/A3/HEAP
+    /// for the Linux syscall shims) -- every touch that isn't a precompile's own private RAM
+    /// buffer. A precompile's own scratch-buffer touches (SHA/EC/Keccak/etc's oracle-popped words)
+    /// go into that event's own `local_mem_access` field instead, via `precompile_local_events` --
+    /// see that method's doc comment for why.
     local_memory_access: std::collections::HashMap<u32, MemoryLocalEvent>,
 }
 
@@ -146,6 +148,31 @@ impl<'a> TracingVM<'a> {
         for (i, &r) in records.iter().enumerate() {
             self.touch_local(base_ptr + 4 * i as u32, &wrap(r));
         }
+    }
+
+    /// Builds a precompile event's own `local_mem_access` (first/last touch per address, merging
+    /// touches to the same address exactly like `touch_local` does), from one or more
+    /// `(addr, record)` pairs given in the exact chronological order they were touched.
+    /// Deliberately independent of `self.local_memory_access` (`touch_local`/`touch_local_slice`'s
+    /// destination): `record.split()` always carves a precompile event's own private scratch RAM
+    /// out into its own separate `ExecutionRecord` (never merged back into the record containing
+    /// the surrounding CPU trace -- see `ExecutionRecord::split`'s precompile-event handling), so
+    /// that event's own RAM touches must travel with it via its own field -- leaving them in the
+    /// shared, `cpu_local_memory_access`-bound map would leave both the split-off shard's local
+    /// chain (for these addresses) unclosed, *and* incorrectly leave a phantom entry behind in the
+    /// original shard's own local chain for an address nothing else in that shard ever touched.
+    fn precompile_local_events(
+        touches: impl IntoIterator<Item = (u32, MemoryRecordEnum)>,
+    ) -> Vec<MemoryLocalEvent> {
+        let mut map: std::collections::HashMap<u32, MemoryLocalEvent> = Default::default();
+        for (addr, record) in touches {
+            let initial = record.previous_record();
+            let current = record.current_record();
+            map.entry(addr)
+                .and_modify(|e| e.final_mem_access = current)
+                .or_insert(MemoryLocalEvent { addr, initial_mem_access: initial, final_mem_access: current });
+        }
+        map.into_values().collect()
     }
 
     fn execute_instruction(&mut self) -> Result<(), ExecutionError> {
@@ -987,7 +1014,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(q_ptr, &q_memory_records, MemoryRecordEnum::Read);
         let p_entries = self.core.next_oracle_entries(num_words);
         let p: Vec<u32> = p_entries.iter().map(|e| e.value).collect();
         let result = ec_add::<E>(&p, &q);
@@ -996,8 +1022,19 @@ impl<'a> TracingVM<'a> {
             .zip(&p_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(p_ptr, &p_memory_records, MemoryRecordEnum::Write);
-        EllipticCurveAddEvent { shard: 0, clk, p_ptr, p, q_ptr, q, p_memory_records, q_memory_records, local_mem_access: Vec::new() }
+        let local_mem_access = Self::precompile_local_events(
+            q_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (q_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    p_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (p_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
+        EllipticCurveAddEvent { shard: 0, clk, p_ptr, p, q_ptr, q, p_memory_records, q_memory_records, local_mem_access }
     }
 
     /// Builds an `EllipticCurveDoubleEvent`: pops `p`'s write-preimage (the value actually needed
@@ -1012,8 +1049,13 @@ impl<'a> TracingVM<'a> {
             .zip(&p_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(p_ptr, &p_memory_records, MemoryRecordEnum::Write);
-        EllipticCurveDoubleEvent { shard: 0, clk, p_ptr, p, p_memory_records, local_mem_access: Vec::new() }
+        let local_mem_access = Self::precompile_local_events(
+            p_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (p_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+        );
+        EllipticCurveDoubleEvent { shard: 0, clk, p_ptr, p, p_memory_records, local_mem_access }
     }
 
     /// Builds an `EllipticCurveDecompressEvent`: pops `x`'s reads (used), then `y`'s
@@ -1031,11 +1073,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(
-            ptr + (num_words_field_element * 4) as u32,
-            &x_memory_records,
-            MemoryRecordEnum::Read,
-        );
         let x_bytes = zkm_primitives::consts::words_to_bytes_le_vec(&x);
         let mut x_bytes_be = x_bytes.clone();
         x_bytes_be.reverse();
@@ -1048,7 +1085,18 @@ impl<'a> TracingVM<'a> {
             .zip(&y_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(ptr, &y_memory_records, MemoryRecordEnum::Write);
+        let local_mem_access = Self::precompile_local_events(
+            x_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (ptr + (num_words_field_element * 4) as u32 + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    y_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
         Ok(EllipticCurveDecompressEvent {
             shard: 0,
             clk,
@@ -1058,7 +1106,7 @@ impl<'a> TracingVM<'a> {
             decompressed_y_bytes,
             x_memory_records,
             y_memory_records,
-            local_mem_access: Vec::new(),
+            local_mem_access,
         })
     }
 
@@ -1078,7 +1126,6 @@ impl<'a> TracingVM<'a> {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        self.touch_local_slice(ptr + COMPRESSED_POINT_BYTES as u32, &y_memory_records, MemoryRecordEnum::Read);
         let y_bytes: [u8; COMPRESSED_POINT_BYTES] =
             zkm_primitives::consts::words_to_bytes_le_vec(&y).try_into().unwrap();
         let decompressed_x_bytes =
@@ -1092,7 +1139,18 @@ impl<'a> TracingVM<'a> {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        self.touch_local_slice(ptr, &x_memory_records, MemoryRecordEnum::Write);
+        let local_mem_access = Self::precompile_local_events(
+            y_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (ptr + COMPRESSED_POINT_BYTES as u32 + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    x_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
         Ok(EdDecompressEvent {
             shard: 0,
             clk,
@@ -1102,7 +1160,7 @@ impl<'a> TracingVM<'a> {
             decompressed_x_bytes,
             x_memory_records,
             y_memory_records,
-            local_mem_access: Vec::new(),
+            local_mem_access,
         })
     }
 
@@ -1124,7 +1182,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(y_ptr, &y_memory_records, MemoryRecordEnum::Read);
         let x_entries = self.core.next_oracle_entries(num_words);
         let x: Vec<u32> = x_entries.iter().map(|e| e.value).collect();
         let result = fp_op::<P>(&x, &y, op);
@@ -1133,8 +1190,19 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
-        FpOpEvent { shard: 0, clk, x_ptr, x, y_ptr, y, op, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
+        let local_mem_access = Self::precompile_local_events(
+            y_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (y_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    x_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (x_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
+        FpOpEvent { shard: 0, clk, x_ptr, x, y_ptr, y, op, x_memory_records, y_memory_records, local_mem_access }
     }
 
     /// Builds an `Fp2AddSubEvent`: pops `y`'s reads, then `x`'s write-preimage. `x`'s writes are
@@ -1154,7 +1222,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(y_ptr, &y_memory_records, MemoryRecordEnum::Read);
         let x_entries = self.core.next_oracle_entries(num_words);
         let x: Vec<u32> = x_entries.iter().map(|e| e.value).collect();
         let result = fp2_addsub::<P>(&x, &y, op);
@@ -1163,8 +1230,19 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
-        Fp2AddSubEvent { shard: 0, clk, op, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
+        let local_mem_access = Self::precompile_local_events(
+            y_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (y_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    x_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (x_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
+        Fp2AddSubEvent { shard: 0, clk, op, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access }
     }
 
     /// Builds an `Fp2MulEvent`: pops `y`'s reads, then `x`'s write-preimage. `x`'s writes are
@@ -1178,7 +1256,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(y_ptr, &y_memory_records, MemoryRecordEnum::Read);
         let x_entries = self.core.next_oracle_entries(num_words);
         let x: Vec<u32> = x_entries.iter().map(|e| e.value).collect();
         let result = fp2_mul::<P>(&x, &y);
@@ -1187,8 +1264,19 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
-        Fp2MulEvent { shard: 0, clk, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
+        let local_mem_access = Self::precompile_local_events(
+            y_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (y_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    x_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (x_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
+        Fp2MulEvent { shard: 0, clk, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access }
     }
 
     /// Builds a `Uint256MulEvent`: pops `y`'s reads, `modulus`'s reads, then `x`'s write-preimage
@@ -1202,7 +1290,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(y_ptr, &y_memory_records, MemoryRecordEnum::Read);
         let modulus_ptr = y_ptr + 8 * 4;
         let modulus_entries = self.core.next_oracle_entries(8);
         let modulus: [u32; 8] =
@@ -1211,7 +1298,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(modulus_ptr, &modulus_memory_records, MemoryRecordEnum::Read);
         let x_entries = self.core.next_oracle_entries(8);
         let x: [u32; 8] = x_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
         let result = uint256_mul(&x, &y, &modulus);
@@ -1220,7 +1306,24 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
+        let local_mem_access = Self::precompile_local_events(
+            y_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (y_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    modulus_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (modulus_ptr + 4 * i as u32, MemoryRecordEnum::Read(r))),
+                )
+                .chain(
+                    x_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (x_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
         Uint256MulEvent {
             shard: 0,
             clk,
@@ -1232,7 +1335,7 @@ impl<'a> TracingVM<'a> {
             x_memory_records,
             y_memory_records,
             modulus_memory_records,
-            local_mem_access: Vec::new(),
+            local_mem_access,
         }
     }
 
@@ -1265,7 +1368,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(a_ptr, &a_memory_records, MemoryRecordEnum::Read);
         let b_entries = self.core.next_oracle_entries(U2048_NUM_WORDS);
         let b: [u32; U2048_NUM_WORDS] =
             b_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
@@ -1273,7 +1375,6 @@ impl<'a> TracingVM<'a> {
             .iter()
             .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(b_ptr, &b_memory_records, MemoryRecordEnum::Read);
 
         let (lo, hi) = u256xu2048_mul(&a, &b);
         let lo_entries = self.core.next_oracle_entries(lo.len());
@@ -1282,14 +1383,37 @@ impl<'a> TracingVM<'a> {
             .zip(&lo_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(lo_ptr, &lo_memory_records, MemoryRecordEnum::Write);
         let hi_entries = self.core.next_oracle_entries(hi.len());
         let hi_memory_records: Vec<MemoryWriteRecord> = hi
             .iter()
             .zip(&hi_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(hi_ptr, &hi_memory_records, MemoryRecordEnum::Write);
+
+        let local_mem_access = Self::precompile_local_events(
+            a_memory_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (a_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                .chain(
+                    b_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (b_ptr + 4 * i as u32, MemoryRecordEnum::Read(r))),
+                )
+                .chain(
+                    lo_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (lo_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                )
+                .chain(
+                    hi_memory_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (hi_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                ),
+        );
 
         U256xU2048MulEvent {
             shard: 0,
@@ -1308,7 +1432,7 @@ impl<'a> TracingVM<'a> {
             b_memory_records,
             lo_memory_records,
             hi_memory_records,
-            local_mem_access: Vec::new(),
+            local_mem_access,
         }
     }
 
@@ -1324,7 +1448,12 @@ impl<'a> TracingVM<'a> {
             .zip(&pre_state_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        self.touch_local_slice(state_ptr, &state_records, MemoryRecordEnum::Write);
+        let local_mem_access = Self::precompile_local_events(
+            state_records
+                .iter()
+                .enumerate()
+                .map(|(i, &r)| (state_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+        );
         Poseidon2PermuteEvent {
             shard: 0,
             clk,
@@ -1332,14 +1461,20 @@ impl<'a> TracingVM<'a> {
             post_state,
             state_records,
             state_addr: state_ptr,
-            local_mem_access: Vec::new(),
+            local_mem_access,
         }
     }
 
     /// Builds a `LinuxEvent` for one of the Linux syscall shims (`SYS_BRK`/`SYS_MMAP`/etc, all
     /// bucketed under the synthetic `SyscallCode::SYS_LINUX` key like the legacy `Executor`
     /// itself does -- see `minimal/syscall.rs`'s corresponding dispatch arms for the compute logic
-    /// each `read_records`/`write_records`/`v0` pairing mirrors).
+    /// each `read_records`/`write_records`/`v0` pairing mirrors). Unlike the other precompiles,
+    /// this event's memory touches are all register-file accesses (A2/A3/HEAP), which -- unlike a
+    /// precompile's own private scratch RAM -- are also touched constantly by ordinary
+    /// instructions throughout the whole record; routing them through the shared
+    /// `touch_local`/`self.local_memory_access` map (their call sites do this directly) is
+    /// therefore correct here, not the `precompile_local_events` isolation `ec_add_event` and
+    /// friends use.
     fn linux_event(
         &self,
         clk: u64,
@@ -1434,14 +1569,12 @@ impl<'a> TracingVM<'a> {
                 let h: [u32; 8] = h_entries.map(|e| e.value);
                 let h_read_records: [MemoryReadRecord; 8] = h_entries
                     .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk });
-                self.touch_local_slice(h_ptr, &h_read_records, MemoryRecordEnum::Read);
                 let w_entries: [MemValue; 64] = std::array::from_fn(|_| self.core.next_oracle_entry());
                 let w: [u32; 64] = w_entries.map(|e| e.value);
                 let w_i_read_records: Vec<MemoryReadRecord> = w_entries
                     .iter()
                     .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
                     .collect();
-                self.touch_local_slice(w_ptr, &w_i_read_records, MemoryRecordEnum::Read);
                 let out = sha256_compress(h, &w);
                 let h_write_entries: [MemValue; 8] = std::array::from_fn(|_| self.core.next_oracle_entry());
                 let h_write_records: [MemoryWriteRecord; 8] = std::array::from_fn(|i| MemoryWriteRecord {
@@ -1450,7 +1583,24 @@ impl<'a> TracingVM<'a> {
                     prev_value: h_write_entries[i].value,
                     prev_timestamp: h_write_entries[i].clk,
                 });
-                self.touch_local_slice(h_ptr, &h_write_records, MemoryRecordEnum::Write);
+                let local_mem_access = Self::precompile_local_events(
+                    h_read_records
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &r)| (h_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
+                        .chain(
+                            w_i_read_records
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &r)| (w_ptr + 4 * i as u32, MemoryRecordEnum::Read(r))),
+                        )
+                        .chain(
+                            h_write_records
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &r)| (h_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                        ),
+                );
                 self.record.precompile_events.add_event(
                     code,
                     SyscallEvent {
@@ -1480,7 +1630,7 @@ impl<'a> TracingVM<'a> {
                         h_read_records,
                         w_i_read_records,
                         h_write_records,
-                        local_mem_access: Vec::new(),
+                        local_mem_access,
                     }),
                 );
                 extra_cycles = 1;
@@ -1493,50 +1643,40 @@ impl<'a> TracingVM<'a> {
                 let mut w_i_minus_16_reads = Vec::with_capacity(48);
                 let mut w_i_minus_7_reads = Vec::with_capacity(48);
                 let mut w_i_writes = Vec::with_capacity(48);
+                // Accumulated in the exact chronological order these addresses are touched --
+                // `precompile_local_events` needs that order to correctly resolve which touch is
+                // "first" vs "last" per address, since the sliding window means later iterations
+                // re-read addresses written by earlier ones.
+                let mut touches: Vec<(u32, MemoryRecordEnum)> = Vec::with_capacity(48 * 5);
                 for i in 16..64u32 {
                     let e = self.core.next_oracle_entry();
                     let w_i_minus_15 = e.value;
-                    w_i_minus_15_reads.push(MemoryReadRecord {
-                        value: w_i_minus_15,
-                        timestamp: clk,
-                        prev_timestamp: e.clk,
-                    });
-                    self.touch_local(w_ptr + (i - 15) * 4, &MemoryRecordEnum::Read(*w_i_minus_15_reads.last().unwrap()));
+                    let r = MemoryReadRecord { value: w_i_minus_15, timestamp: clk, prev_timestamp: e.clk };
+                    w_i_minus_15_reads.push(r);
+                    touches.push((w_ptr + (i - 15) * 4, MemoryRecordEnum::Read(r)));
                     let e = self.core.next_oracle_entry();
                     let w_i_minus_2 = e.value;
-                    w_i_minus_2_reads.push(MemoryReadRecord {
-                        value: w_i_minus_2,
-                        timestamp: clk,
-                        prev_timestamp: e.clk,
-                    });
-                    self.touch_local(w_ptr + (i - 2) * 4, &MemoryRecordEnum::Read(*w_i_minus_2_reads.last().unwrap()));
+                    let r = MemoryReadRecord { value: w_i_minus_2, timestamp: clk, prev_timestamp: e.clk };
+                    w_i_minus_2_reads.push(r);
+                    touches.push((w_ptr + (i - 2) * 4, MemoryRecordEnum::Read(r)));
                     let e = self.core.next_oracle_entry();
                     let w_i_minus_16 = e.value;
-                    w_i_minus_16_reads.push(MemoryReadRecord {
-                        value: w_i_minus_16,
-                        timestamp: clk,
-                        prev_timestamp: e.clk,
-                    });
-                    self.touch_local(w_ptr + (i - 16) * 4, &MemoryRecordEnum::Read(*w_i_minus_16_reads.last().unwrap()));
+                    let r = MemoryReadRecord { value: w_i_minus_16, timestamp: clk, prev_timestamp: e.clk };
+                    w_i_minus_16_reads.push(r);
+                    touches.push((w_ptr + (i - 16) * 4, MemoryRecordEnum::Read(r)));
                     let e = self.core.next_oracle_entry();
                     let w_i_minus_7 = e.value;
-                    w_i_minus_7_reads.push(MemoryReadRecord {
-                        value: w_i_minus_7,
-                        timestamp: clk,
-                        prev_timestamp: e.clk,
-                    });
-                    self.touch_local(w_ptr + (i - 7) * 4, &MemoryRecordEnum::Read(*w_i_minus_7_reads.last().unwrap()));
+                    let r = MemoryReadRecord { value: w_i_minus_7, timestamp: clk, prev_timestamp: e.clk };
+                    w_i_minus_7_reads.push(r);
+                    touches.push((w_ptr + (i - 7) * 4, MemoryRecordEnum::Read(r)));
                     let w_i =
                         sha256_extend_word(w_i_minus_15, w_i_minus_2, w_i_minus_16, w_i_minus_7);
                     let e = self.core.next_oracle_entry();
-                    w_i_writes.push(MemoryWriteRecord {
-                        value: w_i,
-                        timestamp: clk,
-                        prev_value: e.value,
-                        prev_timestamp: e.clk,
-                    });
-                    self.touch_local(w_ptr + i * 4, &MemoryRecordEnum::Write(*w_i_writes.last().unwrap()));
+                    let w = MemoryWriteRecord { value: w_i, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk };
+                    w_i_writes.push(w);
+                    touches.push((w_ptr + i * 4, MemoryRecordEnum::Write(w)));
                 }
+                let local_mem_access = Self::precompile_local_events(touches);
                 self.record.precompile_events.add_event(
                     code,
                     SyscallEvent {
@@ -1565,7 +1705,7 @@ impl<'a> TracingVM<'a> {
                         w_i_minus_16_reads,
                         w_i_minus_7_reads,
                         w_i_writes,
-                        local_mem_access: Vec::new(),
+                        local_mem_access,
                     }),
                 );
                 extra_cycles = 48;
@@ -1581,8 +1721,6 @@ impl<'a> TracingVM<'a> {
                     timestamp: clk,
                     prev_timestamp: input_len_entry.clk,
                 };
-                self.touch_local(result_ptr + 16 * 4, &MemoryRecordEnum::Read(input_length_record));
-
                 let mut input_values = Vec::with_capacity(input_len_u32s as usize);
                 let mut input_read_records = Vec::with_capacity(input_len_u32s as usize);
                 for _ in 0..input_len_u32s {
@@ -1594,7 +1732,6 @@ impl<'a> TracingVM<'a> {
                         prev_timestamp: e.clk,
                     });
                 }
-                self.touch_local_slice(input_ptr, &input_read_records, MemoryRecordEnum::Read);
                 let input_u64_values: Vec<u64> = input_values
                     .chunks_exact(2)
                     .map(|pair| pair[0] as u64 + ((pair[1] as u64) << 32))
@@ -1624,7 +1761,21 @@ impl<'a> TracingVM<'a> {
                         prev_timestamp: e.clk,
                     })
                     .collect();
-                self.touch_local_slice(result_ptr, &output_write_records, MemoryRecordEnum::Write);
+                let local_mem_access = Self::precompile_local_events(
+                    std::iter::once((result_ptr + 16 * 4, MemoryRecordEnum::Read(input_length_record)))
+                        .chain(
+                            input_read_records
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &r)| (input_ptr + 4 * i as u32, MemoryRecordEnum::Read(r))),
+                        )
+                        .chain(
+                            output_write_records
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &r)| (result_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+                        ),
+                );
 
                 self.record.precompile_events.add_event(
                     code,
@@ -1657,7 +1808,7 @@ impl<'a> TracingVM<'a> {
                         xored_state_list,
                         input_addr: input_ptr,
                         output_addr: result_ptr,
-                        local_mem_access: Vec::new(),
+                        local_mem_access,
                     }),
                 );
                 extra_cycles = 1;

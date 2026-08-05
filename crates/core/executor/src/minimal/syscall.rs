@@ -277,22 +277,18 @@ impl MinimalExecutor {
             }
             SyscallCode::SECP256K1_ADD => {
                 self.ec_add_dispatch::<Secp256k1>(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::SECP256R1_ADD => {
                 self.ec_add_dispatch::<Secp256r1>(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BN254_ADD => {
                 self.ec_add_dispatch::<Bn254>(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BLS12381_ADD => {
                 self.ec_add_dispatch::<Bls12381>(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::SECP256K1_DOUBLE => {
@@ -325,7 +321,6 @@ impl MinimalExecutor {
             }
             SyscallCode::ED_ADD => {
                 self.ec_add_dispatch::<Ed25519>(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::ED_DECOMPRESS => {
@@ -334,72 +329,58 @@ impl MinimalExecutor {
             }
             SyscallCode::BN254_FP_ADD => {
                 self.fp_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Add);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BN254_FP_SUB => {
                 self.fp_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Sub);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BN254_FP_MUL => {
                 self.fp_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Mul);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BLS12381_FP_ADD => {
                 self.fp_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Add);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BLS12381_FP_SUB => {
                 self.fp_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Sub);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BLS12381_FP_MUL => {
                 self.fp_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Mul);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BN254_FP2_ADD => {
                 self.fp2_addsub_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Add);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BN254_FP2_SUB => {
                 self.fp2_addsub_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Sub);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BN254_FP2_MUL => {
                 self.fp2_mul_dispatch::<Bn254BaseField>(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BLS12381_FP2_ADD => {
                 self.fp2_addsub_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Add);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BLS12381_FP2_SUB => {
                 self.fp2_addsub_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Sub);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::BLS12381_FP2_MUL => {
                 self.fp2_mul_dispatch::<Bls12381BaseField>(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::UINT256_MUL => {
                 self.uint256_mul_dispatch(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::U256XU2048_MUL => {
                 self.u256xu2048_mul_dispatch(arg1, arg2);
-                extra_cycles = 1;
                 None
             }
             SyscallCode::POSEIDON2_PERMUTE => {
