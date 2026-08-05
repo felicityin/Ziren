@@ -174,6 +174,20 @@ impl MinimalExecutor {
         self.registers[r as usize]
     }
 
+    /// Reads register `r`'s value, re-stamping its own consistency-timestamp at `clk + position`
+    /// in the process -- mirrors `Executor::rr_traced`'s unconditional `record.timestamp =
+    /// timestamp` (a read participates in the same access-timestamp chain as a write, since the
+    /// timestamp tracked here is later used to seed the *next* chunk's `start_register_timestamps`
+    /// via `Self::register_timestamps()`; if reads didn't re-stamp it, a register whose last touch
+    /// in this chunk was a read -- not a write -- would hand the next chunk a stale timestamp).
+    /// Only call this at the exact position an op_a/op_b/op_c slot reads `r` (never for an
+    /// untracked "peek" -- see the callers' own comments for which reads are peeks).
+    fn reg_read(&mut self, r: Register, position: MemoryAccessPosition) -> u32 {
+        let value = self.reg(r);
+        self.set_reg(r, value, position);
+        value
+    }
+
     /// Writes `value` to register `r`, tagging its consistency-timestamp at `clk + position` --
     /// matches `Executor::rw_cpu`'s exact scheme for the instruction's own op_a/op_b/op_c/hi
     /// slots (the only registers this ISA ever writes through those slots; `op_b`/`op_c` are
@@ -197,6 +211,14 @@ impl MinimalExecutor {
         let value = if r == Register::ZERO { 0 } else { value };
         self.registers[r as usize] = value;
         self.register_timestamps[r as usize] = self.clk;
+    }
+
+    /// Auxiliary-register counterpart to `reg_read` (bare `clk`, no position offset) -- see both
+    /// doc comments.
+    fn reg_read_aux(&mut self, r: Register) -> u32 {
+        let value = self.reg(r);
+        self.set_reg_aux(r, value);
+        value
     }
 
     // ---- RAM (oracle-logged) ----
@@ -340,13 +362,17 @@ impl MinimalExecutor {
         } else if instruction.is_memory_store_instruction() {
             self.execute_store(instruction)?;
         } else if instruction.is_branch_instruction() {
+            // Must read B before A (mirrors `Executor::branch_rr`'s exact order -- matches
+            // `MemoryAccessPosition`'s documented C-B-A ordering: if the two operands alias the
+            // same register, B's record must chain from the pre-instruction state and A's from
+            // B's).
             let rs: Register = instruction.op_a.into();
-            let src1 = self.reg(rs);
             let src2 = if instruction.opcode.only_one_operand() {
                 0
             } else {
-                self.reg((instruction.op_b as u8).into())
+                self.reg_read((instruction.op_b as u8).into(), MemoryAccessPosition::B)
             };
+            let src1 = self.reg_read(rs, MemoryAccessPosition::A);
             let offset = instruction.op_c;
             if vm::branch_taken(instruction.opcode, src1, src2) {
                 next_next_pc = vm::branch_target(next_pc_in, offset);
@@ -357,7 +383,7 @@ impl MinimalExecutor {
             let (return_pc, target) = match instruction.opcode {
                 Opcode::Jump => {
                     let target_reg: Register = (instruction.op_b as u8).into();
-                    let target_pc = self.reg(target_reg);
+                    let target_pc = self.reg_read(target_reg, MemoryAccessPosition::B);
                     vm::jump_jr_result(next_pc_in, target_pc)
                 }
                 Opcode::Jumpi => vm::jump_jumpi_result(next_pc_in, instruction.op_b),
@@ -371,9 +397,14 @@ impl MinimalExecutor {
             let rd: Register = instruction.op_a.into();
             let rs: Register = (instruction.op_b as u8).into();
             let rt: Register = (instruction.op_c as u8).into();
+            // `prev_a` is an untracked live peek -- matches `TracingVM`'s identical pattern (the
+            // real `a_record` comes entirely from the write below, which captures this same value
+            // as its own `prev_value`), so it must NOT re-stamp `rd`'s timestamp here.
             let prev_a = self.reg(rd);
-            let b = self.reg(rs);
-            let c = self.reg(rt);
+            // Must read C before B (mirrors `Executor::execute_condmov`'s exact order -- see the
+            // branch case's identical comment on why this matters when `rs == rt`).
+            let c = self.reg_read(rt, MemoryAccessPosition::C);
+            let b = self.reg_read(rs, MemoryAccessPosition::B);
             let a = vm::condmov_result(instruction.opcode, prev_a, b, c);
             self.set_reg(rd, a, MemoryAccessPosition::A);
         } else if instruction.is_misc_instruction() {
@@ -398,15 +429,18 @@ impl MinimalExecutor {
 
     /// Mirrors `Executor::alu_rr`'s three operand-decoding shapes (register-register,
     /// register-immediate, immediate-immediate).
-    fn alu_operands(&self, instruction: &Instruction) -> (Register, u32, u32) {
+    fn alu_operands(&mut self, instruction: &Instruction) -> (Register, u32, u32) {
         if !instruction.imm_c {
             let rd = instruction.op_a.into();
-            let b = self.reg((instruction.op_b as u8).into());
-            let c = self.reg((instruction.op_c as u8).into());
+            // Must read C before B (mirrors `Executor::alu_rr`'s exact order) -- if the two
+            // operands alias the same register, C's record must chain from the pre-instruction
+            // state and B's from C's, matching `MemoryAccessPosition`'s documented C-B-A order.
+            let c = self.reg_read((instruction.op_c as u8).into(), MemoryAccessPosition::C);
+            let b = self.reg_read((instruction.op_b as u8).into(), MemoryAccessPosition::B);
             (rd, b, c)
         } else if !instruction.imm_b {
             let rd = instruction.op_a.into();
-            let b = self.reg((instruction.op_b as u8).into());
+            let b = self.reg_read((instruction.op_b as u8).into(), MemoryAccessPosition::B);
             (rd, b, instruction.op_c)
         } else {
             (instruction.op_a.into(), instruction.op_b, instruction.op_c)
@@ -427,7 +461,10 @@ impl MinimalExecutor {
         let rt_reg: Register = instruction.op_a.into();
         let rs_reg: Register = (instruction.op_b as u8).into();
         let offset = instruction.op_c;
-        let rs_raw = self.reg(rs_reg);
+        let rs_raw = self.reg_read(rs_reg, MemoryAccessPosition::B);
+        // `rt`'s current value is an untracked live peek (only needed for LWL/LWR's byte-merge) --
+        // matches `TracingVM`'s identical comment: the real `a_record` comes entirely from the
+        // write below, which captures this same value as its own `prev_value`.
         let rt = self.reg(rt_reg);
 
         let addr = rs_raw.wrapping_add(offset);
@@ -487,8 +524,15 @@ impl MinimalExecutor {
         let rt_reg: Register = instruction.op_a.into();
         let rs_reg: Register = (instruction.op_b as u8).into();
         let offset = instruction.op_c;
-        let rs = self.reg(rs_reg);
+        let rs = self.reg_read(rs_reg, MemoryAccessPosition::B);
+        // `SC`'s `rt` (the value about to be stored) is an untracked live peek -- unlike every
+        // other store, which reads it as a real record at A (see `TracingVM::execute_store`'s
+        // identical comment: SC's own A-slot is a *write* of the success flag, not a read of
+        // `rt`).
         let rt = self.reg(rt_reg);
+        if instruction.opcode != Opcode::SC {
+            self.set_reg(rt_reg, rt, MemoryAccessPosition::A);
+        }
 
         let addr = rs.wrapping_add(offset);
         let aligned_addr = addr & 0xFFFF_FFFC;
@@ -551,7 +595,7 @@ impl MinimalExecutor {
         if instruction.opcode == Opcode::WSBH {
             let rd: Register = instruction.op_a.into();
             let rt: Register = (instruction.op_b as u8).into();
-            let b = self.reg(rt);
+            let b = self.reg_read(rt, MemoryAccessPosition::B);
             self.set_reg(rd, vm::wsbh(b), MemoryAccessPosition::A);
             return Ok(());
         }
@@ -561,15 +605,17 @@ impl MinimalExecutor {
         let c = instruction.op_c;
         match instruction.opcode {
             Opcode::SEXT => {
-                let b = self.reg(rt);
+                let b = self.reg_read(rt, MemoryAccessPosition::B);
                 self.set_reg(rd, vm::sext(b, c), MemoryAccessPosition::A);
             }
             Opcode::EXT => {
-                let b = self.reg(rt);
+                let b = self.reg_read(rt, MemoryAccessPosition::B);
                 self.set_reg(rd, vm::ext(b, c)?, MemoryAccessPosition::A);
             }
             Opcode::INS => {
-                let b = self.reg(rt);
+                let b = self.reg_read(rt, MemoryAccessPosition::B);
+                // `a` (rd's current value, merged with `b`) is an untracked live peek -- matches
+                // `TracingVM`'s identical `INS` pattern.
                 let a = self.reg(rd);
                 self.set_reg(rd, vm::ins(a, b, c)?, MemoryAccessPosition::A);
             }
@@ -577,15 +623,17 @@ impl MinimalExecutor {
                 // `execute_teq`'s unusual encoding: `rs = op_a`, `rt = op_b` (no destination).
                 let rs: Register = instruction.op_a.into();
                 let rt: Register = (instruction.op_b as u8).into();
-                let src2 = self.reg(rt);
-                let src1 = self.reg(rs);
+                let src2 = self.reg_read(rt, MemoryAccessPosition::B);
+                let src1 = self.reg_read(rs, MemoryAccessPosition::A);
                 vm::teq(src1, src2)?;
             }
             Opcode::MADDU | Opcode::MSUBU | Opcode::MADD | Opcode::MSUB => {
                 let lo_reg: Register = instruction.op_a.into();
                 let rs: Register = (instruction.op_c as u8).into();
-                let c = self.reg(rs);
-                let b = self.reg(rt);
+                let c = self.reg_read(rs, MemoryAccessPosition::C);
+                let b = self.reg_read(rt, MemoryAccessPosition::B);
+                // `lo`/`hi` are untracked live peeks -- matches `TracingVM`'s identical pattern
+                // (only used as computation inputs; the real records come from the writes below).
                 let lo = self.reg(Register::LO);
                 let hi = self.reg(Register::HI);
                 let (out_lo, out_hi) = match instruction.opcode {

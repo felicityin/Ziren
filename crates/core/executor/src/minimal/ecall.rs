@@ -124,8 +124,8 @@ impl MinimalExecutor {
     /// `a_ptr * b_ptr`, writing the low 2048 bits to the address in `$a2` and the high 256 bits
     /// to the address in `$a3`.
     fn u256xu2048_mul_dispatch(&mut self, a_ptr: u32, b_ptr: u32) {
-        let lo_ptr = self.reg(Register::A2);
-        let hi_ptr = self.reg(Register::A3);
+        let lo_ptr = self.reg_read_aux(Register::A2);
+        let hi_ptr = self.reg_read_aux(Register::A3);
         let a: [u32; vm::U256_NUM_WORDS] = self.mr_slice(a_ptr, vm::U256_NUM_WORDS).try_into().unwrap();
         let b: [u32; vm::U2048_NUM_WORDS] = self.mr_slice(b_ptr, vm::U2048_NUM_WORDS).try_into().unwrap();
         self.clk += 1;
@@ -146,10 +146,13 @@ impl MinimalExecutor {
     /// still add 4 to for `next_next_pc`, mirroring `SyscallContext::next_pc`'s default of
     /// `self.pc.wrapping_add(4)` and `HaltSyscall`'s override to `0`).
     pub(super) fn execute_syscall(&mut self) -> Result<u32, ExecutionError> {
+        // `V0` stays an untracked live peek here -- the real record comes from the write at the
+        // bottom of this function (mirrors `TracingVM::execute_syscall`'s identical comment). `A1`
+        // is read before `A0` (C before B), matching `Executor::execute_operation`'s exact order.
         let syscall_id = self.reg(Register::V0);
         let code = SyscallCode::from_u32(syscall_id);
-        let arg1 = self.reg(Register::A0);
-        let arg2 = self.reg(Register::A1);
+        let arg2 = self.reg_read(Register::A1, MemoryAccessPosition::C);
+        let arg1 = self.reg_read(Register::A0, MemoryAccessPosition::B);
 
         let mut next_pc = self.pc.wrapping_add(4);
         let mut extra_cycles = 0u32;
@@ -424,7 +427,7 @@ impl MinimalExecutor {
             SyscallCode::SYS_WRITE => {
                 let fd = arg1;
                 let write_buf = arg2;
-                let nbytes = self.reg(Register::A2);
+                let nbytes = self.reg_read_aux(Register::A2);
                 // Every byte's owning word is logged (via `byte_peek`) regardless of `fd`, same
                 // as the `WRITE` syscall above -- `CoreVM` must pop a matching entry per byte to
                 // stay in sync even for destinations whose content isn't otherwise preserved.

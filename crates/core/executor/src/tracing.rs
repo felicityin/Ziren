@@ -193,35 +193,44 @@ impl<'a> TracingVM<'a> {
     // just-updated timestamp instead of the correct pre-instruction one.
 
     /// Builds a real read record for `op_a`, given its already-resolved value -- only a handful
-    /// of instruction families (branches) ever *read* `op_a` rather than write it.
+    /// of instruction families (branches) ever *read* `op_a` rather than write it. Re-stamps
+    /// `r`'s own consistency-timestamp afterward (same value, new timestamp) -- mirrors
+    /// `Executor::rr_traced`'s unconditional `record.timestamp = timestamp`: a read participates
+    /// in the same access-timestamp chain as a write, so a later access's `prev_timestamp` must
+    /// match THIS read's own timestamp, not some earlier write's.
     fn read_op_a(&mut self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
         let rec = MemoryRecordEnum::Read(MemoryReadRecord {
             value,
             timestamp: clk + MemoryAccessPosition::A as u64,
             prev_timestamp: self.core.reg_timestamp(r),
         });
+        self.core.set_reg(r, value, MemoryAccessPosition::A);
         self.touch_local(r as u32, &rec);
         rec
     }
 
-    /// Builds a real read record for `op_b`, given its already-resolved value.
+    /// Builds a real read record for `op_b`, given its already-resolved value. See `read_op_a`'s
+    /// doc comment for why this also re-stamps `r`'s consistency-timestamp.
     fn read_op_b(&mut self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
         let rec = MemoryRecordEnum::Read(MemoryReadRecord {
             value,
             timestamp: clk + MemoryAccessPosition::B as u64,
             prev_timestamp: self.core.reg_timestamp(r),
         });
+        self.core.set_reg(r, value, MemoryAccessPosition::B);
         self.touch_local(r as u32, &rec);
         rec
     }
 
-    /// Builds a real read record for `op_c`, given its already-resolved value.
+    /// Builds a real read record for `op_c`, given its already-resolved value. See `read_op_a`'s
+    /// doc comment for why this also re-stamps `r`'s consistency-timestamp.
     fn read_op_c(&mut self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
         let rec = MemoryRecordEnum::Read(MemoryReadRecord {
             value,
             timestamp: clk + MemoryAccessPosition::C as u64,
             prev_timestamp: self.core.reg_timestamp(r),
         });
+        self.core.set_reg(r, value, MemoryAccessPosition::C);
         self.touch_local(r as u32, &rec);
         rec
     }
@@ -319,11 +328,13 @@ impl<'a> TracingVM<'a> {
             self.execute_store(instruction, clk, pc, next_pc_in)?;
         } else if instruction.is_branch_instruction() {
             // `src1`/`src2` are read (never written) at positions A/B respectively -- mirrors
-            // `Executor::branch_rr` exactly. The offset (`op_c`) is always a raw immediate for
-            // this opcode family, never a register, so there is no `c_record`.
+            // `Executor::branch_rr` exactly, including its B-then-A read order (matches
+            // `MemoryAccessPosition`'s documented C-B-A ordering: if `rs == rt`, B's record must
+            // chain from the pre-instruction state and A's record must chain from B's). The
+            // offset (`op_c`) is always a raw immediate for this opcode family, never a register,
+            // so there is no `c_record`.
             let rs: Register = instruction.op_a.into();
             let src1 = self.core.reg(rs);
-            let a_record = self.read_op_a(rs, src1, clk);
             let (src2, b_record) = if instruction.opcode.only_one_operand() {
                 (0, None)
             } else {
@@ -331,6 +342,7 @@ impl<'a> TracingVM<'a> {
                 let src2 = self.core.reg(rt);
                 (src2, Some(self.read_op_b(rt, src2, clk)))
             };
+            let a_record = self.read_op_a(rs, src1, clk);
             let offset = instruction.op_c;
             // Every branch opcode's register operands use the cheap register-access scheme (see
             // `Executor::emit_memory_bump_events`'s call site comment), so this is unconditional.
@@ -412,10 +424,12 @@ impl<'a> TracingVM<'a> {
             let rs: Register = (instruction.op_b as u8).into();
             let rt: Register = (instruction.op_c as u8).into();
             let prev_a = self.core.reg(rd);
-            let b = self.core.reg(rs);
-            let b_record = self.read_op_b(rs, b, clk);
+            // Must read C before B (mirrors `Executor::execute_condmov`'s exact order -- see
+            // `alu_operands`'s identical comment on why this matters when `rs == rt`).
             let c = self.core.reg(rt);
             let c_record = self.read_op_c(rt, c, clk);
+            let b = self.core.reg(rs);
+            let b_record = self.read_op_b(rs, b, clk);
             let a = crate::vm::condmov_result(instruction.opcode, prev_a, b, c);
             let a_record = self.write_op_a(rd, a, clk);
             // MEQ/MNE/WSBH are dispatched through the legacy `Executor`'s misc branch, whose
@@ -473,7 +487,12 @@ impl<'a> TracingVM<'a> {
             let c_reg: Register = (instruction.op_c as u8).into();
             let b = self.core.reg(b_reg);
             let c = self.core.reg(c_reg);
-            (rd, b, Some(self.read_op_b(b_reg, b, clk)), c, Some(self.read_op_c(c_reg, c, clk)))
+            // Must read C before B (mirrors `Executor::alu_rr`'s exact order) -- if `b_reg ==
+            // c_reg`, C's own record must chain from the pre-instruction state and B's record
+            // must chain from C's, matching `MemoryAccessPosition`'s documented C-B-A ordering.
+            let c_record = self.read_op_c(c_reg, c, clk);
+            let b_record = self.read_op_b(b_reg, b, clk);
+            (rd, b, Some(b_record), c, Some(c_record))
         } else if !instruction.imm_b {
             let rd = instruction.op_a.into();
             let b_reg: Register = (instruction.op_b as u8).into();
@@ -1217,6 +1236,8 @@ impl<'a> TracingVM<'a> {
             timestamp: clk,
             prev_timestamp: self.core.reg_timestamp(Register::A3),
         };
+        self.core.set_reg_aux(Register::A2, lo_ptr);
+        self.core.set_reg_aux(Register::A3, hi_ptr);
         self.touch_local(Register::A2 as u32, &MemoryRecordEnum::Read(lo_ptr_memory));
         self.touch_local(Register::A3 as u32, &MemoryRecordEnum::Read(hi_ptr_memory));
 
@@ -1331,12 +1352,14 @@ impl<'a> TracingVM<'a> {
         let syscall_id = self.core.reg(Register::V0);
         let code = SyscallCode::from_u32(syscall_id);
         // Mirrors `Executor::execute_operation`'s `SYSCALL` branch exactly: `A0`/`A1` are read at
-        // B/C (the syscall instruction's own op_b/op_c slots); `V0` is written at A once the
-        // result is known, at the bottom of this function.
-        let arg1 = self.core.reg(Register::A0);
-        let b_record = self.read_op_b(Register::A0, arg1, clk);
+        // B/C (the syscall instruction's own op_b/op_c slots), C before B (matches legacy's exact
+        // order -- harmless here since A0/A1 are always distinct fixed registers, but kept
+        // consistent with `alu_operands`'s documented C-B-A ordering regardless); `V0` is written
+        // at A once the result is known, at the bottom of this function.
         let arg2 = self.core.reg(Register::A1);
         let c_record = self.read_op_c(Register::A1, arg2, clk);
+        let arg1 = self.core.reg(Register::A0);
+        let b_record = self.read_op_b(Register::A0, arg1, clk);
 
         let mut next_pc = pc.wrapping_add(4);
         let mut extra_cycles = 0u32;
@@ -2306,6 +2329,7 @@ impl<'a> TracingVM<'a> {
             SyscallCode::SYS_WRITE => {
                 let nbytes = self.core.reg(Register::A2);
                 let nbytes_ts = self.core.reg_timestamp(Register::A2);
+                self.core.set_reg_aux(Register::A2, nbytes);
                 self.touch_local(
                     Register::A2 as u32,
                     &MemoryRecordEnum::Read(MemoryReadRecord {
@@ -2763,5 +2787,86 @@ mod tests {
         assert_eq!(t2.initial_mem_access.timestamp, 0);
         assert_eq!(t2.final_mem_access.value, 12, "5 + 7");
         assert_eq!(t2.final_mem_access.timestamp, instr3_clk + MemoryAccessPosition::A as u64);
+    }
+
+    /// Regression test for a real bug: `CoreVM::register_timestamps` was only updated by writes,
+    /// not reads, so a register touched twice with no intervening write (including a single
+    /// instruction reading the same register at both its B and C operand slots, e.g. `ADD $t1,
+    /// $t0, $t0`) would give the second access a `prev_timestamp` chained to a stale earlier
+    /// write instead of the first access's own timestamp -- breaking the memory-consistency
+    /// argument. Also exercises the C-before-B read order `alu_operands` must use (mirroring
+    /// `Executor::alu_rr`) for this aliasing case to chain correctly at all.
+    #[test]
+    fn read_op_b_and_c_chain_correctly_when_aliasing_the_same_register() {
+        const T0: u8 = Register::T0 as u8;
+        const T1: u8 = Register::T1 as u8;
+        const ZERO: u8 = Register::ZERO as u8;
+
+        let program = Program::new(
+            vec![
+                Instruction::new(Opcode::ADD, T0, ZERO as u32, 5, false, true),
+                // $t1 = $t0 + $t0 -- reads $t0 at both B and C.
+                Instruction::new(Opcode::ADD, T1, T0 as u32, T0 as u32, false, false),
+                // $t0 = $t1 + $t1 -- reads $t1 at both B and C.
+                Instruction::new(Opcode::ADD, T0, T1 as u32, T1 as u32, false, false),
+            ],
+            0,
+            0,
+        );
+
+        let program = Arc::new(program);
+        let mut minimal = MinimalExecutor::new(program.clone(), u64::MAX / 2);
+        let chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
+        let max_syscall_cycles = minimal.max_syscall_cycles();
+
+        let mut record = ExecutionRecord::new(program.clone());
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
+
+        assert_eq!(record.add_events.len(), 2, "instructions 2 and 3 are both register-register ADD");
+
+        // Instruction 1 ($t0 = 5) retires at clk 1; instruction 2 at clk 6; instruction 3 at clk 11.
+        let instr2_clk = 6;
+        let instr2_c_ts = instr2_clk + MemoryAccessPosition::C as u64;
+        let instr2_b_ts = instr2_clk + MemoryAccessPosition::B as u64;
+
+        let event2 = record.add_events[0];
+        assert_eq!(event2.a, 10, "$t1 = 5 + 5");
+        match (event2.b_record, event2.c_record) {
+            (Some(MemoryRecordEnum::Read(b)), Some(MemoryRecordEnum::Read(c))) => {
+                assert_eq!(c.value, 5);
+                assert_eq!(c.timestamp, instr2_c_ts);
+                assert_eq!(c.prev_timestamp, 1 + MemoryAccessPosition::A as u64, "chains from instruction 1's write");
+                assert_eq!(b.value, 5);
+                assert_eq!(b.timestamp, instr2_b_ts);
+                assert_eq!(
+                    b.prev_timestamp, instr2_c_ts,
+                    "B must chain from C's own timestamp (this instruction's read), not the stale pre-instruction write"
+                );
+            }
+            other => panic!("expected real b_record/c_record, got {other:?}"),
+        }
+
+        let instr3_clk = 11;
+        let instr3_c_ts = instr3_clk + MemoryAccessPosition::C as u64;
+        let instr3_b_ts = instr3_clk + MemoryAccessPosition::B as u64;
+
+        let event3 = record.add_events[1];
+        assert_eq!(event3.a, 20, "$t0 = 10 + 10");
+        match (event3.b_record, event3.c_record) {
+            (Some(MemoryRecordEnum::Read(b)), Some(MemoryRecordEnum::Read(c))) => {
+                assert_eq!(c.value, 10);
+                assert_eq!(c.timestamp, instr3_c_ts);
+                assert_eq!(
+                    c.prev_timestamp,
+                    instr2_clk + MemoryAccessPosition::A as u64,
+                    "chains from instruction 2's write of $t1 (its own destination, the last touch of $t1)"
+                );
+                assert_eq!(b.value, 10);
+                assert_eq!(b.timestamp, instr3_b_ts);
+                assert_eq!(b.prev_timestamp, instr3_c_ts, "B must chain from C's own timestamp again");
+            }
+            other => panic!("expected real b_record/c_record, got {other:?}"),
+        }
     }
 }
