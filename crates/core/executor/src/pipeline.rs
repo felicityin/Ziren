@@ -8,12 +8,14 @@
 use std::sync::Arc;
 
 use crate::{
+    events::MemoryInitializeFinalizeEvent,
     minimal::MinimalExecutor,
     splicing::{SplicingStatus, SplicingVM},
-    trace::MinimalTrace,
     tracing::TracingVM,
-    ExecutionError, ExecutionRecord, Program,
+    ExecutionError, ExecutionRecord, ExecutionReport, Program,
 };
+
+pub use crate::splicing::SplicedMinimalTrace;
 
 /// Runs `program` to completion through the new pipeline, returning one [`ExecutionRecord`] per
 /// shard. `max_trace_size` bounds `MinimalExecutor`'s oracle-log buffer (a memory-management
@@ -42,11 +44,11 @@ pub fn run_full_pipeline(
         match splicing.execute()? {
             SplicingStatus::ShardBoundary => {
                 let spliced = splicing.splice(&chunk);
-                records.push(trace_shard(&spliced, program.clone(), max_syscall_cycles)?);
+                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles)?);
             }
             SplicingStatus::Done => {
                 let spliced = splicing.splice(&chunk);
-                records.push(trace_shard(&spliced, program.clone(), max_syscall_cycles)?);
+                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles)?);
                 break;
             }
             SplicingStatus::TraceEnd => {
@@ -72,15 +74,112 @@ pub fn run_full_pipeline(
     Ok(records)
 }
 
-fn trace_shard<T: MinimalTrace>(
-    spliced: &T,
+/// Traces one already-spliced shard into a real [`ExecutionRecord`] -- the new pipeline's
+/// equivalent of the legacy `Executor`-based `trace_checkpoint`.
+///
+/// # Errors
+///
+/// Propagates any [`ExecutionError`] from executing an instruction.
+pub fn trace_shard(
     program: Arc<Program>,
+    spliced: &SplicedMinimalTrace,
     max_syscall_cycles: u32,
 ) -> Result<ExecutionRecord, ExecutionError> {
     let mut record = ExecutionRecord::new(program.clone());
     let mut tracing = TracingVM::new(spliced, program, max_syscall_cycles, &mut record);
     tracing.execute()?;
     Ok(record)
+}
+
+/// Owns a `MinimalExecutor` (kept crate-private) across repeated [`next_shard`] calls, so a shard
+/// spanning more than one `MinimalExecutor` chunk never needs a self-referential `SplicingVM` to
+/// survive across calls -- each `next_shard` call loops through as many chunks as that one shard
+/// needs, entirely within its own stack frame, and only `ShardDriver` itself (opaque to callers)
+/// needs to persist between calls.
+pub struct ShardDriver(MinimalExecutor);
+
+impl ShardDriver {
+    #[must_use]
+    pub fn new(program: Arc<Program>, max_trace_size: u64) -> Self {
+        Self(MinimalExecutor::new(program, max_trace_size))
+    }
+
+    /// The global, never-reset clk `next_shard`'s most recent call left off at -- the new
+    /// pipeline's equivalent of the legacy `Executor`'s `state.global_clk`, sent alongside each
+    /// checkpoint.
+    #[must_use]
+    pub fn clk(&self) -> u64 {
+        self.0.clk()
+    }
+
+    /// The `max_syscall_cycles` this run's `bump_clk_high_if_need` uses -- [`trace_shard`]'s
+    /// `TracingVM` must be constructed with the same value (see
+    /// `MinimalExecutor::max_syscall_cycles`'s doc comment).
+    #[must_use]
+    pub fn max_syscall_cycles(&self) -> u32 {
+        self.0.max_syscall_cycles()
+    }
+
+    #[must_use]
+    pub fn public_values_stream(&self) -> &[u8] {
+        self.0.public_values_stream()
+    }
+
+    /// Only meaningful once the whole run has finished -- call only after [`next_shard`] has
+    /// returned `done == true` (see `MinimalExecutor::global_memory_events`'s doc comment).
+    #[must_use]
+    pub fn global_memory_events(
+        &self,
+    ) -> (Vec<MemoryInitializeFinalizeEvent>, Vec<MemoryInitializeFinalizeEvent>) {
+        self.0.global_memory_events()
+    }
+
+    /// A snapshot of opcode/syscall dispatch counts accumulated so far, for summary logging.
+    #[must_use]
+    pub fn execution_report(&self) -> ExecutionReport {
+        self.0.execution_report()
+    }
+}
+
+/// Drives `driver` through exactly one shard's worth of chunks (however many that takes),
+/// returning the spliced shard and whether the whole run is now done. Callers loop this until it
+/// returns `done == true`, threading only `&mut ShardDriver` across calls -- the new pipeline's
+/// equivalent of `prove.rs`'s existing `execute_state(false)`-in-a-loop shape, just yielding a
+/// [`SplicedMinimalTrace`] in place of a serialized `ExecutionState` checkpoint.
+///
+/// # Errors
+///
+/// Propagates any [`ExecutionError`] from executing an instruction.
+///
+/// # Panics
+///
+/// If called again after a previous call already returned `done == true`.
+pub fn next_shard(
+    driver: &mut ShardDriver,
+    program: Arc<Program>,
+    element_threshold: u64,
+    height_threshold: u64,
+) -> Result<(SplicedMinimalTrace, bool), ExecutionError> {
+    let minimal = &mut driver.0;
+    let max_syscall_cycles = minimal.max_syscall_cycles();
+    let mut chunk = minimal
+        .try_execute_chunk()?
+        .expect("next_shard must not be called again after a previous call returned done == true");
+    let mut splicing =
+        SplicingVM::new(&chunk, program.clone(), max_syscall_cycles, element_threshold, height_threshold);
+    loop {
+        match splicing.execute()? {
+            SplicingStatus::ShardBoundary => return Ok((splicing.splice(&chunk), false)),
+            SplicingStatus::Done => return Ok((splicing.splice(&chunk), true)),
+            SplicingStatus::TraceEnd => {
+                let carry = splicing.into_carry(&chunk);
+                chunk = minimal
+                    .try_execute_chunk()?
+                    .expect("TraceEnd means the program hasn't halted, so another chunk follows");
+                splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

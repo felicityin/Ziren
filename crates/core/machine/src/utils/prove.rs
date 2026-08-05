@@ -4,18 +4,10 @@ use crate::mips::MipsAir;
 // use size::Size;
 use hashbrown::HashMap;
 use std::thread::ScopedJoinHandle;
-use std::{
-    fs::File,
-    io::{
-        Seek, {self},
-    },
-    sync::{mpsc::sync_channel, Arc, Mutex},
-};
+use std::sync::{mpsc::sync_channel, Arc, Mutex};
 use thiserror::Error;
 use web_time::Instant;
-use zkm_stark::koala_bear_poseidon2::KoalaBearPoseidon2;
 
-use p3_field::PrimeField32;
 use p3_koala_bear::KoalaBear;
 
 use crate::{
@@ -24,11 +16,10 @@ use crate::{
 };
 use zkm_core_executor::{
     estimate_record_trace_bytes,
-    events::{format_table_line, sorted_table_lines},
-    mips_costs,
-    subproof::NoOpSubproofVerifier,
-    ExecutionError, ExecutionRecord, ExecutionReport, ExecutionState, Executor, MipsAirId,
-    Program, ZKMContext,
+    events::{format_table_line, sorted_table_lines, MemoryInitializeFinalizeEvent},
+    mips_costs, next_shard, trace_shard,
+    ExecutionError, ExecutionRecord, ExecutionReport, Executor, MipsAirId, Program, ShardDriver,
+    SplicedMinimalTrace, ZKMContext, CORE_SHARD_HEIGHT_THRESHOLD,
 };
 use zkm_primitives::io::ZKMPublicValues;
 
@@ -70,10 +61,6 @@ use zkm_stark::{
 pub enum ZKMCoreProverError {
     #[error("failed to execute program: {0}")]
     ExecutionError(ExecutionError),
-    #[error("io error: {0}")]
-    IoError(io::Error),
-    #[error("serialization error: {0}")]
-    SerializationError(bincode::Error),
     #[error("traces generation error")]
     TracesGenerationError,
     #[error("dependencies generation error")]
@@ -89,6 +76,21 @@ pub fn prove_with_context(
     (Vec<ZkmShardProof>, Vec<u8>, u64, zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext>),
     ZKMCoreProverError,
 > {
+    // `MinimalExecutor` doesn't read stdin or verify subproofs yet, and doesn't support a hook
+    // registry, a cycle cap, or a non-default subproof verifier -- only the defaults are
+    // supported for now.
+    assert!(
+        stdin.buffer.is_empty() && stdin.proofs.is_empty(),
+        "prove_with_context: non-empty ZKMStdin is not yet supported"
+    );
+    assert!(
+        context.hook_registry.is_none()
+            && context.subproof_verifier.is_none()
+            && context.max_cycles.is_none()
+            && !context.skip_deferred_proof_verification,
+        "prove_with_context: a non-default ZKMContext is not yet supported"
+    );
+
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
     // Fixed independently of `opts.shard_size` (the executor's cycle-count ceiling) -- see
     // `zkm_stark::CORE_MAX_LOG_ROW_COUNT`'s doc comment.
@@ -106,19 +108,20 @@ pub fn prove_with_context(
     let trace_byte_costs: Arc<HashMap<MipsAirId, u64>> =
         Arc::new(mips_costs().into_iter().map(|(k, v)| (k, v as u64)).collect());
 
-    // Setup the runtime.
-    let mut runtime = Executor::with_context(program.clone(), opts, context);
-
-    runtime.write_vecs(&stdin.buffer);
-    for proof in stdin.proofs.iter() {
-        let (proof, vk) = proof.clone();
-        runtime.write_proof(proof, vk);
-    }
+    let program_arc = Arc::new(program.clone());
+    // `MinimalExecutor`'s oracle-log buffer cutoff (a memory-management knob, independent of
+    // where shards actually get cut) -- reuses `shard_size`, the same value the legacy executor
+    // interprets as its own per-shard cycle-count ceiling.
+    let max_trace_size = opts.shard_size as u64;
+    // `SplicingVM`'s shard-cut thresholds: `lde_size_threshold` bounds a shard's committed LDE
+    // area (a correctness bound tied to the jagged PCS's cell-count rejection);
+    // `CORE_SHARD_HEIGHT_THRESHOLD` bounds any single chip's real row count within a shard.
+    let element_threshold = opts.lde_size_threshold;
+    let height_threshold = CORE_SHARD_HEIGHT_THRESHOLD;
 
     let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
-    let program_arc = Arc::new(program.clone());
     let (preprocessed, vk) =
-        setup_rt.block_on(shard_prover.setup(program_arc, ProverSemaphore::new(1)));
+        setup_rt.block_on(shard_prover.setup(program_arc.clone(), ProverSemaphore::new(1)));
     let pk = preprocessed.pk;
 
     #[cfg(feature = "debug")]
@@ -132,51 +135,74 @@ pub fn prove_with_context(
 
         // Spawn the checkpoint generator thread.
         let checkpoint_generator_span = tracing::Span::current().clone();
-        let (checkpoints_tx, checkpoints_rx) =
-            sync_channel::<(usize, File, bool, u64)>(opts.checkpoints_channel_capacity);
-        let checkpoint_generator_handle: ScopedJoinHandle<Result<_, ZKMCoreProverError>> =
-            s.spawn(move || {
-                let _span = checkpoint_generator_span.enter();
-                tracing::debug_span!("checkpoint generator").in_scope(|| {
-                    let mut index = 0;
-                    loop {
-                        // Enter the span.
-                        let span = tracing::debug_span!("batch");
-                        let _span = span.enter();
+        let (checkpoints_tx, checkpoints_rx) = sync_channel::<(
+            usize,
+            SplicedMinimalTrace,
+            bool,
+            u64,
+            u32,
+            Option<(Vec<MemoryInitializeFinalizeEvent>, Vec<MemoryInitializeFinalizeEvent>)>,
+        )>(opts.checkpoints_channel_capacity);
+        let checkpoint_generator_program = program_arc.clone();
+        let checkpoint_generator_handle: ScopedJoinHandle<
+            Result<(Vec<u8>, ExecutionReport), ZKMCoreProverError>,
+        > = s.spawn(move || {
+            let _span = checkpoint_generator_span.enter();
+            tracing::debug_span!("checkpoint generator").in_scope(|| {
+                let mut driver =
+                    ShardDriver::new(checkpoint_generator_program.clone(), max_trace_size);
+                let mut index = 0;
+                loop {
+                    // Enter the span.
+                    let span = tracing::debug_span!("batch");
+                    let _span = span.enter();
 
-                        // Execute the runtime until we reach a checkpoint.
-                        let (checkpoint, done) = runtime
-                            .execute_state(false)
-                            .map_err(ZKMCoreProverError::ExecutionError)?;
+                    // Execute the runtime until we reach a shard boundary.
+                    let (spliced, done) = next_shard(
+                        &mut driver,
+                        checkpoint_generator_program.clone(),
+                        element_threshold,
+                        height_threshold,
+                    )
+                    .map_err(ZKMCoreProverError::ExecutionError)?;
 
-                        // Save the checkpoint to a temp file.
-                        let mut checkpoint_file =
-                            tempfile::tempfile().map_err(ZKMCoreProverError::IoError)?;
-                        checkpoint
-                            .save(&mut checkpoint_file)
-                            .map_err(ZKMCoreProverError::IoError)?;
+                    // Only meaningful once the whole run is done -- see
+                    // `ShardDriver::global_memory_events`'s doc comment. Sent alongside the final
+                    // checkpoint so whichever worker traces it can attach these to its record,
+                    // mirroring the legacy `Executor`'s own postprocess-on-final-checkpoint timing.
+                    let global_memory_events = done.then(|| driver.global_memory_events());
 
-                        // Send the checkpoint.
-                        checkpoints_tx
-                            .send((index, checkpoint_file, done, runtime.state.global_clk))
-                            .unwrap();
-                        tracing::info!(
-                            "checkpoint {} generated at {:?} (clk={})",
+                    // Send the checkpoint.
+                    checkpoints_tx
+                        .send((
                             index,
-                            proving_start.elapsed(),
-                            runtime.state.global_clk,
-                        );
+                            spliced,
+                            done,
+                            driver.clk(),
+                            driver.max_syscall_cycles(),
+                            global_memory_events,
+                        ))
+                        .unwrap();
+                    tracing::info!(
+                        "checkpoint {} generated at {:?} (clk={})",
+                        index,
+                        proving_start.elapsed(),
+                        driver.clk(),
+                    );
 
-                        // If we've reached the final checkpoint, break out of the loop.
-                        if done {
-                            break Ok(runtime.state.public_values_stream);
-                        }
-
-                        // Update the index.
-                        index += 1;
+                    // If we've reached the final checkpoint, break out of the loop.
+                    if done {
+                        break Ok((
+                            driver.public_values_stream().to_vec(),
+                            driver.execution_report(),
+                        ));
                     }
-                })
-            });
+
+                    // Update the index.
+                    index += 1;
+                }
+            })
+        });
 
         // Spawn the phase 2 record generator thread.
         let p2_record_gen_sync = Arc::new(TurnBasedSync::new());
@@ -196,9 +222,8 @@ pub fn prove_with_context(
         // re-sorting back into submission order afterward.
         let p2_shard_sequence = Arc::new(Mutex::new(0u32));
 
-        let report_aggregate = Arc::new(Mutex::new(ExecutionReport::default()));
         let state = Arc::new(Mutex::new(PublicValues::<u32, u32>::default().reset()));
-        let deferred = Arc::new(Mutex::new(ExecutionRecord::new(program.clone().into())));
+        let deferred = Arc::new(Mutex::new(ExecutionRecord::new(program_arc.clone())));
         let mut p2_record_and_trace_gen_handles = Vec::new();
         for _ in 0..opts.trace_gen_workers {
             let record_gen_sync = Arc::clone(&p2_record_gen_sync);
@@ -206,11 +231,10 @@ pub fn prove_with_context(
             let records_and_traces_tx = Arc::clone(&p2_records_and_traces_tx);
             let checkpoints_rx = Arc::clone(&checkpoints_rx);
 
-            let report_aggregate = Arc::clone(&report_aggregate);
             let state = Arc::clone(&state);
             let deferred = Arc::clone(&deferred);
             let shard_sequence = Arc::clone(&p2_shard_sequence);
-            let program = program.clone();
+            let program = program_arc.clone();
             let shard_prover = Arc::clone(&shard_prover);
             let machine = shard_prover.machine().clone();
             let pk = Arc::clone(&pk);
@@ -229,23 +253,25 @@ pub fn prove_with_context(
                     let _: () = loop {
                         // Receive the latest checkpoint.
                         let received = { checkpoints_rx.lock().unwrap().recv() };
-                        if let Ok((index, mut checkpoint, done, num_cycles)) = received {
-                            // Trace the checkpoint and reconstruct the execution records.
-                            let mut reader = io::BufReader::new(&checkpoint);
-                            let execution_state: ExecutionState =
-                                bincode::deserialize_from(&mut reader)
-                                    .expect("failed to deserialize state");
-                            let (mut records, report) = tracing::debug_span!("trace checkpoint")
-                                .in_scope(|| {
-                                    trace_checkpoint::<KoalaBearPoseidon2>(
-                                        program.clone(),
-                                        execution_state,
-                                        opts,
-                                    )
-                                });
+                        if let Ok((
+                            index,
+                            spliced,
+                            done,
+                            num_cycles,
+                            max_syscall_cycles,
+                            global_memory_events,
+                        )) = received
+                        {
+                            // Trace the shard and reconstruct the execution records.
+                            let mut record = tracing::debug_span!("trace checkpoint")
+                                .in_scope(|| trace_shard(program.clone(), &spliced, max_syscall_cycles))
+                                .map_err(ZKMCoreProverError::ExecutionError)?;
+                            if let Some((initialize_events, finalize_events)) = global_memory_events {
+                                record.global_memory_initialize_events = initialize_events;
+                                record.global_memory_finalize_events = finalize_events;
+                            }
+                            let mut records = vec![record];
                             log::debug!("generated {} records", records.len());
-                            *report_aggregate.lock().unwrap() += report;
-                            reset_seek(&mut checkpoint);
 
                             // Wait for our turn to update the state.
                             record_gen_sync.wait_for_turn(index);
@@ -548,7 +574,7 @@ pub fn prove_with_context(
         }
 
         // Wait until the checkpoint generator handle has fully finished.
-        let public_values_stream = checkpoint_generator_handle.join().unwrap()?;
+        let (public_values_stream, execution_report) = checkpoint_generator_handle.join().unwrap()?;
 
         // Wait until the records and traces have been fully generated for phase 2.
         for handle in p2_record_and_trace_gen_handles {
@@ -568,18 +594,17 @@ pub fn prove_with_context(
             all_shard_proofs_unordered.into_iter().map(|(_, proof)| proof).collect();
 
         // Log some of the `ExecutionReport` information.
-        let report_aggregate = report_aggregate.lock().unwrap();
         tracing::info!(
             "execution report (totals): total_cycles={}, total_syscall_cycles={}, touched_memory_addresses={}",
-            report_aggregate.total_instruction_count(),
-            report_aggregate.total_syscall_count(),
-            report_aggregate.touched_memory_addresses,
+            execution_report.total_instruction_count(),
+            execution_report.total_syscall_count(),
+            execution_report.touched_memory_addresses,
         );
 
         // Print the opcode and syscall count tables like `du`: sorted by count (descending) and
         // with the count in the first column.
         tracing::info!("execution report (opcode counts):");
-        let (width, lines) = sorted_table_lines(report_aggregate.opcode_counts.as_ref());
+        let (width, lines) = sorted_table_lines(execution_report.opcode_counts.as_ref());
         for (label, count) in lines {
             if *count > 0 {
                 tracing::info!("  {}", format_table_line(&width, &label, count));
@@ -589,7 +614,7 @@ pub fn prove_with_context(
         }
 
         tracing::info!("execution report (syscall counts):");
-        let (width, lines) = sorted_table_lines(report_aggregate.syscall_counts.as_ref());
+        let (width, lines) = sorted_table_lines(execution_report.syscall_counts.as_ref());
         for (label, count) in lines {
             if *count > 0 {
                 tracing::info!("  {}", format_table_line(&width, &label, count));
@@ -598,7 +623,7 @@ pub fn prove_with_context(
             }
         }
 
-        let cycles = report_aggregate.total_instruction_count();
+        let cycles = execution_report.total_instruction_count();
 
         // Print the summary.
         let proving_time = proving_start.elapsed().as_secs_f64();
@@ -668,32 +693,6 @@ pub fn run_test_core(
     }
 
     Ok(shard_proofs)
-}
-
-pub fn trace_checkpoint<SC: StarkGenericConfig>(
-    program: Program,
-    state: ExecutionState,
-    opts: ZKMCoreOpts,
-) -> (Vec<ExecutionRecord>, ExecutionReport)
-where
-    <SC as StarkGenericConfig>::Val: PrimeField32,
-{
-    let noop = NoOpSubproofVerifier;
-
-    let mut runtime = Executor::recover(program, state, opts);
-
-    // We already passed the deferred proof verifier when creating checkpoints, so the proofs were
-    // already verified. So here we use a noop verifier to not print any warnings.
-    runtime.subproof_verifier = Some(&noop);
-
-    // Execute from the checkpoint.
-    let (records, _) = runtime.execute_record(true).unwrap();
-
-    (records, runtime.report)
-}
-
-fn reset_seek(file: &mut File) {
-    file.seek(std::io::SeekFrom::Start(0)).expect("failed to seek to start of tempfile");
 }
 
 #[cfg(debug_assertions)]

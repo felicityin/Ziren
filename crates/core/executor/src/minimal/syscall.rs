@@ -163,6 +163,10 @@ impl MinimalExecutor {
             return Err(ExecutionError::InvalidSyscallUsage(syscall_id as u64));
         }
 
+        if !self.unconstrained {
+            self.syscall_counts[code] += 1;
+        }
+
         let mut next_pc = self.pc.wrapping_add(4);
         let mut extra_cycles = 0u32;
         let a0_result: Option<u32> = match code {

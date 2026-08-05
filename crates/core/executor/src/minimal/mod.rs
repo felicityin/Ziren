@@ -20,14 +20,16 @@ mod syscall;
 
 use std::sync::Arc;
 
+use enum_map::EnumMap;
+
 use crate::{
     events::{MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryRecord},
     memory::{MaybeCowMemory, PagedMemory},
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
-    syscalls::default_syscall_map,
+    syscalls::{default_syscall_map, SyscallCode},
     trace::{MemValue, TraceChunk},
-    vm, ExecutionError, Instruction, Program,
+    vm, ExecutionError, ExecutionReport, Instruction, Program,
 };
 
 /// Register/pc state snapshotted on `ENTER_UNCONSTRAINED`, restored on `EXIT_UNCONSTRAINED` --
@@ -78,6 +80,11 @@ pub(crate) struct MinimalExecutor {
     oracle_log: Vec<MemValue>,
     max_trace_size: u64,
     public_values_stream: Vec<u8>,
+    /// Per-opcode/syscall dispatch counts, for `Self::execution_report`. Mirrors
+    /// `Executor::report`'s identical fields and gating (`!self.unconstrained`) -- purely
+    /// informational, consumed only by `prove.rs`'s end-of-run summary logging.
+    opcode_counts: Box<EnumMap<Opcode, u64>>,
+    syscall_counts: Box<EnumMap<SyscallCode, u64>>,
 }
 
 impl MinimalExecutor {
@@ -124,6 +131,8 @@ impl MinimalExecutor {
             ),
             max_trace_size,
             public_values_stream: Vec::new(),
+            opcode_counts: Box::default(),
+            syscall_counts: Box::default(),
         }
     }
 
@@ -247,6 +256,20 @@ impl MinimalExecutor {
         }
 
         (initialize_events, finalize_events)
+    }
+
+    /// Snapshots the opcode/syscall dispatch counts accumulated so far into an [`ExecutionReport`],
+    /// for `prove.rs`'s end-of-run summary logging. `touched_memory_addresses` reuses
+    /// `Self::global_memory_events`'s finalize-event count, since that walks the exact same
+    /// touched-address set this field is meant to describe.
+    #[must_use]
+    pub(crate) fn execution_report(&self) -> ExecutionReport {
+        ExecutionReport {
+            opcode_counts: self.opcode_counts.clone(),
+            syscall_counts: self.syscall_counts.clone(),
+            cycle_tracker: Default::default(),
+            touched_memory_addresses: self.global_memory_events().1.len() as u64,
+        }
     }
 
     // ---- register file (values never oracle-logged; timestamps tracked -- see the struct doc
@@ -526,6 +549,10 @@ impl MinimalExecutor {
         let next_pc_in = self.next_pc;
         let mut next_next_pc = self.next_pc.wrapping_add(4);
         self.next_is_delayslot = false;
+
+        if !self.unconstrained {
+            self.opcode_counts[instruction.opcode] += 1;
+        }
 
         if instruction.is_alu_instruction() {
             let (rd, b, c) = self.alu_operands(instruction);
@@ -839,7 +866,7 @@ mod tests {
         golden::run_golden,
         programs::tests::{
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
-            simple_program,
+            simple_memory_program, simple_program,
         },
         Program,
     };
@@ -904,6 +931,11 @@ mod tests {
         assert_matches_golden(ed_decompress_program, "ed_decompress_program");
     }
 
+    #[test]
+    fn matches_golden_simple_memory_program() {
+        assert_matches_golden(simple_memory_program, "simple_memory_program");
+    }
+
     /// `golden::run_golden` drives the legacy `Executor` via its single-pass `run()`, whose
     /// `emit_global_memory_events` defaults to `true` -- unlike `golden.rs`'s
     /// `local_memory_access_events` case, this field genuinely IS populated by that path, so its
@@ -933,6 +965,11 @@ mod tests {
     #[test]
     fn global_memory_events_matches_golden_halt_only_program() {
         assert_global_memory_events_match_golden(halt_only_program, "halt_only_program");
+    }
+
+    #[test]
+    fn global_memory_events_matches_golden_simple_memory_program() {
+        assert_global_memory_events_match_golden(simple_memory_program, "simple_memory_program");
     }
 
     #[test]

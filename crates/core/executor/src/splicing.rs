@@ -210,7 +210,7 @@ fn precompile_air_ids(code: SyscallCode) -> &'static [MipsAirId] {
 /// may need to be a concatenation of more than one chunk's data. This also makes it trivially
 /// sendable across a channel to a separate trace-generation worker.
 #[derive(Debug, Clone)]
-pub(crate) struct SplicedMinimalTrace {
+pub struct SplicedMinimalTrace {
     mem_reads: Arc<[MemValue]>,
     start_registers: [u32; NUM_REGISTERS],
     start_register_timestamps: [u64; NUM_REGISTERS],
