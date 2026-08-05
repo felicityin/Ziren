@@ -16,6 +16,7 @@ use zkm_curves::{
 };
 use zkm_primitives::consts::{
     bytes_to_words_le_vec, fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT}, words_to_bytes_le_vec,
+    WORD_SIZE,
 };
 
 impl MinimalExecutor {
@@ -100,6 +101,18 @@ impl MinimalExecutor {
         let y = self.mr_slice(y_ptr, num_words);
         self.clk += 1;
         let result = vm::fp2_mul::<P>(&x, &y);
+        self.mw_slice(x_ptr, &result);
+    }
+
+    /// `x_ptr = (x_ptr * y_ptr) mod modulus`, where `modulus` immediately follows `y_ptr` in
+    /// memory, writing the result back to `x_ptr`.
+    fn uint256_mul_dispatch(&mut self, x_ptr: u32, y_ptr: u32) {
+        let x: [u32; 8] = self.slice_peek(x_ptr, WORDS_FIELD_ELEMENT).try_into().unwrap();
+        let y: [u32; 8] = self.mr_slice(y_ptr, WORDS_FIELD_ELEMENT).try_into().unwrap();
+        let modulus_ptr = y_ptr + WORDS_FIELD_ELEMENT as u32 * WORD_SIZE as u32;
+        let modulus: [u32; 8] = self.mr_slice(modulus_ptr, WORDS_FIELD_ELEMENT).try_into().unwrap();
+        self.clk += 1;
+        let result = vm::uint256_mul(&x, &y, &modulus);
         self.mw_slice(x_ptr, &result);
     }
 
@@ -342,6 +355,11 @@ impl MinimalExecutor {
             }
             SyscallCode::BLS12381_FP2_MUL => {
                 self.fp2_mul_dispatch::<Bls12381BaseField>(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::UINT256_MUL => {
+                self.uint256_mul_dispatch(arg1, arg2);
                 extra_cycles = 1;
                 None
             }

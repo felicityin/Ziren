@@ -24,6 +24,7 @@ use crate::{
         FieldOperation, Fp2AddSubEvent, Fp2MulEvent, FpOpEvent, JumpEvent, KeccakSpongeEvent,
         MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
         MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
+        Uint256MulEvent,
     },
     opcode::Opcode,
     register::Register,
@@ -32,8 +33,8 @@ use crate::{
     vm::{
         ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, ed25519_decompress,
         fp2_addsub, fp2_mul, fp2_num_words, fp_num_words, fp_op, keccak_xor_block, keccakf,
-        sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus, KECCAK_GENERAL_BLOCK_SIZE_U64S,
-        KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
+        sha256_compress, sha256_extend_word, uint256_mul, CoreVM, CoreVMStatus,
+        KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
     },
     ExecutionError, ExecutionRecord, Instruction, Program,
 };
@@ -769,6 +770,38 @@ impl<'a> TracingVM<'a> {
         Fp2MulEvent { shard: 0, clk, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
     }
 
+    /// Builds a `Uint256MulEvent`: pops `y`'s reads, `modulus`'s reads, then `x`'s write-preimage
+    /// (the value actually needed as an input).
+    fn uint256_mul_event(&mut self, clk: u64, x_ptr: u32, y_ptr: u32) -> Uint256MulEvent {
+        let y: [u32; 8] = self.core.next_oracle_values(8).try_into().unwrap();
+        let y_memory_records: Vec<MemoryReadRecord> =
+            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let modulus: [u32; 8] = self.core.next_oracle_values(8).try_into().unwrap();
+        let modulus_memory_records: Vec<MemoryReadRecord> = modulus
+            .iter()
+            .map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 })
+            .collect();
+        let x: [u32; 8] = self.core.next_oracle_values(8).try_into().unwrap();
+        let result = uint256_mul(&x, &y, &modulus);
+        let x_memory_records: Vec<MemoryWriteRecord> = result
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        Uint256MulEvent {
+            shard: 0,
+            clk,
+            x_ptr,
+            x: x.to_vec(),
+            y_ptr,
+            y: y.to_vec(),
+            modulus: modulus.to_vec(),
+            x_memory_records,
+            y_memory_records,
+            modulus_memory_records,
+            local_mem_access: Vec::new(),
+        }
+    }
+
     /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
@@ -1334,6 +1367,22 @@ impl<'a> TracingVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::UINT256_MUL => {
+                let event = self.uint256_mul_event(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Uint256Mul(event),
+                );
+                extra_cycles = 1;
+                None
+            }
             _ => None,
         };
 
@@ -1374,7 +1423,7 @@ mod tests {
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
             secp256k1_add_program, secp256k1_double_program, secp256r1_add_program,
             secp256r1_double_program, sha_compress_program, sha_extend_program, simple_program,
-            ssz_withdrawals_program,
+            ssz_withdrawals_program, uint256_mul_program,
         },
         register::NUM_REGISTERS,
     };
@@ -1544,5 +1593,10 @@ mod tests {
     #[test]
     fn matches_golden_bls12381_fp2_mul_real_elf() {
         assert_matches_golden(bls12381_fp2_mul_program, "bls12381_fp2_mul_program");
+    }
+
+    #[test]
+    fn matches_golden_uint256_mul_real_elf() {
+        assert_matches_golden(uint256_mul_program, "uint256_mul_program");
     }
 }

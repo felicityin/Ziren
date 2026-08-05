@@ -524,6 +524,28 @@ pub(crate) fn fp2_mul<P: FpOpField>(x: &[u32], y: &[u32]) -> Vec<u32> {
     result
 }
 
+/// `(x * y) mod modulus` as 256-bit little-endian word arrays -- mirrors `Uint256MulSyscall::execute`'s
+/// compute step (`syscalls/precompiles/uint256.rs`) exactly, split from the memory accesses that
+/// gather `x`/`y`/`modulus`. A zero `modulus` means "mod 2^256" (unconstrained multiplication),
+/// mirroring the source's own convention.
+pub(crate) fn uint256_mul(x: &[u32; 8], y: &[u32; 8], modulus: &[u32; 8]) -> [u32; 8] {
+    let uint256_x = BigUint::from_bytes_le(&zkm_primitives::consts::words_to_bytes_le_vec(x));
+    let uint256_y = BigUint::from_bytes_le(&zkm_primitives::consts::words_to_bytes_le_vec(y));
+    let uint256_modulus =
+        BigUint::from_bytes_le(&zkm_primitives::consts::words_to_bytes_le_vec(modulus));
+
+    let result: BigUint = if num::Zero::is_zero(&uint256_modulus) {
+        let modulus = <BigUint as num::One>::one() << 256;
+        (uint256_x * uint256_y) % modulus
+    } else {
+        (uint256_x * uint256_y) % uint256_modulus
+    };
+
+    let mut result_bytes = result.to_bytes_le();
+    result_bytes.resize(32, 0u8);
+    zkm_primitives::consts::bytes_to_words_le::<8>(&result_bytes)
+}
+
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
 /// on. Unlike `MinimalExecutor`, it has **no backing RAM at all**: every RAM access
 /// (`mr`/`mw`-equivalent) is answered by popping the next entry off a [`MinimalTrace`]'s oracle
@@ -1241,6 +1263,11 @@ impl<'a> CoreVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::UINT256_MUL => {
+                self.uint256_mul_replay();
+                extra_cycles = 1;
+                None
+            }
             _ => None,
         };
 
@@ -1319,6 +1346,15 @@ impl<'a> CoreVM<'a> {
         let y = self.next_oracle_values(num_words);
         let x = self.next_oracle_values(num_words);
         fp2_mul::<P>(&x, &y);
+    }
+
+    /// Replays a `uint256_mul`: pops `y`'s reads, `modulus`'s reads, then `x`'s write-preimage
+    /// (the value actually needed as an input).
+    fn uint256_mul_replay(&mut self) {
+        let y: [u32; 8] = self.next_oracle_values(WORDS_FIELD_ELEMENT).try_into().unwrap();
+        let modulus: [u32; 8] = self.next_oracle_values(WORDS_FIELD_ELEMENT).try_into().unwrap();
+        let x: [u32; 8] = self.next_oracle_values(WORDS_FIELD_ELEMENT).try_into().unwrap();
+        uint256_mul(&x, &y, &modulus);
     }
 }
 
