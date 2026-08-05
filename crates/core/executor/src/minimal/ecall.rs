@@ -3,9 +3,54 @@
 
 use super::MinimalExecutor;
 use crate::{register::Register, syscalls::SyscallCode, vm, ExecutionError};
-use zkm_primitives::consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT};
+use zkm_curves::{
+    weierstrass::{bls12_381::Bls12381, bn254::Bn254, secp256k1::Secp256k1, secp256r1::Secp256r1},
+    EllipticCurve,
+};
+use zkm_primitives::consts::{
+    bytes_to_words_le_vec, fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT}, words_to_bytes_le_vec,
+};
 
 impl MinimalExecutor {
+    /// `p_ptr += q_ptr`, writing the sum back to `p_ptr`. `p` is peeked untracked (its old value
+    /// is recoverable from the immediately-following `mw_slice`'s own log, per `slice_peek`'s doc
+    /// comment); `q` is read for real, before `p` is overwritten, in case `p_ptr == q_ptr`.
+    fn ec_add_dispatch<E: EllipticCurve>(&mut self, p_ptr: u32, q_ptr: u32) {
+        let num_words = vm::ec_num_words::<E>();
+        let p = self.slice_peek(p_ptr, num_words);
+        let q = self.mr_slice(q_ptr, num_words);
+        self.clk += 1;
+        let result = vm::ec_add::<E>(&p, &q);
+        self.mw_slice(p_ptr, &result);
+    }
+
+    /// `p_ptr *= 2`, writing the result back to `p_ptr`.
+    fn ec_double_dispatch<E: EllipticCurve>(&mut self, p_ptr: u32) {
+        let num_words = vm::ec_num_words::<E>();
+        let p = self.slice_peek(p_ptr, num_words);
+        let result = vm::ec_double::<E>(&p);
+        self.mw_slice(p_ptr, &result);
+    }
+
+    /// Reads the `x` coordinate at `slice_ptr + num_limbs`, decompresses `y`, and writes `y` back
+    /// to `slice_ptr`.
+    fn ec_decompress_dispatch<E: EllipticCurve>(
+        &mut self,
+        slice_ptr: u32,
+        sign_bit: u32,
+    ) -> Result<(), ExecutionError> {
+        let num_words_field_element = vm::ec_num_limb_words::<E>();
+        let num_limbs = num_words_field_element * 4;
+        let x_vec = self.mr_slice(slice_ptr + num_limbs as u32, num_words_field_element);
+        let mut x_bytes_be = words_to_bytes_le_vec(&x_vec);
+        x_bytes_be.reverse();
+        let y_bytes =
+            vm::ec_decompress::<E>(&x_bytes_be, sign_bit).map_err(ExecutionError::CurveError)?;
+        let y_words = bytes_to_words_le_vec(&y_bytes);
+        self.mw_slice(slice_ptr, &y_words);
+        Ok(())
+    }
+
     /// Executes the `SYSCALL` at the current `pc`. Returns `next_pc` (the value the caller must
     /// still add 4 to for `next_next_pc`, mirroring `SyscallContext::next_pc`'s default of
     /// `self.pc.wrapping_add(4)` and `HaltSyscall`'s override to `0`).
@@ -129,6 +174,54 @@ impl MinimalExecutor {
                     self.mw(result_ptr + (2 * i + 1) as u32 * 4, most_sig);
                 }
                 extra_cycles = 1;
+                None
+            }
+            SyscallCode::SECP256K1_ADD => {
+                self.ec_add_dispatch::<Secp256k1>(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SECP256R1_ADD => {
+                self.ec_add_dispatch::<Secp256r1>(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_ADD => {
+                self.ec_add_dispatch::<Bn254>(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_ADD => {
+                self.ec_add_dispatch::<Bls12381>(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SECP256K1_DOUBLE => {
+                self.ec_double_dispatch::<Secp256k1>(arg1);
+                None
+            }
+            SyscallCode::SECP256R1_DOUBLE => {
+                self.ec_double_dispatch::<Secp256r1>(arg1);
+                None
+            }
+            SyscallCode::BN254_DOUBLE => {
+                self.ec_double_dispatch::<Bn254>(arg1);
+                None
+            }
+            SyscallCode::BLS12381_DOUBLE => {
+                self.ec_double_dispatch::<Bls12381>(arg1);
+                None
+            }
+            SyscallCode::SECP256K1_DECOMPRESS => {
+                self.ec_decompress_dispatch::<Secp256k1>(arg1, arg2)?;
+                None
+            }
+            SyscallCode::SECP256R1_DECOMPRESS => {
+                self.ec_decompress_dispatch::<Secp256r1>(arg1, arg2)?;
+                None
+            }
+            SyscallCode::BLS12381_DECOMPRESS => {
+                self.ec_decompress_dispatch::<Bls12381>(arg1, arg2)?;
                 None
             }
             // Everything else (precompiles, other Linux shims, hints, unconstrained, VERIFY): a

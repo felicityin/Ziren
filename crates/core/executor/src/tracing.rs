@@ -19,7 +19,8 @@ use std::sync::Arc;
 
 use crate::{
     events::{
-        AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, JumpEvent, KeccakSpongeEvent,
+        AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, EllipticCurveAddEvent,
+        EllipticCurveDecompressEvent, EllipticCurveDoubleEvent, JumpEvent, KeccakSpongeEvent,
         MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
         MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
     },
@@ -28,10 +29,15 @@ use crate::{
     syscalls::SyscallCode,
     trace::MinimalTrace,
     vm::{
-        keccak_xor_block, keccakf, sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus,
+        ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, keccak_xor_block,
+        keccakf, sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus,
         KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
     },
     ExecutionError, ExecutionRecord, Instruction, Program,
+};
+use zkm_curves::{
+    weierstrass::{bls12_381::Bls12381, bn254::Bn254, secp256k1::Secp256k1, secp256r1::Secp256r1},
+    EllipticCurve,
 };
 
 pub(crate) struct TracingVM<'a> {
@@ -584,6 +590,75 @@ impl<'a> TracingVM<'a> {
         }
     }
 
+    /// Builds an `EllipticCurveAddEvent`: pops `q`'s reads, then `p`'s write-preimage (the value
+    /// actually needed as an input, unlike a discarded write pop -- see
+    /// `minimal/ecall.rs::ec_add_dispatch`'s doc comment for why the oracle order is q-then-p
+    /// even though `p` is conceptually read first).
+    fn ec_add_event<E: EllipticCurve>(&mut self, clk: u64, p_ptr: u32, q_ptr: u32) -> EllipticCurveAddEvent {
+        let num_words = ec_num_words::<E>();
+        let q = self.core.next_oracle_values(num_words);
+        let q_memory_records: Vec<MemoryReadRecord> =
+            q.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let p = self.core.next_oracle_values(num_words);
+        let result = ec_add::<E>(&p, &q);
+        let p_memory_records: Vec<MemoryWriteRecord> = result
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        EllipticCurveAddEvent { shard: 0, clk, p_ptr, p, q_ptr, q, p_memory_records, q_memory_records, local_mem_access: Vec::new() }
+    }
+
+    /// Builds an `EllipticCurveDoubleEvent`: pops `p`'s write-preimage (the value actually needed
+    /// as an input).
+    fn ec_double_event<E: EllipticCurve>(&mut self, clk: u64, p_ptr: u32) -> EllipticCurveDoubleEvent {
+        let num_words = ec_num_words::<E>();
+        let p = self.core.next_oracle_values(num_words);
+        let result = ec_double::<E>(&p);
+        let p_memory_records: Vec<MemoryWriteRecord> = result
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        EllipticCurveDoubleEvent { shard: 0, clk, p_ptr, p, p_memory_records, local_mem_access: Vec::new() }
+    }
+
+    /// Builds an `EllipticCurveDecompressEvent`: pops `x`'s reads (used), then `y`'s
+    /// write-preimage (discarded -- the old `y` value isn't an input to computing the new one).
+    fn ec_decompress_event<E: EllipticCurve>(
+        &mut self,
+        clk: u64,
+        ptr: u32,
+        sign_bit: u32,
+    ) -> Result<EllipticCurveDecompressEvent, ExecutionError> {
+        let num_words_field_element = ec_num_limb_words::<E>();
+        let x = self.core.next_oracle_values(num_words_field_element);
+        let x_memory_records: Vec<MemoryReadRecord> =
+            x.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let x_bytes = zkm_primitives::consts::words_to_bytes_le_vec(&x);
+        let mut x_bytes_be = x_bytes.clone();
+        x_bytes_be.reverse();
+        let decompressed_y_bytes =
+            ec_decompress::<E>(&x_bytes_be, sign_bit).map_err(ExecutionError::CurveError)?;
+        let y_words = zkm_primitives::consts::bytes_to_words_le_vec(&decompressed_y_bytes);
+        let y_memory_records: Vec<MemoryWriteRecord> = y_words
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        for _ in &y_words {
+            self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+        }
+        Ok(EllipticCurveDecompressEvent {
+            shard: 0,
+            clk,
+            ptr,
+            sign_bit: sign_bit != 0,
+            x_bytes,
+            decompressed_y_bytes,
+            x_memory_records,
+            y_memory_records,
+            local_mem_access: Vec::new(),
+        })
+    }
+
     /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
@@ -841,6 +916,175 @@ impl<'a> TracingVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::SECP256K1_ADD => {
+                let event = self.ec_add_event::<Secp256k1>(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Secp256k1Add(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SECP256R1_ADD => {
+                let event = self.ec_add_event::<Secp256r1>(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Secp256r1Add(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_ADD => {
+                let event = self.ec_add_event::<Bn254>(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bn254Add(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_ADD => {
+                let event = self.ec_add_event::<Bls12381>(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bls12381Add(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SECP256K1_DOUBLE => {
+                let event = self.ec_double_event::<Secp256k1>(clk, arg1);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Secp256k1Double(event),
+                );
+                None
+            }
+            SyscallCode::SECP256R1_DOUBLE => {
+                let event = self.ec_double_event::<Secp256r1>(clk, arg1);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Secp256r1Double(event),
+                );
+                None
+            }
+            SyscallCode::BN254_DOUBLE => {
+                let event = self.ec_double_event::<Bn254>(clk, arg1);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bn254Double(event),
+                );
+                None
+            }
+            SyscallCode::BLS12381_DOUBLE => {
+                let event = self.ec_double_event::<Bls12381>(clk, arg1);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bls12381Double(event),
+                );
+                None
+            }
+            SyscallCode::SECP256K1_DECOMPRESS => {
+                let event = self.ec_decompress_event::<Secp256k1>(clk, arg1, arg2)?;
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Secp256k1Decompress(event),
+                );
+                None
+            }
+            SyscallCode::SECP256R1_DECOMPRESS => {
+                let event = self.ec_decompress_event::<Secp256r1>(clk, arg1, arg2)?;
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Secp256r1Decompress(event),
+                );
+                None
+            }
+            SyscallCode::BLS12381_DECOMPRESS => {
+                let event = self.ec_decompress_event::<Bls12381>(clk, arg1, arg2)?;
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bls12381Decompress(event),
+                );
+                None
+            }
             _ => None,
         };
 
@@ -875,8 +1119,10 @@ mod tests {
         golden::run_golden,
         minimal::MinimalExecutor,
         programs::tests::{
-            fibonacci_program, halt_only_program, hello_world_program, sha_compress_program,
-            sha_extend_program, simple_program, ssz_withdrawals_program,
+            bls12381_add_program, bls12381_double_program, bn254_add_program, bn254_double_program,
+            fibonacci_program, halt_only_program, hello_world_program, secp256k1_add_program,
+            secp256k1_double_program, secp256r1_add_program, secp256r1_double_program,
+            sha_compress_program, sha_extend_program, simple_program, ssz_withdrawals_program,
         },
         register::NUM_REGISTERS,
     };
@@ -959,4 +1205,53 @@ mod tests {
     fn matches_golden_keccak_sponge_real_elf() {
         assert_matches_golden(ssz_withdrawals_program, "ssz_withdrawals_program");
     }
+
+    #[test]
+    fn matches_golden_secp256r1_add_real_elf() {
+        assert_matches_golden(secp256r1_add_program, "secp256r1_add_program");
+    }
+
+    #[test]
+    fn matches_golden_secp256r1_double_real_elf() {
+        assert_matches_golden(secp256r1_double_program, "secp256r1_double_program");
+    }
+
+    // No differential test for `*_decompress_program`: those ELFs read a compressed point from
+    // stdin (see `zkm-core-machine`'s `weierstrass_decompress` tests, which generate one via
+    // `k256`/`p256`), and this crate has no dependency on those key-generation crates or on the
+    // stdin-plumbing helpers (`ZKMStdin`/`run_test_io`) used to feed it -- `run_golden` only runs
+    // a program with an empty input stream. `ec_decompress_dispatch`/`ec_decompress_event` share
+    // all their oracle-consumption-ordering machinery with `ec_add`/`ec_double` above, which *are*
+    // covered.
+
+    #[test]
+    fn matches_golden_secp256k1_add_real_elf() {
+        assert_matches_golden(secp256k1_add_program, "secp256k1_add_program");
+    }
+
+    #[test]
+    fn matches_golden_secp256k1_double_real_elf() {
+        assert_matches_golden(secp256k1_double_program, "secp256k1_double_program");
+    }
+
+    #[test]
+    fn matches_golden_bn254_add_real_elf() {
+        assert_matches_golden(bn254_add_program, "bn254_add_program");
+    }
+
+    #[test]
+    fn matches_golden_bn254_double_real_elf() {
+        assert_matches_golden(bn254_double_program, "bn254_double_program");
+    }
+
+    #[test]
+    fn matches_golden_bls12381_add_real_elf() {
+        assert_matches_golden(bls12381_add_program, "bls12381_add_program");
+    }
+
+    #[test]
+    fn matches_golden_bls12381_double_real_elf() {
+        assert_matches_golden(bls12381_double_program, "bls12381_double_program");
+    }
+
 }

@@ -6,9 +6,11 @@ pub mod tests {
     use crate::{Instruction, Opcode, Program};
 
     use test_artifacts::{
-        FIBONACCI_ELF, HELLO_WORLD_ELF, KECCAK_SPONGE_ELF, MAX_MEMORY_ELF, PANIC_ELF,
-        SECP256R1_ADD_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF, SHA_COMPRESS_ELF, SHA_EXTEND_ELF,
-        U256XU2048_MUL_ELF, UNCONSTRAINED_ELF,
+        BLS12381_ADD_ELF, BLS12381_DECOMPRESS_ELF, BLS12381_DOUBLE_ELF, BN254_ADD_ELF,
+        BN254_DOUBLE_ELF, FIBONACCI_ELF, HELLO_WORLD_ELF, KECCAK_SPONGE_ELF, MAX_MEMORY_ELF,
+        PANIC_ELF, SECP256K1_ADD_ELF, SECP256K1_DECOMPRESS_ELF, SECP256K1_DOUBLE_ELF,
+        SECP256R1_ADD_ELF, SECP256R1_DECOMPRESS_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF,
+        SHA_COMPRESS_ELF, SHA_EXTEND_ELF, U256XU2048_MUL_ELF, UNCONSTRAINED_ELF,
     };
 
     #[must_use]
@@ -92,6 +94,96 @@ pub mod tests {
     #[must_use]
     pub fn sha_compress_program() -> Program {
         Program::from(SHA_COMPRESS_ELF).unwrap()
+    }
+
+    /// Get the secp256k1 add program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn secp256k1_add_program() -> Program {
+        Program::from(SECP256K1_ADD_ELF).unwrap()
+    }
+
+    /// Get the secp256k1 double program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn secp256k1_double_program() -> Program {
+        Program::from(SECP256K1_DOUBLE_ELF).unwrap()
+    }
+
+    /// Get the secp256k1 decompress program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn secp256k1_decompress_program() -> Program {
+        Program::from(SECP256K1_DECOMPRESS_ELF).unwrap()
+    }
+
+    /// Get the secp256r1 decompress program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn secp256r1_decompress_program() -> Program {
+        Program::from(SECP256R1_DECOMPRESS_ELF).unwrap()
+    }
+
+    /// Get the bn254 add program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bn254_add_program() -> Program {
+        Program::from(BN254_ADD_ELF).unwrap()
+    }
+
+    /// Get the bn254 double program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bn254_double_program() -> Program {
+        Program::from(BN254_DOUBLE_ELF).unwrap()
+    }
+
+    /// Get the bls12381 add program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bls12381_add_program() -> Program {
+        Program::from(BLS12381_ADD_ELF).unwrap()
+    }
+
+    /// Get the bls12381 double program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bls12381_double_program() -> Program {
+        Program::from(BLS12381_DOUBLE_ELF).unwrap()
+    }
+
+    /// Get the bls12381 decompress program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bls12381_decompress_program() -> Program {
+        Program::from(BLS12381_DECOMPRESS_ELF).unwrap()
     }
 
     /// Get the secp256r1 add program.

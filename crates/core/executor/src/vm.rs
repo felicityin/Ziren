@@ -29,6 +29,17 @@ use crate::{
     trace::{MemReads, MinimalTrace},
     ExecutionError, Instruction, Program, CORE_SHARD_CLK_LIMIT,
 };
+use typenum::Unsigned;
+use zkm_curves::{
+    params::{NumLimbs, NumWords},
+    weierstrass::{
+        bls12_381::{bls12381_decompress, Bls12381},
+        bn254::Bn254,
+        secp256k1::{secp256k1_decompress, Secp256k1},
+        secp256r1::{secp256r1_decompress, Secp256r1},
+    },
+    AffinePoint, CurveError, CurveType, EllipticCurve,
+};
 use zkm_primitives::consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT};
 
 /// Number of u64 lanes in a Keccak-f\[1600\] state.
@@ -353,6 +364,55 @@ pub(crate) fn keccak_xor_block(state: &mut [u64; KECCAK_STATE_SIZE_U64S], block:
 
 pub(crate) use tiny_keccak::keccakf;
 
+/// Number of u32 words in a curve point's `(x, y)` representation for `E`.
+pub(crate) fn ec_num_words<E: EllipticCurve>() -> usize {
+    <E::BaseField as NumWords>::WordsCurvePoint::USIZE
+}
+
+/// Adds two curve points, given as little-endian word slices -- mirrors `create_ec_add_event`'s
+/// compute step (`events/precompiles/ec.rs`) exactly, split from the memory accesses that gather
+/// `p`/`q`.
+pub(crate) fn ec_add<E: EllipticCurve>(p: &[u32], q: &[u32]) -> Vec<u32> {
+    (AffinePoint::<E>::from_words_le(p) + AffinePoint::<E>::from_words_le(q)).to_words_le()
+}
+
+/// Doubles a curve point, given as a little-endian word slice -- mirrors
+/// `create_ec_double_event`'s compute step exactly.
+pub(crate) fn ec_double<E: EllipticCurve>(p: &[u32]) -> Vec<u32> {
+    E::ec_double(&AffinePoint::<E>::from_words_le(p)).to_words_le()
+}
+
+/// Number of u32 words in a base-field element for `E`.
+pub(crate) fn ec_num_limb_words<E: EllipticCurve>() -> usize {
+    <E::BaseField as NumLimbs>::Limbs::USIZE / 4
+}
+
+/// Decompresses a point's `y` coordinate from its `x` coordinate (big-endian bytes) and sign bit
+/// -- mirrors `create_ec_decompress_event`'s compute step exactly, split from the memory accesses
+/// that gather `x_bytes_be`. Returns the `y` coordinate as little-endian bytes, padded to
+/// `E::BaseField`'s limb width.
+///
+/// # Errors
+///
+/// Returns [`CurveError`] if `x_bytes_be`/`sign_bit` don't decode to a valid point on the curve,
+/// or if `E` isn't one of the curves with a known decompression routine.
+pub(crate) fn ec_decompress<E: EllipticCurve>(
+    x_bytes_be: &[u8],
+    sign_bit: u32,
+) -> Result<Vec<u8>, CurveError> {
+    let decompress_fn = match E::CURVE_TYPE {
+        CurveType::Secp256k1 => secp256k1_decompress::<E>,
+        CurveType::Secp256r1 => secp256r1_decompress::<E>,
+        CurveType::Bls12381 => bls12381_decompress::<E>,
+        _ => return Err(CurveError::UnsupportedCurve(E::CURVE_TYPE.to_string())),
+    };
+    let computed_point = decompress_fn(x_bytes_be, sign_bit)?;
+    let num_limbs = <E::BaseField as NumLimbs>::Limbs::USIZE;
+    let mut y_bytes = computed_point.y.to_bytes_le();
+    y_bytes.resize(num_limbs, 0u8);
+    Ok(y_bytes)
+}
+
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
 /// on. Unlike `MinimalExecutor`, it has **no backing RAM at all**: every RAM access
 /// (`mr`/`mw`-equivalent) is answered by popping the next entry off a [`MinimalTrace`]'s oracle
@@ -489,6 +549,11 @@ impl<'a> CoreVM<'a> {
                  desynced on how many entries a memory access logs",
             )
             .value
+    }
+
+    /// Pops `len` consecutive oracle-log entries -- see `next_oracle_value`'s doc comment.
+    pub(crate) fn next_oracle_values(&mut self, len: usize) -> Vec<u32> {
+        (0..len).map(|_| self.next_oracle_value()).collect()
     }
 
     // ---- direct pc/clk/delay-slot access for TracingVM's own dispatch ----
@@ -948,6 +1013,54 @@ impl<'a> CoreVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::SECP256K1_ADD => {
+                self.ec_add_replay::<Secp256k1>();
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SECP256R1_ADD => {
+                self.ec_add_replay::<Secp256r1>();
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_ADD => {
+                self.ec_add_replay::<Bn254>();
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_ADD => {
+                self.ec_add_replay::<Bls12381>();
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SECP256K1_DOUBLE => {
+                self.ec_double_replay::<Secp256k1>();
+                None
+            }
+            SyscallCode::SECP256R1_DOUBLE => {
+                self.ec_double_replay::<Secp256r1>();
+                None
+            }
+            SyscallCode::BN254_DOUBLE => {
+                self.ec_double_replay::<Bn254>();
+                None
+            }
+            SyscallCode::BLS12381_DOUBLE => {
+                self.ec_double_replay::<Bls12381>();
+                None
+            }
+            SyscallCode::SECP256K1_DECOMPRESS => {
+                self.ec_decompress_replay::<Secp256k1>(arg2)?;
+                None
+            }
+            SyscallCode::SECP256R1_DECOMPRESS => {
+                self.ec_decompress_replay::<Secp256r1>(arg2)?;
+                None
+            }
+            SyscallCode::BLS12381_DECOMPRESS => {
+                self.ec_decompress_replay::<Bls12381>(arg2)?;
+                None
+            }
             _ => None,
         };
 
@@ -955,6 +1068,39 @@ impl<'a> CoreVM<'a> {
         self.set_reg(Register::V0, a0);
         self.clk += u64::from(extra_cycles);
         Ok(next_pc)
+    }
+
+    /// Replays an `ec_add`: pops `q`'s reads, then `p`'s write-preimage (the value actually needed
+    /// as an input, unlike `SHA_COMPRESS`'s discarded write pops -- see `minimal/ecall.rs`'s
+    /// `ec_add_dispatch` for why the oracle order is q-then-p even though `p` is conceptually
+    /// read first). The computed result has nowhere to go (`CoreVM` has no backing RAM); called
+    /// only so `SplicingVM`'s replay exercises the exact same arithmetic `TracingVM` will.
+    fn ec_add_replay<E: EllipticCurve>(&mut self) {
+        let num_words = ec_num_words::<E>();
+        let q = self.next_oracle_values(num_words);
+        let p = self.next_oracle_values(num_words);
+        ec_add::<E>(&p, &q);
+    }
+
+    /// Replays an `ec_double`: pops `p`'s write-preimage (the value actually needed as an input).
+    fn ec_double_replay<E: EllipticCurve>(&mut self) {
+        let num_words = ec_num_words::<E>();
+        let p = self.next_oracle_values(num_words);
+        ec_double::<E>(&p);
+    }
+
+    /// Replays an `ec_decompress`: pops `x`'s reads (used), then `y`'s write-preimage (discarded,
+    /// like `SHA_COMPRESS`'s writes -- the old `y` value isn't an input to computing the new one).
+    fn ec_decompress_replay<E: EllipticCurve>(&mut self, sign_bit: u32) -> Result<(), ExecutionError> {
+        let num_words_field_element = ec_num_limb_words::<E>();
+        let x_vec = self.next_oracle_values(num_words_field_element);
+        let mut x_bytes_be = zkm_primitives::consts::words_to_bytes_le_vec(&x_vec);
+        x_bytes_be.reverse();
+        ec_decompress::<E>(&x_bytes_be, sign_bit).map_err(ExecutionError::CurveError)?;
+        for _ in 0..num_words_field_element {
+            self.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+        }
+        Ok(())
     }
 }
 

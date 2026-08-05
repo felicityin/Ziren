@@ -209,6 +209,25 @@ impl MinimalExecutor {
         record.value
     }
 
+    /// Reads `len` consecutive words starting at `addr`, each logged individually via `mr`.
+    fn mr_slice(&mut self, addr: u32, len: usize) -> Vec<u32> {
+        (0..len as u32).map(|i| self.mr(addr + i * 4)).collect()
+    }
+
+    /// Writes `values` starting at `addr`, each logged individually via `mw`.
+    fn mw_slice(&mut self, addr: u32, values: &[u32]) {
+        for (i, &value) in values.iter().enumerate() {
+            self.mw(addr + i as u32 * 4, value);
+        }
+    }
+
+    /// Peeks `len` consecutive words starting at `addr`, untracked -- see `word_peek`'s doc
+    /// comment on when this is safe to use (only when an immediately-following `mw`/`mw_slice` to
+    /// the same addresses logs the same preimage anyway).
+    fn slice_peek(&self, addr: u32, len: usize) -> Vec<u32> {
+        (0..len as u32).map(|i| self.word_peek(addr + i * 4)).collect()
+    }
+
     fn byte_peek(&mut self, addr: u32) -> u8 {
         let word = self.mr_log_only(addr - addr % 4);
         (word >> ((addr % 4) * 8)) as u8
