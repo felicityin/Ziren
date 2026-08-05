@@ -29,7 +29,7 @@ use crate::{
     opcode::Opcode,
     register::Register,
     syscalls::SyscallCode,
-    trace::MinimalTrace,
+    trace::{MemValue, MinimalTrace},
     vm::{
         align_size, ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words,
         ed25519_decompress, fcntl_result, fp2_addsub, fp2_mul, fp2_num_words, fp_num_words, fp_op,
@@ -799,14 +799,19 @@ impl<'a> TracingVM<'a> {
     /// even though `p` is conceptually read first).
     fn ec_add_event<E: EllipticCurve>(&mut self, clk: u64, p_ptr: u32, q_ptr: u32) -> EllipticCurveAddEvent {
         let num_words = ec_num_words::<E>();
-        let q = self.core.next_oracle_values(num_words);
-        let q_memory_records: Vec<MemoryReadRecord> =
-            q.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
-        let p = self.core.next_oracle_values(num_words);
+        let q_entries = self.core.next_oracle_entries(num_words);
+        let q: Vec<u32> = q_entries.iter().map(|e| e.value).collect();
+        let q_memory_records: Vec<MemoryReadRecord> = q_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
+        let p_entries = self.core.next_oracle_entries(num_words);
+        let p: Vec<u32> = p_entries.iter().map(|e| e.value).collect();
         let result = ec_add::<E>(&p, &q);
         let p_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&p_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         EllipticCurveAddEvent { shard: 0, clk, p_ptr, p, q_ptr, q, p_memory_records, q_memory_records, local_mem_access: Vec::new() }
     }
@@ -815,11 +820,13 @@ impl<'a> TracingVM<'a> {
     /// as an input).
     fn ec_double_event<E: EllipticCurve>(&mut self, clk: u64, p_ptr: u32) -> EllipticCurveDoubleEvent {
         let num_words = ec_num_words::<E>();
-        let p = self.core.next_oracle_values(num_words);
+        let p_entries = self.core.next_oracle_entries(num_words);
+        let p: Vec<u32> = p_entries.iter().map(|e| e.value).collect();
         let result = ec_double::<E>(&p);
         let p_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&p_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         EllipticCurveDoubleEvent { shard: 0, clk, p_ptr, p, p_memory_records, local_mem_access: Vec::new() }
     }
@@ -833,22 +840,24 @@ impl<'a> TracingVM<'a> {
         sign_bit: u32,
     ) -> Result<EllipticCurveDecompressEvent, ExecutionError> {
         let num_words_field_element = ec_num_limb_words::<E>();
-        let x = self.core.next_oracle_values(num_words_field_element);
-        let x_memory_records: Vec<MemoryReadRecord> =
-            x.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let x_entries = self.core.next_oracle_entries(num_words_field_element);
+        let x: Vec<u32> = x_entries.iter().map(|e| e.value).collect();
+        let x_memory_records: Vec<MemoryReadRecord> = x_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
         let x_bytes = zkm_primitives::consts::words_to_bytes_le_vec(&x);
         let mut x_bytes_be = x_bytes.clone();
         x_bytes_be.reverse();
         let decompressed_y_bytes =
             ec_decompress::<E>(&x_bytes_be, sign_bit).map_err(ExecutionError::CurveError)?;
         let y_words = zkm_primitives::consts::bytes_to_words_le_vec(&decompressed_y_bytes);
+        let y_entries = self.core.next_oracle_entries(y_words.len()); // write preimages; see SHA_COMPRESS.
         let y_memory_records: Vec<MemoryWriteRecord> = y_words
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&y_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        for _ in &y_words {
-            self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
-        }
         Ok(EllipticCurveDecompressEvent {
             shard: 0,
             clk,
@@ -870,10 +879,11 @@ impl<'a> TracingVM<'a> {
         ptr: u32,
         sign: u32,
     ) -> Result<EdDecompressEvent, ExecutionError> {
-        let y = self.core.next_oracle_values(WORDS_FIELD_ELEMENT);
-        let y_memory_records: [MemoryReadRecord; WORDS_FIELD_ELEMENT] = y
+        let y_entries = self.core.next_oracle_entries(WORDS_FIELD_ELEMENT);
+        let y: Vec<u32> = y_entries.iter().map(|e| e.value).collect();
+        let y_memory_records: [MemoryReadRecord; WORDS_FIELD_ELEMENT] = y_entries
             .iter()
-            .map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 })
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
@@ -882,15 +892,14 @@ impl<'a> TracingVM<'a> {
         let decompressed_x_bytes =
             ed25519_decompress(y_bytes, sign).map_err(ExecutionError::CurveError)?;
         let x_words = zkm_primitives::consts::bytes_to_words_le_vec(&decompressed_x_bytes);
+        let x_entries = self.core.next_oracle_entries(x_words.len()); // write preimages; see SHA_COMPRESS.
         let x_memory_records: [MemoryWriteRecord; WORDS_FIELD_ELEMENT] = x_words
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&x_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        for _ in &x_words {
-            self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
-        }
         Ok(EdDecompressEvent {
             shard: 0,
             clk,
@@ -915,14 +924,19 @@ impl<'a> TracingVM<'a> {
         op: FieldOperation,
     ) -> FpOpEvent {
         let num_words = fp_num_words::<P>();
-        let y = self.core.next_oracle_values(num_words);
-        let y_memory_records: Vec<MemoryReadRecord> =
-            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
-        let x = self.core.next_oracle_values(num_words);
+        let y_entries = self.core.next_oracle_entries(num_words);
+        let y: Vec<u32> = y_entries.iter().map(|e| e.value).collect();
+        let y_memory_records: Vec<MemoryReadRecord> = y_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
+        let x_entries = self.core.next_oracle_entries(num_words);
+        let x: Vec<u32> = x_entries.iter().map(|e| e.value).collect();
         let result = fp_op::<P>(&x, &y, op);
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&x_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         FpOpEvent { shard: 0, clk, x_ptr, x, y_ptr, y, op, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
     }
@@ -936,14 +950,19 @@ impl<'a> TracingVM<'a> {
         op: FieldOperation,
     ) -> Fp2AddSubEvent {
         let num_words = fp2_num_words::<P>();
-        let y = self.core.next_oracle_values(num_words);
-        let y_memory_records: Vec<MemoryReadRecord> =
-            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
-        let x = self.core.next_oracle_values(num_words);
+        let y_entries = self.core.next_oracle_entries(num_words);
+        let y: Vec<u32> = y_entries.iter().map(|e| e.value).collect();
+        let y_memory_records: Vec<MemoryReadRecord> = y_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
+        let x_entries = self.core.next_oracle_entries(num_words);
+        let x: Vec<u32> = x_entries.iter().map(|e| e.value).collect();
         let result = fp2_addsub::<P>(&x, &y, op);
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&x_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         Fp2AddSubEvent { shard: 0, clk, op, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
     }
@@ -951,14 +970,19 @@ impl<'a> TracingVM<'a> {
     /// Builds an `Fp2MulEvent`: pops `y`'s reads, then `x`'s write-preimage.
     fn fp2_mul_event<P: FpOpField>(&mut self, clk: u64, x_ptr: u32, y_ptr: u32) -> Fp2MulEvent {
         let num_words = fp2_num_words::<P>();
-        let y = self.core.next_oracle_values(num_words);
-        let y_memory_records: Vec<MemoryReadRecord> =
-            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
-        let x = self.core.next_oracle_values(num_words);
+        let y_entries = self.core.next_oracle_entries(num_words);
+        let y: Vec<u32> = y_entries.iter().map(|e| e.value).collect();
+        let y_memory_records: Vec<MemoryReadRecord> = y_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
+        let x_entries = self.core.next_oracle_entries(num_words);
+        let x: Vec<u32> = x_entries.iter().map(|e| e.value).collect();
         let result = fp2_mul::<P>(&x, &y);
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&x_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         Fp2MulEvent { shard: 0, clk, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
     }
@@ -966,19 +990,26 @@ impl<'a> TracingVM<'a> {
     /// Builds a `Uint256MulEvent`: pops `y`'s reads, `modulus`'s reads, then `x`'s write-preimage
     /// (the value actually needed as an input).
     fn uint256_mul_event(&mut self, clk: u64, x_ptr: u32, y_ptr: u32) -> Uint256MulEvent {
-        let y: [u32; 8] = self.core.next_oracle_values(8).try_into().unwrap();
-        let y_memory_records: Vec<MemoryReadRecord> =
-            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
-        let modulus: [u32; 8] = self.core.next_oracle_values(8).try_into().unwrap();
-        let modulus_memory_records: Vec<MemoryReadRecord> = modulus
+        let y_entries = self.core.next_oracle_entries(8);
+        let y: [u32; 8] = y_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
+        let y_memory_records: Vec<MemoryReadRecord> = y_entries
             .iter()
-            .map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 })
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
             .collect();
-        let x: [u32; 8] = self.core.next_oracle_values(8).try_into().unwrap();
+        let modulus_entries = self.core.next_oracle_entries(8);
+        let modulus: [u32; 8] =
+            modulus_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
+        let modulus_memory_records: Vec<MemoryReadRecord> = modulus_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
+        let x_entries = self.core.next_oracle_entries(8);
+        let x: [u32; 8] = x_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
         let result = uint256_mul(&x, &y, &modulus);
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&x_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         Uint256MulEvent {
             shard: 0,
@@ -1000,31 +1031,45 @@ impl<'a> TracingVM<'a> {
     fn u256xu2048_mul_event(&mut self, clk: u64, a_ptr: u32, b_ptr: u32) -> U256xU2048MulEvent {
         let lo_ptr = self.core.reg(Register::A2);
         let hi_ptr = self.core.reg(Register::A3);
-        let lo_ptr_memory = MemoryReadRecord { value: lo_ptr, timestamp: clk, prev_timestamp: 0 };
-        let hi_ptr_memory = MemoryReadRecord { value: hi_ptr, timestamp: clk, prev_timestamp: 0 };
+        let lo_ptr_memory = MemoryReadRecord {
+            value: lo_ptr,
+            timestamp: clk,
+            prev_timestamp: self.core.reg_timestamp(Register::A2),
+        };
+        let hi_ptr_memory = MemoryReadRecord {
+            value: hi_ptr,
+            timestamp: clk,
+            prev_timestamp: self.core.reg_timestamp(Register::A3),
+        };
 
-        let a: [u32; U256_NUM_WORDS] = self.core.next_oracle_values(U256_NUM_WORDS).try_into().unwrap();
-        let a_memory_records: Vec<MemoryReadRecord> =
-            a.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
-        let b: [u32; U2048_NUM_WORDS] = self.core.next_oracle_values(U2048_NUM_WORDS).try_into().unwrap();
-        let b_memory_records: Vec<MemoryReadRecord> =
-            b.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let a_entries = self.core.next_oracle_entries(U256_NUM_WORDS);
+        let a: [u32; U256_NUM_WORDS] =
+            a_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
+        let a_memory_records: Vec<MemoryReadRecord> = a_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
+        let b_entries = self.core.next_oracle_entries(U2048_NUM_WORDS);
+        let b: [u32; U2048_NUM_WORDS] =
+            b_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
+        let b_memory_records: Vec<MemoryReadRecord> = b_entries
+            .iter()
+            .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+            .collect();
 
         let (lo, hi) = u256xu2048_mul(&a, &b);
+        let lo_entries = self.core.next_oracle_entries(lo.len());
         let lo_memory_records: Vec<MemoryWriteRecord> = lo
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&lo_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
+        let hi_entries = self.core.next_oracle_entries(hi.len());
         let hi_memory_records: Vec<MemoryWriteRecord> = hi
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&hi_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        for _ in &lo {
-            self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
-        }
-        for _ in &hi {
-            self.core.next_oracle_value();
-        }
 
         U256xU2048MulEvent {
             shard: 0,
@@ -1050,12 +1095,14 @@ impl<'a> TracingVM<'a> {
     /// Builds a `Poseidon2PermuteEvent`: pops the state's write-preimage (the value actually
     /// needed as an input).
     fn poseidon2_permute_event(&mut self, clk: u64, state_ptr: u32) -> Poseidon2PermuteEvent {
+        let pre_state_entries = self.core.next_oracle_entries(POSEIDON2_STATE_SIZE);
         let pre_state: [u32; POSEIDON2_STATE_SIZE] =
-            self.core.next_oracle_values(POSEIDON2_STATE_SIZE).try_into().unwrap();
+            pre_state_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
         let post_state = poseidon2_permute(pre_state);
         let state_records: Vec<MemoryWriteRecord> = post_state
             .iter()
-            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .zip(&pre_state_entries)
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         Poseidon2PermuteEvent {
             shard: 0,
@@ -1137,17 +1184,23 @@ impl<'a> TracingVM<'a> {
             SyscallCode::SHA_COMPRESS => {
                 let w_ptr = arg1;
                 let h_ptr = arg2;
-                let h: [u32; 8] = std::array::from_fn(|_| self.core.next_oracle_value());
-                let h_read_records: [MemoryReadRecord; 8] =
-                    h.map(|value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 });
-                let w: [u32; 64] = std::array::from_fn(|_| self.core.next_oracle_value());
-                let w_i_read_records: Vec<MemoryReadRecord> =
-                    w.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+                let h_entries: [MemValue; 8] = std::array::from_fn(|_| self.core.next_oracle_entry());
+                let h: [u32; 8] = h_entries.map(|e| e.value);
+                let h_read_records: [MemoryReadRecord; 8] = h_entries
+                    .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk });
+                let w_entries: [MemValue; 64] = std::array::from_fn(|_| self.core.next_oracle_entry());
+                let w: [u32; 64] = w_entries.map(|e| e.value);
+                let w_i_read_records: Vec<MemoryReadRecord> = w_entries
+                    .iter()
+                    .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
+                    .collect();
                 let out = sha256_compress(h, &w);
-                let h_write_records: [MemoryWriteRecord; 8] = std::array::from_fn(|i| {
-                    self.core.next_oracle_value(); // pops the write's logged preimage; unused --
-                                                    // `out[i]` is already known.
-                    MemoryWriteRecord { value: out[i], timestamp: clk, prev_value: 0, prev_timestamp: 0 }
+                let h_write_entries: [MemValue; 8] = std::array::from_fn(|_| self.core.next_oracle_entry());
+                let h_write_records: [MemoryWriteRecord; 8] = std::array::from_fn(|i| MemoryWriteRecord {
+                    value: out[i],
+                    timestamp: clk,
+                    prev_value: h_write_entries[i].value,
+                    prev_timestamp: h_write_entries[i].clk,
                 });
                 self.record.precompile_events.add_event(
                     code,
@@ -1158,8 +1211,8 @@ impl<'a> TracingVM<'a> {
                         a_record: MemoryWriteRecord {
                             value: syscall_id,
                             timestamp: clk,
-                            prev_value: 0,
-                            prev_timestamp: 0,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
                         },
                         a_record_is_real: true,
                         b_record: None,
@@ -1192,38 +1245,42 @@ impl<'a> TracingVM<'a> {
                 let mut w_i_minus_7_reads = Vec::with_capacity(48);
                 let mut w_i_writes = Vec::with_capacity(48);
                 for _ in 16..64u32 {
-                    let w_i_minus_15 = self.core.next_oracle_value();
+                    let e = self.core.next_oracle_entry();
+                    let w_i_minus_15 = e.value;
                     w_i_minus_15_reads.push(MemoryReadRecord {
                         value: w_i_minus_15,
                         timestamp: clk,
-                        prev_timestamp: 0,
+                        prev_timestamp: e.clk,
                     });
-                    let w_i_minus_2 = self.core.next_oracle_value();
+                    let e = self.core.next_oracle_entry();
+                    let w_i_minus_2 = e.value;
                     w_i_minus_2_reads.push(MemoryReadRecord {
                         value: w_i_minus_2,
                         timestamp: clk,
-                        prev_timestamp: 0,
+                        prev_timestamp: e.clk,
                     });
-                    let w_i_minus_16 = self.core.next_oracle_value();
+                    let e = self.core.next_oracle_entry();
+                    let w_i_minus_16 = e.value;
                     w_i_minus_16_reads.push(MemoryReadRecord {
                         value: w_i_minus_16,
                         timestamp: clk,
-                        prev_timestamp: 0,
+                        prev_timestamp: e.clk,
                     });
-                    let w_i_minus_7 = self.core.next_oracle_value();
+                    let e = self.core.next_oracle_entry();
+                    let w_i_minus_7 = e.value;
                     w_i_minus_7_reads.push(MemoryReadRecord {
                         value: w_i_minus_7,
                         timestamp: clk,
-                        prev_timestamp: 0,
+                        prev_timestamp: e.clk,
                     });
                     let w_i =
                         sha256_extend_word(w_i_minus_15, w_i_minus_2, w_i_minus_16, w_i_minus_7);
-                    self.core.next_oracle_value(); // pops the write's logged preimage; unused.
+                    let e = self.core.next_oracle_entry();
                     w_i_writes.push(MemoryWriteRecord {
                         value: w_i,
                         timestamp: clk,
-                        prev_value: 0,
-                        prev_timestamp: 0,
+                        prev_value: e.value,
+                        prev_timestamp: e.clk,
                     });
                 }
                 self.record.precompile_events.add_event(
@@ -1235,8 +1292,8 @@ impl<'a> TracingVM<'a> {
                         a_record: MemoryWriteRecord {
                             value: syscall_id,
                             timestamp: clk,
-                            prev_value: 0,
-                            prev_timestamp: 0,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
                         },
                         a_record_is_real: true,
                         b_record: None,
@@ -1263,16 +1320,24 @@ impl<'a> TracingVM<'a> {
             SyscallCode::KECCAK_SPONGE => {
                 let input_ptr = arg1;
                 let result_ptr = arg2;
-                let input_len_u32s = self.core.next_oracle_value();
-                let input_length_record =
-                    MemoryReadRecord { value: input_len_u32s, timestamp: clk, prev_timestamp: 0 };
+                let input_len_entry = self.core.next_oracle_entry();
+                let input_len_u32s = input_len_entry.value;
+                let input_length_record = MemoryReadRecord {
+                    value: input_len_u32s,
+                    timestamp: clk,
+                    prev_timestamp: input_len_entry.clk,
+                };
 
                 let mut input_values = Vec::with_capacity(input_len_u32s as usize);
                 let mut input_read_records = Vec::with_capacity(input_len_u32s as usize);
                 for _ in 0..input_len_u32s {
-                    let value = self.core.next_oracle_value();
-                    input_values.push(value);
-                    input_read_records.push(MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 });
+                    let e = self.core.next_oracle_entry();
+                    input_values.push(e.value);
+                    input_read_records.push(MemoryReadRecord {
+                        value: e.value,
+                        timestamp: clk,
+                        prev_timestamp: e.clk,
+                    });
                 }
                 let input_u64_values: Vec<u64> = input_values
                     .chunks_exact(2)
@@ -1292,11 +1357,15 @@ impl<'a> TracingVM<'a> {
                     values_to_write.push((lane & 0xFFFF_FFFF) as u32);
                     values_to_write.push((lane >> 32) as u32);
                 }
+                let output_write_entries = self.core.next_oracle_entries(values_to_write.len());
                 let output_write_records: Vec<MemoryWriteRecord> = values_to_write
                     .iter()
-                    .map(|&value| {
-                        self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
-                        MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 }
+                    .zip(&output_write_entries)
+                    .map(|(&value, e)| MemoryWriteRecord {
+                        value,
+                        timestamp: clk,
+                        prev_value: e.value,
+                        prev_timestamp: e.clk,
                     })
                     .collect();
 
@@ -1309,8 +1378,8 @@ impl<'a> TracingVM<'a> {
                         a_record: MemoryWriteRecord {
                             value: syscall_id,
                             timestamp: clk,
-                            prev_value: 0,
-                            prev_timestamp: 0,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
                         },
                         a_record_is_real: true,
                         b_record: None,
@@ -1343,7 +1412,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1359,7 +1433,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1375,7 +1454,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1391,7 +1475,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1407,7 +1496,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1422,7 +1516,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1437,7 +1536,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1452,7 +1556,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1467,7 +1576,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1482,7 +1596,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1497,7 +1616,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1512,7 +1636,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1528,7 +1657,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1548,7 +1682,12 @@ impl<'a> TracingVM<'a> {
                     SyscallCode::BN254_FP_ADD,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1569,7 +1708,12 @@ impl<'a> TracingVM<'a> {
                     SyscallCode::BLS12381_FP_ADD,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1586,7 +1730,12 @@ impl<'a> TracingVM<'a> {
                     SyscallCode::BN254_FP2_ADD,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1603,7 +1752,12 @@ impl<'a> TracingVM<'a> {
                     SyscallCode::BLS12381_FP2_ADD,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1619,7 +1773,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1635,7 +1794,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1651,7 +1815,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1667,7 +1836,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1683,7 +1857,12 @@ impl<'a> TracingVM<'a> {
                     code,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1701,17 +1880,24 @@ impl<'a> TracingVM<'a> {
                     .copied()
                     .unwrap_or_else(|| self.core.reg(Register::BRK));
                 let v0 = resolve_brk(initial_brk, initial_brk, arg1)?;
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id,
                     vec![MemoryReadRecord { value: initial_brk, timestamp: clk, prev_timestamp: 0 }],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1722,12 +1908,20 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
                 let size = align_size(arg2)?;
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
-                let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 };
+                let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
                 let (v0, write_records) = if arg1 == 0 {
                     let heap = self.core.reg(Register::HEAP);
+                    let prev_heap_ts = self.core.reg_timestamp(Register::HEAP);
                     self.core.set_reg_aux(Register::HEAP, heap.wrapping_add(size));
-                    let heap_record = MemoryWriteRecord { value: heap.wrapping_add(size), timestamp: clk, prev_value: 0, prev_timestamp: 0 };
+                    let heap_record = MemoryWriteRecord {
+                        value: heap.wrapping_add(size),
+                        timestamp: clk,
+                        prev_value: heap,
+                        prev_timestamp: prev_heap_ts,
+                    };
                     (heap, vec![a3_record, heap_record])
                 } else {
                     (arg1, vec![a3_record])
@@ -1737,7 +1931,12 @@ impl<'a> TracingVM<'a> {
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1748,16 +1947,23 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_CLONE => {
                 let v0 = 1;
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1769,16 +1975,23 @@ impl<'a> TracingVM<'a> {
             SyscallCode::SYS_EXT_GROUP => {
                 next_pc = 0;
                 let v0 = 0;
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1789,16 +2002,23 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_FCNTL => {
                 let (v0, a3) = fcntl_result(arg1, arg2);
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, a3);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1809,16 +2029,23 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_READ => {
                 let (v0, a3) = read_result(arg1);
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, a3);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1829,21 +2056,29 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_WRITE => {
                 let nbytes = self.core.reg(Register::A2);
+                let nbytes_ts = self.core.reg_timestamp(Register::A2);
                 for _ in 0..nbytes {
                     self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
                 }
                 let v0 = nbytes;
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id,
-                    vec![MemoryReadRecord { value: nbytes, timestamp: clk, prev_timestamp: 0 }],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                    vec![MemoryReadRecord { value: nbytes, timestamp: clk, prev_timestamp: nbytes_ts }],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,
@@ -1867,16 +2102,23 @@ impl<'a> TracingVM<'a> {
             | SyscallCode::SYS_FSTAT64
             | SyscallCode::SYS_MUNMAP => {
                 let v0 = 0;
+                let prev_a3 = self.core.reg(Register::A3);
+                let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
                         pc, next_pc, clk,
-                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record: MemoryWriteRecord {
+                            value: v0,
+                            timestamp: clk,
+                            prev_value: syscall_id,
+                            prev_timestamp: self.core.reg_timestamp(Register::V0),
+                        },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
                         syscall_id, arg1, arg2,

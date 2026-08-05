@@ -860,6 +860,11 @@ impl<'a> CoreVM<'a> {
         (0..len).map(|_| self.next_oracle_value()).collect()
     }
 
+    /// Pops `len` consecutive oracle-log entries in full -- see `next_oracle_entry`'s doc comment.
+    pub(crate) fn next_oracle_entries(&mut self, len: usize) -> Vec<MemValue> {
+        (0..len).map(|_| self.next_oracle_entry()).collect()
+    }
+
     // ---- direct pc/clk/delay-slot access for TracingVM's own dispatch ----
 
     pub(crate) fn set_pc(&mut self, pc: u32) {
