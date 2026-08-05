@@ -1228,6 +1228,16 @@ impl<'a> CoreVM<'a> {
         let mut next_pc = self.pc.wrapping_add(4);
         let mut extra_cycles = 0u32;
         let a0_result: Option<u32> = match code {
+            // Unconditionally `0`, regardless of anything `MinimalExecutor` actually computed
+            // (real execution there returns `1`, see `MinimalExecutor::enter_unconstrained`'s doc
+            // comment). The guest's own `unconstrained!{}` macro branches on this return value to
+            // decide whether to enter the block; since replay always sees `0`, it always takes
+            // the "don't enter" branch, structurally skipping every instruction inside the block
+            // (including the matching `EXIT_UNCONSTRAINED`) via ordinary branch-not-taken control
+            // flow -- no oracle data for any of it is ever needed, because none of it is ever
+            // visited. This is the entire unconstrained-mode contract on the replay side; neither
+            // `SplicingVM` nor `TracingVM` needs any other unconstrained-specific code at all.
+            SyscallCode::ENTER_UNCONSTRAINED => Some(0),
             SyscallCode::HALT => {
                 let exit_code = arg1;
                 next_pc = 0;

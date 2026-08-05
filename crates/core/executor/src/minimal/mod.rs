@@ -8,10 +8,11 @@
 //! # Syscall coverage
 //!
 //! The full ISA (every opcode family covered by the pure-compute functions in `crate::vm`) is
-//! implemented for real. Syscalls are **not** all implemented yet: `HALT` and the `WRITE`
-//! syscall's `FD_PUBLIC_VALUES` case are real; every other syscall (precompiles, Linux shims,
-//! hints, unconstrained enter/exit) is a documented no-op fallback (`a0 = syscall_id`, no side
-//! effects) for now. Extend the dispatch in [`ecall`] as needed.
+//! implemented for real. Most syscalls are too: `HALT`, `WRITE`'s `FD_PUBLIC_VALUES` case, every
+//! precompile, the Linux syscall shims, and `ENTER_UNCONSTRAINED`/`EXIT_UNCONSTRAINED` (see
+//! `Self::enter_unconstrained`'s doc comment) are all real. `HINT_READ`/`HINT_LEN` remain a
+//! documented no-op fallback (`a0 = syscall_id`, no side effects) for now. Extend the dispatch in
+//! [`ecall`] as needed.
 
 #![allow(dead_code)]
 
@@ -21,13 +22,24 @@ use std::sync::Arc;
 
 use crate::{
     events::{MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryRecord},
-    memory::PagedMemory,
+    memory::{MaybeCowMemory, PagedMemory},
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
     syscalls::default_syscall_map,
     trace::{MemValue, TraceChunk},
     vm, ExecutionError, Instruction, Program,
 };
+
+/// Register/pc state snapshotted on `ENTER_UNCONSTRAINED`, restored on `EXIT_UNCONSTRAINED` --
+/// see `MinimalExecutor::enter_unconstrained`'s doc comment. `clk` is deliberately *not* here:
+/// unlike the legacy `Executor` (which lets `clk` advance through the whole block and rolls it
+/// back afterward), `clk` here is simply gated from advancing at all while unconstrained (see
+/// `execute_instruction`), so there is nothing to restore.
+struct UnconstrainedSnapshot {
+    registers: [u32; NUM_REGISTERS],
+    register_timestamps: [u64; NUM_REGISTERS],
+    pc: u32,
+}
 
 /// Bound on how many oracle-log entries are pre-reserved for a chunk. `max_trace_size` is a
 /// cutoff, not a reservation hint -- callers may pass a very large or sentinel value to mean "no
@@ -43,12 +55,18 @@ pub(crate) struct MinimalExecutor {
     /// recover a real `prev_timestamp` for a register last written in an *earlier* chunk;
     /// register *values* never need this (always recomputed live, never oracle-logged).
     register_timestamps: [u64; NUM_REGISTERS],
-    page_table: PagedMemory<MemoryRecord>,
+    page_table: MaybeCowMemory<MemoryRecord>,
     pc: u32,
     next_pc: u32,
     clk: u64,
     next_is_delayslot: bool,
     exited: bool,
+    /// Whether we're currently inside an `unconstrained!{}` block -- see
+    /// `Self::enter_unconstrained`'s doc comment.
+    unconstrained: bool,
+    /// Set by `Self::enter_unconstrained`, consumed by `Self::exit_unconstrained`. `None` outside
+    /// an unconstrained block.
+    unconstrained_snapshot: Option<UnconstrainedSnapshot>,
     /// Set once `is_done()` has fired *after* at least one instruction has retired -- see
     /// `try_execute_chunk`'s doc comment on why this must be distinct from `is_done()` itself
     /// (checking `is_done()` before ever running an instruction is wrong for any program whose
@@ -93,9 +111,11 @@ impl MinimalExecutor {
             program,
             registers,
             register_timestamps: [0; NUM_REGISTERS],
-            page_table,
+            page_table: MaybeCowMemory::Owned(page_table),
             clk: 1, // `clk == 0` is the "never touched" sentinel, matches `ExecutionState::new`.
             next_is_delayslot: false,
+            unconstrained: false,
+            unconstrained_snapshot: None,
             exited: false,
             finished: false,
             max_syscall_cycles,
@@ -156,10 +176,11 @@ impl MinimalExecutor {
         use std::hash::{DefaultHasher, Hash, Hasher};
         let mut touched: Vec<(u32, u32, u64)> = self
             .page_table
-            .clone()
-            .into_iter()
-            .filter(|(_, record)| record.timestamp != 0)
-            .map(|(addr, record)| (addr, record.value, record.timestamp))
+            .keys()
+            .filter_map(|addr| {
+                let record = self.page_table.get(addr).unwrap();
+                (record.timestamp != 0).then_some((addr, record.value, record.timestamp))
+            })
             .collect();
         touched.sort_unstable_by_key(|&(addr, _, _)| addr);
         let mut hasher = DefaultHasher::new();
@@ -285,10 +306,14 @@ impl MinimalExecutor {
     // ---- RAM (oracle-logged) ----
 
     /// Read a word from RAM, logging its preimage. Matches `Executor::mr_cpu`'s semantics
-    /// (timestamped at `MemoryAccessPosition::Memory`, i.e. exactly `self.clk`).
+    /// (timestamped at `MemoryAccessPosition::Memory`, i.e. exactly `self.clk`). Logging is
+    /// suppressed while unconstrained -- see `Self::enter_unconstrained`'s doc comment: nothing
+    /// computed inside the block should be observable to a later replay.
     fn mr(&mut self, addr: u32) -> u32 {
         let record = self.page_table.entry(addr).or_insert(MemoryRecord { value: 0, timestamp: 0 });
-        self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
+        if !self.unconstrained {
+            self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
+        }
         record.timestamp = self.clk;
         record.value
     }
@@ -303,9 +328,12 @@ impl MinimalExecutor {
 
     /// Write a word to RAM, logging only its preimage (the new value is always a pure function of
     /// a live register + this preimage, recomputable by any replayer -- see the module doc).
+    /// Logging is suppressed while unconstrained -- see `mr`'s identical comment.
     fn mw(&mut self, addr: u32, value: u32) {
         let record = self.page_table.entry(addr).or_insert(MemoryRecord { value: 0, timestamp: 0 });
-        self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
+        if !self.unconstrained {
+            self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
+        }
         record.value = value;
         record.timestamp = self.clk;
     }
@@ -313,10 +341,14 @@ impl MinimalExecutor {
     /// Read a word from RAM for a syscall (`WRITE`'s memory-to-bytes extraction), *without*
     /// updating its timestamp (matches `Executor::word`'s untracked-peek semantics exactly) but
     /// *does* log the preimage as an oracle entry -- unlike `word_peek`, nothing else logs this
-    /// value, and `CoreVM` has no backing RAM at all to recover it from otherwise.
+    /// value, and `CoreVM` has no backing RAM at all to recover it from otherwise. Logging is
+    /// suppressed while unconstrained -- see `mr`'s identical comment (`WRITE` is one of the only
+    /// two syscalls allowed inside a block, so this path is real and reachable there).
     fn mr_log_only(&mut self, addr: u32) -> u32 {
         let record = self.page_table.entry(addr).or_insert(MemoryRecord { value: 0, timestamp: 0 });
-        self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
+        if !self.unconstrained {
+            self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
+        }
         record.value
     }
 
@@ -348,9 +380,76 @@ impl MinimalExecutor {
 
     /// Whether the trace buffer is full *and* it is safe to cut here: a chunk boundary must never
     /// split a branch/jump from its delay slot, mirroring the same `!next_is_delayslot` gate the
-    /// legacy executor's shard-cut check uses.
+    /// legacy executor's shard-cut check uses. Likewise, a chunk boundary must never fall inside
+    /// an unconstrained block -- a later chunk's `start_registers`/`start_pc` snapshot would then
+    /// capture mid-block (not-yet-rolled-back) state that `CoreVM`'s replay, which never visits
+    /// any instruction inside the block at all, could never independently reproduce.
     fn chunk_full(&self) -> bool {
-        self.oracle_log.len() as u64 >= self.max_trace_size && !self.next_is_delayslot
+        self.oracle_log.len() as u64 >= self.max_trace_size
+            && !self.next_is_delayslot
+            && !self.unconstrained
+    }
+
+    // ---- unconstrained mode (`unconstrained!{}` guest blocks) ----
+
+    /// Enters an unconstrained block: snapshots registers/register-timestamps/`pc` (see
+    /// `UnconstrainedSnapshot`) and switches `page_table` into COW mode (`Self::exit_unconstrained`
+    /// discards the overlay in O(1), unlike a diff-based undo log -- see
+    /// `crate::memory::MaybeCowMemory`'s doc comment). Everything computed for real from this
+    /// point until the matching `EXIT_UNCONSTRAINED` -- register writes, RAM writes, even further
+    /// nested control flow -- is real, genuine execution (this is *not* a no-op skip), but is
+    /// guaranteed to be fully discarded on exit and is never oracle-logged in the meantime (see
+    /// `mr`/`mw`/`mr_log_only`'s matching guards), so it's invisible to any later replay.
+    ///
+    /// Returns `1` (matches `Executor::EnterUnconstrainedSyscall`'s `Ok(Some(1))`) -- the
+    /// guest-side `unconstrained!{}` macro branches on this value to
+    /// decide whether to execute the block for real (see the macro's own doc comment for why this
+    /// is also what makes the whole block invisible to `CoreVM`'s replay: replay unconditionally
+    /// computes `0` for this syscall instead, so it always takes the "don't enter" branch).
+    ///
+    /// # Panics
+    ///
+    /// If called while already inside an unconstrained block (guest bug, mirrors `Executor`'s
+    /// identical panic).
+    fn enter_unconstrained(&mut self) -> u32 {
+        assert!(
+            self.unconstrained_snapshot.is_none(),
+            "ENTER_UNCONSTRAINED called while already inside an unconstrained block"
+        );
+        self.unconstrained_snapshot = Some(UnconstrainedSnapshot {
+            registers: self.registers,
+            register_timestamps: self.register_timestamps,
+            pc: self.pc,
+        });
+        self.unconstrained = true;
+        self.page_table.copy_on_write();
+        1
+    }
+
+    /// Exits an unconstrained block: restores the register/pc snapshot taken on entry, discards
+    /// the `page_table` COW overlay (reverting to its pre-block state), and returns the `next_pc`
+    /// the caller should resume at -- `snapshot.pc + 4`, i.e. the instruction immediately after
+    /// the *original* `ENTER_UNCONSTRAINED` syscall, not after this `EXIT_UNCONSTRAINED` one. This
+    /// is what makes the whole block (including the exit syscall's own instruction) disappear
+    /// from view: execution "resumes" exactly where the guest macro's own branch-on-`enter`'s-
+    /// return-value check lives, and since registers were just rolled back, that check now
+    /// evaluates false and falls straight through, never re-entering the block.
+    ///
+    /// A no-op returning a garbage `next_pc` if called outside an unconstrained block would be a
+    /// guest bug; like the legacy `Executor`, other syscalls already reject running inside a block
+    /// (see `ecall.rs`), so this is only ever reached in the correct state -- still, mirrors
+    /// `Executor::ExitUnconstrainedSyscall`'s own defensive `if ctx.rt.unconstrained` shape via the
+    /// `expect` below rather than silently computing nonsense.
+    fn exit_unconstrained(&mut self) -> u32 {
+        let snapshot = self
+            .unconstrained_snapshot
+            .take()
+            .expect("EXIT_UNCONSTRAINED called while not inside an unconstrained block");
+        self.registers = snapshot.registers;
+        self.register_timestamps = snapshot.register_timestamps;
+        self.page_table.discard_cow();
+        self.unconstrained = false;
+        snapshot.pc.wrapping_add(4)
     }
 
     /// Runs until the trace buffer fills (at a delay-slot-safe boundary) or the program halts,
@@ -402,9 +501,23 @@ impl MinimalExecutor {
 
     fn execute_instruction(&mut self) -> Result<(), ExecutionError> {
         let instruction = self.program.fetch(self.pc);
-        self.clk = vm::bump_clk_high_if_need(self.clk, self.max_syscall_cycles);
+        // `clk` only advances for instructions *outside* an unconstrained block. Gated on the
+        // state *before* this instruction's own dispatch (not after): `ENTER_UNCONSTRAINED`
+        // itself is the last instruction that still advances `clk` (its own dispatch sets
+        // `unconstrained = true` only partway through), while `EXIT_UNCONSTRAINED` -- despite
+        // clearing the flag partway through its own dispatch -- is the last one that does *not*.
+        // This means `clk` never needs to be snapshotted/rolled back at all: it simply never
+        // moved during the whole block, so it's already exactly where a replayer (which never
+        // visits any instruction inside the block) independently computes it to be. See
+        // `Self::enter_unconstrained`'s doc comment for the full picture.
+        let was_unconstrained = self.unconstrained;
+        if !was_unconstrained {
+            self.clk = vm::bump_clk_high_if_need(self.clk, self.max_syscall_cycles);
+        }
         self.execute_operation(&instruction)?;
-        self.clk += 5;
+        if !was_unconstrained {
+            self.clk += 5;
+        }
         Ok(())
     }
 

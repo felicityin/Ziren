@@ -1364,6 +1364,13 @@ impl<'a> TracingVM<'a> {
         let mut next_pc = pc.wrapping_add(4);
         let mut extra_cycles = 0u32;
         let a0_result: Option<u32> = match code {
+            // See `CoreVM::execute_syscall`'s identical arm for the full explanation: replay
+            // always sees `0` here (regardless of what `MinimalExecutor` actually computed), which
+            // makes the guest's own branch-on-return-value check skip the entire unconstrained
+            // block -- so this instruction gets a completely ordinary `SyscallEvent` (built at the
+            // bottom of this function, same as any other syscall) and nothing else about
+            // unconstrained mode needs any code here.
+            SyscallCode::ENTER_UNCONSTRAINED => Some(0),
             SyscallCode::HALT => {
                 let exit_code = arg1;
                 next_pc = 0;
@@ -2868,5 +2875,85 @@ mod tests {
             }
             other => panic!("expected real b_record/c_record, got {other:?}"),
         }
+    }
+
+    /// End-to-end unconstrained-mode test: a hand-crafted program mirroring exactly what the
+    /// guest-side `unconstrained!{}` macro compiles to (`v0 = syscall_enter_unconstrained(); if
+    /// v0 != 0 { <block>; syscall_exit_unconstrained(); }`), so it exercises the *real* mechanism
+    /// (branch-on-return-value) rather than a simplified stand-in. `$t0` is set to 42 before the
+    /// block, corrupted to 999 *inside* the block (real, uncommitted execution -- not skipped),
+    /// and must read back as 42 afterward, proving the COW-backed rollback actually discarded it.
+    ///
+    /// Also verifies the replay side: `MinimalExecutor`'s real run and `TracingVM`'s independent
+    /// replay must reach the exact same final register state, confirming `CoreVM`'s unconditional
+    /// `a=0` for `ENTER_UNCONSTRAINED` correctly makes it skip the entire block (including the
+    /// `EXIT_UNCONSTRAINED` syscall itself) via ordinary branch-not-taken control flow, with no
+    /// oracle-log desync despite `MinimalExecutor` executing the block body for real.
+    #[test]
+    fn unconstrained_block_is_rolled_back_and_replay_matches() {
+        const T0: u8 = Register::T0 as u8;
+        const T1: u8 = Register::T1 as u8;
+        const T2: u8 = Register::T2 as u8;
+        const V0: u8 = Register::V0 as u8;
+        const A0: u8 = Register::A0 as u8;
+        const ZERO: u8 = Register::ZERO as u8;
+
+        let syscall_instr = |a: u8, b: u32| Instruction::new(Opcode::SYSCALL, a, b, 5, false, false);
+
+        let instructions = vec![
+            /* 0, pc=0  */ Instruction::new(Opcode::ADD, T0, ZERO as u32, 42, false, true),
+            /* 1, pc=4  */ Instruction::new(
+                Opcode::ADD,
+                V0,
+                ZERO as u32,
+                SyscallCode::ENTER_UNCONSTRAINED as u32,
+                false,
+                true,
+            ),
+            /* 2, pc=8  */ syscall_instr(V0, A0 as u32), // ENTER_UNCONSTRAINED
+            /* 3, pc=12 */ Instruction::new(Opcode::BEQ, V0, ZERO as u32, 16, false, true),
+            /* 4, pc=16 */ Instruction::new(Opcode::ADD, T2, ZERO as u32, 0, false, true), // delay slot
+            /* 5, pc=20 */ Instruction::new(Opcode::ADD, T0, ZERO as u32, 999, false, true), // block body
+            /* 6, pc=24 */ Instruction::new(
+                Opcode::ADD,
+                V0,
+                ZERO as u32,
+                SyscallCode::EXIT_UNCONSTRAINED as u32,
+                false,
+                true,
+            ),
+            /* 7, pc=28 */ syscall_instr(V0, A0 as u32), // EXIT_UNCONSTRAINED
+            /* 8, pc=32 */ Instruction::new(Opcode::ADD, T1, T0 as u32, ZERO as u32, false, false),
+            /* 9, pc=36 */ Instruction::new(Opcode::ADD, V0, ZERO as u32, 0, false, true), // HALT code
+            /* 10,pc=40 */ Instruction::new(Opcode::ADD, A0, ZERO as u32, 0, false, true), // exit code 0
+            /* 11,pc=44 */ syscall_instr(V0, A0 as u32), // HALT
+        ];
+        let program = Arc::new(Program::new(instructions, 0, 0));
+
+        let mut minimal = MinimalExecutor::new(program.clone(), u64::MAX / 2);
+        let chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
+        assert_eq!(
+            minimal.registers()[T0 as usize],
+            42,
+            "MinimalExecutor: $t0 must read back as 42, not 999 -- the unconstrained write must \
+             have been rolled back"
+        );
+
+        let max_syscall_cycles = minimal.max_syscall_cycles();
+        let mut record = ExecutionRecord::new(program.clone());
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
+
+        assert_eq!(
+            tracing_vm.registers()[T0 as usize],
+            42,
+            "TracingVM replay must independently reach the same rolled-back $t0"
+        );
+        assert_eq!(
+            tracing_vm.registers(),
+            minimal.registers(),
+            "TracingVM's full final register state must match MinimalExecutor's real run"
+        );
+        assert_eq!(tracing_vm.pc(), minimal.pc());
     }
 }

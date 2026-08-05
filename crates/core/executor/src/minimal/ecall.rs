@@ -154,6 +154,15 @@ impl MinimalExecutor {
         let arg2 = self.reg_read(Register::A1, MemoryAccessPosition::C);
         let arg1 = self.reg_read(Register::A0, MemoryAccessPosition::B);
 
+        // Only `WRITE` (the hint-hook escape hatch) and `EXIT_UNCONSTRAINED` itself are allowed
+        // inside an unconstrained block -- mirrors `Executor::execute_operation`'s identical
+        // check exactly (`ExecutionError::InvalidSyscallUsage`, not a panic, to match its
+        // catchable-error contract).
+        if self.unconstrained && code != SyscallCode::WRITE && code != SyscallCode::EXIT_UNCONSTRAINED
+        {
+            return Err(ExecutionError::InvalidSyscallUsage(syscall_id as u64));
+        }
+
         let mut next_pc = self.pc.wrapping_add(4);
         let mut extra_cycles = 0u32;
         let a0_result: Option<u32> = match code {
@@ -455,8 +464,13 @@ impl MinimalExecutor {
                 self.set_reg_aux(Register::A3, 0);
                 Some(0)
             }
-            // Everything else (precompiles, hints, unconstrained, VERIFY): a documented no-op --
-            // see the module doc on `minimal/mod.rs`.
+            SyscallCode::ENTER_UNCONSTRAINED => Some(self.enter_unconstrained()),
+            SyscallCode::EXIT_UNCONSTRAINED => {
+                next_pc = self.exit_unconstrained();
+                Some(0)
+            }
+            // Everything else (precompiles, hints, VERIFY): a documented no-op -- see the module
+            // doc on `minimal/mod.rs`.
             _ => None,
         };
 

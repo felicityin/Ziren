@@ -366,6 +366,84 @@ impl<V: Copy> Default for PagedMemory<V> {
     }
 }
 
+/// A `PagedMemory` variant supporting O(1) unconstrained-mode enter/discard (rather than a
+/// diff-based undo log, which is O(touched-addresses) to unwind).
+///
+/// Entering COW mode (`copy_on_write`) moves the current, fully-populated memory into `original`
+/// (a plain field move -- the `Vec`s' pointer/length/capacity, not their contents -- so this is
+/// O(1) regardless of how much memory is already touched) and starts a fresh, empty `copy`
+/// overlay. Every write during the block goes into `copy`, lazily duplicating the touched
+/// address's prior value from `original` on first write to that address (not its whole page).
+/// Reads check `copy` first, falling back to `original` for addresses `copy` hasn't touched.
+/// Discarding on exit (`discard_cow`) just drops `copy` and restores `original` -- no per-address
+/// undo/replay loop, unlike a diff-based approach.
+pub(crate) enum MaybeCowMemory<V: Copy> {
+    Owned(PagedMemory<V>),
+    Cow { copy: PagedMemory<V>, original: PagedMemory<V> },
+}
+
+impl<V: Copy> Default for MaybeCowMemory<V> {
+    fn default() -> Self {
+        Self::Owned(PagedMemory::default())
+    }
+}
+
+impl<V: Copy> MaybeCowMemory<V> {
+    pub(crate) fn get(&self, addr: u32) -> Option<&V> {
+        match self {
+            Self::Owned(memory) => memory.get(addr),
+            Self::Cow { copy, original } => copy.get(addr).or_else(|| original.get(addr)),
+        }
+    }
+
+    /// Gets the memory entry for the given address -- in COW mode, lazily duplicates the
+    /// address's value from `original` into `copy` on first touch (if it existed there at all)
+    /// before handing out `copy`'s own entry, mirroring `PagedMemory::entry`'s vacant/occupied
+    /// semantics exactly from the caller's point of view.
+    pub(crate) fn entry(&mut self, addr: u32) -> Entry<'_, V> {
+        match self {
+            Self::Owned(memory) => memory.entry(addr),
+            Self::Cow { copy, original } => {
+                if copy.get(addr).is_none() {
+                    if let Some(&value) = original.get(addr) {
+                        copy.insert(addr, value);
+                    }
+                }
+                copy.entry(addr)
+            }
+        }
+    }
+
+    /// Returns an iterator over the occupied addresses. Only meaningful (and only called) once
+    /// the whole run has finished -- by then any unconstrained block must have been exited for
+    /// real (`Self::discard_cow`), so `Self::Owned` is the only state this should ever see.
+    pub(crate) fn keys(&self) -> impl Iterator<Item = u32> + '_ {
+        match self {
+            Self::Owned(memory) => memory.keys(),
+            Self::Cow { .. } => {
+                unreachable!("keys() called while still in an unconstrained block")
+            }
+        }
+    }
+
+    /// Enters COW mode -- O(1), see the type's own doc comment. A no-op if already in COW mode.
+    pub(crate) fn copy_on_write(&mut self) {
+        if matches!(self, Self::Owned(_)) {
+            let taken = std::mem::take(self);
+            let Self::Owned(memory) = taken else { unreachable!() };
+            *self = Self::Cow { copy: PagedMemory::default(), original: memory };
+        }
+    }
+
+    /// Discards everything written since `copy_on_write` and reverts to the pre-block state --
+    /// O(1), see the type's own doc comment. A no-op if not currently in COW mode.
+    pub(crate) fn discard_cow(&mut self) {
+        if let Self::Cow { original, .. } = self {
+            *self = Self::Owned(std::mem::take(original));
+        }
+    }
+}
+
 /// An entry of `PagedMemory` or `Registers`, for in-place manipulation.
 pub enum Entry<'a, V: Copy> {
     Vacant(VacantEntry<'a, V>),
@@ -479,5 +557,65 @@ impl<V: Copy + 'static> IntoIterator for PagedMemory<V> {
                     })
             },
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maybe_cow_memory_discards_writes_and_new_addresses_on_discard() {
+        let mut mem: MaybeCowMemory<u32> = MaybeCowMemory::default();
+        *mem.entry(4).or_insert(0) = 100;
+        *mem.entry(8).or_insert(0) = 200;
+        assert_eq!(mem.get(4), Some(&100));
+        assert_eq!(mem.get(8), Some(&200));
+
+        mem.copy_on_write();
+        assert_eq!(mem.get(4), Some(&100), "reads must see through to the original while unwritten");
+        assert_eq!(mem.get(8), Some(&200));
+
+        // Overwrite an existing address.
+        *mem.entry(4).or_insert(0) = 999;
+        assert_eq!(mem.get(4), Some(&999), "reads must see the overlay once written");
+        // Write a brand-new address that never existed before entering COW mode.
+        *mem.entry(12).or_insert(0) = 777;
+        assert_eq!(mem.get(12), Some(&777));
+        // Untouched address must still read through to the original.
+        assert_eq!(mem.get(8), Some(&200));
+
+        mem.discard_cow();
+        assert_eq!(mem.get(4), Some(&100), "discard must revert the overwritten address");
+        assert_eq!(mem.get(8), Some(&200), "discard must leave the untouched address alone");
+        assert_eq!(mem.get(12), None, "discard must make the never-before-existing address vanish again");
+    }
+
+    #[test]
+    fn maybe_cow_memory_entry_and_modify_matches_owned_semantics() {
+        // `entry().or_insert()`/`.and_modify()` must behave identically whether or not we're in
+        // COW mode -- this is the exact pattern `MinimalExecutor::mr`/`mw` rely on.
+        let mut mem: MaybeCowMemory<u32> = MaybeCowMemory::default();
+        mem.copy_on_write();
+        let v = mem.entry(16).or_insert(0);
+        *v += 1;
+        assert_eq!(mem.get(16), Some(&1));
+        let v = mem.entry(16).or_insert(0);
+        *v += 1;
+        assert_eq!(mem.get(16), Some(&2));
+    }
+
+    #[test]
+    fn maybe_cow_memory_nested_copy_on_write_is_a_no_op() {
+        let mut mem: MaybeCowMemory<u32> = MaybeCowMemory::default();
+        *mem.entry(4).or_insert(0) = 1;
+        mem.copy_on_write();
+        *mem.entry(8).or_insert(0) = 2;
+        mem.copy_on_write(); // already in COW mode -- must not start a fresh overlay
+        assert_eq!(mem.get(4), Some(&1));
+        assert_eq!(mem.get(8), Some(&2));
+        mem.discard_cow();
+        assert_eq!(mem.get(4), Some(&1));
+        assert_eq!(mem.get(8), None);
     }
 }
