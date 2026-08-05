@@ -187,21 +187,13 @@ impl MinimalExecutor {
                 // `initial_brk` fresh from `program.image`, so "current brk" is always just
                 // `initial_brk`), and `A3` gets a real (if unused-by-us) `0` write for
                 // register-value parity.
-                const MAX_HEAP_SIZE: u32 = 0x4000_0000;
                 let initial_brk = self
                     .program
                     .image
                     .get(&(Register::BRK as u32))
                     .copied()
                     .unwrap_or_else(|| self.reg(Register::BRK));
-                let limit = initial_brk
-                    .checked_add(MAX_HEAP_SIZE)
-                    .ok_or(ExecutionError::InvalidSyscallArgs())?
-                    .min(crate::program::MAX_MEMORY as u32);
-                let v0 = arg1.max(initial_brk);
-                if v0 > limit {
-                    return Err(ExecutionError::InvalidSyscallArgs());
-                }
+                let v0 = vm::resolve_brk(initial_brk, initial_brk, arg1)?;
                 self.set_reg(Register::A3, 0);
                 Some(v0)
             }
@@ -393,8 +385,70 @@ impl MinimalExecutor {
                 self.poseidon2_permute_dispatch(arg1);
                 None
             }
-            // Everything else (precompiles, other Linux shims, hints, unconstrained, VERIFY): a
-            // documented no-op -- see the module doc on `minimal/mod.rs`.
+            SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
+                let size = vm::align_size(arg2)?;
+                let v0 = if arg1 == 0 {
+                    let heap = self.reg(Register::HEAP);
+                    self.set_reg(Register::HEAP, heap.wrapping_add(size));
+                    heap
+                } else {
+                    arg1
+                };
+                self.set_reg(Register::A3, 0);
+                Some(v0)
+            }
+            SyscallCode::SYS_CLONE => {
+                self.set_reg(Register::A3, 0);
+                Some(1) // Simulate a successful clone operation.
+            }
+            SyscallCode::SYS_EXT_GROUP => {
+                next_pc = 0;
+                self.set_reg(Register::A3, 0);
+                Some(0)
+            }
+            SyscallCode::SYS_FCNTL => {
+                let (v0, a3) = vm::fcntl_result(arg1, arg2);
+                self.set_reg(Register::A3, a3);
+                Some(v0)
+            }
+            SyscallCode::SYS_READ => {
+                let (v0, a3) = vm::read_result(arg1);
+                self.set_reg(Register::A3, a3);
+                Some(v0)
+            }
+            SyscallCode::SYS_WRITE => {
+                let fd = arg1;
+                let write_buf = arg2;
+                let nbytes = self.reg(Register::A2);
+                // Every byte's owning word is logged (via `byte_peek`) regardless of `fd`, same
+                // as the `WRITE` syscall above -- `CoreVM` must pop a matching entry per byte to
+                // stay in sync even for destinations whose content isn't otherwise preserved.
+                let bytes: Vec<u8> = (0..nbytes).map(|i| self.byte_peek(write_buf + i)).collect();
+                if fd == FD_PUBLIC_VALUES {
+                    self.public_values_stream.extend_from_slice(&bytes);
+                }
+                self.set_reg(Register::A3, 0);
+                Some(nbytes)
+            }
+            SyscallCode::SYS_OPEN
+            | SyscallCode::SYS_CLOSE
+            | SyscallCode::SYS_RT_SIGACTION
+            | SyscallCode::SYS_RT_SIGPROCMASK
+            | SyscallCode::SYS_MADVISE
+            | SyscallCode::SYS_GETTID
+            | SyscallCode::SYS_SCHED_GETAFFINITY
+            | SyscallCode::SYS_CLOCK_GETTIME
+            | SyscallCode::SYS_NANOSLEEP
+            | SyscallCode::SYS_PRLIMIT64
+            | SyscallCode::SYS_SIGALTSTACK
+            | SyscallCode::SYS_OPENAT
+            | SyscallCode::SYS_FSTAT64
+            | SyscallCode::SYS_MUNMAP => {
+                self.set_reg(Register::A3, 0);
+                Some(0)
+            }
+            // Everything else (precompiles, hints, unconstrained, VERIFY): a documented no-op --
+            // see the module doc on `minimal/mod.rs`.
             _ => None,
         };
 

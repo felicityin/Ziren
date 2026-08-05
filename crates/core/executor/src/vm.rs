@@ -52,7 +52,7 @@ use zkm_curves::{
     NUM_BYTES_FIELD_ELEMENT,
 };
 use zkm_primitives::{
-    consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT},
+    consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDIN, FD_STDOUT},
     poseidon2_init,
 };
 
@@ -597,6 +597,89 @@ pub(crate) fn poseidon2_permute(
     state.map(|x| x.as_canonical_u32())
 }
 
+/// Return value for an unsupported/invalid Linux-syscall argument -- mirrors `sys_linux`'s shared
+/// `MIPS_EBADF` convention across `sysfcntl.rs`/`sysread.rs`.
+pub(crate) const MIPS_EBADF: u32 = 9;
+
+/// Prover-side safety bound on heap growth from the program's initial `BRK` value, mirroring
+/// `sysbrk.rs`'s identical constant.
+const MAX_HEAP_SIZE: u32 = 0x4000_0000;
+
+/// The highest `brk` value a program may resolve to, given its initial value -- mirrors
+/// `sysbrk.rs::max_brk` exactly.
+///
+/// # Errors
+///
+/// Returns [`ExecutionError::InvalidSyscallArgs`] if `initial_brk + MAX_HEAP_SIZE` overflows.
+pub(crate) fn max_brk(initial_brk: u32) -> Result<u32, ExecutionError> {
+    let limit =
+        initial_brk.checked_add(MAX_HEAP_SIZE).ok_or(ExecutionError::InvalidSyscallArgs())?;
+    Ok(limit.min(crate::program::MAX_MEMORY as u32))
+}
+
+/// Resolves a `brk(requested_brk)` call -- mirrors `sysbrk.rs::resolve_brk` exactly.
+///
+/// # Errors
+///
+/// Returns [`ExecutionError::InvalidSyscallArgs`] if the resolved value would exceed
+/// [`max_brk`]'s limit.
+pub(crate) fn resolve_brk(
+    initial_brk: u32,
+    current_brk: u32,
+    requested_brk: u32,
+) -> Result<u32, ExecutionError> {
+    let limit = max_brk(initial_brk)?;
+    let v0 = requested_brk.max(current_brk);
+    if v0 > limit {
+        return Err(ExecutionError::InvalidSyscallArgs());
+    }
+    Ok(v0)
+}
+
+/// Rounds `size` up to the next page boundary -- mirrors `sysmmap.rs::align_size` exactly.
+///
+/// # Errors
+///
+/// Returns [`ExecutionError::InvalidSyscallArgs`] on overflow.
+pub(crate) fn align_size(size: u32) -> Result<u32, ExecutionError> {
+    const PAGE_ADDR_MASK: u32 = (1 << 12) - 1;
+    const PAGE_SIZE: u32 = 1 << 12;
+    if size & PAGE_ADDR_MASK == 0 {
+        return Ok(size);
+    }
+    size.checked_add(PAGE_SIZE - (size & PAGE_ADDR_MASK)).ok_or(ExecutionError::InvalidSyscallArgs())
+}
+
+/// `(v0, a3)` for an `fcntl(fd, cmd)` call -- mirrors `sysfcntl.rs::SysFcntlSyscall::execute`'s
+/// compute step exactly (`a1 == 3` is `F_GETFL`, `a1 == 1` is `F_GETFD`; anything else is
+/// unsupported).
+pub(crate) fn fcntl_result(fd: u32, cmd: u32) -> (u32, u32) {
+    if cmd == 3 {
+        match fd {
+            FD_STDIN => (0, 0),
+            FD_STDOUT | FD_STDERR => (1, 0),
+            _ => (0xffff_ffff, MIPS_EBADF),
+        }
+    } else if cmd == 1 {
+        match fd {
+            FD_STDIN | FD_STDOUT | FD_STDERR => (fd, 0),
+            _ => (0xffff_ffff, MIPS_EBADF),
+        }
+    } else {
+        (0xffff_ffff, MIPS_EBADF)
+    }
+}
+
+/// `(v0, a3)` for a `read(fd, ...)` call -- mirrors `sysread.rs::SysReadSyscall::execute`'s
+/// compute step exactly (only `FD_STDIN` is supported; a read of zero bytes always "succeeds").
+pub(crate) fn read_result(fd: u32) -> (u32, u32) {
+    if fd == FD_STDIN {
+        (0, 0)
+    } else {
+        (0xffff_ffff, MIPS_EBADF)
+    }
+}
+
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
 /// on. Unlike `MinimalExecutor`, it has **no backing RAM at all**: every RAM access
 /// (`mr`/`mw`-equivalent) is answered by popping the next entry off a [`MinimalTrace`]'s oracle
@@ -1130,21 +1213,13 @@ impl<'a> CoreVM<'a> {
                 None
             }
             SyscallCode::SYS_BRK => {
-                const MAX_HEAP_SIZE: u32 = 0x4000_0000;
                 let initial_brk = self
                     .program
                     .image
                     .get(&(Register::BRK as u32))
                     .copied()
                     .unwrap_or_else(|| self.reg(Register::BRK));
-                let limit = initial_brk
-                    .checked_add(MAX_HEAP_SIZE)
-                    .ok_or(ExecutionError::InvalidSyscallArgs())?
-                    .min(crate::program::MAX_MEMORY as u32);
-                let v0 = arg1.max(initial_brk);
-                if v0 > limit {
-                    return Err(ExecutionError::InvalidSyscallArgs());
-                }
+                let v0 = resolve_brk(initial_brk, initial_brk, arg1)?;
                 self.set_reg(Register::A3, 0);
                 Some(v0)
             }
@@ -1327,6 +1402,62 @@ impl<'a> CoreVM<'a> {
             SyscallCode::POSEIDON2_PERMUTE => {
                 self.poseidon2_permute_replay();
                 None
+            }
+            SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
+                let size = align_size(arg2)?;
+                let v0 = if arg1 == 0 {
+                    let heap = self.reg(Register::HEAP);
+                    self.set_reg(Register::HEAP, heap.wrapping_add(size));
+                    heap
+                } else {
+                    arg1
+                };
+                self.set_reg(Register::A3, 0);
+                Some(v0)
+            }
+            SyscallCode::SYS_CLONE => {
+                self.set_reg(Register::A3, 0);
+                Some(1)
+            }
+            SyscallCode::SYS_EXT_GROUP => {
+                next_pc = 0;
+                self.set_reg(Register::A3, 0);
+                Some(0)
+            }
+            SyscallCode::SYS_FCNTL => {
+                let (v0, a3) = fcntl_result(arg1, arg2);
+                self.set_reg(Register::A3, a3);
+                Some(v0)
+            }
+            SyscallCode::SYS_READ => {
+                let (v0, a3) = read_result(arg1);
+                self.set_reg(Register::A3, a3);
+                Some(v0)
+            }
+            SyscallCode::SYS_WRITE => {
+                let nbytes = self.reg(Register::A2);
+                for _ in 0..nbytes {
+                    self.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+                }
+                self.set_reg(Register::A3, 0);
+                Some(nbytes)
+            }
+            SyscallCode::SYS_OPEN
+            | SyscallCode::SYS_CLOSE
+            | SyscallCode::SYS_RT_SIGACTION
+            | SyscallCode::SYS_RT_SIGPROCMASK
+            | SyscallCode::SYS_MADVISE
+            | SyscallCode::SYS_GETTID
+            | SyscallCode::SYS_SCHED_GETAFFINITY
+            | SyscallCode::SYS_CLOCK_GETTIME
+            | SyscallCode::SYS_NANOSLEEP
+            | SyscallCode::SYS_PRLIMIT64
+            | SyscallCode::SYS_SIGALTSTACK
+            | SyscallCode::SYS_OPENAT
+            | SyscallCode::SYS_FSTAT64
+            | SyscallCode::SYS_MUNMAP => {
+                self.set_reg(Register::A3, 0);
+                Some(0)
             }
             _ => None,
         };

@@ -22,21 +22,21 @@ use crate::{
         AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, EdDecompressEvent,
         EllipticCurveAddEvent, EllipticCurveDecompressEvent, EllipticCurveDoubleEvent,
         FieldOperation, Fp2AddSubEvent, Fp2MulEvent, FpOpEvent, JumpEvent, KeccakSpongeEvent,
-        MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
-        MovCondEvent, Poseidon2PermuteEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent,
-        SyscallEvent, U256xU2048MulEvent, Uint256MulEvent,
+        LinuxEvent, MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord,
+        MiscEvent, MovCondEvent, Poseidon2PermuteEvent, PrecompileEvent, ShaCompressEvent,
+        ShaExtendEvent, SyscallEvent, U256xU2048MulEvent, Uint256MulEvent,
     },
     opcode::Opcode,
     register::Register,
     syscalls::SyscallCode,
     trace::MinimalTrace,
     vm::{
-        ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, ed25519_decompress,
-        fp2_addsub, fp2_mul, fp2_num_words, fp_num_words, fp_op, keccak_xor_block, keccakf,
-        poseidon2_permute, sha256_compress, sha256_extend_word, u256xu2048_mul, uint256_mul,
-        CoreVM, CoreVMStatus, KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S,
-        KECCAK_STATE_SIZE_U64S, POSEIDON2_STATE_SIZE,
-        U2048_NUM_WORDS, U256_NUM_WORDS,
+        align_size, ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words,
+        ed25519_decompress, fcntl_result, fp2_addsub, fp2_mul, fp2_num_words, fp_num_words, fp_op,
+        keccak_xor_block, keccakf, poseidon2_permute, read_result, resolve_brk, sha256_compress,
+        sha256_extend_word, u256xu2048_mul, uint256_mul, CoreVM, CoreVMStatus,
+        KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
+        POSEIDON2_STATE_SIZE, U2048_NUM_WORDS, U256_NUM_WORDS,
     },
     ExecutionError, ExecutionRecord, Instruction, Program,
 };
@@ -877,6 +877,33 @@ impl<'a> TracingVM<'a> {
         }
     }
 
+    /// Builds a `LinuxEvent` for one of the Linux syscall shims (`SYS_BRK`/`SYS_MMAP`/etc, all
+    /// bucketed under the synthetic `SyscallCode::SYS_LINUX` key like the legacy `Executor`
+    /// itself does -- see `minimal/ecall.rs`'s corresponding dispatch arms for the compute logic
+    /// each `read_records`/`write_records`/`v0` pairing mirrors).
+    fn linux_event(
+        &self,
+        clk: u64,
+        a0: u32,
+        a1: u32,
+        v0: u32,
+        syscall_id: u32,
+        read_records: Vec<MemoryReadRecord>,
+        write_records: Vec<MemoryWriteRecord>,
+    ) -> LinuxEvent {
+        LinuxEvent {
+            shard: 0,
+            clk,
+            a0,
+            a1,
+            v0,
+            syscall_code: syscall_id,
+            read_records,
+            write_records,
+            local_mem_access: Vec::new(),
+        }
+    }
+
     /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
@@ -910,26 +937,6 @@ impl<'a> TracingVM<'a> {
                                      // ExecutionRecord -- TracingVM has no field to append it to
                                      // yet (deferred alongside the other scoped-out bookkeeping).
                 None
-            }
-            SyscallCode::SYS_BRK => {
-                const MAX_HEAP_SIZE: u32 = 0x4000_0000;
-                let initial_brk = self
-                    .core
-                    .program()
-                    .image
-                    .get(&(Register::BRK as u32))
-                    .copied()
-                    .unwrap_or_else(|| self.core.reg(Register::BRK));
-                let limit = initial_brk
-                    .checked_add(MAX_HEAP_SIZE)
-                    .ok_or(ExecutionError::InvalidSyscallArgs())?
-                    .min(crate::program::MAX_MEMORY as u32);
-                let v0 = arg1.max(initial_brk);
-                if v0 > limit {
-                    return Err(ExecutionError::InvalidSyscallArgs());
-                }
-                self.core.set_reg(Register::A3, 0);
-                Some(v0)
             }
             SyscallCode::SHA_COMPRESS => {
                 let w_ptr = arg1;
@@ -1488,6 +1495,191 @@ impl<'a> TracingVM<'a> {
                     PrecompileEvent::Poseidon2Permute(event),
                 );
                 None
+            }
+            SyscallCode::SYS_BRK => {
+                let initial_brk = self
+                    .core
+                    .program()
+                    .image
+                    .get(&(Register::BRK as u32))
+                    .copied()
+                    .unwrap_or_else(|| self.core.reg(Register::BRK));
+                let v0 = resolve_brk(initial_brk, initial_brk, arg1)?;
+                let event = self.linux_event(
+                    clk, arg1, arg2, v0, syscall_id,
+                    vec![MemoryReadRecord { value: initial_brk, timestamp: clk, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                );
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
+            }
+            SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
+                let size = align_size(arg2)?;
+                let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 };
+                let (v0, write_records) = if arg1 == 0 {
+                    let heap = self.core.reg(Register::HEAP);
+                    self.core.set_reg(Register::HEAP, heap.wrapping_add(size));
+                    let heap_record = MemoryWriteRecord { value: heap.wrapping_add(size), timestamp: clk, prev_value: 0, prev_timestamp: 0 };
+                    (heap, vec![a3_record, heap_record])
+                } else {
+                    (arg1, vec![a3_record])
+                };
+                let event = self.linux_event(clk, arg1, arg2, v0, syscall_id, vec![], write_records);
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
+            }
+            SyscallCode::SYS_CLONE => {
+                let v0 = 1;
+                let event = self.linux_event(
+                    clk, arg1, arg2, v0, syscall_id, vec![],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                );
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
+            }
+            SyscallCode::SYS_EXT_GROUP => {
+                next_pc = 0;
+                let v0 = 0;
+                let event = self.linux_event(
+                    clk, arg1, arg2, v0, syscall_id, vec![],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                );
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
+            }
+            SyscallCode::SYS_FCNTL => {
+                let (v0, a3) = fcntl_result(arg1, arg2);
+                let event = self.linux_event(
+                    clk, arg1, arg2, v0, syscall_id, vec![],
+                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                );
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
+            }
+            SyscallCode::SYS_READ => {
+                let (v0, a3) = read_result(arg1);
+                let event = self.linux_event(
+                    clk, arg1, arg2, v0, syscall_id, vec![],
+                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                );
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
+            }
+            SyscallCode::SYS_WRITE => {
+                let nbytes = self.core.reg(Register::A2);
+                for _ in 0..nbytes {
+                    self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+                }
+                let v0 = nbytes;
+                let event = self.linux_event(
+                    clk, arg1, arg2, v0, syscall_id,
+                    vec![MemoryReadRecord { value: nbytes, timestamp: clk, prev_timestamp: 0 }],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                );
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
+            }
+            SyscallCode::SYS_OPEN
+            | SyscallCode::SYS_CLOSE
+            | SyscallCode::SYS_RT_SIGACTION
+            | SyscallCode::SYS_RT_SIGPROCMASK
+            | SyscallCode::SYS_MADVISE
+            | SyscallCode::SYS_GETTID
+            | SyscallCode::SYS_SCHED_GETAFFINITY
+            | SyscallCode::SYS_CLOCK_GETTIME
+            | SyscallCode::SYS_NANOSLEEP
+            | SyscallCode::SYS_PRLIMIT64
+            | SyscallCode::SYS_SIGALTSTACK
+            | SyscallCode::SYS_OPENAT
+            | SyscallCode::SYS_FSTAT64
+            | SyscallCode::SYS_MUNMAP => {
+                let v0 = 0;
+                let event = self.linux_event(
+                    clk, arg1, arg2, v0, syscall_id, vec![],
+                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
+                );
+                self.record.precompile_events.add_event(
+                    SyscallCode::SYS_LINUX,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: v0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Linux(event),
+                );
+                Some(v0)
             }
             _ => None,
         };
