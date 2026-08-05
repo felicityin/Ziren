@@ -9,6 +9,16 @@
 //! `inc_shard_if_need`'s per-chip `next_power_of_two` rounding), so shard boundaries may differ
 //! from the legacy executor's; only total-execution correctness across all shards is required to
 //! match (verified by this file's own tests).
+//!
+//! A `SplicingVM<'a>` borrows one `MinimalExecutor` chunk's oracle log at a time (via `CoreVM`'s
+//! own lifetime-bound cursor), but a shard's own instructions are not required to fit within a
+//! single chunk -- chunk boundaries (a memory-management buffer-size cutoff) and shard boundaries
+//! (a proof-size decision) are deliberately independent. When `execute()` returns `TraceEnd`
+//! (this chunk's log is exhausted but the in-progress shard hasn't been cut yet), the caller
+//! extracts a lifetime-free [`SplicingCarry`] via `into_carry`, fetches the next chunk from
+//! `MinimalExecutor`, and constructs a fresh `SplicingVM` over it via `resume` -- the shard's own
+//! start-state snapshot, accumulated `ShapeChecker` totals, and oracle-log window-so-far all
+//! carry over transparently.
 
 #![allow(dead_code)]
 
@@ -190,24 +200,26 @@ fn precompile_air_ids(code: SyscallCode) -> &'static [MipsAirId] {
         .map_or(&[] as &[MipsAirId], |(_, ids)| ids)
 }
 
-/// A single shard's slice of a larger [`MinimalTrace`]: a starting-state snapshot (reconstructed
-/// from `CoreVM`'s live state at the cut point, not re-derived), a bounded window into the
-/// backing oracle log (see `MemReads::bounded`), and this shard's own `clk_end` (the cut point,
-/// *not* `inner`'s whole-chunk `clk_end` -- `TracingVM` must stop exactly here or it would run on
-/// into the next shard's instructions).
+/// A single shard's oracle-log window and starting-state snapshot (the latter reconstructed from
+/// `CoreVM`'s live state at the cut point, not re-derived), plus this shard's own `clk_end` (the
+/// cut point, *not* whichever chunk(s) it was spliced from).
+///
+/// Self-contained -- no generic/lifetime parameter, unlike an earlier version of this type that
+/// borrowed directly from one backing chunk -- because a shard's instructions can span more than
+/// one `MinimalExecutor` chunk (see `SplicingVM::into_carry`/`resume`), so its oracle-log window
+/// may need to be a concatenation of more than one chunk's data. This also makes it trivially
+/// sendable across a channel to a separate trace-generation worker.
 #[derive(Debug, Clone)]
-pub(crate) struct SplicedMinimalTrace<T: MinimalTrace> {
-    inner: T,
+pub(crate) struct SplicedMinimalTrace {
+    mem_reads: Arc<[MemValue]>,
     start_registers: [u32; NUM_REGISTERS],
     start_register_timestamps: [u64; NUM_REGISTERS],
     start_pc: u32,
     start_clk: u64,
     end_clk: u64,
-    mem_reads_start: usize,
-    mem_reads_end: usize,
 }
 
-impl<T: MinimalTrace> MinimalTrace for SplicedMinimalTrace<T> {
+impl MinimalTrace for SplicedMinimalTrace {
     fn start_registers(&self) -> [u32; NUM_REGISTERS] {
         self.start_registers
     }
@@ -229,16 +241,31 @@ impl<T: MinimalTrace> MinimalTrace for SplicedMinimalTrace<T> {
     }
 
     fn num_mem_reads(&self) -> u64 {
-        (self.mem_reads_end - self.mem_reads_start) as u64
+        self.mem_reads.len() as u64
     }
 
     fn mem_reads(&self) -> MemReads<'_> {
-        MemReads::bounded(self.inner.mem_reads_slice(), self.mem_reads_start, self.mem_reads_end)
+        MemReads::new(&self.mem_reads)
     }
 
     fn mem_reads_slice(&self) -> &[MemValue] {
-        &self.inner.mem_reads_slice()[self.mem_reads_start..self.mem_reads_end]
+        &self.mem_reads
     }
+}
+
+/// Shard-tracking state carried across a `MinimalExecutor` chunk boundary -- see
+/// `SplicingVM::into_carry`/`resume`. Lifetime-free (unlike `SplicingVM` itself), so it survives
+/// past the point where the exhausted chunk that produced it goes out of scope (e.g. a `while let
+/// Some(chunk) = minimal.try_execute_chunk()?` loop, where each `chunk` is a fresh local).
+pub(crate) struct SplicingCarry {
+    shard_start_registers: [u32; NUM_REGISTERS],
+    shard_start_register_timestamps: [u64; NUM_REGISTERS],
+    shard_start_pc: u32,
+    shard_start_clk: u64,
+    /// This in-progress shard's oracle-log entries from every chunk it has already spanned
+    /// (i.e. every chunk before the one currently being replayed).
+    shard_mem_reads_carried: Vec<MemValue>,
+    shape_checker: ShapeChecker,
 }
 
 /// The result of one `SplicingVM::execute()` call.
@@ -264,6 +291,8 @@ pub(crate) struct SplicingVM<'a> {
     shard_start_pc: u32,
     shard_start_clk: u64,
     shard_start_mem_reads_consumed: usize,
+    /// See `SplicingCarry`'s identically-named field -- empty except right after `Self::resume`.
+    shard_mem_reads_carried: Vec<MemValue>,
 }
 
 impl<'a> SplicingVM<'a> {
@@ -283,8 +312,56 @@ impl<'a> SplicingVM<'a> {
             shard_start_pc: core.pc(),
             shard_start_clk: core.clk(),
             shard_start_mem_reads_consumed: 0,
+            shard_mem_reads_carried: Vec::new(),
             core,
             shape_checker: ShapeChecker::new(program_size, element_threshold, height_threshold),
+        }
+    }
+
+    /// Resumes replaying an in-progress shard -- one whose state was extracted via
+    /// `Self::into_carry` when the *previous* chunk's oracle log ran out (`execute()` returned
+    /// `TraceEnd`) before the shard itself ended -- against a newly available chunk. The shard's
+    /// own start-state snapshot and accumulated `ShapeChecker` cost totals carry over unchanged;
+    /// only the underlying `CoreVM` is rebuilt, over `trace` (whose own start state is wherever
+    /// `MinimalExecutor` left off, i.e. exactly where the previous chunk's replay ended, so
+    /// resuming execution here is seamless -- only the shard-window bookkeeping needs threading
+    /// through by hand).
+    #[must_use]
+    pub(crate) fn resume<T: MinimalTrace>(
+        carry: SplicingCarry,
+        trace: &'a T,
+        program: Arc<Program>,
+        max_syscall_cycles: u32,
+    ) -> Self {
+        Self {
+            core: CoreVM::new(trace, program, max_syscall_cycles),
+            shape_checker: carry.shape_checker,
+            shard_start_registers: carry.shard_start_registers,
+            shard_start_register_timestamps: carry.shard_start_register_timestamps,
+            shard_start_pc: carry.shard_start_pc,
+            shard_start_clk: carry.shard_start_clk,
+            shard_start_mem_reads_consumed: 0,
+            shard_mem_reads_carried: carry.shard_mem_reads_carried,
+        }
+    }
+
+    /// Extracts this in-progress shard's carryable state after `execute()` returns `TraceEnd`.
+    /// Consumes `self` since the underlying `CoreVM`/chunk borrow is now spent; pass the result to
+    /// `Self::resume` once the next chunk is available. `trace` must be the same trace this
+    /// `SplicingVM` was constructed (or last resumed) with.
+    #[must_use]
+    pub(crate) fn into_carry<T: MinimalTrace>(self, trace: &T) -> SplicingCarry {
+        let mem_reads_consumed = trace.num_mem_reads() as usize - self.core.mem_reads_remaining();
+        let mut shard_mem_reads_carried = self.shard_mem_reads_carried;
+        shard_mem_reads_carried
+            .extend_from_slice(&trace.mem_reads_slice()[self.shard_start_mem_reads_consumed..mem_reads_consumed]);
+        SplicingCarry {
+            shard_start_registers: self.shard_start_registers,
+            shard_start_register_timestamps: self.shard_start_register_timestamps,
+            shard_start_pc: self.shard_start_pc,
+            shard_start_clk: self.shard_start_clk,
+            shard_mem_reads_carried,
+            shape_checker: self.shape_checker,
         }
     }
 
@@ -340,11 +417,11 @@ impl<'a> SplicingVM<'a> {
         }
     }
 
-    /// Slices out the shard that just ended (the span from the previous `splice()`/construction
-    /// up to the current, just-reached boundary), and resets internal bookkeeping for the next
-    /// one. Call only immediately after `execute()` returns `ShardBoundary`.
+    /// Slices out the shard that just ended (the span from the previous `splice()`/construction/
+    /// `resume()` up to the current, just-reached boundary), and resets internal bookkeeping for
+    /// the next one. Call only immediately after `execute()` returns `ShardBoundary` or `Done`.
     #[must_use]
-    pub(crate) fn splice<T: MinimalTrace>(&mut self, trace: &T) -> SplicedMinimalTrace<T> {
+    pub(crate) fn splice<T: MinimalTrace>(&mut self, trace: &T) -> SplicedMinimalTrace {
         // The delay-slot invariant: a cut is only ever legal when `!next_is_delayslot`, which
         // implies `next_pc == pc + 4` exactly -- i.e. this shard's starting snapshot never needs
         // to carry a separate `next_pc`/pending-branch field. Checked here, not just in a test,
@@ -356,15 +433,28 @@ impl<'a> SplicingVM<'a> {
              immediately after execute() returns ShardBoundary"
         );
         let mem_reads_consumed = trace.num_mem_reads() as usize - self.core.mem_reads_remaining();
+        let this_chunk_slice =
+            &trace.mem_reads_slice()[self.shard_start_mem_reads_consumed..mem_reads_consumed];
+        // Common case (a shard fits entirely within one chunk): just copy this one window. Rare
+        // case (a shard spanned one or more earlier chunks via `resume()`): concatenate onto what
+        // was already carried over. Either way this is a real copy, not a zero-copy borrow -- an
+        // earlier version of this type borrowed directly from a single backing chunk instead, but
+        // that can't represent the multi-chunk case at all (`mem_reads_slice()` must return one
+        // contiguous `&[MemValue]`). Acceptable for now; revisit if profiling shows it matters.
+        let mem_reads: Arc<[MemValue]> = if self.shard_mem_reads_carried.is_empty() {
+            this_chunk_slice.into()
+        } else {
+            let mut combined = std::mem::take(&mut self.shard_mem_reads_carried);
+            combined.extend_from_slice(this_chunk_slice);
+            combined.into()
+        };
         let spliced = SplicedMinimalTrace {
-            inner: trace.clone(),
+            mem_reads,
             start_registers: self.shard_start_registers,
             start_register_timestamps: self.shard_start_register_timestamps,
             start_pc: self.shard_start_pc,
             start_clk: self.shard_start_clk,
             end_clk: self.core.clk(),
-            mem_reads_start: self.shard_start_mem_reads_consumed,
-            mem_reads_end: mem_reads_consumed,
         };
 
         self.shard_start_registers = self.core.registers();
@@ -507,5 +597,61 @@ mod tests {
         assert_eq!(registers, golden.final_registers, "register mismatch vs. golden");
         assert_eq!(pc, golden.final_pc, "pc mismatch vs. golden");
         assert_eq!(clk, golden.final_clk, "clk mismatch vs. golden");
+    }
+
+    /// Exercises `SplicingVM::into_carry`/`resume`: a tiny `max_trace_size` forces
+    /// `MinimalExecutor` to cut many small chunks, while generous shard thresholds keep the whole
+    /// run to a single shard -- meaning that one shard's oracle-log window must be correctly
+    /// concatenated across every chunk transition. Also feeds the resulting `SplicedMinimalTrace`
+    /// through a real `TracingVM` replay (not just checking `SplicingVM`'s own final state), since
+    /// the risk here is specifically a wrong/misordered concatenation that `SplicingVM`'s own
+    /// bookkeeping wouldn't catch but a downstream replay reading garbage values would.
+    #[test]
+    fn splicing_resumes_across_many_chunks_and_tracing_vm_replays_it_matching_golden() {
+        let golden = crate::golden::run_golden(fibonacci_program());
+        let program = Arc::new(fibonacci_program());
+
+        let mut minimal = MinimalExecutor::new(Arc::new(fibonacci_program()), 4);
+        let max_syscall_cycles = minimal.max_syscall_cycles();
+        let mut chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
+        let mut splicing =
+            SplicingVM::new(&chunk, program.clone(), max_syscall_cycles, u64::MAX / 2, u64::MAX / 2);
+        let mut num_shards = 0;
+        let mut num_chunk_resumes = 0;
+        let spliced = loop {
+            match splicing.execute().unwrap() {
+                SplicingStatus::ShardBoundary => {
+                    let _spliced = splicing.splice(&chunk);
+                    num_shards += 1;
+                }
+                SplicingStatus::Done => {
+                    let spliced = splicing.splice(&chunk);
+                    num_shards += 1;
+                    break spliced;
+                }
+                SplicingStatus::TraceEnd => {
+                    let carry = splicing.into_carry(&chunk);
+                    chunk = minimal.try_execute_chunk().unwrap().expect("expected another chunk");
+                    splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
+                    num_chunk_resumes += 1;
+                }
+            }
+        };
+        assert!(
+            num_chunk_resumes > 1,
+            "expected a tiny max_trace_size to force many chunk resumes, got {num_chunk_resumes}"
+        );
+        assert_eq!(num_shards, 1, "generous thresholds should keep this to a single shard spanning every chunk");
+
+        let mut record = crate::record::ExecutionRecord::new(program.clone());
+        let mut tracing = crate::tracing::TracingVM::new(&spliced, program, max_syscall_cycles, &mut record);
+        assert_eq!(
+            tracing.execute().unwrap(),
+            crate::vm::CoreVMStatus::Done,
+            "TracingVM must be able to replay the concatenated shard to completion"
+        );
+        assert_eq!(tracing.registers(), golden.final_registers, "register mismatch vs. golden");
+        assert_eq!(tracing.pc(), golden.final_pc, "pc mismatch vs. golden");
+        assert_eq!(tracing.clk(), golden.final_clk, "clk mismatch vs. golden");
     }
 }

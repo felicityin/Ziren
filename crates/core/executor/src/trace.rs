@@ -26,9 +26,6 @@ pub(crate) struct MemValue {
 }
 
 /// A cursor over a [`MinimalTrace`]'s oracle log, consumed strictly in order by `CoreVM`.
-/// Bounded (`end` may be short of the backing slice's own length) so `SplicedMinimalTrace` can
-/// hand a shard exactly its own window of a larger chunk's log, not a suffix running past its own
-/// boundary into the next shard's entries.
 #[derive(Debug, Clone)]
 pub(crate) struct MemReads<'a> {
     data: &'a [MemValue],
@@ -40,13 +37,6 @@ impl<'a> MemReads<'a> {
     #[must_use]
     pub(crate) fn new(data: &'a [MemValue]) -> Self {
         Self { data, pos: 0, end: data.len() }
-    }
-
-    /// A cursor over `data[start..end]` -- used by `SplicedMinimalTrace` to hand out exactly one
-    /// shard's slice of a larger chunk's oracle log.
-    #[must_use]
-    pub(crate) fn bounded(data: &'a [MemValue], start: usize, end: usize) -> Self {
-        Self { data, pos: start, end: end.min(data.len()) }
     }
 
     /// Remaining (unconsumed) entry count.
@@ -71,7 +61,8 @@ impl Iterator for MemReads<'_> {
 
 /// The oracle-log contract every consumer (`CoreVM`/`SplicingVM`/`TracingVM`) is generic over.
 /// `MinimalExecutor` produces the concrete implementation, [`TraceChunk`]; `SplicedMinimalTrace`
-/// wraps one to add a starting-state offset without copying the log.
+/// is the other, self-contained implementation `SplicingVM` slices out of one (or, when a shard
+/// spans a chunk boundary, more than one) `TraceChunk`.
 pub(crate) trait MinimalTrace: Clone + Send + Sync + 'static {
     /// The register file at `pc_start`/`clk_start`.
     fn start_registers(&self) -> [u32; NUM_REGISTERS];
@@ -91,8 +82,8 @@ pub(crate) trait MinimalTrace: Clone + Send + Sync + 'static {
     /// A cursor over the oracle log, starting from its first entry.
     fn mem_reads(&self) -> MemReads<'_>;
     /// The oracle log's backing slice. Every `MinimalTrace` implementation here is a real, owned,
-    /// contiguous slice -- `SplicedMinimalTrace` uses this directly to build a bounded
-    /// [`MemReads`] rather than re-deriving one via `mem_reads()` + N discarded `.next()` calls.
+    /// contiguous slice -- `SplicingVM::splice` uses this directly to copy out exactly the window
+    /// a shard needs, rather than re-deriving it via `mem_reads()` + N discarded `.next()` calls.
     fn mem_reads_slice(&self) -> &[MemValue];
 }
 
