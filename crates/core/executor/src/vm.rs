@@ -276,6 +276,63 @@ pub(crate) fn bump_clk_high_if_need(clk: u64, max_syscall_cycles: u32) -> u64 {
     }
 }
 
+/// SHA-256 round constants (`syscalls/precompiles/sha256/compress.rs::SHA_COMPRESS_K`).
+pub(crate) const SHA_COMPRESS_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+/// SHA-256 compress, given the 8 already-read `h` words and 64 already-read `w` words. Pure
+/// function of its inputs -- mirrors `Sha256CompressSyscall::execute`'s compute loop
+/// (`syscalls/precompiles/sha256/compress.rs`) exactly, split from the memory accesses that
+/// gather `h`/`w` so it can be shared between a real backing store and an oracle replay.
+#[must_use]
+pub(crate) fn sha256_compress(h: [u32; 8], w: &[u32; 64]) -> [u32; 8] {
+    let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] =
+        [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]];
+    for (i, &w_i) in w.iter().enumerate() {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ (!e & g);
+        let temp1 =
+            hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(SHA_COMPRESS_K[i]).wrapping_add(w_i);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let temp2 = s0.wrapping_add(maj);
+
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(temp1);
+        d = c;
+        c = b;
+        b = a;
+        a = temp1.wrapping_add(temp2);
+    }
+    let v = [a, b, c, d, e, f, g, hh];
+    std::array::from_fn(|i| h[i].wrapping_add(v[i]))
+}
+
+/// SHA-256 extend, one word. Pure function of the 4 already-read predecessor words -- mirrors
+/// `Sha256ExtendSyscall::execute`'s per-`w[i]` computation (`syscalls/precompiles/sha256/extend.rs`)
+/// exactly.
+#[must_use]
+pub(crate) fn sha256_extend_word(
+    w_i_minus_15: u32,
+    w_i_minus_2: u32,
+    w_i_minus_16: u32,
+    w_i_minus_7: u32,
+) -> u32 {
+    let s0 = w_i_minus_15.rotate_right(7) ^ w_i_minus_15.rotate_right(18) ^ (w_i_minus_15 >> 3);
+    let s1 = w_i_minus_2.rotate_right(17) ^ w_i_minus_2.rotate_right(19) ^ (w_i_minus_2 >> 10);
+    s1.wrapping_add(w_i_minus_16).wrapping_add(s0).wrapping_add(w_i_minus_7)
+}
+
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
 /// on. Unlike `MinimalExecutor`, it has **no backing RAM at all**: every RAM access
 /// (`mr`/`mw`-equivalent) is answered by popping the next entry off a [`MinimalTrace`]'s oracle
@@ -438,6 +495,15 @@ impl<'a> CoreVM<'a> {
 
     pub(crate) fn advance_clk(&mut self) {
         self.clk += 5;
+    }
+
+    /// Bumps `clk` by a syscall's `num_extra_cycles`, on top of the base `advance_clk` every
+    /// instruction gets -- mirrors `Executor::execute_operation`'s `self.state.clk +=
+    /// u64::from(precompile_cycles)`, applied inside the `SYSCALL` branch itself rather than
+    /// uniformly. `pub(crate)`, not private: `TracingVM` (a sibling module) has its own
+    /// `execute_syscall` and must apply the same bump `CoreVM::execute_syscall` applies internally.
+    pub(crate) fn advance_clk_extra(&mut self, extra_cycles: u32) {
+        self.clk += u64::from(extra_cycles);
     }
 
     // ---- replay loop ----
@@ -766,6 +832,7 @@ impl<'a> CoreVM<'a> {
         let arg2 = self.reg(Register::A1);
 
         let mut next_pc = self.pc.wrapping_add(4);
+        let mut extra_cycles = 0u32;
         let a0_result: Option<u32> = match code {
             SyscallCode::HALT => {
                 let exit_code = arg1;
@@ -812,11 +879,39 @@ impl<'a> CoreVM<'a> {
                 self.set_reg(Register::A3, 0);
                 Some(v0)
             }
+            SyscallCode::SHA_COMPRESS => {
+                let h: [u32; 8] = std::array::from_fn(|_| self.next_oracle_value());
+                let w: [u32; 64] = std::array::from_fn(|_| self.next_oracle_value());
+                let out = sha256_compress(h, &w);
+                for _ in out {
+                    // Pops each write's logged preimage to stay in sync with
+                    // `MinimalExecutor::execute_syscall`'s `mw` calls -- the popped value itself
+                    // is unused since the new value is already known (`out`, a pure function of
+                    // `h`/`w`).
+                    self.next_oracle_value();
+                }
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SHA_EXTEND => {
+                for _ in 16..64u32 {
+                    let w_i_minus_15 = self.next_oracle_value();
+                    let w_i_minus_2 = self.next_oracle_value();
+                    let w_i_minus_16 = self.next_oracle_value();
+                    let w_i_minus_7 = self.next_oracle_value();
+                    let _w_i =
+                        sha256_extend_word(w_i_minus_15, w_i_minus_2, w_i_minus_16, w_i_minus_7);
+                    self.next_oracle_value(); // pops the write's logged preimage; see SHA_COMPRESS.
+                }
+                extra_cycles = 48;
+                None
+            }
             _ => None,
         };
 
         let a0 = a0_result.unwrap_or(syscall_id);
         self.set_reg(Register::V0, a0);
+        self.clk += u64::from(extra_cycles);
         Ok(next_pc)
     }
 }
@@ -1318,5 +1413,33 @@ mod tests {
         assert_eq!(core.registers(), minimal.registers(), "register mismatch at chunk boundary");
         assert_eq!(core.pc(), minimal.pc(), "pc mismatch at chunk boundary");
         assert_eq!(core.clk(), minimal.clk(), "clk mismatch at chunk boundary");
+    }
+
+    /// Known-answer test for `sha256_compress`/`sha256_extend_word`: hashes the empty message
+    /// (a single padded block) and checks the result against the standard SHA-256 digest of `""`.
+    /// The golden-comparison tests in `tracing.rs` only compare event *counts*, not computed
+    /// values, so this is the only check that the arithmetic itself is correct.
+    #[test]
+    fn sha256_compress_and_extend_word_match_known_answer_for_empty_message() {
+        let iv: [u32; 8] = [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+            0x5be0cd19,
+        ];
+        let mut block = [0u32; 16];
+        block[0] = 0x8000_0000; // padding: a single `1` bit, then zeros.
+        // `block[15]` (the 64-bit message length in bits) is already `0` for the empty message.
+
+        let mut w = [0u32; 64];
+        w[..16].copy_from_slice(&block);
+        for i in 16..64 {
+            w[i] = sha256_extend_word(w[i - 15], w[i - 2], w[i - 16], w[i - 7]);
+        }
+
+        let digest = sha256_compress(iv, &w);
+        let expected: [u32; 8] = [
+            0xe3b0c442, 0x98fc1c14, 0x9afbf4c8, 0x996fb924, 0x27ae41e4, 0x649b934c, 0xa495991b,
+            0x7852b855,
+        ];
+        assert_eq!(digest, expected, "SHA-256(\"\") mismatch");
     }
 }

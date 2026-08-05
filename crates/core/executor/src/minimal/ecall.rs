@@ -2,7 +2,7 @@
 //! vs. a documented no-op fallback.
 
 use super::MinimalExecutor;
-use crate::{register::Register, syscalls::SyscallCode, ExecutionError};
+use crate::{register::Register, syscalls::SyscallCode, vm, ExecutionError};
 use zkm_primitives::consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT};
 
 impl MinimalExecutor {
@@ -16,9 +16,7 @@ impl MinimalExecutor {
         let arg2 = self.reg(Register::A1);
 
         let mut next_pc = self.pc.wrapping_add(4);
-        // No syscall implemented here uses extra cycles yet -- kept as a named `0` rather than
-        // hardcoded inline so a future arm can set it without restructuring this function.
-        let extra_cycles = 0u32;
+        let mut extra_cycles = 0u32;
         let a0_result: Option<u32> = match code {
             SyscallCode::HALT => {
                 let exit_code = arg1;
@@ -75,6 +73,36 @@ impl MinimalExecutor {
                 }
                 self.set_reg(Register::A3, 0);
                 Some(v0)
+            }
+            SyscallCode::SHA_COMPRESS => {
+                let w_ptr = arg1;
+                let h_ptr = arg2;
+                let h: [u32; 8] = std::array::from_fn(|i| self.mr(h_ptr + i as u32 * 4));
+                let w: [u32; 64] = std::array::from_fn(|i| self.mr(w_ptr + i as u32 * 4));
+                let out = vm::sha256_compress(h, &w);
+                for (i, &v) in out.iter().enumerate() {
+                    self.mw(h_ptr + i as u32 * 4, v);
+                }
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SHA_EXTEND => {
+                let w_ptr = arg1;
+                for i in 16..64u32 {
+                    let w_i_minus_15 = self.mr(w_ptr + (i - 15) * 4);
+                    let w_i_minus_2 = self.mr(w_ptr + (i - 2) * 4);
+                    let w_i_minus_16 = self.mr(w_ptr + (i - 16) * 4);
+                    let w_i_minus_7 = self.mr(w_ptr + (i - 7) * 4);
+                    let w_i = vm::sha256_extend_word(
+                        w_i_minus_15,
+                        w_i_minus_2,
+                        w_i_minus_16,
+                        w_i_minus_7,
+                    );
+                    self.mw(w_ptr + i * 4, w_i);
+                }
+                extra_cycles = 48;
+                None
             }
             // Everything else (precompiles, other Linux shims, hints, unconstrained, VERIFY): a
             // documented no-op -- see the module doc on `minimal/mod.rs`.

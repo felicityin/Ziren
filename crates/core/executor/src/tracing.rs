@@ -21,13 +21,13 @@ use crate::{
     events::{
         AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, JumpEvent, MemInstrEvent,
         MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent,
-        SyscallEvent,
+        PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
     },
     opcode::Opcode,
     register::Register,
     syscalls::SyscallCode,
     trace::MinimalTrace,
-    vm::{CoreVM, CoreVMStatus},
+    vm::{sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus},
     ExecutionError, ExecutionRecord, Instruction, Program,
 };
 
@@ -105,9 +105,12 @@ impl<'a> TracingVM<'a> {
 
         self.record.last_next_pc = self.core.pc();
         self.record.last_instruction_clk = clk;
-        self.record.last_timestamp = clk + 5;
 
         self.core.advance_clk();
+        // Read back after `advance_clk` (rather than hardcoding `clk + 5`) since a `SYSCALL` with
+        // nonzero `num_extra_cycles` (e.g. SHA-256 compress/extend) already bumped `self.core`'s
+        // clk further inside `execute_syscall`.
+        self.record.last_timestamp = self.core.clk();
         Ok(())
     }
 
@@ -587,6 +590,7 @@ impl<'a> TracingVM<'a> {
         let arg2 = self.core.reg(Register::A1);
 
         let mut next_pc = pc.wrapping_add(4);
+        let mut extra_cycles = 0u32;
         let a0_result: Option<u32> = match code {
             SyscallCode::HALT => {
                 let exit_code = arg1;
@@ -631,11 +635,138 @@ impl<'a> TracingVM<'a> {
                 self.core.set_reg(Register::A3, 0);
                 Some(v0)
             }
+            SyscallCode::SHA_COMPRESS => {
+                let w_ptr = arg1;
+                let h_ptr = arg2;
+                let h: [u32; 8] = std::array::from_fn(|_| self.core.next_oracle_value());
+                let h_read_records: [MemoryReadRecord; 8] =
+                    h.map(|value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 });
+                let w: [u32; 64] = std::array::from_fn(|_| self.core.next_oracle_value());
+                let w_i_read_records: Vec<MemoryReadRecord> =
+                    w.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+                let out = sha256_compress(h, &w);
+                let h_write_records: [MemoryWriteRecord; 8] = std::array::from_fn(|i| {
+                    self.core.next_oracle_value(); // pops the write's logged preimage; unused --
+                                                    // `out[i]` is already known.
+                    MemoryWriteRecord { value: out[i], timestamp: clk, prev_value: 0, prev_timestamp: 0 }
+                });
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc,
+                        next_pc,
+                        clk,
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: 0,
+                            prev_timestamp: 0,
+                        },
+                        a_record_is_real: true,
+                        b_record: None,
+                        c_record: None,
+                        syscall_id,
+                        arg1,
+                        arg2,
+                    },
+                    PrecompileEvent::ShaCompress(ShaCompressEvent {
+                        shard: 0,
+                        clk,
+                        w_ptr,
+                        h_ptr,
+                        w: w.to_vec(),
+                        h,
+                        h_read_records,
+                        w_i_read_records,
+                        h_write_records,
+                        local_mem_access: Vec::new(),
+                    }),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::SHA_EXTEND => {
+                let w_ptr = arg1;
+                let mut w_i_minus_15_reads = Vec::with_capacity(48);
+                let mut w_i_minus_2_reads = Vec::with_capacity(48);
+                let mut w_i_minus_16_reads = Vec::with_capacity(48);
+                let mut w_i_minus_7_reads = Vec::with_capacity(48);
+                let mut w_i_writes = Vec::with_capacity(48);
+                for _ in 16..64u32 {
+                    let w_i_minus_15 = self.core.next_oracle_value();
+                    w_i_minus_15_reads.push(MemoryReadRecord {
+                        value: w_i_minus_15,
+                        timestamp: clk,
+                        prev_timestamp: 0,
+                    });
+                    let w_i_minus_2 = self.core.next_oracle_value();
+                    w_i_minus_2_reads.push(MemoryReadRecord {
+                        value: w_i_minus_2,
+                        timestamp: clk,
+                        prev_timestamp: 0,
+                    });
+                    let w_i_minus_16 = self.core.next_oracle_value();
+                    w_i_minus_16_reads.push(MemoryReadRecord {
+                        value: w_i_minus_16,
+                        timestamp: clk,
+                        prev_timestamp: 0,
+                    });
+                    let w_i_minus_7 = self.core.next_oracle_value();
+                    w_i_minus_7_reads.push(MemoryReadRecord {
+                        value: w_i_minus_7,
+                        timestamp: clk,
+                        prev_timestamp: 0,
+                    });
+                    let w_i =
+                        sha256_extend_word(w_i_minus_15, w_i_minus_2, w_i_minus_16, w_i_minus_7);
+                    self.core.next_oracle_value(); // pops the write's logged preimage; unused.
+                    w_i_writes.push(MemoryWriteRecord {
+                        value: w_i,
+                        timestamp: clk,
+                        prev_value: 0,
+                        prev_timestamp: 0,
+                    });
+                }
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc,
+                        next_pc,
+                        clk,
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: 0,
+                            prev_timestamp: 0,
+                        },
+                        a_record_is_real: true,
+                        b_record: None,
+                        c_record: None,
+                        syscall_id,
+                        arg1,
+                        arg2,
+                    },
+                    PrecompileEvent::ShaExtend(ShaExtendEvent {
+                        shard: 0,
+                        clk,
+                        w_ptr,
+                        w_i_minus_15_reads,
+                        w_i_minus_2_reads,
+                        w_i_minus_16_reads,
+                        w_i_minus_7_reads,
+                        w_i_writes,
+                        local_mem_access: Vec::new(),
+                    }),
+                );
+                extra_cycles = 48;
+                None
+            }
             _ => None,
         };
 
         let a0 = a0_result.unwrap_or(syscall_id);
         self.core.set_reg(Register::V0, a0);
+        self.core.advance_clk_extra(extra_cycles);
         self.record.syscall_events.push(SyscallEvent {
             pc,
             next_pc,
@@ -663,7 +794,10 @@ mod tests {
     use crate::{
         golden::run_golden,
         minimal::MinimalExecutor,
-        programs::tests::{fibonacci_program, halt_only_program, hello_world_program, simple_program},
+        programs::tests::{
+            fibonacci_program, halt_only_program, hello_world_program, sha_compress_program,
+            sha_extend_program, simple_program,
+        },
         register::NUM_REGISTERS,
     };
     use std::collections::BTreeMap;
@@ -729,5 +863,15 @@ mod tests {
     #[test]
     fn matches_golden_hello_world_real_elf() {
         assert_matches_golden(hello_world_program, "hello_world_program");
+    }
+
+    #[test]
+    fn matches_golden_sha_extend_real_elf() {
+        assert_matches_golden(sha_extend_program, "sha_extend_program");
+    }
+
+    #[test]
+    fn matches_golden_sha_compress_real_elf() {
+        assert_matches_golden(sha_compress_program, "sha_compress_program");
     }
 }
