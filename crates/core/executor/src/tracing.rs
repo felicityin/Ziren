@@ -23,8 +23,8 @@ use crate::{
         EllipticCurveAddEvent, EllipticCurveDecompressEvent, EllipticCurveDoubleEvent,
         FieldOperation, Fp2AddSubEvent, Fp2MulEvent, FpOpEvent, JumpEvent, KeccakSpongeEvent,
         MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
-        MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
-        U256xU2048MulEvent, Uint256MulEvent,
+        MovCondEvent, Poseidon2PermuteEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent,
+        SyscallEvent, U256xU2048MulEvent, Uint256MulEvent,
     },
     opcode::Opcode,
     register::Register,
@@ -33,8 +33,9 @@ use crate::{
     vm::{
         ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, ed25519_decompress,
         fp2_addsub, fp2_mul, fp2_num_words, fp_num_words, fp_op, keccak_xor_block, keccakf,
-        sha256_compress, sha256_extend_word, u256xu2048_mul, uint256_mul, CoreVM, CoreVMStatus,
-        KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
+        poseidon2_permute, sha256_compress, sha256_extend_word, u256xu2048_mul, uint256_mul,
+        CoreVM, CoreVMStatus, KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S,
+        KECCAK_STATE_SIZE_U64S, POSEIDON2_STATE_SIZE,
         U2048_NUM_WORDS, U256_NUM_WORDS,
     },
     ExecutionError, ExecutionRecord, Instruction, Program,
@@ -855,6 +856,27 @@ impl<'a> TracingVM<'a> {
         }
     }
 
+    /// Builds a `Poseidon2PermuteEvent`: pops the state's write-preimage (the value actually
+    /// needed as an input).
+    fn poseidon2_permute_event(&mut self, clk: u64, state_ptr: u32) -> Poseidon2PermuteEvent {
+        let pre_state: [u32; POSEIDON2_STATE_SIZE] =
+            self.core.next_oracle_values(POSEIDON2_STATE_SIZE).try_into().unwrap();
+        let post_state = poseidon2_permute(pre_state);
+        let state_records: Vec<MemoryWriteRecord> = post_state
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        Poseidon2PermuteEvent {
+            shard: 0,
+            clk,
+            pre_state,
+            post_state,
+            state_records,
+            state_addr: state_ptr,
+            local_mem_access: Vec::new(),
+        }
+    }
+
     /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
@@ -1452,6 +1474,21 @@ impl<'a> TracingVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::POSEIDON2_PERMUTE => {
+                let event = self.poseidon2_permute_event(clk, arg1);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Poseidon2Permute(event),
+                );
+                None
+            }
             _ => None,
         };
 
@@ -1490,9 +1527,10 @@ mod tests {
             bls12381_fp2_mul_program, bls12381_fp_program, bn254_add_program, bn254_double_program,
             bn254_fp2_addsub_program, bn254_fp2_mul_program, bn254_fp_program, ed_add_program,
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
-            secp256k1_add_program, secp256k1_double_program, secp256r1_add_program,
-            secp256r1_double_program, sha_compress_program, sha_extend_program, simple_program,
-            ssz_withdrawals_program, u256xu2048_mul_program, uint256_mul_program,
+            poseidon2_permute_program, secp256k1_add_program, secp256k1_double_program,
+            secp256r1_add_program, secp256r1_double_program, sha_compress_program,
+            sha_extend_program, simple_program, ssz_withdrawals_program, u256xu2048_mul_program,
+            uint256_mul_program,
         },
         register::NUM_REGISTERS,
     };
@@ -1672,5 +1710,10 @@ mod tests {
     #[test]
     fn matches_golden_u256xu2048_mul_real_elf() {
         assert_matches_golden(u256xu2048_mul_program, "u256xu2048_mul_program");
+    }
+
+    #[test]
+    fn matches_golden_poseidon2_permute_real_elf() {
+        assert_matches_golden(poseidon2_permute_program, "poseidon2_permute_program");
     }
 }

@@ -129,6 +129,14 @@ impl MinimalExecutor {
         self.mw_slice(hi_ptr, &hi);
     }
 
+    /// Permutes the 16-word Poseidon2 state at `state_ptr` in place.
+    fn poseidon2_permute_dispatch(&mut self, state_ptr: u32) {
+        let pre_state: [u32; vm::POSEIDON2_STATE_SIZE] =
+            self.slice_peek(state_ptr, vm::POSEIDON2_STATE_SIZE).try_into().unwrap();
+        let post_state = vm::poseidon2_permute(pre_state);
+        self.mw_slice(state_ptr, &post_state);
+    }
+
     /// Executes the `SYSCALL` at the current `pc`. Returns `next_pc` (the value the caller must
     /// still add 4 to for `next_next_pc`, mirroring `SyscallContext::next_pc`'s default of
     /// `self.pc.wrapping_add(4)` and `HaltSyscall`'s override to `0`).
@@ -379,6 +387,10 @@ impl MinimalExecutor {
             SyscallCode::U256XU2048_MUL => {
                 self.u256xu2048_mul_dispatch(arg1, arg2);
                 extra_cycles = 1;
+                None
+            }
+            SyscallCode::POSEIDON2_PERMUTE => {
+                self.poseidon2_permute_dispatch(arg1);
                 None
             }
             // Everything else (precompiles, other Linux shims, hints, unconstrained, VERIFY): a

@@ -30,6 +30,9 @@ use crate::{
     ExecutionError, Instruction, Program, CORE_SHARD_CLK_LIMIT,
 };
 use num::{BigUint, Integer};
+use p3_field::{FieldAlgebra, PrimeField32};
+use p3_koala_bear::KoalaBear;
+use p3_symmetric::Permutation;
 use typenum::Unsigned;
 use zkm_curves::{
     curve25519_dalek::CompressedEdwardsY,
@@ -48,7 +51,10 @@ use zkm_curves::{
     AffinePoint, CurveError, CurveType, EllipticCurve, COMPRESSED_POINT_BYTES,
     NUM_BYTES_FIELD_ELEMENT,
 };
-use zkm_primitives::consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT};
+use zkm_primitives::{
+    consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT},
+    poseidon2_init,
+};
 
 use crate::events::FieldOperation;
 
@@ -574,6 +580,21 @@ pub(crate) fn u256xu2048_mul(
     let hi_words = zkm_primitives::consts::bytes_to_words_le::<U256_NUM_WORDS>(&hi_bytes);
 
     (lo_words, hi_words)
+}
+
+/// Number of `KoalaBear` field elements in a Poseidon2 permutation state.
+pub(crate) const POSEIDON2_STATE_SIZE: usize = 16;
+
+/// Poseidon2 permutation over the `KoalaBear` field -- mirrors `Poseidon2PermuteSyscall::execute`'s
+/// compute step (`syscalls/precompiles/poseidon2/permute.rs`) exactly, split from the memory
+/// accesses that gather `pre_state`.
+pub(crate) fn poseidon2_permute(
+    pre_state: [u32; POSEIDON2_STATE_SIZE],
+) -> [u32; POSEIDON2_STATE_SIZE] {
+    let mut state = pre_state.map(KoalaBear::from_canonical_u32);
+    let hasher = poseidon2_init();
+    hasher.permute_mut(&mut state);
+    state.map(|x| x.as_canonical_u32())
 }
 
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
@@ -1303,6 +1324,10 @@ impl<'a> CoreVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::POSEIDON2_PERMUTE => {
+                self.poseidon2_permute_replay();
+                None
+            }
             _ => None,
         };
 
@@ -1405,6 +1430,14 @@ impl<'a> CoreVM<'a> {
         for _ in &hi {
             self.next_oracle_value();
         }
+    }
+
+    /// Replays a `poseidon2_permute`: pops the state's write-preimage (the value actually needed
+    /// as an input).
+    fn poseidon2_permute_replay(&mut self) {
+        let pre_state: [u32; POSEIDON2_STATE_SIZE] =
+            self.next_oracle_values(POSEIDON2_STATE_SIZE).try_into().unwrap();
+        poseidon2_permute(pre_state);
     }
 }
 

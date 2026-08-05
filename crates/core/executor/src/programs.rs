@@ -10,9 +10,9 @@ pub mod tests {
         BLS12381_FP2_MUL_ELF, BLS12381_FP_ELF, BN254_ADD_ELF, BN254_DOUBLE_ELF,
         BN254_FP2_ADDSUB_ELF, BN254_FP2_MUL_ELF, BN254_FP_ELF, ED_ADD_ELF, ED_DECOMPRESS_ELF,
         FIBONACCI_ELF, HELLO_WORLD_ELF, KECCAK_SPONGE_ELF, MAX_MEMORY_ELF, PANIC_ELF,
-        SECP256K1_ADD_ELF, SECP256K1_DECOMPRESS_ELF, SECP256K1_DOUBLE_ELF, SECP256R1_ADD_ELF,
-        SECP256R1_DECOMPRESS_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF, SHA_COMPRESS_ELF,
-        SHA_EXTEND_ELF, U256XU2048_MUL_ELF, UINT256_MUL_ELF, UNCONSTRAINED_ELF,
+        POSEIDON2_PERMUTE_ELF, SECP256K1_ADD_ELF, SECP256K1_DECOMPRESS_ELF, SECP256K1_DOUBLE_ELF,
+        SECP256R1_ADD_ELF, SECP256R1_DECOMPRESS_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF,
+        SHA_COMPRESS_ELF, SHA_EXTEND_ELF, U256XU2048_MUL_ELF, UINT256_MUL_ELF, UNCONSTRAINED_ELF,
     };
 
     #[must_use]
@@ -306,6 +306,16 @@ pub mod tests {
     #[must_use]
     pub fn uint256_mul_program() -> Program {
         Program::from(UINT256_MUL_ELF).unwrap()
+    }
+
+    /// Get the poseidon2 permute program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn poseidon2_permute_program() -> Program {
+        Program::from(POSEIDON2_PERMUTE_ELF).unwrap()
     }
 
     /// Get the SSZ withdrawals program.
