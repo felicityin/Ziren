@@ -79,10 +79,11 @@ impl<'a> TracingVM<'a> {
         trace: &'a T,
         program: Arc<Program>,
         max_syscall_cycles: u32,
+        stdin: Arc<[Vec<u8>]>,
         record: &'a mut ExecutionRecord,
     ) -> Self {
         Self {
-            core: CoreVM::new(trace, program, max_syscall_cycles),
+            core: CoreVM::new(trace, program, max_syscall_cycles, stdin),
             record,
             local_memory_access: std::collections::HashMap::new(),
         }
@@ -2295,6 +2296,15 @@ impl<'a> TracingVM<'a> {
                 );
                 None
             }
+            // See `CoreVM::hint_len`/`CoreVM::advance_input_stream_ptr`'s doc comments: neither
+            // arm pops any oracle entries or touches RAM directly -- `SYSHINTREAD`'s seeding of
+            // `MinimalExecutor::hint_seed` only ever materializes into the oracle log the moment a
+            // real load/store first touches that address, exactly like every other RAM preimage.
+            SyscallCode::SYSHINTLEN => Some(self.core.hint_len()?),
+            SyscallCode::SYSHINTREAD => {
+                self.core.advance_input_stream_ptr()?;
+                None
+            }
             SyscallCode::SYS_BRK => {
                 let initial_brk = self
                     .core
@@ -2672,17 +2682,17 @@ fn sign_extend<const BITS: u32>(value: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::{
-        golden::run_golden,
+        golden::{run_golden, run_golden_with_stdin},
         minimal::MinimalExecutor,
         programs::tests::{
             bls12381_add_program, bls12381_double_program, bls12381_fp2_addsub_program,
             bls12381_fp2_mul_program, bls12381_fp_program, bn254_add_program, bn254_double_program,
             bn254_fp2_addsub_program, bn254_fp2_mul_program, bn254_fp_program, ed_add_program,
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
-            poseidon2_permute_program, secp256k1_add_program, secp256k1_double_program,
-            secp256r1_add_program, secp256r1_double_program, sha_compress_program,
-            sha_extend_program, simple_memory_program, simple_program, ssz_withdrawals_program,
-            u256xu2048_mul_program, uint256_mul_program,
+            hint_read_program, poseidon2_permute_program, secp256k1_add_program,
+            secp256k1_double_program, secp256r1_add_program, secp256r1_double_program,
+            sha_compress_program, sha_extend_program, simple_memory_program, simple_program,
+            ssz_withdrawals_program, u256xu2048_mul_program, uint256_mul_program,
         },
         register::NUM_REGISTERS,
     };
@@ -2707,13 +2717,20 @@ mod tests {
     ];
 
     fn run_tracing(program: Program) -> (BTreeMap<String, usize>, [u32; NUM_REGISTERS], u32, u64) {
+        run_tracing_with_stdin(program, Arc::from([]))
+    }
+
+    fn run_tracing_with_stdin(
+        program: Program,
+        stdin: Arc<[Vec<u8>]>,
+    ) -> (BTreeMap<String, usize>, [u32; NUM_REGISTERS], u32, u64) {
         let program = Arc::new(program);
-        let mut minimal = MinimalExecutor::new(program.clone(), u64::MAX / 2);
+        let mut minimal = MinimalExecutor::new_with_stdin(program.clone(), u64::MAX / 2, stdin.clone());
         let chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        let mut tracing = TracingVM::new(&chunk, program, max_syscall_cycles, stdin, &mut record);
         let status = tracing.execute().unwrap();
         assert_eq!(status, CoreVMStatus::Done, "expected the whole run to fit in one shard");
         let (registers, pc, clk) = (tracing.registers(), tracing.pc(), tracing.clk());
@@ -2750,6 +2767,35 @@ mod tests {
     #[test]
     fn matches_golden_simple_memory_program() {
         assert_matches_golden(simple_memory_program, "simple_memory_program");
+    }
+
+    /// Differential coverage for `HINT_LEN`/`HINT_READ`: `hint_read_program` reads its one stdin
+    /// entry's length, then both its words, forcing them to materialize into real memory via `LW`
+    /// -- exercises `MinimalExecutor::hint_seed` seeding, `CoreVM`/`TracingVM`'s
+    /// `SYSHINTLEN`/`SYSHINTREAD` replay arms, and the shard-boundary `input_stream_ptr` carry, all
+    /// against the legacy `Executor`'s own `HintLenSyscall`/`HintReadSyscall`.
+    #[test]
+    fn matches_golden_hint_read_program() {
+        let stdin: Arc<[Vec<u8>]> = Arc::from([vec![1, 2, 3, 4, 5, 6, 7, 8]]);
+        let golden = run_golden_with_stdin(hint_read_program(), &stdin);
+        let (mut counts, registers, pc, clk) = run_tracing_with_stdin(hint_read_program(), stdin);
+
+        let mut golden_counts = golden.event_counts;
+        for field in DEFERRED_FIELDS {
+            golden_counts.remove(*field);
+            counts.remove(*field);
+        }
+        assert_eq!(counts, golden_counts, "hint_read_program: event counts mismatch");
+        assert_eq!(registers, golden.final_registers, "hint_read_program: final registers mismatch");
+        assert_eq!(pc, golden.final_pc, "hint_read_program: final pc mismatch");
+        assert_eq!(clk, golden.final_clk, "hint_read_program: final clk mismatch");
+        // `T0`/`T1`/`T2` (registers 8/9/10) hold `SYSHINTLEN`'s return value and the two hinted
+        // words read back via real `LW`s -- pinned to known values so a bug that happened to
+        // produce identical *counts* (e.g. reading the wrong bytes but the same byte count)
+        // wouldn't silently pass.
+        assert_eq!(registers[8], 8, "hint_read_program: SYSHINTLEN should return the 8-byte stdin entry's length");
+        assert_eq!(registers[9], u32::from_le_bytes([1, 2, 3, 4]), "hint_read_program: first hinted word");
+        assert_eq!(registers[10], u32::from_le_bytes([5, 6, 7, 8]), "hint_read_program: second hinted word");
     }
 
     #[test]
@@ -2930,7 +2976,7 @@ mod tests {
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         assert_eq!(record.add_events.len(), 1, "only the 3rd (register-register) ADD isn't Addi");
@@ -2994,7 +3040,7 @@ mod tests {
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         let by_addr: BTreeMap<u32, MemoryLocalEvent> =
@@ -3053,7 +3099,7 @@ mod tests {
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         assert_eq!(record.add_events.len(), 2, "instructions 2 and 3 are both register-register ADD");
@@ -3167,7 +3213,7 @@ mod tests {
 
         let max_syscall_cycles = minimal.max_syscall_cycles();
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         assert_eq!(

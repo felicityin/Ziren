@@ -705,6 +705,12 @@ pub(crate) struct CoreVM<'a> {
     max_syscall_cycles: u32,
     mem_reads: MemReads<'a>,
     program: Arc<Program>,
+    /// `ZKMStdin`'s buffer -- see `MinimalExecutor::stdin`'s doc comment. Whole-run constant;
+    /// threaded down here (like `program`) so `SYSHINTLEN`'s replay can independently recompute
+    /// its own return value from the same live `input_stream_ptr`, without any oracle pop.
+    stdin: Arc<[Vec<u8>]>,
+    /// Live cursor into `stdin` -- see `MinimalExecutor::input_stream_ptr`'s doc comment.
+    input_stream_ptr: usize,
 }
 
 /// The result of replaying up to a chunk/shard boundary. `TraceEnd` mirrors SP1's `CycleResult`:
@@ -724,6 +730,7 @@ impl<'a> CoreVM<'a> {
         trace: &'a T,
         program: Arc<Program>,
         max_syscall_cycles: u32,
+        stdin: Arc<[Vec<u8>]>,
     ) -> Self {
         let pc = trace.pc_start();
         Self {
@@ -741,6 +748,8 @@ impl<'a> CoreVM<'a> {
             max_syscall_cycles,
             mem_reads: trace.mem_reads(),
             program,
+            stdin,
+            input_stream_ptr: trace.start_input_stream_ptr(),
         }
     }
 
@@ -777,6 +786,34 @@ impl<'a> CoreVM<'a> {
     #[must_use]
     pub(crate) fn program(&self) -> &Arc<Program> {
         &self.program
+    }
+
+    /// Current cursor into `stdin` -- see `MinimalExecutor::input_stream_ptr`'s doc comment.
+    /// `SplicingVM` snapshots this at each shard boundary alongside `pc()`/`clk()`.
+    #[must_use]
+    pub(crate) fn input_stream_ptr(&self) -> usize {
+        self.input_stream_ptr
+    }
+
+    /// `SYSHINTLEN`'s replay: the current `stdin` entry's length, independently recomputed from
+    /// the live `input_stream_ptr` cursor rather than an oracle pop (see the `stdin` field's doc
+    /// comment). Shared by `CoreVM`'s own `execute_syscall` and `TracingVM`'s, since `stdin`/
+    /// `input_stream_ptr` are private to this module.
+    pub(crate) fn hint_len(&self) -> Result<u32, ExecutionError> {
+        if self.input_stream_ptr >= self.stdin.len() {
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        Ok(self.stdin[self.input_stream_ptr].len() as u32)
+    }
+
+    /// `SYSHINTREAD`'s replay: advances the `input_stream_ptr` cursor. Never touches RAM itself --
+    /// see the `SYSHINTLEN`/`SYSHINTREAD` match arms' doc comment in `execute_syscall` for why.
+    pub(crate) fn advance_input_stream_ptr(&mut self) -> Result<(), ExecutionError> {
+        if self.input_stream_ptr >= self.stdin.len() {
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        self.input_stream_ptr += 1;
+        Ok(())
     }
 
     /// Peeks a register's live value without any oracle interaction (registers are never
@@ -1455,6 +1492,19 @@ impl<'a> CoreVM<'a> {
                 self.poseidon2_permute_replay();
                 None
             }
+            // Neither arm pops any oracle entries: `input_stream_ptr` is carried state (see
+            // `MinimalTrace::start_input_stream_ptr`'s doc comment), not oracle-logged, and
+            // `SYSHINTREAD`'s own side effect (seeding `MinimalExecutor::hint_seed`) never
+            // produces oracle data of its own -- it only ever materializes into the *existing*
+            // per-address oracle log the moment a real load/store first touches that address,
+            // exactly like every other RAM preimage. `CoreVM` has no backing RAM to replay that
+            // seeding against directly, so there is nothing more to do here than advance the
+            // cursor, matching `MinimalExecutor::hint_read_dispatch`'s own bookkeeping.
+            SyscallCode::SYSHINTLEN => Some(self.hint_len()?),
+            SyscallCode::SYSHINTREAD => {
+                self.advance_input_stream_ptr()?;
+                None
+            }
             SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
                 let size = align_size(arg2)?;
                 let v0 = if arg1 == 0 {
@@ -2078,7 +2128,7 @@ mod tests {
         );
 
         let max_syscall_cycles = minimal.max_syscall_cycles();
-        let mut core = CoreVM::new(&chunk, Arc::new(program()), max_syscall_cycles);
+        let mut core = CoreVM::new(&chunk, Arc::new(program()), max_syscall_cycles, Arc::from([]));
         let status = core.execute().unwrap();
         assert_eq!(status, CoreVMStatus::Done, "{name}: CoreVM should reach real completion");
         assert_eq!(core.registers(), minimal.registers(), "{name}: register mismatch");
@@ -2114,8 +2164,12 @@ mod tests {
         let mut minimal = MinimalExecutor::new(Arc::new(fibonacci_program()), 4);
         let chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
 
-        let mut core =
-            CoreVM::new(&chunk, Arc::new(fibonacci_program()), minimal.max_syscall_cycles());
+        let mut core = CoreVM::new(
+            &chunk,
+            Arc::new(fibonacci_program()),
+            minimal.max_syscall_cycles(),
+            Arc::from([]),
+        );
         let status = core.execute().unwrap();
         assert_eq!(status, CoreVMStatus::TraceEnd, "expected a mid-program cutoff, not real completion");
         assert_eq!(core.registers(), minimal.registers(), "register mismatch at chunk boundary");

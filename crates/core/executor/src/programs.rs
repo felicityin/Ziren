@@ -38,6 +38,39 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A synthetic (non-ELF) program exercising `HINT_LEN`/`HINT_READ`: reads the first `stdin`
+    /// entry's length via `SYSHINTLEN`, then its two words via `SYSHINTREAD` followed by real
+    /// `LW`s (forcing the hinted values to materialize into real memory touches, not just
+    /// `hint_seed`), before halting. Callers must feed a single 8-byte `stdin` entry.
+    #[must_use]
+    #[allow(clippy::unreadable_literal)]
+    pub fn hint_read_program() -> Program {
+        use crate::syscalls::SyscallCode;
+
+        const PTR: u32 = 0x27654320;
+        let instructions = vec![
+            // t0 (reg 8) = SYSHINTLEN() -- the stdin entry's length.
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::SYSHINTLEN as u32, false, true),
+            Instruction::new(Opcode::ADD, 4, 0, 0, false, true),
+            Instruction::new(Opcode::ADD, 5, 0, 0, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+            Instruction::new(Opcode::ADD, 8, 2, 0, false, true),
+            // SYSHINTREAD(PTR, t0) -- seeds hint_seed[PTR..PTR+len).
+            Instruction::new(Opcode::ADD, 4, 0, PTR, false, true),
+            Instruction::new(Opcode::ADD, 5, 8, 0, false, true),
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::SYSHINTREAD as u32, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+            // Real loads to force both hinted words to materialize into memory.
+            Instruction::new(Opcode::LW, 9, 0, PTR, false, true),
+            Instruction::new(Opcode::LW, 10, 0, PTR + 4, false, true),
+            // HALT.
+            Instruction::new(Opcode::ADD, 2, 0, 0, false, true),
+            Instruction::new(Opcode::ADD, 4, 0, 0, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+        ];
+        Program::new(instructions, 0, 0)
+    }
+
     /// Get the fibonacci program.
     ///
     /// # Panics

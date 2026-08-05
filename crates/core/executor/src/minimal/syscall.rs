@@ -134,6 +134,39 @@ impl MinimalExecutor {
         self.mw_slice(hi_ptr, &hi);
     }
 
+    /// Pops the front `stdin` entry (`input_stream_ptr += 1`) and seeds `hint_seed` word-by-word
+    /// for the guest's `ptr..ptr+len` range, right-padding a short final chunk with zero bytes.
+    /// Mirrors `syscalls::hint::HintReadSyscall::execute` exactly, including its error cases
+    /// (stream exhausted, called while unconstrained, `len` mismatch/misalignment, or an address
+    /// already seeded by an earlier `HINT_READ` that hasn't been consumed by a real touch yet --
+    /// see `Self::hint_seed`'s doc comment on why the *other* direction, re-seeding an address a
+    /// real instruction already touched, is silently allowed).
+    fn hint_read_dispatch(&mut self, ptr: u32, len: u32) -> Result<(), ExecutionError> {
+        if self.input_stream_ptr >= self.stdin.len() {
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        let vec = self.stdin[self.input_stream_ptr].clone();
+        self.input_stream_ptr += 1;
+        if self.unconstrained {
+            return Err(ExecutionError::ExceptionOrTrap());
+        }
+        if vec.len() as u32 != len || !ptr.is_multiple_of(4) {
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        for i in (0..len).step_by(4) {
+            let b1 = vec[i as usize];
+            let b2 = vec.get(i as usize + 1).copied().unwrap_or(0);
+            let b3 = vec.get(i as usize + 2).copied().unwrap_or(0);
+            let b4 = vec.get(i as usize + 3).copied().unwrap_or(0);
+            let word = u32::from_le_bytes([b1, b2, b3, b4]);
+            if self.hint_seed.contains_key(&(ptr + i)) {
+                return Err(ExecutionError::InvalidSyscallArgs());
+            }
+            self.hint_seed.insert(ptr + i, word);
+        }
+        Ok(())
+    }
+
     /// Permutes the 16-word Poseidon2 state at `state_ptr` in place.
     fn poseidon2_permute_dispatch(&mut self, state_ptr: u32) {
         let pre_state: [u32; vm::POSEIDON2_STATE_SIZE] =
@@ -196,7 +229,10 @@ impl MinimalExecutor {
                     // print-on-newline machinery (`write.rs::update_io_buf`) -- affects only
                     // console output, not executor state.
                 } else if fd == FD_HINT {
-                    // Hint-stream plumbing (`HINT_READ`/`HINT_LEN`) not implemented yet.
+                    // A hint *computed* inside `unconstrained!{}` (`hint()`/`hint_slice()`, or a
+                    // hook fd) and appended to `input_stream` here for a later `HINT_READ` to pop
+                    // -- not implemented yet, unlike the plain-`ZKMStdin`-sourced case `HINT_LEN`/
+                    // `HINT_READ` handle for real (see `hint_read_dispatch`'s doc comment).
                 }
                 None
             }
@@ -387,6 +423,16 @@ impl MinimalExecutor {
                 self.poseidon2_permute_dispatch(arg1);
                 None
             }
+            SyscallCode::SYSHINTLEN => {
+                if self.input_stream_ptr >= self.stdin.len() {
+                    return Err(ExecutionError::InvalidSyscallArgs());
+                }
+                Some(self.stdin[self.input_stream_ptr].len() as u32)
+            }
+            SyscallCode::SYSHINTREAD => {
+                self.hint_read_dispatch(arg1, arg2)?;
+                None
+            }
             SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
                 let size = vm::align_size(arg2)?;
                 let v0 = if arg1 == 0 {
@@ -454,8 +500,8 @@ impl MinimalExecutor {
                 next_pc = self.exit_unconstrained();
                 Some(0)
             }
-            // Everything else (precompiles, hints, VERIFY): a documented no-op -- see the module
-            // doc on `minimal/mod.rs`.
+            // Everything else (VERIFY): a documented no-op -- see the module doc on
+            // `minimal/mod.rs`.
             _ => None,
         };
 

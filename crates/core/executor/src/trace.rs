@@ -75,6 +75,11 @@ pub(crate) trait MinimalTrace: Clone + Send + Sync + 'static {
     fn pc_start(&self) -> u32;
     /// The `clk` to begin replay at.
     fn clk_start(&self) -> u64;
+    /// The cursor into `stdin` (`MinimalExecutor::input_stream_ptr`/`CoreVM`'s own field of the
+    /// same name) to begin replay at -- carried across chunk/shard boundaries exactly like
+    /// `pc_start`/`clk_start`, since `stdin` itself is whole-run constant but which entry is
+    /// "next" is live, mutating state.
+    fn start_input_stream_ptr(&self) -> usize;
     /// The `clk` replay must stop at (either the chunk's buffer-size cutoff or program halt).
     fn clk_end(&self) -> u64;
     /// Total number of oracle-log entries.
@@ -98,6 +103,7 @@ pub(crate) struct TraceChunk {
     pub pc_start: u32,
     pub clk_start: u64,
     pub clk_end: u64,
+    pub start_input_stream_ptr: usize,
     pub mem_reads: Arc<[MemValue]>,
 }
 
@@ -116,6 +122,10 @@ impl MinimalTrace for TraceChunk {
 
     fn clk_start(&self) -> u64 {
         self.clk_start
+    }
+
+    fn start_input_stream_ptr(&self) -> usize {
+        self.start_input_stream_ptr
     }
 
     fn clk_end(&self) -> u64 {

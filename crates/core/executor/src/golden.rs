@@ -50,7 +50,19 @@ pub(crate) struct GoldenSnapshot {
 /// Panics if the program fails to execute (this is a test-only reference harness; a failing
 /// golden-reference run is itself a bug worth stopping on immediately).
 pub(crate) fn run_golden(program: Program) -> GoldenSnapshot {
+    run_golden_with_stdin(program, &[])
+}
+
+/// Like [`run_golden`], but seeds the legacy `Executor`'s `input_stream` first -- for programs
+/// that read via `HINT_LEN`/`HINT_READ`.
+///
+/// # Panics
+///
+/// Panics if the program fails to execute (this is a test-only reference harness; a failing
+/// golden-reference run is itself a bug worth stopping on immediately).
+pub(crate) fn run_golden_with_stdin(program: Program, stdin: &[Vec<u8>]) -> GoldenSnapshot {
     let mut runtime = Executor::new(program, ZKMCoreOpts::default());
+    runtime.write_vecs(stdin);
     runtime.run().expect("golden-reference Executor run failed");
     snapshot(&mut runtime)
 }

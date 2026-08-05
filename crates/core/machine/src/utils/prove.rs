@@ -76,13 +76,13 @@ pub fn prove_with_context(
     (Vec<ZkmShardProof>, Vec<u8>, u64, zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext>),
     ZKMCoreProverError,
 > {
-    // `MinimalExecutor` doesn't read stdin or verify subproofs yet, and doesn't support a hook
-    // registry, a cycle cap, or a non-default subproof verifier -- only the defaults are
-    // supported for now.
+    // `MinimalExecutor` reads plain `stdin.buffer` entries via `HINT_LEN`/`HINT_READ`, but doesn't
+    // yet verify subproofs -- only an empty `stdin.proofs` is supported for now.
     assert!(
-        stdin.buffer.is_empty() && stdin.proofs.is_empty(),
-        "prove_with_context: non-empty ZKMStdin is not yet supported"
+        stdin.proofs.is_empty(),
+        "prove_with_context: ZKMStdin.proofs is not yet supported"
     );
+    let stdin_buffer: Arc<[Vec<u8>]> = Arc::from(stdin.buffer.clone());
     assert!(
         context.hook_registry.is_none()
             && context.subproof_verifier.is_none()
@@ -144,13 +144,17 @@ pub fn prove_with_context(
             Option<(Vec<MemoryInitializeFinalizeEvent>, Vec<MemoryInitializeFinalizeEvent>)>,
         )>(opts.checkpoints_channel_capacity);
         let checkpoint_generator_program = program_arc.clone();
+        let checkpoint_generator_stdin = stdin_buffer.clone();
         let checkpoint_generator_handle: ScopedJoinHandle<
             Result<(Vec<u8>, ExecutionReport), ZKMCoreProverError>,
         > = s.spawn(move || {
             let _span = checkpoint_generator_span.enter();
             tracing::debug_span!("checkpoint generator").in_scope(|| {
-                let mut driver =
-                    ShardDriver::new(checkpoint_generator_program.clone(), max_trace_size);
+                let mut driver = ShardDriver::new_with_stdin(
+                    checkpoint_generator_program.clone(),
+                    max_trace_size,
+                    checkpoint_generator_stdin,
+                );
                 let mut index = 0;
                 loop {
                     // Enter the span.
@@ -235,6 +239,7 @@ pub fn prove_with_context(
             let deferred = Arc::clone(&deferred);
             let shard_sequence = Arc::clone(&p2_shard_sequence);
             let program = program_arc.clone();
+            let stdin_buffer = stdin_buffer.clone();
             let shard_prover = Arc::clone(&shard_prover);
             let machine = shard_prover.machine().clone();
             let pk = Arc::clone(&pk);
@@ -264,7 +269,14 @@ pub fn prove_with_context(
                         {
                             // Trace the shard and reconstruct the execution records.
                             let mut record = tracing::debug_span!("trace checkpoint")
-                                .in_scope(|| trace_shard(program.clone(), &spliced, max_syscall_cycles))
+                                .in_scope(|| {
+                                    trace_shard(
+                                        program.clone(),
+                                        &spliced,
+                                        max_syscall_cycles,
+                                        stdin_buffer.clone(),
+                                    )
+                                })
                                 .map_err(ZKMCoreProverError::ExecutionError)?;
                             if let Some((initialize_events, finalize_events)) = global_memory_events {
                                 record.global_memory_initialize_events = initialize_events;
@@ -867,7 +879,9 @@ mod tests {
         loop {
             let (spliced, done) =
                 next_shard(&mut driver, program.clone(), element_threshold, height_threshold).unwrap();
-            let mut record = trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+            let mut record =
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles(), Arc::from([]))
+                    .unwrap();
             if done {
                 let (init, fin) = driver.global_memory_events();
                 record.global_memory_initialize_events = init;

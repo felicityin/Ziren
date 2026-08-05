@@ -9,10 +9,12 @@
 //!
 //! The full ISA (every opcode family covered by the pure-compute functions in `crate::vm`) is
 //! implemented for real. Most syscalls are too: `HALT`, `WRITE`'s `FD_PUBLIC_VALUES` case, every
-//! precompile, the Linux syscall shims, and `ENTER_UNCONSTRAINED`/`EXIT_UNCONSTRAINED` (see
-//! `Self::enter_unconstrained`'s doc comment) are all real. `HINT_READ`/`HINT_LEN` remain a
-//! documented no-op fallback (`a0 = syscall_id`, no side effects) for now. Extend the dispatch in
-//! [`syscall`] as needed.
+//! precompile, the Linux syscall shims, `ENTER_UNCONSTRAINED`/`EXIT_UNCONSTRAINED` (see
+//! `Self::enter_unconstrained`'s doc comment), and `HINT_LEN`/`HINT_READ` (reading from
+//! `ZKMStdin`'s buffer, see `Self::hint_seed`'s doc comment) are all real. A hint computed
+//! *inside* an `unconstrained!{}` block via `hint()`/`hint_slice()` (or a hook fd) is not yet
+//! supported -- `WRITE`'s `FD_HINT` case remains a documented no-op (see `syscall.rs`). Extend
+//! the dispatch in [`syscall`] as needed.
 
 #![allow(dead_code)]
 
@@ -21,6 +23,7 @@ mod syscall;
 use std::sync::Arc;
 
 use enum_map::EnumMap;
+use hashbrown::HashMap;
 
 use crate::{
     events::{MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryRecord},
@@ -80,6 +83,27 @@ pub(crate) struct MinimalExecutor {
     oracle_log: Vec<MemValue>,
     max_trace_size: u64,
     public_values_stream: Vec<u8>,
+    /// `ZKMStdin`'s buffer -- whole-run constant, like `program`, never mutated after
+    /// construction. `HINT_LEN` reads `stdin[input_stream_ptr].len()`; `HINT_READ` pops the front
+    /// entry (`input_stream_ptr += 1`) and seeds `hint_seed`. Mirrors `Executor::state.input_stream`.
+    stdin: Arc<[Vec<u8>]>,
+    /// Live cursor into `stdin`, advanced by `HINT_READ`. Threaded across chunk/shard boundaries
+    /// as a carried snapshot (`TraceChunk::start_input_stream_ptr`), exactly like `pc`/`clk`.
+    input_stream_ptr: usize,
+    /// Pre-seeded values for addresses `HINT_READ` has written but no real load/store has touched
+    /// yet -- mirrors `Executor::state.uninitialized_memory`. `HINT_READ` never calls `mw`
+    /// directly (that would mark the address "touched" at the hint's own `clk`, pricing an
+    /// address that's hinted but never actually accessed, which legacy never does); instead it
+    /// only records here, and `mr`/`mw`/`mr_log_only`'s own `Entry::Vacant` case consults this
+    /// (via `remove`, so a value is only ever consumed once) instead of defaulting to `0` -- the
+    /// hinted value then flows through the *existing* oracle log automatically, the moment any
+    /// real instruction first touches that address, exactly like every other RAM preimage.
+    /// Deliberately *not* consulted by `word_peek` (an untracked, non-mutating peek used only for
+    /// a store's byte/half merge) -- matches `Executor::word`'s identical behavior: it doesn't
+    /// consult `uninitialized_memory` either, so a partial store to a hint-seeded-but-untouched
+    /// address merges against `0`, not the hinted bytes. That's legacy's real, established
+    /// behavior (not a bug this port should "fix"), and must be matched bit-for-bit.
+    hint_seed: HashMap<u32, u32>,
     /// Per-opcode/syscall dispatch counts, for `Self::execution_report`. Mirrors
     /// `Executor::report`'s identical fields and gating (`!self.unconstrained`) -- purely
     /// informational, consumed only by `prove.rs`'s end-of-run summary logging.
@@ -88,8 +112,19 @@ pub(crate) struct MinimalExecutor {
 }
 
 impl MinimalExecutor {
+    /// Convenience constructor for callers that never feed stdin -- equivalent to
+    /// `Self::new_with_stdin(program, max_trace_size, Arc::from([]))`.
     #[must_use]
     pub(crate) fn new(program: Arc<Program>, max_trace_size: u64) -> Self {
+        Self::new_with_stdin(program, max_trace_size, Arc::from([]))
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_stdin(
+        program: Arc<Program>,
+        max_trace_size: u64,
+        stdin: Arc<[Vec<u8>]>,
+    ) -> Self {
         // `program.image` addresses below `NUM_REGISTERS` are register-index seeds (e.g. the
         // ELF loader's computed initial `BRK`), not RAM -- mirrors `Memory::insert`'s dispatch,
         // which `Executor::initialize` relies on for exactly this. Routing everything into the
@@ -131,6 +166,9 @@ impl MinimalExecutor {
             ),
             max_trace_size,
             public_values_stream: Vec::new(),
+            stdin,
+            input_stream_ptr: 0,
+            hint_seed: HashMap::new(),
             opcode_counts: Box::default(),
             syscall_counts: Box::default(),
         }
@@ -154,6 +192,20 @@ impl MinimalExecutor {
     #[must_use]
     pub(crate) fn clk(&self) -> u64 {
         self.clk
+    }
+
+    /// Current cursor into `stdin` -- snapshotted into `TraceChunk::start_input_stream_ptr` at
+    /// each chunk boundary, exactly like `pc()`/`clk()`.
+    #[must_use]
+    pub(crate) fn input_stream_ptr(&self) -> usize {
+        self.input_stream_ptr
+    }
+
+    /// `stdin` itself -- whole-run constant, threaded into `CoreVM`/`TracingVM` alongside
+    /// `program` so replay can independently recompute `HINT_LEN`'s return value.
+    #[must_use]
+    pub(crate) fn stdin(&self) -> Arc<[Vec<u8>]> {
+        self.stdin.clone()
     }
 
     /// The `max_syscall_cycles` this run used for `bump_clk_high_if_need`. `CoreVM` must be
@@ -333,7 +385,10 @@ impl MinimalExecutor {
     /// suppressed while unconstrained -- see `Self::enter_unconstrained`'s doc comment: nothing
     /// computed inside the block should be observable to a later replay.
     fn mr(&mut self, addr: u32) -> u32 {
-        let record = self.page_table.entry(addr).or_insert(MemoryRecord { value: 0, timestamp: 0 });
+        let hint_seed = &mut self.hint_seed;
+        let record = self.page_table.entry(addr).or_insert_with(|| {
+            MemoryRecord { value: hint_seed.remove(&addr).unwrap_or(0), timestamp: 0 }
+        });
         if !self.unconstrained {
             self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
         }
@@ -353,7 +408,10 @@ impl MinimalExecutor {
     /// a live register + this preimage, recomputable by any replayer -- see the module doc).
     /// Logging is suppressed while unconstrained -- see `mr`'s identical comment.
     fn mw(&mut self, addr: u32, value: u32) {
-        let record = self.page_table.entry(addr).or_insert(MemoryRecord { value: 0, timestamp: 0 });
+        let hint_seed = &mut self.hint_seed;
+        let record = self.page_table.entry(addr).or_insert_with(|| {
+            MemoryRecord { value: hint_seed.remove(&addr).unwrap_or(0), timestamp: 0 }
+        });
         if !self.unconstrained {
             self.oracle_log.push(MemValue { clk: record.timestamp, value: record.value });
         }
@@ -489,6 +547,7 @@ impl MinimalExecutor {
         let start_register_timestamps = self.register_timestamps;
         let pc_start = self.pc;
         let clk_start = self.clk;
+        let start_input_stream_ptr = self.input_stream_ptr;
 
         // Do-while, matching `Executor::execute`'s `loop { if self.execute_cycle()? {...} }`:
         // `is_done()`'s `pc == 0` arm is also the *initial* `pc` for any program whose
@@ -511,6 +570,7 @@ impl MinimalExecutor {
             pc_start,
             clk_start,
             clk_end: self.clk,
+            start_input_stream_ptr,
             mem_reads: std::mem::replace(
                 &mut self.oracle_log,
                 Vec::with_capacity(self.max_trace_size.min(MAX_PREALLOCATED_ORACLE_LOG) as usize),

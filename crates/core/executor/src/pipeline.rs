@@ -28,27 +28,34 @@ pub use crate::splicing::SplicedMinimalTrace;
 pub fn run_full_pipeline(
     program: Arc<Program>,
     max_trace_size: u64,
+    stdin: Arc<[Vec<u8>]>,
     element_threshold: u64,
     height_threshold: u64,
 ) -> Result<Vec<ExecutionRecord>, ExecutionError> {
-    let mut minimal = MinimalExecutor::new(program.clone(), max_trace_size);
+    let mut minimal = MinimalExecutor::new_with_stdin(program.clone(), max_trace_size, stdin.clone());
     let max_syscall_cycles = minimal.max_syscall_cycles();
 
     let mut chunk = minimal
         .try_execute_chunk()?
         .expect("the first try_execute_chunk call always retires at least one instruction");
-    let mut splicing =
-        SplicingVM::new(&chunk, program.clone(), max_syscall_cycles, element_threshold, height_threshold);
+    let mut splicing = SplicingVM::new(
+        &chunk,
+        program.clone(),
+        max_syscall_cycles,
+        stdin.clone(),
+        element_threshold,
+        height_threshold,
+    );
     let mut records = Vec::new();
     loop {
         match splicing.execute()? {
             SplicingStatus::ShardBoundary => {
                 let spliced = splicing.splice(&chunk);
-                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles)?);
+                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles, stdin.clone())?);
             }
             SplicingStatus::Done => {
                 let spliced = splicing.splice(&chunk);
-                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles)?);
+                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles, stdin.clone())?);
                 break;
             }
             SplicingStatus::TraceEnd => {
@@ -56,7 +63,8 @@ pub fn run_full_pipeline(
                 chunk = minimal
                     .try_execute_chunk()?
                     .expect("TraceEnd means the program hasn't halted, so another chunk follows");
-                splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
+                splicing =
+                    SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles, stdin.clone());
             }
         }
     }
@@ -84,9 +92,10 @@ pub fn trace_shard(
     program: Arc<Program>,
     spliced: &SplicedMinimalTrace,
     max_syscall_cycles: u32,
+    stdin: Arc<[Vec<u8>]>,
 ) -> Result<ExecutionRecord, ExecutionError> {
     let mut record = ExecutionRecord::new(program.clone());
-    let mut tracing = TracingVM::new(spliced, program, max_syscall_cycles, &mut record);
+    let mut tracing = TracingVM::new(spliced, program, max_syscall_cycles, stdin, &mut record);
     tracing.execute()?;
     Ok(record)
 }
@@ -99,9 +108,16 @@ pub fn trace_shard(
 pub struct ShardDriver(MinimalExecutor);
 
 impl ShardDriver {
+    /// Convenience constructor for callers that never feed stdin -- equivalent to
+    /// `Self::new_with_stdin(program, max_trace_size, Arc::from([]))`.
     #[must_use]
     pub fn new(program: Arc<Program>, max_trace_size: u64) -> Self {
-        Self(MinimalExecutor::new(program, max_trace_size))
+        Self::new_with_stdin(program, max_trace_size, Arc::from([]))
+    }
+
+    #[must_use]
+    pub fn new_with_stdin(program: Arc<Program>, max_trace_size: u64, stdin: Arc<[Vec<u8>]>) -> Self {
+        Self(MinimalExecutor::new_with_stdin(program, max_trace_size, stdin))
     }
 
     /// The global, never-reset clk `next_shard`'s most recent call left off at -- the new
@@ -162,11 +178,18 @@ pub fn next_shard(
 ) -> Result<(SplicedMinimalTrace, bool), ExecutionError> {
     let minimal = &mut driver.0;
     let max_syscall_cycles = minimal.max_syscall_cycles();
+    let stdin = minimal.stdin();
     let mut chunk = minimal
         .try_execute_chunk()?
         .expect("next_shard must not be called again after a previous call returned done == true");
-    let mut splicing =
-        SplicingVM::new(&chunk, program.clone(), max_syscall_cycles, element_threshold, height_threshold);
+    let mut splicing = SplicingVM::new(
+        &chunk,
+        program.clone(),
+        max_syscall_cycles,
+        stdin.clone(),
+        element_threshold,
+        height_threshold,
+    );
     loop {
         match splicing.execute()? {
             SplicingStatus::ShardBoundary => return Ok((splicing.splice(&chunk), false)),
@@ -176,7 +199,8 @@ pub fn next_shard(
                 chunk = minimal
                     .try_execute_chunk()?
                     .expect("TraceEnd means the program hasn't halted, so another chunk follows");
-                splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
+                splicing =
+                    SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles, stdin.clone());
             }
         }
     }
@@ -206,8 +230,14 @@ mod tests {
 
     fn assert_matches_golden(program: impl Fn() -> Program, name: &str) {
         let golden = run_golden(program());
-        let records =
-            run_full_pipeline(Arc::new(program()), u64::MAX / 2, u64::MAX / 2, u64::MAX / 2).unwrap();
+        let records = run_full_pipeline(
+            Arc::new(program()),
+            u64::MAX / 2,
+            Arc::from([]),
+            u64::MAX / 2,
+            u64::MAX / 2,
+        )
+        .unwrap();
 
         assert_eq!(records.len(), 1, "{name}: generous thresholds should keep this to a single shard");
         let last = records.last().unwrap();
@@ -282,7 +312,8 @@ mod tests {
     #[test]
     fn matches_golden_fibonacci_real_elf_many_shards_and_chunks() {
         let golden = run_golden(fibonacci_program());
-        let records = run_full_pipeline(Arc::new(fibonacci_program()), 64, u64::MAX / 2, 40).unwrap();
+        let records =
+            run_full_pipeline(Arc::new(fibonacci_program()), 64, Arc::from([]), u64::MAX / 2, 40).unwrap();
 
         assert!(records.len() > 1, "expected a tight height_threshold to force multiple shards");
 

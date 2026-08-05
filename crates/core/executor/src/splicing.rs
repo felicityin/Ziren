@@ -217,6 +217,7 @@ pub struct SplicedMinimalTrace {
     start_pc: u32,
     start_clk: u64,
     end_clk: u64,
+    start_input_stream_ptr: usize,
 }
 
 impl MinimalTrace for SplicedMinimalTrace {
@@ -234,6 +235,10 @@ impl MinimalTrace for SplicedMinimalTrace {
 
     fn clk_start(&self) -> u64 {
         self.start_clk
+    }
+
+    fn start_input_stream_ptr(&self) -> usize {
+        self.start_input_stream_ptr
     }
 
     fn clk_end(&self) -> u64 {
@@ -262,6 +267,7 @@ pub(crate) struct SplicingCarry {
     shard_start_register_timestamps: [u64; NUM_REGISTERS],
     shard_start_pc: u32,
     shard_start_clk: u64,
+    shard_start_input_stream_ptr: usize,
     /// This in-progress shard's oracle-log entries from every chunk it has already spanned
     /// (i.e. every chunk before the one currently being replayed).
     shard_mem_reads_carried: Vec<MemValue>,
@@ -290,6 +296,7 @@ pub(crate) struct SplicingVM<'a> {
     shard_start_register_timestamps: [u64; NUM_REGISTERS],
     shard_start_pc: u32,
     shard_start_clk: u64,
+    shard_start_input_stream_ptr: usize,
     shard_start_mem_reads_consumed: usize,
     /// See `SplicingCarry`'s identically-named field -- empty except right after `Self::resume`.
     shard_mem_reads_carried: Vec<MemValue>,
@@ -301,16 +308,18 @@ impl<'a> SplicingVM<'a> {
         trace: &'a T,
         program: Arc<Program>,
         max_syscall_cycles: u32,
+        stdin: Arc<[Vec<u8>]>,
         element_threshold: u64,
         height_threshold: u64,
     ) -> Self {
         let program_size = program.instructions.len() as u64;
-        let core = CoreVM::new(trace, program, max_syscall_cycles);
+        let core = CoreVM::new(trace, program, max_syscall_cycles, stdin);
         Self {
             shard_start_registers: core.registers(),
             shard_start_register_timestamps: core.register_timestamps(),
             shard_start_pc: core.pc(),
             shard_start_clk: core.clk(),
+            shard_start_input_stream_ptr: core.input_stream_ptr(),
             shard_start_mem_reads_consumed: 0,
             shard_mem_reads_carried: Vec::new(),
             core,
@@ -332,14 +341,16 @@ impl<'a> SplicingVM<'a> {
         trace: &'a T,
         program: Arc<Program>,
         max_syscall_cycles: u32,
+        stdin: Arc<[Vec<u8>]>,
     ) -> Self {
         Self {
-            core: CoreVM::new(trace, program, max_syscall_cycles),
+            core: CoreVM::new(trace, program, max_syscall_cycles, stdin),
             shape_checker: carry.shape_checker,
             shard_start_registers: carry.shard_start_registers,
             shard_start_register_timestamps: carry.shard_start_register_timestamps,
             shard_start_pc: carry.shard_start_pc,
             shard_start_clk: carry.shard_start_clk,
+            shard_start_input_stream_ptr: carry.shard_start_input_stream_ptr,
             shard_start_mem_reads_consumed: 0,
             shard_mem_reads_carried: carry.shard_mem_reads_carried,
         }
@@ -360,6 +371,7 @@ impl<'a> SplicingVM<'a> {
             shard_start_register_timestamps: self.shard_start_register_timestamps,
             shard_start_pc: self.shard_start_pc,
             shard_start_clk: self.shard_start_clk,
+            shard_start_input_stream_ptr: self.shard_start_input_stream_ptr,
             shard_mem_reads_carried,
             shape_checker: self.shape_checker,
         }
@@ -455,12 +467,14 @@ impl<'a> SplicingVM<'a> {
             start_pc: self.shard_start_pc,
             start_clk: self.shard_start_clk,
             end_clk: self.core.clk(),
+            start_input_stream_ptr: self.shard_start_input_stream_ptr,
         };
 
         self.shard_start_registers = self.core.registers();
         self.shard_start_register_timestamps = self.core.register_timestamps();
         self.shard_start_pc = self.core.pc();
         self.shard_start_clk = self.core.clk();
+        self.shard_start_input_stream_ptr = self.core.input_stream_ptr();
         self.shard_start_mem_reads_consumed = mem_reads_consumed;
         self.shape_checker.start_new_shard();
 
@@ -493,6 +507,7 @@ mod tests {
             &chunk,
             Arc::new(program()),
             max_syscall_cycles,
+            Arc::from([]),
             element_threshold,
             height_threshold,
         );
@@ -614,8 +629,14 @@ mod tests {
         let mut minimal = MinimalExecutor::new(Arc::new(fibonacci_program()), 4);
         let max_syscall_cycles = minimal.max_syscall_cycles();
         let mut chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
-        let mut splicing =
-            SplicingVM::new(&chunk, program.clone(), max_syscall_cycles, u64::MAX / 2, u64::MAX / 2);
+        let mut splicing = SplicingVM::new(
+            &chunk,
+            program.clone(),
+            max_syscall_cycles,
+            Arc::from([]),
+            u64::MAX / 2,
+            u64::MAX / 2,
+        );
         let mut num_shards = 0;
         let mut num_chunk_resumes = 0;
         let spliced = loop {
@@ -632,7 +653,13 @@ mod tests {
                 SplicingStatus::TraceEnd => {
                     let carry = splicing.into_carry(&chunk);
                     chunk = minimal.try_execute_chunk().unwrap().expect("expected another chunk");
-                    splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
+                    splicing = SplicingVM::resume(
+                        carry,
+                        &chunk,
+                        program.clone(),
+                        max_syscall_cycles,
+                        Arc::from([]),
+                    );
                     num_chunk_resumes += 1;
                 }
             }
@@ -644,7 +671,13 @@ mod tests {
         assert_eq!(num_shards, 1, "generous thresholds should keep this to a single shard spanning every chunk");
 
         let mut record = crate::record::ExecutionRecord::new(program.clone());
-        let mut tracing = crate::tracing::TracingVM::new(&spliced, program, max_syscall_cycles, &mut record);
+        let mut tracing = crate::tracing::TracingVM::new(
+            &spliced,
+            program,
+            max_syscall_cycles,
+            Arc::from([]),
+            &mut record,
+        );
         assert_eq!(
             tracing.execute().unwrap(),
             crate::vm::CoreVMStatus::Done,

@@ -1048,7 +1048,7 @@ pub mod tests {
             let (spliced, done) =
                 next_shard(&mut driver, program.clone(), element_threshold, height_threshold).unwrap();
             let mut record =
-                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles(), Arc::from([])).unwrap();
             if done {
                 let (init, fin) = driver.global_memory_events();
                 record.global_memory_initialize_events = init;
@@ -1182,7 +1182,7 @@ pub mod tests {
             let (spliced, done) =
                 next_shard(&mut driver, program.clone(), element_threshold, height_threshold).unwrap();
             let mut record =
-                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles(), Arc::from([])).unwrap();
             if done {
                 let (init, fin) = driver.global_memory_events();
                 record.global_memory_initialize_events = init;
@@ -1430,7 +1430,7 @@ pub mod tests {
             let (spliced, done) =
                 next_shard(&mut driver, program.clone(), u64::MAX / 2, u64::MAX / 2).unwrap();
             let mut record =
-                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles(), Arc::from([])).unwrap();
             if done {
                 let (init, fin) = driver.global_memory_events();
                 record.global_memory_initialize_events = init;
