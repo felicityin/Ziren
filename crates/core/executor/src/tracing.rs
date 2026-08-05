@@ -135,7 +135,7 @@ impl<'a> TracingVM<'a> {
 
     /// `touch_local` for a contiguous run of words starting at `base_ptr`, one per `records[i]`
     /// at address `base_ptr + 4*i` -- the word-indexed addressing every precompile's own
-    /// `mr`/`mw`/`mr_slice`/`mw_slice` call uses (see `minimal/ecall.rs`'s dispatch functions,
+    /// `mr`/`mw`/`mr_slice`/`mw_slice` call uses (see `minimal/syscall.rs`'s dispatch functions,
     /// which this must match exactly).
     fn touch_local_slice<T: Copy>(
         &mut self,
@@ -969,7 +969,7 @@ impl<'a> TracingVM<'a> {
 
     /// Builds an `EllipticCurveAddEvent`: pops `q`'s reads, then `p`'s write-preimage (the value
     /// actually needed as an input, unlike a discarded write pop -- see
-    /// `minimal/ecall.rs::ec_add_dispatch`'s doc comment for why the oracle order is q-then-p
+    /// `minimal/syscall.rs::ec_add_dispatch`'s doc comment for why the oracle order is q-then-p
     /// even though `p` is conceptually read first).
     fn ec_add_event<E: EllipticCurve>(&mut self, clk: u64, p_ptr: u32, q_ptr: u32) -> EllipticCurveAddEvent {
         let num_words = ec_num_words::<E>();
@@ -1321,7 +1321,7 @@ impl<'a> TracingVM<'a> {
 
     /// Builds a `LinuxEvent` for one of the Linux syscall shims (`SYS_BRK`/`SYS_MMAP`/etc, all
     /// bucketed under the synthetic `SyscallCode::SYS_LINUX` key like the legacy `Executor`
-    /// itself does -- see `minimal/ecall.rs`'s corresponding dispatch arms for the compute logic
+    /// itself does -- see `minimal/syscall.rs`'s corresponding dispatch arms for the compute logic
     /// each `read_records`/`write_records`/`v0` pairing mirrors).
     fn linux_event(
         &self,
@@ -1346,7 +1346,7 @@ impl<'a> TracingVM<'a> {
         }
     }
 
-    /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
+    /// See `minimal/syscall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
         let syscall_id = self.core.reg(Register::V0);

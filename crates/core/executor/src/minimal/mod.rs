@@ -12,11 +12,11 @@
 //! precompile, the Linux syscall shims, and `ENTER_UNCONSTRAINED`/`EXIT_UNCONSTRAINED` (see
 //! `Self::enter_unconstrained`'s doc comment) are all real. `HINT_READ`/`HINT_LEN` remain a
 //! documented no-op fallback (`a0 = syscall_id`, no side effects) for now. Extend the dispatch in
-//! [`ecall`] as needed.
+//! [`syscall`] as needed.
 
 #![allow(dead_code)]
 
-mod ecall;
+mod syscall;
 
 use std::sync::Arc;
 
@@ -437,7 +437,7 @@ impl MinimalExecutor {
     ///
     /// A no-op returning a garbage `next_pc` if called outside an unconstrained block would be a
     /// guest bug; like the legacy `Executor`, other syscalls already reject running inside a block
-    /// (see `ecall.rs`), so this is only ever reached in the correct state -- still, mirrors
+    /// (see `syscall.rs`), so this is only ever reached in the correct state -- still, mirrors
     /// `Executor::ExitUnconstrainedSyscall`'s own defensive `if ctx.rt.unconstrained` shape via the
     /// `expect` below rather than silently computing nonsense.
     fn exit_unconstrained(&mut self) -> u32 {

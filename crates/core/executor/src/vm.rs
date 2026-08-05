@@ -1214,7 +1214,7 @@ impl<'a> CoreVM<'a> {
         Ok(())
     }
 
-    /// See `minimal::ecall`'s module doc for scope (HALT/WRITE/SYS_BRK real, everything else a
+    /// See `minimal::syscall`'s module doc for scope (HALT/WRITE/SYS_BRK real, everything else a
     /// documented no-op). `HALT`/`SYS_BRK` are fully register-and-`Program`-derived (no RAM
     /// involved at all) so this replays them by literally re-running the same logic; `WRITE`
     /// pops the same number of oracle entries, in the same order, that
@@ -1521,7 +1521,7 @@ impl<'a> CoreVM<'a> {
     }
 
     /// Replays an `ec_add`: pops `q`'s reads, then `p`'s write-preimage (the value actually needed
-    /// as an input, unlike `SHA_COMPRESS`'s discarded write pops -- see `minimal/ecall.rs`'s
+    /// as an input, unlike `SHA_COMPRESS`'s discarded write pops -- see `minimal/syscall.rs`'s
     /// `ec_add_dispatch` for why the oracle order is q-then-p even though `p` is conceptually
     /// read first). The computed result has nowhere to go (`CoreVM` has no backing RAM); called
     /// only so `SplicingVM`'s replay exercises the exact same arithmetic `TracingVM` will.

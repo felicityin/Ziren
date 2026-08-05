@@ -179,7 +179,7 @@ fn opcode_air_id(instruction: &Instruction) -> MipsAirId {
 
 /// Precompile-chip costs a given syscall additionally drives, beyond the base `SyscallInstrs`
 /// cost every `SYSCALL` instruction already gets via [`opcode_air_id`]. Only fires for syscalls
-/// this crate actually implements (see `minimal/ecall.rs`'s module doc on scope); extend this
+/// this crate actually implements (see `minimal/syscall.rs`'s module doc on scope); extend this
 /// table as each additional precompile is wired up for real.
 fn precompile_air_ids(code: SyscallCode) -> &'static [MipsAirId] {
     if matches!(
