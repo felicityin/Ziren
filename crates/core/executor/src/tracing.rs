@@ -19,15 +19,18 @@ use std::sync::Arc;
 
 use crate::{
     events::{
-        AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, JumpEvent, MemInstrEvent,
-        MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent,
-        PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
+        AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, JumpEvent, KeccakSpongeEvent,
+        MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
+        MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
     },
     opcode::Opcode,
     register::Register,
     syscalls::SyscallCode,
     trace::MinimalTrace,
-    vm::{sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus},
+    vm::{
+        keccak_xor_block, keccakf, sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus,
+        KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
+    },
     ExecutionError, ExecutionRecord, Instruction, Program,
 };
 
@@ -761,6 +764,83 @@ impl<'a> TracingVM<'a> {
                 extra_cycles = 48;
                 None
             }
+            SyscallCode::KECCAK_SPONGE => {
+                let input_ptr = arg1;
+                let result_ptr = arg2;
+                let input_len_u32s = self.core.next_oracle_value();
+                let input_length_record =
+                    MemoryReadRecord { value: input_len_u32s, timestamp: clk, prev_timestamp: 0 };
+
+                let mut input_values = Vec::with_capacity(input_len_u32s as usize);
+                let mut input_read_records = Vec::with_capacity(input_len_u32s as usize);
+                for _ in 0..input_len_u32s {
+                    let value = self.core.next_oracle_value();
+                    input_values.push(value);
+                    input_read_records.push(MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 });
+                }
+                let input_u64_values: Vec<u64> = input_values
+                    .chunks_exact(2)
+                    .map(|pair| pair[0] as u64 + ((pair[1] as u64) << 32))
+                    .collect();
+
+                let mut state = [0u64; KECCAK_STATE_SIZE_U64S];
+                let mut xored_state_list = Vec::new();
+                for block in input_u64_values.chunks_exact(KECCAK_GENERAL_BLOCK_SIZE_U64S) {
+                    keccak_xor_block(&mut state, block);
+                    xored_state_list.push(state);
+                    keccakf(&mut state);
+                }
+
+                let mut values_to_write = Vec::with_capacity(2 * KECCAK_GENERAL_OUTPUT_U64S);
+                for &lane in state.iter().take(KECCAK_GENERAL_OUTPUT_U64S) {
+                    values_to_write.push((lane & 0xFFFF_FFFF) as u32);
+                    values_to_write.push((lane >> 32) as u32);
+                }
+                let output_write_records: Vec<MemoryWriteRecord> = values_to_write
+                    .iter()
+                    .map(|&value| {
+                        self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+                        MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 }
+                    })
+                    .collect();
+
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc,
+                        next_pc,
+                        clk,
+                        a_record: MemoryWriteRecord {
+                            value: syscall_id,
+                            timestamp: clk,
+                            prev_value: 0,
+                            prev_timestamp: 0,
+                        },
+                        a_record_is_real: true,
+                        b_record: None,
+                        c_record: None,
+                        syscall_id,
+                        arg1,
+                        arg2,
+                    },
+                    PrecompileEvent::KeccakSponge(KeccakSpongeEvent {
+                        shard: 0,
+                        clk,
+                        input: input_values,
+                        output: values_to_write.try_into().unwrap(),
+                        input_len_u32s,
+                        input_read_records,
+                        input_length_record,
+                        output_write_records,
+                        xored_state_list,
+                        input_addr: input_ptr,
+                        output_addr: result_ptr,
+                        local_mem_access: Vec::new(),
+                    }),
+                );
+                extra_cycles = 1;
+                None
+            }
             _ => None,
         };
 
@@ -796,7 +876,7 @@ mod tests {
         minimal::MinimalExecutor,
         programs::tests::{
             fibonacci_program, halt_only_program, hello_world_program, sha_compress_program,
-            sha_extend_program, simple_program,
+            sha_extend_program, simple_program, ssz_withdrawals_program,
         },
         register::NUM_REGISTERS,
     };
@@ -873,5 +953,10 @@ mod tests {
     #[test]
     fn matches_golden_sha_compress_real_elf() {
         assert_matches_golden(sha_compress_program, "sha_compress_program");
+    }
+
+    #[test]
+    fn matches_golden_keccak_sponge_real_elf() {
+        assert_matches_golden(ssz_withdrawals_program, "ssz_withdrawals_program");
     }
 }

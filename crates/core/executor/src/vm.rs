@@ -31,6 +31,13 @@ use crate::{
 };
 use zkm_primitives::consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT};
 
+/// Number of u64 lanes in a Keccak-f\[1600\] state.
+pub(crate) const KECCAK_STATE_SIZE_U64S: usize = 25;
+/// Rate of the general (fixed-parameter) Keccak sponge precompile, in u64 lanes per block.
+pub(crate) const KECCAK_GENERAL_BLOCK_SIZE_U64S: usize = 18;
+/// Number of u64 lanes read back out as the sponge's output.
+pub(crate) const KECCAK_GENERAL_OUTPUT_U64S: usize = 8;
+
 /// ALU family (`Executor::execute_alu`, `executor.rs`): every opcode reachable via
 /// `Instruction::is_alu_instruction()`. Returns `(a, hi)` exactly as the source's inner match
 /// does; the caller decides (via `Opcode::is_use_lo_hi_alu()`) whether `hi` is meaningful or `a`
@@ -332,6 +339,19 @@ pub(crate) fn sha256_extend_word(
     let s1 = w_i_minus_2.rotate_right(17) ^ w_i_minus_2.rotate_right(19) ^ (w_i_minus_2 >> 10);
     s1.wrapping_add(w_i_minus_16).wrapping_add(s0).wrapping_add(w_i_minus_7)
 }
+
+/// XORs one rate-sized block into a Keccak sponge state, in place -- mirrors
+/// `KeccakSpongeSyscall::execute`'s per-block XOR step (`syscalls/precompiles/keccak/sponge.rs`)
+/// exactly. The caller applies the Keccak-f\[1600\] permutation (`keccakf`, re-exported alongside
+/// this function) afterwards; kept as a separate step (not folded into one "absorb" call) because
+/// `TracingVM` needs the post-XOR, pre-permutation state as part of its event.
+pub(crate) fn keccak_xor_block(state: &mut [u64; KECCAK_STATE_SIZE_U64S], block: &[u64]) {
+    for (i, value) in block.iter().enumerate() {
+        state[i] ^= *value;
+    }
+}
+
+pub(crate) use tiny_keccak::keccakf;
 
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
 /// on. Unlike `MinimalExecutor`, it has **no backing RAM at all**: every RAM access
@@ -904,6 +924,28 @@ impl<'a> CoreVM<'a> {
                     self.next_oracle_value(); // pops the write's logged preimage; see SHA_COMPRESS.
                 }
                 extra_cycles = 48;
+                None
+            }
+            SyscallCode::KECCAK_SPONGE => {
+                let input_len_u32s = self.next_oracle_value();
+                let input_values: Vec<u32> =
+                    (0..input_len_u32s).map(|_| self.next_oracle_value()).collect();
+                let input_u64_values: Vec<u64> = input_values
+                    .chunks_exact(2)
+                    .map(|pair| pair[0] as u64 + ((pair[1] as u64) << 32))
+                    .collect();
+
+                let mut state = [0u64; KECCAK_STATE_SIZE_U64S];
+                for block in input_u64_values.chunks_exact(KECCAK_GENERAL_BLOCK_SIZE_U64S) {
+                    keccak_xor_block(&mut state, block);
+                    keccakf(&mut state);
+                }
+
+                for _ in 0..KECCAK_GENERAL_OUTPUT_U64S {
+                    self.next_oracle_value(); // least-sig write preimage; see SHA_COMPRESS.
+                    self.next_oracle_value(); // most-sig write preimage.
+                }
+                extra_cycles = 1;
                 None
             }
             _ => None,

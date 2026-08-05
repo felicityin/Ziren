@@ -104,6 +104,33 @@ impl MinimalExecutor {
                 extra_cycles = 48;
                 None
             }
+            SyscallCode::KECCAK_SPONGE => {
+                let input_ptr = arg1;
+                let result_ptr = arg2;
+                let input_len_u32s = self.mr(result_ptr + 16 * 4);
+
+                let input_values: Vec<u32> =
+                    (0..input_len_u32s).map(|i| self.mr(input_ptr + i * 4)).collect();
+                let input_u64_values: Vec<u64> = input_values
+                    .chunks_exact(2)
+                    .map(|pair| pair[0] as u64 + ((pair[1] as u64) << 32))
+                    .collect();
+
+                let mut state = [0u64; vm::KECCAK_STATE_SIZE_U64S];
+                for block in input_u64_values.chunks_exact(vm::KECCAK_GENERAL_BLOCK_SIZE_U64S) {
+                    vm::keccak_xor_block(&mut state, block);
+                    vm::keccakf(&mut state);
+                }
+
+                for i in 0..vm::KECCAK_GENERAL_OUTPUT_U64S {
+                    let least_sig = (state[i] & 0xFFFF_FFFF) as u32;
+                    let most_sig = (state[i] >> 32) as u32;
+                    self.mw(result_ptr + (2 * i) as u32 * 4, least_sig);
+                    self.mw(result_ptr + (2 * i + 1) as u32 * 4, most_sig);
+                }
+                extra_cycles = 1;
+                None
+            }
             // Everything else (precompiles, other Linux shims, hints, unconstrained, VERIFY): a
             // documented no-op -- see the module doc on `minimal/mod.rs`.
             _ => None,
