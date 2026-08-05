@@ -29,6 +29,7 @@ use crate::{
     trace::{MemReads, MinimalTrace},
     ExecutionError, Instruction, Program, CORE_SHARD_CLK_LIMIT,
 };
+use num::BigUint;
 use typenum::Unsigned;
 use zkm_curves::{
     curve25519_dalek::CompressedEdwardsY,
@@ -38,15 +39,18 @@ use zkm_curves::{
     },
     params::{NumLimbs, NumWords},
     weierstrass::{
-        bls12_381::{bls12381_decompress, Bls12381},
-        bn254::Bn254,
+        bls12_381::{bls12381_decompress, Bls12381, Bls12381BaseField},
+        bn254::{Bn254, Bn254BaseField},
         secp256k1::{secp256k1_decompress, Secp256k1},
         secp256r1::{secp256r1_decompress, Secp256r1},
+        FpOpField,
     },
     AffinePoint, CurveError, CurveType, EllipticCurve, COMPRESSED_POINT_BYTES,
     NUM_BYTES_FIELD_ELEMENT,
 };
 use zkm_primitives::consts::fd::{FD_HINT, FD_PUBLIC_VALUES, FD_STDERR, FD_STDOUT};
+
+use crate::events::FieldOperation;
 
 /// Number of u64 lanes in a Keccak-f\[1600\] state.
 pub(crate) const KECCAK_STATE_SIZE_U64S: usize = 25;
@@ -436,6 +440,88 @@ pub(crate) fn ed25519_decompress(
     let mut decompressed_x_bytes = decompressed.x.to_bytes_le();
     decompressed_x_bytes.resize(NUM_BYTES_FIELD_ELEMENT, 0u8);
     Ok(decompressed_x_bytes.try_into().unwrap())
+}
+
+/// Number of u32 words in one `P`-field element.
+pub(crate) fn fp_num_words<P: FpOpField>() -> usize {
+    <P as NumWords>::WordsFieldElement::USIZE
+}
+
+/// `x op y mod P::MODULUS`, given as little-endian word slices -- mirrors `FpOpSyscall::execute`'s
+/// compute step (`syscalls/precompiles/fptower/fp.rs`) exactly, split from the memory accesses
+/// that gather `x`/`y`. Only `Add`/`Sub`/`Mul` are valid; mirrors the source's own restriction.
+pub(crate) fn fp_op<P: FpOpField>(x: &[u32], y: &[u32], op: FieldOperation) -> Vec<u32> {
+    let num_words = fp_num_words::<P>();
+    let modulus = &BigUint::from_bytes_le(P::MODULUS);
+    let a = BigUint::from_slice(x) % modulus;
+    let b = BigUint::from_slice(y) % modulus;
+    let result = match op {
+        FieldOperation::Add => (a + b) % modulus,
+        FieldOperation::Sub => ((a + modulus) - b) % modulus,
+        FieldOperation::Mul => (a * b) % modulus,
+        FieldOperation::Div => unreachable!("fp_op only supports Add/Sub/Mul"),
+    };
+    let mut result = result.to_u32_digits();
+    result.resize(num_words, 0);
+    result
+}
+
+/// Number of u32 words in a `P`-field degree-2 extension element (`c0`, `c1` concatenated).
+pub(crate) fn fp2_num_words<P: FpOpField>() -> usize {
+    <P as NumWords>::WordsCurvePoint::USIZE
+}
+
+/// `x op y` in `P`'s degree-2 extension field -- mirrors `Fp2AddSubSyscall::execute`'s compute
+/// step exactly. Only `Add`/`Sub` are valid; mirrors the source's own restriction.
+pub(crate) fn fp2_addsub<P: FpOpField>(x: &[u32], y: &[u32], op: FieldOperation) -> Vec<u32> {
+    let num_words = fp2_num_words::<P>();
+    let (ac0, ac1) = x.split_at(x.len() / 2);
+    let (bc0, bc1) = y.split_at(y.len() / 2);
+    let ac0 = &BigUint::from_slice(ac0);
+    let ac1 = &BigUint::from_slice(ac1);
+    let bc0 = &BigUint::from_slice(bc0);
+    let bc1 = &BigUint::from_slice(bc1);
+    let modulus = &BigUint::from_bytes_le(P::MODULUS);
+    let (c0, c1) = match op {
+        FieldOperation::Add => ((ac0 + bc0) % modulus, (ac1 + bc1) % modulus),
+        FieldOperation::Sub => {
+            ((ac0 + modulus - bc0) % modulus, (ac1 + modulus - bc1) % modulus)
+        }
+        _ => unreachable!("fp2_addsub only supports Add/Sub"),
+    };
+    let mut result = c0.to_u32_digits();
+    result.resize(num_words / 2, 0);
+    result.extend_from_slice(&c1.to_u32_digits());
+    result.resize(num_words, 0);
+    result
+}
+
+/// `x * y` in `P`'s degree-2 extension field -- mirrors `Fp2MulSyscall::execute`'s compute step
+/// exactly.
+pub(crate) fn fp2_mul<P: FpOpField>(x: &[u32], y: &[u32]) -> Vec<u32> {
+    let num_words = fp2_num_words::<P>();
+    let (ac0, ac1) = x.split_at(x.len() / 2);
+    let (bc0, bc1) = y.split_at(y.len() / 2);
+    let ac0 = &BigUint::from_slice(ac0);
+    let ac1 = &BigUint::from_slice(ac1);
+    let bc0 = &BigUint::from_slice(bc0);
+    let bc1 = &BigUint::from_slice(bc1);
+    let modulus = &BigUint::from_bytes_le(P::MODULUS);
+    let ac0_bc0 = (ac0 * bc0) % modulus;
+    let ac1_bc1 = (ac1 * bc1) % modulus;
+    let ac0_bc1 = (ac0 * bc1) % modulus;
+    let ac1_bc0 = (ac1 * bc0) % modulus;
+    let c0 = if ac0_bc0 < ac1_bc1 {
+        ((modulus + &ac0_bc0) - &ac1_bc1) % modulus
+    } else {
+        (&ac0_bc0 - &ac1_bc1) % modulus
+    };
+    let c1 = (&ac0_bc1 + &ac1_bc0) % modulus;
+    let mut result = c0.to_u32_digits();
+    result.resize(num_words / 2, 0);
+    result.extend_from_slice(&c1.to_u32_digits());
+    result.resize(num_words, 0);
+    result
 }
 
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
@@ -1095,6 +1181,66 @@ impl<'a> CoreVM<'a> {
                 self.ed_decompress_replay(arg2)?;
                 None
             }
+            SyscallCode::BN254_FP_ADD => {
+                self.fp_op_replay::<Bn254BaseField>(FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP_SUB => {
+                self.fp_op_replay::<Bn254BaseField>(FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP_MUL => {
+                self.fp_op_replay::<Bn254BaseField>(FieldOperation::Mul);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP_ADD => {
+                self.fp_op_replay::<Bls12381BaseField>(FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP_SUB => {
+                self.fp_op_replay::<Bls12381BaseField>(FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP_MUL => {
+                self.fp_op_replay::<Bls12381BaseField>(FieldOperation::Mul);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_ADD => {
+                self.fp2_addsub_replay::<Bn254BaseField>(FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_SUB => {
+                self.fp2_addsub_replay::<Bn254BaseField>(FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_MUL => {
+                self.fp2_mul_replay::<Bn254BaseField>();
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_ADD => {
+                self.fp2_addsub_replay::<Bls12381BaseField>(FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_SUB => {
+                self.fp2_addsub_replay::<Bls12381BaseField>(FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_MUL => {
+                self.fp2_mul_replay::<Bls12381BaseField>();
+                extra_cycles = 1;
+                None
+            }
             _ => None,
         };
 
@@ -1148,6 +1294,31 @@ impl<'a> CoreVM<'a> {
             self.next_oracle_value(); // write preimage; see SHA_COMPRESS.
         }
         Ok(())
+    }
+
+    /// Replays an `fp_op`: pops `y`'s reads, then `x`'s write-preimage (the value actually needed
+    /// as an input -- see `ec_add_replay`'s doc comment for why the oracle order is y-then-x).
+    fn fp_op_replay<P: FpOpField>(&mut self, op: FieldOperation) {
+        let num_words = fp_num_words::<P>();
+        let y = self.next_oracle_values(num_words);
+        let x = self.next_oracle_values(num_words);
+        fp_op::<P>(&x, &y, op);
+    }
+
+    /// Replays an `fp2_addsub`: pops `y`'s reads, then `x`'s write-preimage.
+    fn fp2_addsub_replay<P: FpOpField>(&mut self, op: FieldOperation) {
+        let num_words = fp2_num_words::<P>();
+        let y = self.next_oracle_values(num_words);
+        let x = self.next_oracle_values(num_words);
+        fp2_addsub::<P>(&x, &y, op);
+    }
+
+    /// Replays an `fp2_mul`: pops `y`'s reads, then `x`'s write-preimage.
+    fn fp2_mul_replay<P: FpOpField>(&mut self) {
+        let num_words = fp2_num_words::<P>();
+        let y = self.next_oracle_values(num_words);
+        let x = self.next_oracle_values(num_words);
+        fp2_mul::<P>(&x, &y);
     }
 }
 

@@ -2,10 +2,16 @@
 //! vs. a documented no-op fallback.
 
 use super::MinimalExecutor;
-use crate::{register::Register, syscalls::SyscallCode, vm, ExecutionError};
+use crate::{events::FieldOperation, register::Register, syscalls::SyscallCode, vm, ExecutionError};
 use zkm_curves::{
     edwards::{ed25519::Ed25519, WORDS_FIELD_ELEMENT},
-    weierstrass::{bls12_381::Bls12381, bn254::Bn254, secp256k1::Secp256k1, secp256r1::Secp256r1},
+    weierstrass::{
+        bls12_381::{Bls12381, Bls12381BaseField},
+        bn254::{Bn254, Bn254BaseField},
+        secp256k1::Secp256k1,
+        secp256r1::Secp256r1,
+        FpOpField,
+    },
     EllipticCurve, COMPRESSED_POINT_BYTES,
 };
 use zkm_primitives::consts::{
@@ -63,6 +69,38 @@ impl MinimalExecutor {
         let x_words = bytes_to_words_le_vec(&x_bytes);
         self.mw_slice(slice_ptr, &x_words);
         Ok(())
+    }
+
+    /// `x_ptr = x_ptr op y_ptr` (mod `P::MODULUS`), writing the result back to `x_ptr`. Same
+    /// peek-x/read-y/write-x shape as `ec_add_dispatch`.
+    fn fp_dispatch<P: FpOpField>(&mut self, x_ptr: u32, y_ptr: u32, op: FieldOperation) {
+        let num_words = vm::fp_num_words::<P>();
+        let x = self.slice_peek(x_ptr, num_words);
+        let y = self.mr_slice(y_ptr, num_words);
+        self.clk += 1;
+        let result = vm::fp_op::<P>(&x, &y, op);
+        self.mw_slice(x_ptr, &result);
+    }
+
+    /// `x_ptr = x_ptr op y_ptr` in `P`'s degree-2 extension field, writing the result back to
+    /// `x_ptr`.
+    fn fp2_addsub_dispatch<P: FpOpField>(&mut self, x_ptr: u32, y_ptr: u32, op: FieldOperation) {
+        let num_words = vm::fp2_num_words::<P>();
+        let x = self.slice_peek(x_ptr, num_words);
+        let y = self.mr_slice(y_ptr, num_words);
+        self.clk += 1;
+        let result = vm::fp2_addsub::<P>(&x, &y, op);
+        self.mw_slice(x_ptr, &result);
+    }
+
+    /// `x_ptr *= y_ptr` in `P`'s degree-2 extension field, writing the result back to `x_ptr`.
+    fn fp2_mul_dispatch<P: FpOpField>(&mut self, x_ptr: u32, y_ptr: u32) {
+        let num_words = vm::fp2_num_words::<P>();
+        let x = self.slice_peek(x_ptr, num_words);
+        let y = self.mr_slice(y_ptr, num_words);
+        self.clk += 1;
+        let result = vm::fp2_mul::<P>(&x, &y);
+        self.mw_slice(x_ptr, &result);
     }
 
     /// Executes the `SYSCALL` at the current `pc`. Returns `next_pc` (the value the caller must
@@ -245,6 +283,66 @@ impl MinimalExecutor {
             }
             SyscallCode::ED_DECOMPRESS => {
                 self.ed_decompress_dispatch(arg1, arg2)?;
+                None
+            }
+            SyscallCode::BN254_FP_ADD => {
+                self.fp_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP_SUB => {
+                self.fp_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP_MUL => {
+                self.fp_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Mul);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP_ADD => {
+                self.fp_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP_SUB => {
+                self.fp_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP_MUL => {
+                self.fp_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Mul);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_ADD => {
+                self.fp2_addsub_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_SUB => {
+                self.fp2_addsub_dispatch::<Bn254BaseField>(arg1, arg2, FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_MUL => {
+                self.fp2_mul_dispatch::<Bn254BaseField>(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_ADD => {
+                self.fp2_addsub_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Add);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_SUB => {
+                self.fp2_addsub_dispatch::<Bls12381BaseField>(arg1, arg2, FieldOperation::Sub);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_MUL => {
+                self.fp2_mul_dispatch::<Bls12381BaseField>(arg1, arg2);
+                extra_cycles = 1;
                 None
             }
             // Everything else (precompiles, other Linux shims, hints, unconstrained, VERIFY): a

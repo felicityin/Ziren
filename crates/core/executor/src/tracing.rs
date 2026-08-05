@@ -20,9 +20,10 @@ use std::sync::Arc;
 use crate::{
     events::{
         AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, EdDecompressEvent,
-        EllipticCurveAddEvent, EllipticCurveDecompressEvent, EllipticCurveDoubleEvent, JumpEvent,
-        KeccakSpongeEvent, MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord,
-        MiscEvent, MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
+        EllipticCurveAddEvent, EllipticCurveDecompressEvent, EllipticCurveDoubleEvent,
+        FieldOperation, Fp2AddSubEvent, Fp2MulEvent, FpOpEvent, JumpEvent, KeccakSpongeEvent,
+        MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
+        MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
     },
     opcode::Opcode,
     register::Register,
@@ -30,14 +31,21 @@ use crate::{
     trace::MinimalTrace,
     vm::{
         ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, ed25519_decompress,
-        keccak_xor_block, keccakf, sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus,
-        KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
+        fp2_addsub, fp2_mul, fp2_num_words, fp_num_words, fp_op, keccak_xor_block, keccakf,
+        sha256_compress, sha256_extend_word, CoreVM, CoreVMStatus, KECCAK_GENERAL_BLOCK_SIZE_U64S,
+        KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
     },
     ExecutionError, ExecutionRecord, Instruction, Program,
 };
 use zkm_curves::{
     edwards::{ed25519::Ed25519, WORDS_FIELD_ELEMENT},
-    weierstrass::{bls12_381::Bls12381, bn254::Bn254, secp256k1::Secp256k1, secp256r1::Secp256r1},
+    weierstrass::{
+        bls12_381::{Bls12381, Bls12381BaseField},
+        bn254::{Bn254, Bn254BaseField},
+        secp256k1::Secp256k1,
+        secp256r1::Secp256r1,
+        FpOpField,
+    },
     EllipticCurve, COMPRESSED_POINT_BYTES,
 };
 
@@ -702,6 +710,65 @@ impl<'a> TracingVM<'a> {
         })
     }
 
+    /// Builds an `FpOpEvent`: pops `y`'s reads, then `x`'s write-preimage (the value actually
+    /// needed as an input -- see `ec_add_event`'s doc comment for why the oracle order is
+    /// y-then-x).
+    fn fp_op_event<P: FpOpField>(
+        &mut self,
+        clk: u64,
+        x_ptr: u32,
+        y_ptr: u32,
+        op: FieldOperation,
+    ) -> FpOpEvent {
+        let num_words = fp_num_words::<P>();
+        let y = self.core.next_oracle_values(num_words);
+        let y_memory_records: Vec<MemoryReadRecord> =
+            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let x = self.core.next_oracle_values(num_words);
+        let result = fp_op::<P>(&x, &y, op);
+        let x_memory_records: Vec<MemoryWriteRecord> = result
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        FpOpEvent { shard: 0, clk, x_ptr, x, y_ptr, y, op, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
+    }
+
+    /// Builds an `Fp2AddSubEvent`: pops `y`'s reads, then `x`'s write-preimage.
+    fn fp2_addsub_event<P: FpOpField>(
+        &mut self,
+        clk: u64,
+        x_ptr: u32,
+        y_ptr: u32,
+        op: FieldOperation,
+    ) -> Fp2AddSubEvent {
+        let num_words = fp2_num_words::<P>();
+        let y = self.core.next_oracle_values(num_words);
+        let y_memory_records: Vec<MemoryReadRecord> =
+            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let x = self.core.next_oracle_values(num_words);
+        let result = fp2_addsub::<P>(&x, &y, op);
+        let x_memory_records: Vec<MemoryWriteRecord> = result
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        Fp2AddSubEvent { shard: 0, clk, op, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
+    }
+
+    /// Builds an `Fp2MulEvent`: pops `y`'s reads, then `x`'s write-preimage.
+    fn fp2_mul_event<P: FpOpField>(&mut self, clk: u64, x_ptr: u32, y_ptr: u32) -> Fp2MulEvent {
+        let num_words = fp2_num_words::<P>();
+        let y = self.core.next_oracle_values(num_words);
+        let y_memory_records: Vec<MemoryReadRecord> =
+            y.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let x = self.core.next_oracle_values(num_words);
+        let result = fp2_mul::<P>(&x, &y);
+        let x_memory_records: Vec<MemoryWriteRecord> = result
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        Fp2MulEvent { shard: 0, clk, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
+    }
+
     /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
@@ -1159,6 +1226,114 @@ impl<'a> TracingVM<'a> {
                 );
                 None
             }
+            SyscallCode::BN254_FP_ADD | SyscallCode::BN254_FP_SUB | SyscallCode::BN254_FP_MUL => {
+                let op = match code {
+                    SyscallCode::BN254_FP_ADD => FieldOperation::Add,
+                    SyscallCode::BN254_FP_SUB => FieldOperation::Sub,
+                    _ => FieldOperation::Mul,
+                };
+                let event = self.fp_op_event::<Bn254BaseField>(clk, arg1, arg2, op);
+                self.record.precompile_events.add_event(
+                    SyscallCode::BN254_FP_ADD,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bn254Fp(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP_ADD | SyscallCode::BLS12381_FP_SUB | SyscallCode::BLS12381_FP_MUL => {
+                let op = match code {
+                    SyscallCode::BLS12381_FP_ADD => FieldOperation::Add,
+                    SyscallCode::BLS12381_FP_SUB => FieldOperation::Sub,
+                    _ => FieldOperation::Mul,
+                };
+                let event = self.fp_op_event::<Bls12381BaseField>(clk, arg1, arg2, op);
+                self.record.precompile_events.add_event(
+                    SyscallCode::BLS12381_FP_ADD,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bls12381Fp(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_ADD | SyscallCode::BN254_FP2_SUB => {
+                let op = if code == SyscallCode::BN254_FP2_ADD { FieldOperation::Add } else { FieldOperation::Sub };
+                let event = self.fp2_addsub_event::<Bn254BaseField>(clk, arg1, arg2, op);
+                self.record.precompile_events.add_event(
+                    SyscallCode::BN254_FP2_ADD,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bn254Fp2AddSub(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_ADD | SyscallCode::BLS12381_FP2_SUB => {
+                let op = if code == SyscallCode::BLS12381_FP2_ADD { FieldOperation::Add } else { FieldOperation::Sub };
+                let event = self.fp2_addsub_event::<Bls12381BaseField>(clk, arg1, arg2, op);
+                self.record.precompile_events.add_event(
+                    SyscallCode::BLS12381_FP2_ADD,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bls12381Fp2AddSub(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BN254_FP2_MUL => {
+                let event = self.fp2_mul_event::<Bn254BaseField>(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bn254Fp2Mul(event),
+                );
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::BLS12381_FP2_MUL => {
+                let event = self.fp2_mul_event::<Bls12381BaseField>(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::Bls12381Fp2Mul(event),
+                );
+                extra_cycles = 1;
+                None
+            }
             _ => None,
         };
 
@@ -1193,11 +1368,13 @@ mod tests {
         golden::run_golden,
         minimal::MinimalExecutor,
         programs::tests::{
-            bls12381_add_program, bls12381_double_program, bn254_add_program, bn254_double_program,
-            ed_add_program, ed_decompress_program, fibonacci_program, halt_only_program,
-            hello_world_program, secp256k1_add_program, secp256k1_double_program,
-            secp256r1_add_program, secp256r1_double_program, sha_compress_program,
-            sha_extend_program, simple_program, ssz_withdrawals_program,
+            bls12381_add_program, bls12381_double_program, bls12381_fp2_addsub_program,
+            bls12381_fp2_mul_program, bls12381_fp_program, bn254_add_program, bn254_double_program,
+            bn254_fp2_addsub_program, bn254_fp2_mul_program, bn254_fp_program, ed_add_program,
+            ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
+            secp256k1_add_program, secp256k1_double_program, secp256r1_add_program,
+            secp256r1_double_program, sha_compress_program, sha_extend_program, simple_program,
+            ssz_withdrawals_program,
         },
         register::NUM_REGISTERS,
     };
@@ -1337,5 +1514,35 @@ mod tests {
     #[test]
     fn matches_golden_ed_decompress_real_elf() {
         assert_matches_golden(ed_decompress_program, "ed_decompress_program");
+    }
+
+    #[test]
+    fn matches_golden_bn254_fp_real_elf() {
+        assert_matches_golden(bn254_fp_program, "bn254_fp_program");
+    }
+
+    #[test]
+    fn matches_golden_bn254_fp2_addsub_real_elf() {
+        assert_matches_golden(bn254_fp2_addsub_program, "bn254_fp2_addsub_program");
+    }
+
+    #[test]
+    fn matches_golden_bn254_fp2_mul_real_elf() {
+        assert_matches_golden(bn254_fp2_mul_program, "bn254_fp2_mul_program");
+    }
+
+    #[test]
+    fn matches_golden_bls12381_fp_real_elf() {
+        assert_matches_golden(bls12381_fp_program, "bls12381_fp_program");
+    }
+
+    #[test]
+    fn matches_golden_bls12381_fp2_addsub_real_elf() {
+        assert_matches_golden(bls12381_fp2_addsub_program, "bls12381_fp2_addsub_program");
+    }
+
+    #[test]
+    fn matches_golden_bls12381_fp2_mul_real_elf() {
+        assert_matches_golden(bls12381_fp2_mul_program, "bls12381_fp2_mul_program");
     }
 }

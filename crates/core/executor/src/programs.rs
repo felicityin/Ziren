@@ -6,11 +6,13 @@ pub mod tests {
     use crate::{Instruction, Opcode, Program};
 
     use test_artifacts::{
-        BLS12381_ADD_ELF, BLS12381_DECOMPRESS_ELF, BLS12381_DOUBLE_ELF, BN254_ADD_ELF,
-        BN254_DOUBLE_ELF, ED_ADD_ELF, ED_DECOMPRESS_ELF, FIBONACCI_ELF, HELLO_WORLD_ELF,
-        KECCAK_SPONGE_ELF, MAX_MEMORY_ELF, PANIC_ELF, SECP256K1_ADD_ELF, SECP256K1_DECOMPRESS_ELF,
-        SECP256K1_DOUBLE_ELF, SECP256R1_ADD_ELF, SECP256R1_DECOMPRESS_ELF, SECP256R1_DOUBLE_ELF,
-        SHA3_CHAIN_ELF, SHA_COMPRESS_ELF, SHA_EXTEND_ELF, U256XU2048_MUL_ELF, UNCONSTRAINED_ELF,
+        BLS12381_ADD_ELF, BLS12381_DECOMPRESS_ELF, BLS12381_DOUBLE_ELF, BLS12381_FP2_ADDSUB_ELF,
+        BLS12381_FP2_MUL_ELF, BLS12381_FP_ELF, BN254_ADD_ELF, BN254_DOUBLE_ELF,
+        BN254_FP2_ADDSUB_ELF, BN254_FP2_MUL_ELF, BN254_FP_ELF, ED_ADD_ELF, ED_DECOMPRESS_ELF,
+        FIBONACCI_ELF, HELLO_WORLD_ELF, KECCAK_SPONGE_ELF, MAX_MEMORY_ELF, PANIC_ELF,
+        SECP256K1_ADD_ELF, SECP256K1_DECOMPRESS_ELF, SECP256K1_DOUBLE_ELF, SECP256R1_ADD_ELF,
+        SECP256R1_DECOMPRESS_ELF, SECP256R1_DOUBLE_ELF, SHA3_CHAIN_ELF, SHA_COMPRESS_ELF,
+        SHA_EXTEND_ELF, U256XU2048_MUL_ELF, UNCONSTRAINED_ELF,
     };
 
     #[must_use]
@@ -94,6 +96,66 @@ pub mod tests {
     #[must_use]
     pub fn sha_compress_program() -> Program {
         Program::from(SHA_COMPRESS_ELF).unwrap()
+    }
+
+    /// Get the bn254 fp add/sub/mul program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bn254_fp_program() -> Program {
+        Program::from(BN254_FP_ELF).unwrap()
+    }
+
+    /// Get the bn254 fp2 add/sub program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bn254_fp2_addsub_program() -> Program {
+        Program::from(BN254_FP2_ADDSUB_ELF).unwrap()
+    }
+
+    /// Get the bn254 fp2 mul program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bn254_fp2_mul_program() -> Program {
+        Program::from(BN254_FP2_MUL_ELF).unwrap()
+    }
+
+    /// Get the bls12381 fp add/sub/mul program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bls12381_fp_program() -> Program {
+        Program::from(BLS12381_FP_ELF).unwrap()
+    }
+
+    /// Get the bls12381 fp2 add/sub program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bls12381_fp2_addsub_program() -> Program {
+        Program::from(BLS12381_FP2_ADDSUB_ELF).unwrap()
+    }
+
+    /// Get the bls12381 fp2 mul program.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the program fails to load.
+    #[must_use]
+    pub fn bls12381_fp2_mul_program() -> Program {
+        Program::from(BLS12381_FP2_MUL_ELF).unwrap()
     }
 
     /// Get the ed25519 add program.
