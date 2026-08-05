@@ -3,10 +3,13 @@ mod context;
 mod cost;
 pub mod events;
 mod executor;
+#[cfg(test)]
+mod golden;
 pub mod hook;
 mod instruction;
 mod io;
 pub mod memory;
+mod minimal;
 mod opcode;
 mod program;
 #[cfg(test)]
@@ -14,10 +17,14 @@ pub mod programs;
 mod record;
 mod register;
 pub mod report;
+mod splicing;
 mod state;
 pub mod subproof;
 pub mod syscalls;
+mod trace;
+mod tracing;
 mod utils;
+mod vm;
 
 pub use air::*;
 pub use context::*;

@@ -1,0 +1,733 @@
+//! `TracingVM` -- replays a [`SplicedMinimalTrace`]-shaped [`MinimalTrace`] shard and constructs
+//! the `ExecutionRecord` events that describe it, using the same oracle-driven `CoreVM` primitives
+//! `SplicingVM` uses for shard-cut accounting. Event *values* (opcode, operands, results) and
+//! event *counts* (which `ExecutionRecord` vector each instruction routes to, including the
+//! `op_a == 0` special cases the legacy executor's chips route separately) are built to match the
+//! legacy `Executor` exactly.
+//!
+//! Per-operand `MemoryRecordEnum`/`MemoryWriteRecord` fields on each event (the register/memory
+//! timestamp bookkeeping the AIR's memory-consistency argument needs for real proving) are left at
+//! placeholder values (the correct *value*, a `0`/current-`clk` timestamp) rather than the
+//! precise, chased-through-every-access values the legacy executor computes. Likewise
+//! `bump_memory_events`/`cpu_local_memory_access`/`global_memory_initialize_events`/
+//! `global_memory_finalize_events`/`global_lookup_events` are not populated at all yet. Real
+//! proving needs all of this to be exact; it is not built here yet.
+
+#![allow(dead_code)]
+
+use std::sync::Arc;
+
+use crate::{
+    events::{
+        AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, JumpEvent, MemInstrEvent,
+        MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent, MovCondEvent,
+        SyscallEvent,
+    },
+    opcode::Opcode,
+    register::Register,
+    syscalls::SyscallCode,
+    trace::MinimalTrace,
+    vm::{CoreVM, CoreVMStatus},
+    ExecutionError, ExecutionRecord, Instruction, Program,
+};
+
+pub(crate) struct TracingVM<'a> {
+    core: CoreVM<'a>,
+    record: &'a mut ExecutionRecord,
+}
+
+impl<'a> TracingVM<'a> {
+    #[must_use]
+    pub(crate) fn new<T: MinimalTrace>(
+        trace: &'a T,
+        program: Arc<Program>,
+        max_syscall_cycles: u32,
+        record: &'a mut ExecutionRecord,
+    ) -> Self {
+        Self { core: CoreVM::new(trace, program, max_syscall_cycles), record }
+    }
+
+    #[must_use]
+    pub(crate) fn registers(&self) -> [u32; crate::register::NUM_REGISTERS] {
+        self.core.registers()
+    }
+
+    #[must_use]
+    pub(crate) fn pc(&self) -> u32 {
+        self.core.pc()
+    }
+
+    #[must_use]
+    pub(crate) fn clk(&self) -> u64 {
+        self.core.clk()
+    }
+
+    /// Replays instructions until the program halts or `clk` reaches `clk_end`, constructing
+    /// events for each one.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any [`ExecutionError`] from executing an instruction.
+    pub(crate) fn execute(&mut self) -> Result<CoreVMStatus, ExecutionError> {
+        loop {
+            self.execute_instruction()?;
+            if self.core.is_halted() {
+                return Ok(CoreVMStatus::Done);
+            }
+            if self.core.clk() >= self.core.clk_end() {
+                return Ok(CoreVMStatus::TraceEnd);
+            }
+        }
+    }
+
+    fn execute_instruction(&mut self) -> Result<(), ExecutionError> {
+        let instruction = self.core.program().fetch(self.core.pc());
+
+        let pre_clk = self.core.clk();
+        let pc = self.core.pc();
+        let next_pc_before = self.core.next_pc();
+        self.core.bump_clk();
+        let post_clk = self.core.clk();
+        if post_clk != pre_clk {
+            self.record.bump_clk_high_events.push(BumpClkHighEvent {
+                prev_clk: pre_clk,
+                increment: post_clk - pre_clk,
+                pc,
+                next_pc: next_pc_before,
+            });
+        }
+
+        let clk = self.core.clk();
+        self.record.first_instruction_pc.get_or_insert(self.core.pc());
+        self.record.first_instruction_clk.get_or_insert(clk);
+
+        self.execute_operation(&instruction, clk)?;
+
+        self.record.last_next_pc = self.core.pc();
+        self.record.last_instruction_clk = clk;
+        self.record.last_timestamp = clk + 5;
+
+        self.core.advance_clk();
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn execute_operation(&mut self, instruction: &Instruction, clk: u64) -> Result<(), ExecutionError> {
+        let pc = self.core.pc();
+        let next_pc_in = self.core.next_pc();
+        let mut next_next_pc = self.core.next_pc().wrapping_add(4);
+        self.core.set_next_is_delayslot(false);
+        let op_a_is_zero = instruction.op_a == Register::ZERO as u8;
+
+        if instruction.is_alu_instruction() {
+            let (rd, b, c) = self.alu_operands(instruction);
+            let (a, hi) = crate::vm::alu_compute(instruction.opcode, b, c)?;
+            self.set_alu_dest(instruction.opcode, rd, a, hi);
+            self.emit_alu_event(clk, pc, next_pc_in, instruction, op_a_is_zero, a, b, c, hi);
+        } else if instruction.is_memory_load_instruction() {
+            self.execute_load(instruction, clk, pc, next_pc_in, op_a_is_zero)?;
+        } else if instruction.is_memory_store_instruction() {
+            self.execute_store(instruction, clk, pc, next_pc_in)?;
+        } else if instruction.is_branch_instruction() {
+            let rs: Register = instruction.op_a.into();
+            let src1 = self.core.reg(rs);
+            let src2 = if instruction.opcode.only_one_operand() {
+                0
+            } else {
+                self.core.reg((instruction.op_b as u8).into())
+            };
+            let offset = instruction.op_c;
+            if crate::vm::branch_taken(instruction.opcode, src1, src2) {
+                next_next_pc = crate::vm::branch_target(next_pc_in, offset);
+            }
+            self.core.set_next_is_delayslot(true);
+            self.record.branch_events.push(BranchEvent::new(
+                clk,
+                pc,
+                next_pc_in,
+                next_next_pc,
+                instruction.opcode,
+                src1,
+                src2,
+                offset,
+            ));
+        } else if instruction.is_jump_instruction() {
+            let link: Register = instruction.op_a.into();
+            let (return_pc, target) = match instruction.opcode {
+                Opcode::Jump => {
+                    let target_reg: Register = (instruction.op_b as u8).into();
+                    let target_pc = self.core.reg(target_reg);
+                    crate::vm::jump_jr_result(next_pc_in, target_pc)
+                }
+                Opcode::Jumpi => crate::vm::jump_jumpi_result(next_pc_in, instruction.op_b),
+                Opcode::JumpDirect => crate::vm::jump_direct_result(next_pc_in, instruction.op_b),
+                _ => unreachable!("not a jump opcode: {:?}", instruction.opcode),
+            };
+            self.core.set_reg(link, return_pc);
+            next_next_pc = target;
+            self.core.set_next_is_delayslot(true);
+            let b = if instruction.opcode == Opcode::Jump {
+                self.core.reg((instruction.op_b as u8).into())
+            } else {
+                instruction.op_b
+            };
+            let event = JumpEvent::new(clk, pc, next_pc_in, next_next_pc, instruction.opcode, return_pc, b, 0);
+            match instruction.opcode {
+                Opcode::Jump => self.record.jump_events.push(event),
+                Opcode::Jumpi => self.record.jumpi_events.push(event),
+                Opcode::JumpDirect => self.record.jumpdirect_events.push(event),
+                _ => unreachable!(),
+            }
+        } else if instruction.is_mov_cond_instruction() {
+            let rd: Register = instruction.op_a.into();
+            let rs: Register = (instruction.op_b as u8).into();
+            let rt: Register = (instruction.op_c as u8).into();
+            let prev_a = self.core.reg(rd);
+            let b = self.core.reg(rs);
+            let c = self.core.reg(rt);
+            let a = crate::vm::condmov_result(instruction.opcode, prev_a, b, c);
+            self.core.set_reg(rd, a);
+            if op_a_is_zero {
+                self.record.alu_x0_events.push(AluEvent::new(pc, instruction.opcode, a, b, c));
+            } else {
+                self.record
+                    .movcond_events
+                    .push(MovCondEvent::new(clk, pc, next_pc_in, instruction.opcode, a, b, c, prev_a));
+            }
+        } else if instruction.is_misc_instruction() {
+            self.execute_misc(instruction, clk, pc, next_pc_in, op_a_is_zero)?;
+        } else if instruction.is_syscall_instruction() {
+            let syscall_next_pc = self.execute_syscall(clk, pc)?;
+            next_next_pc = syscall_next_pc.wrapping_add(4);
+            self.core.set_pc(syscall_next_pc);
+            self.core.set_next_pc(next_next_pc);
+            return Ok(());
+        } else {
+            return Err(ExecutionError::UnsupportedInstruction(instruction.opcode as u32));
+        }
+
+        if next_next_pc == 0 {
+            return Err(ExecutionError::NullPointerReference());
+        }
+        self.core.set_pc(next_pc_in);
+        self.core.set_next_pc(next_next_pc);
+        Ok(())
+    }
+
+    fn alu_operands(&self, instruction: &Instruction) -> (Register, u32, u32) {
+        if !instruction.imm_c {
+            let rd = instruction.op_a.into();
+            let b = self.core.reg((instruction.op_b as u8).into());
+            let c = self.core.reg((instruction.op_c as u8).into());
+            (rd, b, c)
+        } else if !instruction.imm_b {
+            let rd = instruction.op_a.into();
+            let b = self.core.reg((instruction.op_b as u8).into());
+            (rd, b, instruction.op_c)
+        } else {
+            (instruction.op_a.into(), instruction.op_b, instruction.op_c)
+        }
+    }
+
+    fn set_alu_dest(&mut self, opcode: Opcode, rd: Register, a: u32, hi: u32) {
+        if opcode.is_use_lo_hi_alu() {
+            self.core.set_reg(Register::LO, a);
+            self.core.set_reg(Register::HI, hi);
+        } else {
+            self.core.set_reg(rd, a);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_alu_event(
+        &mut self,
+        clk: u64,
+        pc: u32,
+        next_pc: u32,
+        instruction: &Instruction,
+        op_a_is_zero: bool,
+        a: u32,
+        b: u32,
+        c: u32,
+        hi: u32,
+    ) {
+        let event = AluEvent { clk, pc, next_pc, opcode: instruction.opcode, hi, a, b, c, a_record: None, b_record: None, c_record: None };
+        let mut event_comp = CompAluEvent::new_with_hi(pc, instruction.opcode, a, b, c, hi);
+        event_comp.clk = clk;
+        event_comp.next_pc = next_pc;
+        if instruction.opcode.is_use_lo_hi_alu() {
+            event_comp.hi_record_is_real = true;
+            event_comp.hi_record = MemoryWriteRecord { value: hi, timestamp: clk, prev_value: 0, prev_timestamp: 0 };
+        }
+        let imm_b = instruction.imm_b;
+        match instruction.opcode {
+            // Register+immediate form (`imm_c && !imm_b`) is `Addi`; fully-immediate
+            // (`imm_b && imm_c`) is `AddNoop`; register-register (`!imm_c`) falls through to `Add`.
+            Opcode::ADD if instruction.imm_c && !imm_b => self.record.addi_events.push(event),
+            Opcode::ADD if imm_b => self.record.add_noop_events.push(event),
+            Opcode::ADD if op_a_is_zero => self.record.alu_x0_events.push(event),
+            Opcode::ADD => self.record.add_events.push(event),
+            Opcode::SUB if op_a_is_zero => self.record.alu_x0_events.push(event),
+            Opcode::SUB => self.record.sub_events.push(event),
+            Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
+            }
+            Opcode::XOR | Opcode::OR | Opcode::AND | Opcode::NOR => self.record.bitwise_events.push(event),
+            Opcode::SLL if imm_b => self.record.lui_events.push(event),
+            Opcode::SLL if op_a_is_zero => self.record.alu_x0_events.push(event),
+            Opcode::SLL => self.record.shift_left_events.push(event),
+            Opcode::SRL | Opcode::SRA | Opcode::ROR if op_a_is_zero => {
+                self.record.alu_x0_events.push(event);
+            }
+            Opcode::SRL | Opcode::SRA | Opcode::ROR => self.record.shift_right_events.push(event),
+            Opcode::SLT | Opcode::SLTU if instruction.imm_c => self.record.slti_events.push(event),
+            Opcode::SLT | Opcode::SLTU if op_a_is_zero => self.record.alu_x0_events.push(event),
+            Opcode::SLT | Opcode::SLTU => self.record.lt_events.push(event),
+            Opcode::MUL if op_a_is_zero => self.record.alu_x0_events.push(event),
+            Opcode::MUL | Opcode::MULT | Opcode::MULTU => self.record.mul_events.push(event_comp),
+            Opcode::MOD | Opcode::MODU if op_a_is_zero => self.record.alu_x0_events.push(event),
+            Opcode::DIV | Opcode::DIVU | Opcode::MOD | Opcode::MODU => self.record.divrem_events.push(event_comp),
+            Opcode::CLZ | Opcode::CLO if op_a_is_zero => self.record.alu_x0_events.push(event),
+            Opcode::CLZ | Opcode::CLO => self.record.cloclz_events.push(event),
+            _ => {}
+        }
+    }
+
+    fn execute_load(
+        &mut self,
+        instruction: &Instruction,
+        clk: u64,
+        pc: u32,
+        next_pc: u32,
+        op_a_is_zero: bool,
+    ) -> Result<(), ExecutionError> {
+        let rt_reg: Register = instruction.op_a.into();
+        let rs_reg: Register = (instruction.op_b as u8).into();
+        let offset = instruction.op_c;
+        let rs_raw = self.core.reg(rs_reg);
+        let rt = self.core.reg(rt_reg);
+
+        let addr = rs_raw.wrapping_add(offset);
+        let mem = self.core.next_oracle_value();
+        let rs = addr;
+
+        let val = match instruction.opcode {
+            Opcode::LH => {
+                if addr & 1 != 0 {
+                    return Err(ExecutionError::InvalidMemoryAccess(Opcode::LH, addr));
+                }
+                sign_extend::<16>((mem >> ((rs & 2) * 8)) & 0xffff)
+            }
+            Opcode::LWL => {
+                let i = rs & 3;
+                let val = mem << (24 - i * 8);
+                let mask: u32 = 0xFFFF_FFFF_u32 << (24 - i * 8);
+                (rt & (!mask)) | val
+            }
+            Opcode::LW => {
+                if addr & 3 != 0 {
+                    return Err(ExecutionError::InvalidMemoryAccess(Opcode::LW, addr));
+                }
+                mem
+            }
+            Opcode::LBU => (mem >> ((rs & 3) * 8)) & 0xff,
+            Opcode::LHU => {
+                if addr & 1 != 0 {
+                    return Err(ExecutionError::InvalidMemoryAccess(Opcode::LHU, addr));
+                }
+                (mem >> ((rs & 2) * 8)) & 0xffff
+            }
+            Opcode::LWR => {
+                let i = rs & 3;
+                let val = mem >> (i * 8);
+                let mask = 0xFFFF_FFFF_u32 >> (i * 8);
+                (rt & (!mask)) | val
+            }
+            Opcode::LL => {
+                if addr & 3 != 0 {
+                    return Err(ExecutionError::InvalidMemoryAccess(Opcode::LL, addr));
+                }
+                mem
+            }
+            Opcode::LB => sign_extend::<8>((mem >> ((rs & 3) * 8)) & 0xff),
+            _ => unreachable!("not a load opcode: {:?}", instruction.opcode),
+        };
+        self.core.set_reg(rt_reg, val);
+
+        let event = MemInstrEvent::new(
+            clk,
+            pc,
+            next_pc,
+            instruction.opcode,
+            val,
+            rs_raw,
+            offset,
+            MemoryRecordEnum::Read(MemoryReadRecord { value: mem, timestamp: clk, prev_timestamp: 0 }),
+            rt,
+        );
+        match instruction.opcode {
+            Opcode::LW | Opcode::LL if op_a_is_zero => self.record.load_x0_events.push(event),
+            Opcode::LW | Opcode::LL => self.record.load_word_events.push(event),
+            Opcode::LB | Opcode::LBU => self.record.load_byte_events.push(event),
+            Opcode::LH | Opcode::LHU => self.record.load_half_events.push(event),
+            Opcode::LWL | Opcode::LWR => self.record.load_word_unaligned_events.push(event),
+            _ => unreachable!("not a load opcode: {:?}", instruction.opcode),
+        }
+        Ok(())
+    }
+
+    fn execute_store(
+        &mut self,
+        instruction: &Instruction,
+        clk: u64,
+        pc: u32,
+        next_pc: u32,
+    ) -> Result<(), ExecutionError> {
+        let rt_reg: Register = instruction.op_a.into();
+        let rs_reg: Register = (instruction.op_b as u8).into();
+        let offset = instruction.op_c;
+        let rs = self.core.reg(rs_reg);
+        let rt = self.core.reg(rt_reg);
+
+        let addr = rs.wrapping_add(offset);
+        let mem = self.core.next_oracle_value();
+
+        let val = match instruction.opcode {
+            Opcode::SB => {
+                let i = addr & 3;
+                let val = (rt & 0xff) << (i * 8);
+                let mask = 0xFFFF_FFFF_u32 ^ (0xff << (i * 8));
+                (mem & mask) | val
+            }
+            Opcode::SH => {
+                if addr & 1 != 0 {
+                    return Err(ExecutionError::InvalidMemoryAccess(Opcode::SH, addr));
+                }
+                let i = addr & 2;
+                let val = (rt & 0xffff) << (i * 8);
+                let mask = 0xFFFF_FFFF_u32 ^ (0xffff << (i * 8));
+                (mem & mask) | val
+            }
+            Opcode::SWL => {
+                let i = addr & 3;
+                let val = rt >> (24 - i * 8);
+                let mask = 0xFFFF_FFFF_u32 >> (24 - i * 8);
+                (mem & (!mask)) | val
+            }
+            Opcode::SW => {
+                if addr & 3 != 0 {
+                    return Err(ExecutionError::InvalidMemoryAccess(Opcode::SW, addr));
+                }
+                rt
+            }
+            Opcode::SWR => {
+                let i = addr & 3;
+                let val = rt << (i * 8);
+                let mask = 0xFFFF_FFFF_u32 << (i * 8);
+                (mem & (!mask)) | val
+            }
+            Opcode::SC => {
+                if addr & 3 != 0 {
+                    return Err(ExecutionError::InvalidMemoryAccess(Opcode::SC, addr));
+                }
+                rt
+            }
+            _ => unreachable!("not a store opcode: {:?}", instruction.opcode),
+        };
+
+        let a = if instruction.opcode == Opcode::SC {
+            self.core.set_reg(rt_reg, 1);
+            1
+        } else {
+            rt
+        };
+        let event = MemInstrEvent::new(
+            clk,
+            pc,
+            next_pc,
+            instruction.opcode,
+            a,
+            rs,
+            offset,
+            MemoryRecordEnum::Write(MemoryWriteRecord { value: val, timestamp: clk, prev_value: mem, prev_timestamp: 0 }),
+            rt,
+        );
+        match instruction.opcode {
+            Opcode::SW => self.record.store_word_events.push(event),
+            Opcode::SB => self.record.store_byte_events.push(event),
+            Opcode::SH => self.record.store_half_events.push(event),
+            Opcode::SWL | Opcode::SWR => self.record.store_word_unaligned_events.push(event),
+            Opcode::SC => self.record.store_conditional_events.push(event),
+            _ => unreachable!("not a store opcode: {:?}", instruction.opcode),
+        }
+        Ok(())
+    }
+
+    fn execute_misc(
+        &mut self,
+        instruction: &Instruction,
+        clk: u64,
+        pc: u32,
+        next_pc: u32,
+        op_a_is_zero: bool,
+    ) -> Result<(), ExecutionError> {
+        if instruction.opcode == Opcode::WSBH {
+            let rd: Register = instruction.op_a.into();
+            let rt: Register = (instruction.op_b as u8).into();
+            let b = self.core.reg(rt);
+            let a = crate::vm::wsbh(b);
+            self.core.set_reg(rd, a);
+            if op_a_is_zero {
+                self.record.alu_x0_events.push(AluEvent::new(pc, instruction.opcode, a, b, 0));
+            } else {
+                self.record.movcond_events.push(MovCondEvent::new(clk, pc, next_pc, instruction.opcode, a, b, 0, 0));
+            }
+            return Ok(());
+        }
+
+        let rd: Register = instruction.op_a.into();
+        let rt: Register = (instruction.op_b as u8).into();
+        let c = instruction.op_c;
+        match instruction.opcode {
+            Opcode::SEXT => {
+                let b = self.core.reg(rt);
+                let a = crate::vm::sext(b, c);
+                self.core.set_reg(rd, a);
+                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0);
+            }
+            Opcode::EXT => {
+                let b = self.core.reg(rt);
+                let a = crate::vm::ext(b, c)?;
+                self.core.set_reg(rd, a);
+                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0);
+            }
+            Opcode::INS => {
+                let b = self.core.reg(rt);
+                let prev_a = self.core.reg(rd);
+                let a = crate::vm::ins(prev_a, b, c)?;
+                self.core.set_reg(rd, a);
+                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, prev_a);
+            }
+            Opcode::TEQ => {
+                let rs: Register = instruction.op_a.into();
+                let rt: Register = (instruction.op_b as u8).into();
+                let src2 = self.core.reg(rt);
+                let src1 = self.core.reg(rs);
+                crate::vm::teq(src1, src2)?;
+                self.record
+                    .teq_events
+                    .push(MiscEvent::new(clk, pc, next_pc, instruction.opcode, src1, src2, 0, 0, MemoryWriteRecord::default()));
+            }
+            Opcode::MADDU | Opcode::MSUBU | Opcode::MADD | Opcode::MSUB => {
+                let lo_reg: Register = instruction.op_a.into();
+                let rs: Register = (instruction.op_c as u8).into();
+                let c_val = self.core.reg(rs);
+                let b = self.core.reg(rt);
+                let lo = self.core.reg(Register::LO);
+                let hi = self.core.reg(Register::HI);
+                let (out_lo, out_hi) = match instruction.opcode {
+                    Opcode::MADDU => crate::vm::maddu(b, c_val, lo, hi),
+                    Opcode::MSUBU => crate::vm::msubu(b, c_val, lo, hi),
+                    Opcode::MADD => crate::vm::madd(b, c_val, lo, hi),
+                    Opcode::MSUB => crate::vm::msub(b, c_val, lo, hi),
+                    _ => unreachable!(),
+                };
+                self.core.set_reg(lo_reg, out_lo);
+                self.core.set_reg(Register::HI, out_hi);
+                let hi_record = MemoryWriteRecord { value: out_hi, timestamp: clk, prev_value: hi, prev_timestamp: 0 };
+                self.record.maddsub_events.push(MiscEvent::new(
+                    clk,
+                    pc,
+                    next_pc,
+                    instruction.opcode,
+                    out_lo,
+                    b,
+                    c_val,
+                    lo,
+                    hi_record,
+                ));
+            }
+            _ => unreachable!("not a misc opcode: {:?}", instruction.opcode),
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_misc_or_x0(
+        &mut self,
+        op_a_is_zero: bool,
+        clk: u64,
+        pc: u32,
+        next_pc: u32,
+        opcode: Opcode,
+        a: u32,
+        b: u32,
+        c: u32,
+        prev_a: u32,
+    ) {
+        if op_a_is_zero {
+            self.record.alu_x0_events.push(AluEvent::new(pc, opcode, a, b, c));
+            return;
+        }
+        let event = MiscEvent::new(clk, pc, next_pc, opcode, a, b, c, prev_a, MemoryWriteRecord::default());
+        match opcode {
+            Opcode::SEXT => self.record.sext_events.push(event),
+            Opcode::INS => self.record.ins_events.push(event),
+            Opcode::EXT => self.record.ext_events.push(event),
+            _ => unreachable!("not a sext/ins/ext opcode: {opcode:?}"),
+        }
+    }
+
+    /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
+    /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
+    fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
+        let syscall_id = self.core.reg(Register::V0);
+        let code = SyscallCode::from_u32(syscall_id);
+        let arg1 = self.core.reg(Register::A0);
+        let arg2 = self.core.reg(Register::A1);
+
+        let mut next_pc = pc.wrapping_add(4);
+        let a0_result: Option<u32> = match code {
+            SyscallCode::HALT => {
+                let exit_code = arg1;
+                next_pc = 0;
+                if exit_code != 0 {
+                    return Err(ExecutionError::HaltWithNonZeroExitCode(exit_code));
+                }
+                self.record.last_exit_code = exit_code;
+                None
+            }
+            SyscallCode::WRITE => {
+                let fd = arg1;
+                let write_buf = arg2;
+                let nbytes = self.core.reg(Register::A2);
+                let mut bytes = Vec::with_capacity(nbytes as usize);
+                for i in 0..nbytes {
+                    let word = self.core.next_oracle_value();
+                    bytes.push((word >> (((write_buf + i) % 4) * 8)) as u8);
+                }
+                let _ = (fd, bytes); // public_values_stream lives on MinimalExecutor/state, not
+                                     // ExecutionRecord -- TracingVM has no field to append it to
+                                     // yet (deferred alongside the other scoped-out bookkeeping).
+                None
+            }
+            SyscallCode::SYS_BRK => {
+                const MAX_HEAP_SIZE: u32 = 0x4000_0000;
+                let initial_brk = self
+                    .core
+                    .program()
+                    .image
+                    .get(&(Register::BRK as u32))
+                    .copied()
+                    .unwrap_or_else(|| self.core.reg(Register::BRK));
+                let limit = initial_brk
+                    .checked_add(MAX_HEAP_SIZE)
+                    .ok_or(ExecutionError::InvalidSyscallArgs())?
+                    .min(crate::program::MAX_MEMORY as u32);
+                let v0 = arg1.max(initial_brk);
+                if v0 > limit {
+                    return Err(ExecutionError::InvalidSyscallArgs());
+                }
+                self.core.set_reg(Register::A3, 0);
+                Some(v0)
+            }
+            _ => None,
+        };
+
+        let a0 = a0_result.unwrap_or(syscall_id);
+        self.core.set_reg(Register::V0, a0);
+        self.record.syscall_events.push(SyscallEvent {
+            pc,
+            next_pc,
+            clk,
+            a_record: MemoryWriteRecord { value: a0, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+            a_record_is_real: true,
+            b_record: None,
+            c_record: None,
+            syscall_id,
+            arg1,
+            arg2,
+        });
+        Ok(next_pc)
+    }
+}
+
+fn sign_extend<const BITS: u32>(value: u32) -> u32 {
+    let shift = 32 - BITS;
+    (((value << shift) as i32) >> shift) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        golden::run_golden,
+        minimal::MinimalExecutor,
+        programs::tests::{fibonacci_program, halt_only_program, hello_world_program, simple_program},
+        register::NUM_REGISTERS,
+    };
+    use std::collections::BTreeMap;
+    use zkm_hypercube::record::MachineRecord;
+
+    /// Fields this scoped `TracingVM` doesn't populate yet (register/memory-timestamp
+    /// bookkeeping the AIR's memory-consistency argument needs, and the postprocess-derived
+    /// global-memory-init/finalize/lookup events) -- see the module doc. Excluded from the
+    /// count comparison below; every other field must match the legacy `Executor` exactly.
+    const DEFERRED_FIELDS: &[&str] = &[
+        "bump_memory_events",
+        "local_memory_access_events",
+        "global_memory_initialize_events",
+        "global_memory_finalize_events",
+        "byte_lookups",
+    ];
+
+    fn run_tracing(program: Program) -> (BTreeMap<String, usize>, [u32; NUM_REGISTERS], u32, u64) {
+        let program = Arc::new(program);
+        let mut minimal = MinimalExecutor::new(program.clone(), u64::MAX / 2);
+        let chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
+        let max_syscall_cycles = minimal.max_syscall_cycles();
+
+        let mut record = ExecutionRecord::new(program.clone());
+        let mut tracing = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        let status = tracing.execute().unwrap();
+        assert_eq!(status, CoreVMStatus::Done, "expected the whole run to fit in one shard");
+        let (registers, pc, clk) = (tracing.registers(), tracing.pc(), tracing.clk());
+
+        let counts: BTreeMap<String, usize> = record.stats().into_iter().collect();
+        (counts, registers, pc, clk)
+    }
+
+    fn assert_matches_golden(program: impl Fn() -> Program, name: &str) {
+        let golden = run_golden(program());
+        let (counts, registers, pc, clk) = run_tracing(program());
+
+        let mut golden_counts = golden.event_counts;
+        for field in DEFERRED_FIELDS {
+            golden_counts.remove(*field);
+        }
+        assert_eq!(counts, golden_counts, "{name}: event counts mismatch");
+        assert_eq!(registers, golden.final_registers, "{name}: final registers mismatch");
+        assert_eq!(pc, golden.final_pc, "{name}: final pc mismatch");
+        assert_eq!(clk, golden.final_clk, "{name}: final clk mismatch");
+    }
+
+    #[test]
+    fn matches_golden_simple_program() {
+        assert_matches_golden(simple_program, "simple_program");
+    }
+
+    #[test]
+    fn matches_golden_halt_only_program() {
+        assert_matches_golden(halt_only_program, "halt_only_program");
+    }
+
+    #[test]
+    fn matches_golden_fibonacci_real_elf() {
+        assert_matches_golden(fibonacci_program, "fibonacci_program");
+    }
+
+    #[test]
+    fn matches_golden_hello_world_real_elf() {
+        assert_matches_golden(hello_world_program, "hello_world_program");
+    }
+}

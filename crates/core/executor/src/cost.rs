@@ -24,7 +24,7 @@ const BYTE_NUM_ROWS: u64 = 1 << 16;
 /// `SysLinux` isn't included here: every individual Linux syscall (`SYS_BRK`, `SYS_READ`, ...)
 /// already files its event under the single `SyscallCode::SYS_LINUX` key, so it's handled as a
 /// regular one-chip entry via that key like everything else.
-const PRECOMPILE_AIR_IDS: &[(SyscallCode, &[MipsAirId])] = &[
+pub(crate) const PRECOMPILE_AIR_IDS: &[(SyscallCode, &[MipsAirId])] = &[
     (SyscallCode::SHA_EXTEND, &[MipsAirId::ShaExtendControl, MipsAirId::ShaExtend]),
     (SyscallCode::SHA_COMPRESS, &[MipsAirId::ShaCompressControl, MipsAirId::ShaCompress]),
     (SyscallCode::ED_ADD, &[MipsAirId::EdAddAssign]),
