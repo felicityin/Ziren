@@ -135,6 +135,62 @@ impl<'a> TracingVM<'a> {
         Ok(())
     }
 
+    // ---- register-consistency record builders --------------------------------------------
+    //
+    // `op_a` is always tagged `MemoryAccessPosition::A`, `op_b` always `B`, `op_c` always `C`,
+    // regardless of instruction type or read/write role (confirmed by reading every
+    // `MemoryAccessPosition` call site in `executor.rs`'s `rr_cpu`/`rw_cpu` callers). These
+    // helpers must be called in the same order the real register touch happens in: reads before
+    // any write in the same instruction that could alias the same register (`alu_operands` before
+    // `set_alu_dest`, etc.), or a read built *after* an aliased write would see the write's own
+    // just-updated timestamp instead of the correct pre-instruction one.
+
+    /// Builds a real read record for `op_b`, given its already-resolved value.
+    fn read_op_b(&self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
+        MemoryRecordEnum::Read(MemoryReadRecord {
+            value,
+            timestamp: clk + MemoryAccessPosition::B as u64,
+            prev_timestamp: self.core.reg_timestamp(r),
+        })
+    }
+
+    /// Builds a real read record for `op_c`, given its already-resolved value.
+    fn read_op_c(&self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
+        MemoryRecordEnum::Read(MemoryReadRecord {
+            value,
+            timestamp: clk + MemoryAccessPosition::C as u64,
+            prev_timestamp: self.core.reg_timestamp(r),
+        })
+    }
+
+    /// Writes `value` to register `op_a` (`r`), returning the real write record for it.
+    fn write_op_a(&mut self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
+        let prev_value = self.core.reg(r);
+        let prev_timestamp = self.core.reg_timestamp(r);
+        self.core.set_reg(r, value, MemoryAccessPosition::A);
+        MemoryRecordEnum::Write(MemoryWriteRecord {
+            value: self.core.reg(r),
+            timestamp: clk + MemoryAccessPosition::A as u64,
+            prev_value,
+            prev_timestamp,
+        })
+    }
+
+    /// Writes `value` to `Register::HI`, returning the real (non-`Option`) write record for it --
+    /// `CompAluEvent`/`MiscEvent`'s `hi_record` field, unlike `a_record`/`b_record`/`c_record`,
+    /// isn't wrapped in `MemoryRecordEnum`/`Option` since it's only ever a write.
+    fn write_hi(&mut self, value: u32, clk: u64) -> MemoryWriteRecord {
+        let prev_value = self.core.reg(Register::HI);
+        let prev_timestamp = self.core.reg_timestamp(Register::HI);
+        self.core.set_reg(Register::HI, value, MemoryAccessPosition::HI);
+        MemoryWriteRecord {
+            value: self.core.reg(Register::HI),
+            timestamp: clk + MemoryAccessPosition::HI as u64,
+            prev_value,
+            prev_timestamp,
+        }
+    }
+
     #[allow(clippy::too_many_lines)]
     fn execute_operation(&mut self, instruction: &Instruction, clk: u64) -> Result<(), ExecutionError> {
         let pc = self.core.pc();
@@ -144,10 +200,12 @@ impl<'a> TracingVM<'a> {
         let op_a_is_zero = instruction.op_a == Register::ZERO as u8;
 
         if instruction.is_alu_instruction() {
-            let (rd, b, c) = self.alu_operands(instruction);
+            let (rd, b, b_record, c, c_record) = self.alu_operands(instruction, clk);
             let (a, hi) = crate::vm::alu_compute(instruction.opcode, b, c)?;
-            self.set_alu_dest(instruction.opcode, rd, a, hi);
-            self.emit_alu_event(clk, pc, next_pc_in, instruction, op_a_is_zero, a, b, c, hi);
+            self.emit_alu_event(
+                clk, pc, next_pc_in, instruction, op_a_is_zero, rd, a, b, c, hi, b_record,
+                c_record,
+            );
         } else if instruction.is_memory_load_instruction() {
             self.execute_load(instruction, clk, pc, next_pc_in, op_a_is_zero)?;
         } else if instruction.is_memory_store_instruction() {
@@ -238,27 +296,30 @@ impl<'a> TracingVM<'a> {
         Ok(())
     }
 
-    fn alu_operands(&self, instruction: &Instruction) -> (Register, u32, u32) {
+    /// Resolves an ALU instruction's operands, along with real read records for `op_b`/`op_c`
+    /// wherever they're actually registers (`None` for an immediate -- it has no backing
+    /// register, so no consistency record applies). Must run before any write this same
+    /// instruction performs (see the record-builder helpers' shared doc comment).
+    #[allow(clippy::type_complexity)]
+    fn alu_operands(
+        &self,
+        instruction: &Instruction,
+        clk: u64,
+    ) -> (Register, u32, Option<MemoryRecordEnum>, u32, Option<MemoryRecordEnum>) {
         if !instruction.imm_c {
             let rd = instruction.op_a.into();
-            let b = self.core.reg((instruction.op_b as u8).into());
-            let c = self.core.reg((instruction.op_c as u8).into());
-            (rd, b, c)
+            let b_reg: Register = (instruction.op_b as u8).into();
+            let c_reg: Register = (instruction.op_c as u8).into();
+            let b = self.core.reg(b_reg);
+            let c = self.core.reg(c_reg);
+            (rd, b, Some(self.read_op_b(b_reg, b, clk)), c, Some(self.read_op_c(c_reg, c, clk)))
         } else if !instruction.imm_b {
             let rd = instruction.op_a.into();
-            let b = self.core.reg((instruction.op_b as u8).into());
-            (rd, b, instruction.op_c)
+            let b_reg: Register = (instruction.op_b as u8).into();
+            let b = self.core.reg(b_reg);
+            (rd, b, Some(self.read_op_b(b_reg, b, clk)), instruction.op_c, None)
         } else {
-            (instruction.op_a.into(), instruction.op_b, instruction.op_c)
-        }
-    }
-
-    fn set_alu_dest(&mut self, opcode: Opcode, rd: Register, a: u32, hi: u32) {
-        if opcode.is_use_lo_hi_alu() {
-            self.core.set_reg(Register::LO, a, MemoryAccessPosition::A);
-            self.core.set_reg(Register::HI, hi, MemoryAccessPosition::HI);
-        } else {
-            self.core.set_reg(rd, a, MemoryAccessPosition::A);
+            (instruction.op_a.into(), instruction.op_b, None, instruction.op_c, None)
         }
     }
 
@@ -270,19 +331,49 @@ impl<'a> TracingVM<'a> {
         next_pc: u32,
         instruction: &Instruction,
         op_a_is_zero: bool,
+        rd: Register,
         a: u32,
         b: u32,
         c: u32,
         hi: u32,
+        b_record: Option<MemoryRecordEnum>,
+        c_record: Option<MemoryRecordEnum>,
     ) {
-        let event = AluEvent { clk, pc, next_pc, opcode: instruction.opcode, hi, a, b, c, a_record: None, b_record: None, c_record: None };
+        // Dual-result opcodes (MULT/MULTU/DIV/DIVU-family) write `LO` through the `A` slot and
+        // `HI` through its own slot; everything else writes `rd` through `A` alone. Written
+        // exactly once regardless of which of `event`/`event_comp` below actually gets pushed --
+        // see `write_op_a`/`write_hi`'s doc comments on why record-building must happen at the
+        // real write site, not be reconstructed from a stale post-write register read.
+        let (a_record, hi_record, hi_record_is_real) = if instruction.opcode.is_use_lo_hi_alu() {
+            let a_record = self.write_op_a(Register::LO, a, clk);
+            let hi_record = self.write_hi(hi, clk);
+            (a_record, hi_record, true)
+        } else {
+            let a_record = self.write_op_a(rd, a, clk);
+            (a_record, MemoryWriteRecord::default(), false)
+        };
+
+        let event = AluEvent {
+            clk,
+            pc,
+            next_pc,
+            opcode: instruction.opcode,
+            hi,
+            a,
+            b,
+            c,
+            a_record: Some(a_record),
+            b_record,
+            c_record,
+        };
         let mut event_comp = CompAluEvent::new_with_hi(pc, instruction.opcode, a, b, c, hi);
         event_comp.clk = clk;
         event_comp.next_pc = next_pc;
-        if instruction.opcode.is_use_lo_hi_alu() {
-            event_comp.hi_record_is_real = true;
-            event_comp.hi_record = MemoryWriteRecord { value: hi, timestamp: clk, prev_value: 0, prev_timestamp: 0 };
-        }
+        event_comp.hi_record_is_real = hi_record_is_real;
+        event_comp.hi_record = hi_record;
+        event_comp.a_record = Some(a_record);
+        event_comp.b_record = b_record;
+        event_comp.c_record = c_record;
         let imm_b = instruction.imm_b;
         match instruction.opcode {
             // Register+immediate form (`imm_c && !imm_b`) is `Addi`; fully-immediate
@@ -1915,5 +2006,75 @@ mod tests {
     #[test]
     fn matches_golden_poseidon2_permute_real_elf() {
         assert_matches_golden(poseidon2_permute_program, "poseidon2_permute_program");
+    }
+
+    /// Deep, field-level check (not just event counts) that `AluEvent`'s `a_record`/`b_record`/
+    /// `c_record` carry real, correctly-positioned timestamps -- `assert_matches_golden`'s count
+    /// comparison can't catch a wrong `MemoryAccessPosition` offset or a stale prev_timestamp, so
+    /// this hand-verifies the actual clk arithmetic against `Executor::rw_cpu`'s `clk + position`
+    /// scheme for a small, fully-known register-dependency chain: `$t0 = 5`, `$t1 = 7`,
+    /// `$t2 = $t0 + $t1` (register-register form, so `$t0`/`$t1` are real read records).
+    #[test]
+    fn alu_event_records_have_real_position_tagged_timestamps() {
+        const T0: u8 = Register::T0 as u8;
+        const T1: u8 = Register::T1 as u8;
+        const T2: u8 = Register::T2 as u8;
+        const ZERO: u8 = Register::ZERO as u8;
+
+        let program = Program::new(
+            vec![
+                Instruction::new(Opcode::ADD, T0, ZERO as u32, 5, false, true),
+                Instruction::new(Opcode::ADD, T1, ZERO as u32, 7, false, true),
+                Instruction::new(Opcode::ADD, T2, T0 as u32, T1 as u32, false, false),
+            ],
+            0,
+            0,
+        );
+
+        let program = Arc::new(program);
+        let mut minimal = MinimalExecutor::new(program.clone(), u64::MAX / 2);
+        let chunk = minimal.try_execute_chunk().unwrap().expect("expected at least one chunk");
+        let max_syscall_cycles = minimal.max_syscall_cycles();
+
+        let mut record = ExecutionRecord::new(program.clone());
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
+        assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
+
+        assert_eq!(record.add_events.len(), 1, "only the 3rd (register-register) ADD isn't Addi");
+        let event = record.add_events[0];
+
+        // Instruction 1 (`$t0 = 5`) retires at clk 1, so its own `a_record` (position A) is
+        // timestamped `1 + 3 = 4`. Instruction 2 (`$t1 = 7`) retires at clk `1 + 5 = 6`, so its
+        // `a_record` is timestamped `6 + 3 = 9`. Instruction 3 retires at clk `6 + 5 = 11`.
+        let instr3_clk = 11;
+        assert_eq!(event.clk, instr3_clk);
+
+        match event.b_record {
+            Some(MemoryRecordEnum::Read(r)) => {
+                assert_eq!(r.value, 5, "b (=$t0) should read the value instruction 1 wrote");
+                assert_eq!(r.timestamp, instr3_clk + MemoryAccessPosition::B as u64);
+                assert_eq!(r.prev_timestamp, 1 + MemoryAccessPosition::A as u64, "$t0's own last-write timestamp, from instruction 1");
+            }
+            other => panic!("expected a real b_record, got {other:?}"),
+        }
+
+        match event.c_record {
+            Some(MemoryRecordEnum::Read(r)) => {
+                assert_eq!(r.value, 7, "c (=$t1) should read the value instruction 2 wrote");
+                assert_eq!(r.timestamp, instr3_clk + MemoryAccessPosition::C as u64);
+                assert_eq!(r.prev_timestamp, 6 + MemoryAccessPosition::A as u64, "$t1's own last-write timestamp, from instruction 2");
+            }
+            other => panic!("expected a real c_record, got {other:?}"),
+        }
+
+        match event.a_record {
+            Some(MemoryRecordEnum::Write(r)) => {
+                assert_eq!(r.value, 12, "a (=$t2) should be 5 + 7");
+                assert_eq!(r.timestamp, instr3_clk + MemoryAccessPosition::A as u64);
+                assert_eq!(r.prev_value, 0, "$t2 was never written before");
+                assert_eq!(r.prev_timestamp, 0, "$t2 was never written before");
+            }
+            other => panic!("expected a real a_record, got {other:?}"),
+        }
     }
 }
