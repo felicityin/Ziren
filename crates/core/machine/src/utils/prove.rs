@@ -815,20 +815,243 @@ mod tests {
         run_test(program).unwrap();
     }
 
-    /// Real proof/verify over the `ec_add` precompile (via `SECP256R1_ADD`). Currently fails with
-    /// `GkrVerificationFailed(CumulativeSumMismatch(...))` -- two genuine bugs in this path have
-    /// been found and fixed (`minimal/syscall.rs`'s clk double-counting for the six precompile
-    /// dispatch functions that do their own mid-dispatch clk bump; `tracing.rs`'s precompile events
-    /// not carrying their own scratch-RAM `local_mem_access`, needed since `ExecutionRecord::split`
-    /// always carves a precompile event into its own record, separate from the record containing
-    /// the surrounding CPU trace), confirmed via `zkm_core_executor`'s golden differential test and
-    /// a clean global-scope interaction balance across all records, but a further bug remains
-    /// unresolved. `#[ignore]`d so the default suite stays green while that continues.
+    /// Real proof/verify over the `ec_add` precompile (via `SECP256R1_ADD`).
     #[test]
-    #[ignore = "known bug: GkrVerificationFailed(CumulativeSumMismatch) on the ec_add precompile \
-                path; root cause not yet fully identified, see doc comment"]
     fn run_test_secp256r1_add_real_elf() {
         let program = crate::programs::tests::secp256r1_add_program();
         run_test(program).unwrap();
+    }
+
+    /// Serial (single-threaded, no channels) re-implementation of `prove_with_context` +
+    /// `run_test_core`'s verify loop, proving and verifying each record immediately as it's
+    /// produced instead of pipelining trace generation/proving/verification across worker
+    /// threads. Manual diagnostic: pinpoints exactly which record fails without the multi-
+    /// threaded pipeline's log interleaving, and gives a much shorter call stack to add ad hoc
+    /// instrumentation to while investigating a `GkrVerificationFailed` mismatch.
+    #[test]
+    #[ignore = "manual diagnostic, run explicitly while investigating a GkrVerificationFailed mismatch"]
+    fn debug_serial_prove_verify_secp256r1_add() {
+        use std::sync::Arc;
+        use zkm_hypercube::{
+            air::PublicValues,
+            prover::{ProverSemaphore, ZkmShardProver},
+            ShardVerifier,
+        };
+
+        let program = Arc::new(crate::programs::tests::secp256r1_add_program());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        let shard_prover = ZkmShardProver::<MipsAir<KoalaBear>>::new(shard_verifier.clone());
+        let async_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (preprocessed, vk) =
+            async_rt.block_on(shard_prover.setup(program.clone(), ProverSemaphore::new(1)));
+        let pk = Arc::new(preprocessed.pk);
+        let prover_permits = ProverSemaphore::new(1);
+
+        let opts = ZKMCoreOpts::default();
+        let element_threshold = opts.lde_size_threshold;
+        let height_threshold = CORE_SHARD_HEIGHT_THRESHOLD;
+
+        let mut driver = ShardDriver::new(program.clone(), opts.shard_size as u64);
+        let mut state = PublicValues::<u32, u32>::default().reset();
+        let mut deferred = ExecutionRecord::new(program.clone());
+        let mut index = 0u32;
+        let mut record_num = 0usize;
+        loop {
+            let (spliced, done) =
+                next_shard(&mut driver, program.clone(), element_threshold, height_threshold).unwrap();
+            let mut record = trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+            if done {
+                let (init, fin) = driver.global_memory_events();
+                record.global_memory_initialize_events = init;
+                record.global_memory_finalize_events = fin;
+            }
+
+            state.execution_shard = index + 1;
+            state.is_execution_shard = record.contains_cpu() as u32;
+            if let Some(first_pc) = record.first_instruction_pc {
+                state.start_pc = first_pc;
+                state.next_pc = record.last_next_pc;
+                let first_clk = record.first_instruction_clk.unwrap();
+                state.initial_clk_high = (first_clk >> 24) as u32;
+                state.initial_clk_low = (first_clk & 0xFFFFFF) as u32;
+                let last_clk_high = record.last_instruction_clk >> 24;
+                state.last_clk_high = last_clk_high as u32;
+                state.last_clk_low = (record.last_timestamp - (last_clk_high << 24)) as u32;
+            }
+            state.committed_value_digest = record.public_values.committed_value_digest;
+            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+            record.public_values = state;
+
+            deferred.append(&mut record.defer());
+            let mut records = vec![record];
+            let mut split_records = deferred.split(done, records.last_mut(), opts.split_opts);
+
+            if !done {
+                state.execution_shard += 1;
+            }
+            for split_record in &mut split_records {
+                state.is_execution_shard = 0;
+                state.previous_init_addr = split_record.public_values.previous_init_addr;
+                state.last_init_addr = split_record.public_values.last_init_addr;
+                state.previous_finalize_addr = split_record.public_values.previous_finalize_addr;
+                state.last_finalize_addr = split_record.public_values.last_finalize_addr;
+                state.start_pc = state.next_pc;
+                state.initial_clk_high = state.last_clk_high;
+                state.initial_clk_low = state.last_clk_low;
+                split_record.public_values = state;
+            }
+            records.append(&mut split_records);
+
+            for mut record in records {
+                shard_prover.machine().generate_dependencies(std::iter::once(&mut record), None).unwrap();
+
+                let main_trace_data = async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
+                    record.clone(),
+                    shard_prover.max_log_row_count(),
+                    prover_permits.clone(),
+                ));
+                let shard_data = zkm_hypercube::prover::ShardData { pk: Arc::clone(&pk), main_trace_data };
+
+                let mut prove_challenger = ZkmGlobalContext::default_challenger();
+                shard_data.pk.vk.observe_into(&mut prove_challenger);
+                let (proof, _permit) = shard_prover.prove_shard_with_data(shard_data, prove_challenger);
+
+                let mut verify_challenger = ZkmGlobalContext::default_challenger();
+                vk.observe_into(&mut verify_challenger);
+                let result = shard_verifier.verify_shard(&vk, &proof, &mut verify_challenger);
+                println!(
+                    "record {record_num} (checkpoint {index}, is_execution_shard={}, contains_cpu={}): {}",
+                    record.public_values.is_execution_shard,
+                    record.contains_cpu(),
+                    if result.is_ok() { "OK".to_string() } else { format!("FAILED: {:?}", result.unwrap_err()) }
+                );
+                record_num += 1;
+            }
+
+            if done {
+                break;
+            }
+            index += 1;
+        }
+    }
+
+    /// Differential counterpart to `debug_serial_prove_verify_secp256r1_add`: same serial
+    /// generate_dependencies+generate_main_traces+prove_shard_with_data+verify_shard harness and
+    /// the same defer/split/state-threading logic, but starting from the *legacy* `Executor`'s
+    /// own record instead of the new MinimalExecutor/ShardDriver pipeline's. If this passes while
+    /// the new-pipeline version fails, the bug is confirmed to be in the new pipeline's record
+    /// construction (`TracingVM`/`MinimalExecutor`), not in the shared prover/verifier code both
+    /// versions call identically.
+    #[test]
+    #[ignore = "manual diagnostic, run explicitly while investigating a GkrVerificationFailed mismatch"]
+    fn debug_serial_prove_verify_secp256r1_add_legacy_executor() {
+        use std::sync::Arc;
+        use zkm_hypercube::{
+            air::PublicValues,
+            prover::{ProverSemaphore, ZkmShardProver},
+            ShardVerifier,
+        };
+
+        let program = Arc::new(crate::programs::tests::secp256r1_add_program());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        let shard_prover = ZkmShardProver::<MipsAir<KoalaBear>>::new(shard_verifier.clone());
+        let async_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        let (preprocessed, vk) =
+            async_rt.block_on(shard_prover.setup(program.clone(), ProverSemaphore::new(1)));
+        let pk = Arc::new(preprocessed.pk);
+        let prover_permits = ProverSemaphore::new(1);
+
+        let opts = ZKMCoreOpts::default();
+
+        let mut runtime = Executor::new(Program::clone(&program), opts);
+        runtime.run().unwrap();
+        let mut legacy_records = runtime.records;
+        println!("legacy executor produced {} checkpoint record(s)", legacy_records.len());
+
+        let mut state = PublicValues::<u32, u32>::default().reset();
+        let mut deferred = ExecutionRecord::new(program.clone());
+        let mut record_num = 0usize;
+        let num_checkpoints = legacy_records.len();
+        for (index, mut record) in legacy_records.drain(..).enumerate() {
+            let done = index + 1 == num_checkpoints;
+
+            state.execution_shard = record.public_values.execution_shard;
+            state.is_execution_shard = record.contains_cpu() as u32;
+            if let Some(first_pc) = record.first_instruction_pc {
+                state.start_pc = first_pc;
+                state.next_pc = record.last_next_pc;
+                let first_clk = record.first_instruction_clk.unwrap();
+                state.initial_clk_high = (first_clk >> 24) as u32;
+                state.initial_clk_low = (first_clk & 0xFFFFFF) as u32;
+                let last_clk_high = record.last_instruction_clk >> 24;
+                state.last_clk_high = last_clk_high as u32;
+                state.last_clk_low = (record.last_timestamp - (last_clk_high << 24)) as u32;
+            }
+            state.committed_value_digest = record.public_values.committed_value_digest;
+            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+            record.public_values = state;
+
+            deferred.append(&mut record.defer());
+            let mut records = vec![record];
+            let mut split_records = deferred.split(done, records.last_mut(), opts.split_opts);
+
+            if !done {
+                state.execution_shard += 1;
+            }
+            for split_record in &mut split_records {
+                state.is_execution_shard = 0;
+                state.previous_init_addr = split_record.public_values.previous_init_addr;
+                state.last_init_addr = split_record.public_values.last_init_addr;
+                state.previous_finalize_addr = split_record.public_values.previous_finalize_addr;
+                state.last_finalize_addr = split_record.public_values.last_finalize_addr;
+                state.start_pc = state.next_pc;
+                state.initial_clk_high = state.last_clk_high;
+                state.initial_clk_low = state.last_clk_low;
+                split_record.public_values = state;
+            }
+            records.append(&mut split_records);
+
+            for mut record in records {
+                shard_prover.machine().generate_dependencies(std::iter::once(&mut record), None).unwrap();
+
+                let main_trace_data = async_rt.block_on(shard_prover.trace_generator().generate_main_traces(
+                    record.clone(),
+                    shard_prover.max_log_row_count(),
+                    prover_permits.clone(),
+                ));
+                let shard_data = zkm_hypercube::prover::ShardData { pk: Arc::clone(&pk), main_trace_data };
+
+                let mut prove_challenger = ZkmGlobalContext::default_challenger();
+                shard_data.pk.vk.observe_into(&mut prove_challenger);
+                let (proof, _permit) = shard_prover.prove_shard_with_data(shard_data, prove_challenger);
+
+                let mut verify_challenger = ZkmGlobalContext::default_challenger();
+                vk.observe_into(&mut verify_challenger);
+                let result = shard_verifier.verify_shard(&vk, &proof, &mut verify_challenger);
+                println!(
+                    "record {record_num} (checkpoint {index}, is_execution_shard={}, contains_cpu={}): {}",
+                    record.public_values.is_execution_shard,
+                    record.contains_cpu(),
+                    if result.is_ok() { "OK".to_string() } else { format!("FAILED: {:?}", result.unwrap_err()) }
+                );
+                record_num += 1;
+            }
+        }
     }
 }

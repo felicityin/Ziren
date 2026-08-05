@@ -1131,6 +1131,7 @@ pub mod tests {
             let traces = Traces { named_traces: main_named };
             let public_values = record.public_values::<KoalaBear>();
 
+            println!("-- record {i} --");
             let balanced = debug_interactions_with_all_chips(
                 &chips,
                 &preprocessed_traces,
@@ -1140,10 +1141,6 @@ pub mod tests {
                 scope,
             );
             all_balanced &= balanced;
-            if !balanced {
-                println!("record {i} is imbalanced -- stopping early instead of checking the rest");
-                break;
-            }
         }
         all_balanced
     }
@@ -1247,7 +1244,7 @@ pub mod tests {
             (KoalaBear, std::collections::BTreeMap<String, KoalaBear>),
         > = Default::default();
 
-        for record in &all_records {
+        for (i, record) in all_records.iter().enumerate() {
             let mut preprocessed_named = std::collections::BTreeMap::new();
             let mut main_named = std::collections::BTreeMap::new();
             for chip in &chips {
@@ -1271,6 +1268,7 @@ pub mod tests {
             let preprocessed_traces = Traces { named_traces: preprocessed_named };
             let traces = Traces { named_traces: main_named };
 
+            let mut record_total = KoalaBear::zero();
             for chip in &chips {
                 let (_, count) = debug_interactions(
                     chip,
@@ -1280,12 +1278,17 @@ pub mod tests {
                     zkm_hypercube::air::LookupScope::Global,
                 );
                 for (key, value) in &count {
+                    record_total += *value;
                     let entry =
                         final_map.entry(key.clone()).or_insert((KoalaBear::zero(), Default::default()));
                     entry.0 += *value;
                     *entry.1.entry(chip.name().to_string()).or_insert(KoalaBear::zero()) += *value;
                 }
             }
+            println!(
+                "record {i}: own global-scope net total = {record_total} ({})",
+                if KoalaBear::is_zero(&record_total) { "balanced on its own" } else { "NOT balanced on its own" }
+            );
         }
 
         println!("Final global-scope counts across all {} record(s) below.", all_records.len());
@@ -1561,49 +1564,8 @@ pub mod tests {
     }
 
     #[test]
-    #[ignore = "manual diagnostic, run explicitly while investigating the secp256r1_add memory-chain desync"]
     fn debug_new_pipeline_secp256r1_add_constraints_hold() {
         debug_new_pipeline_constraints_hold(secp256r1_add_program());
-    }
-
-    #[test]
-    #[ignore = "manual diagnostic, run explicitly while investigating the secp256r1_add memory-chain desync"]
-    fn debug_dump_secp256r1_add_first_ec_add() {
-        use std::sync::Arc;
-        use zkm_core_executor::{events::PrecompileEvent, next_shard, trace_shard, ShardDriver};
-        let program = Arc::new(secp256r1_add_program());
-        let mut driver = ShardDriver::new(program.clone(), 1 << 22);
-        let (spliced, done) =
-            next_shard(&mut driver, program.clone(), u64::MAX / 2, u64::MAX / 2).unwrap();
-        assert!(done);
-        let record = trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
-
-        for (syscall_event, precompile_event) in record.precompile_events.all_events() {
-            if let PrecompileEvent::Secp256r1Add(ec) = precompile_event {
-                println!(
-                    "EC_ADD syscall clk={} pc={:#x} p_ptr={:#x} q_ptr={:#x}",
-                    syscall_event.clk, syscall_event.pc, ec.p_ptr, ec.q_ptr
-                );
-                for (i, r) in ec.q_memory_records.iter().enumerate() {
-                    println!("  q[{i}] addr={:#x} {:?}", ec.q_ptr + 4 * i as u32, r);
-                }
-                for (i, r) in ec.p_memory_records.iter().enumerate() {
-                    println!("  p[{i}] addr={:#x} {:?}", ec.p_ptr + 4 * i as u32, r);
-                }
-                break;
-            }
-        }
-        println!("---nearby LoadWord/StoreWord events (clk 7290-7330)---");
-        for e in &record.load_word_events {
-            if e.clk >= 7290 && e.clk <= 7330 {
-                println!("LOAD  clk={} pc={:#x} addr={:#x} mem_access={:?}", e.clk, e.pc, e.b.wrapping_add(e.c), e.mem_access);
-            }
-        }
-        for e in &record.store_word_events {
-            if e.clk >= 7290 && e.clk <= 7330 {
-                println!("STORE clk={} pc={:#x} addr={:#x} mem_access={:?}", e.clk, e.pc, e.b.wrapping_add(e.c), e.mem_access);
-            }
-        }
     }
 
     #[test]
@@ -1672,18 +1634,15 @@ pub mod tests {
         );
     }
 
-    /// Exercises the `ec_add` precompile (via `SECP256R1_ADD`). This is expected to always show
-    /// local-scope imbalance, not a bug: `ExecutionRecord::split` always carves a precompile
-    /// event's own scratch RAM into its own record, separate from the record containing the
-    /// surrounding CPU trace, so any address the precompile shares with a nearby regular
-    /// instruction (e.g. a `LoadWord` reading the just-written result) has its chain legitimately
-    /// closed only via `LookupScope::Global` (see `debug_new_pipeline_global_interactions_balance`,
-    /// which passes cleanly), invisible to a per-record `LookupScope::Local` check like this one.
-    /// Kept `#[ignore]`d as a documented non-bug rather than deleted, since a real Local-scope
-    /// regression here would otherwise be silently indistinguishable from this expected pattern.
+    /// Exercises the `ec_add` precompile (via `SECP256R1_ADD`). Regression coverage for a real
+    /// bug where a regular instruction touching the same address both before and after a
+    /// precompile call (e.g. a `LoadWord` reading the just-written result) incorrectly merged
+    /// into one `MemoryLocalEvent` spanning straight from the pre-call state to the post-call
+    /// state, instead of two separate, self-contained ones -- see
+    /// `TracingVM::precompile_local_events`'s doc comment for the fix (draining the shared map for
+    /// these addresses before building the precompile event's own isolated view, mirroring the
+    /// legacy `Executor`'s `SyscallContext::postprocess`).
     #[test]
-    #[ignore = "expected to fail: local-scope interactions for a precompile-touched address only \
-                close via LookupScope::Global once split into its own record, see doc comment"]
     fn debug_new_pipeline_secp256r1_add_interactions_balance() {
         assert!(
             debug_new_pipeline_interactions_balance(
@@ -1697,7 +1656,6 @@ pub mod tests {
     }
 
     #[test]
-    #[ignore = "manual diagnostic, run explicitly while investigating the secp256r1_add memory-chain desync"]
     fn debug_new_pipeline_secp256r1_add_global_interactions_balance() {
         assert!(
             debug_new_pipeline_global_interactions_balance(

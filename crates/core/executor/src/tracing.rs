@@ -8,16 +8,17 @@
 //! Per-operand `MemoryRecordEnum`/`MemoryWriteRecord` fields on each event (the register/memory
 //! timestamp bookkeeping the AIR's memory-consistency argument needs for real proving) carry real
 //! chased-through-every-access values, matching the legacy executor exactly, as does
-//! `bump_memory_events`. `cpu_local_memory_access` is populated for every register touch, every
-//! load/store's own RAM access, and every precompile-internal RAM touch (each builder recomputes
-//! the real address, `ptr + 4*i`, alongside the value/timestamp it already pops via
-//! `next_oracle_entry(ies)`) -- all routed into one unified per-shard map (a precompile event's
-//! own `local_mem_access` field is left empty; `MemoryLocalChip` only ever consumes the flattened
-//! `ExecutionRecord::get_local_mem_events()`, which chains both sources, so which bucket an entry
-//! lives in doesn't matter). `global_memory_initialize_events`/`global_memory_finalize_events`/
-//! `global_lookup_events` are not populated at all: they need a whole-run pass over
-//! `MinimalExecutor`'s own backing memory (this scoped, one-shard-at-a-time `TracingVM` has no
-//! view of addresses touched in other
+//! `bump_memory_events`. `cpu_local_memory_access` is populated for every register touch and
+//! every load/store's own RAM access; a precompile's own scratch-buffer touches (SHA/EC/Keccak/
+//! etc's oracle-popped words) go into that event's own `local_mem_access` field instead, via
+//! `precompile_local_events` -- both eventually feed `ExecutionRecord::get_local_mem_events()`,
+//! which chains them, but they're populated through separate paths because `ExecutionRecord::
+//! split` always carves a precompile event into its own record, so its own RAM touches must
+//! travel with it (see `precompile_local_events`'s doc comment for the full reasoning, including
+//! why building this via the shared map instead caused a real cross-shard bridging bug).
+//! `global_memory_initialize_events`/`global_memory_finalize_events`/`global_lookup_events` are
+//! not populated at all: they need a whole-run pass over `MinimalExecutor`'s own backing memory
+//! (this scoped, one-shard-at-a-time `TracingVM` has no view of addresses touched in other
 //! shards, or of whether this is the last shard at all) -- follow-up work, not built here yet.
 
 #![allow(dead_code)]
@@ -157,15 +158,30 @@ impl<'a> TracingVM<'a> {
     /// destination): `record.split()` always carves a precompile event's own private scratch RAM
     /// out into its own separate `ExecutionRecord` (never merged back into the record containing
     /// the surrounding CPU trace -- see `ExecutionRecord::split`'s precompile-event handling), so
-    /// that event's own RAM touches must travel with it via its own field -- leaving them in the
-    /// shared, `cpu_local_memory_access`-bound map would leave both the split-off shard's local
-    /// chain (for these addresses) unclosed, *and* incorrectly leave a phantom entry behind in the
-    /// original shard's own local chain for an address nothing else in that shard ever touched.
+    /// that event's own RAM touches must travel with it via its own field.
+    ///
+    /// Before building that isolated view, drains any *existing* entry for each of these
+    /// addresses out of the shared map and pushes it directly into `cpu_local_memory_access`,
+    /// closing it out as its own, self-contained event -- mirrors the legacy `Executor`'s
+    /// `SyscallContext::postprocess` (`syscalls/context.rs`), which does the same drain-and-flush
+    /// before a precompile's own reads/writes (which never touch the shared map at all -- see
+    /// `Executor::mr`/`mw`'s `local_mem_access` parameter) get recorded. Without this, a regular
+    /// instruction touching this address *before* the precompile call leaves a stale entry in the
+    /// shared map; a later regular instruction touching it *after* the call then merges into that
+    /// stale entry instead of starting fresh, producing one event spanning from the pre-call state
+    /// straight to the post-call state with the precompile's own write invisible in between --
+    /// breaking the `GlobalChip`-mediated bridge between this event and the split-off precompile
+    /// event's own "final" value, since nothing in *this* record's own chain for the address
+    /// matches it anymore.
     fn precompile_local_events(
+        &mut self,
         touches: impl IntoIterator<Item = (u32, MemoryRecordEnum)>,
     ) -> Vec<MemoryLocalEvent> {
         let mut map: std::collections::HashMap<u32, MemoryLocalEvent> = Default::default();
         for (addr, record) in touches {
+            if let Some(existing) = self.local_memory_access.remove(&addr) {
+                self.record.cpu_local_memory_access.push(existing);
+            }
             let initial = record.previous_record();
             let current = record.current_record();
             map.entry(addr)
@@ -1022,7 +1038,7 @@ impl<'a> TracingVM<'a> {
             .zip(&p_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             q_memory_records
                 .iter()
                 .enumerate()
@@ -1049,7 +1065,7 @@ impl<'a> TracingVM<'a> {
             .zip(&p_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             p_memory_records
                 .iter()
                 .enumerate()
@@ -1085,7 +1101,7 @@ impl<'a> TracingVM<'a> {
             .zip(&y_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             x_memory_records
                 .iter()
                 .enumerate()
@@ -1139,7 +1155,7 @@ impl<'a> TracingVM<'a> {
             .collect::<Vec<_>>()
             .try_into()
             .unwrap();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             y_memory_records
                 .iter()
                 .enumerate()
@@ -1190,7 +1206,7 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             y_memory_records
                 .iter()
                 .enumerate()
@@ -1230,7 +1246,7 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             y_memory_records
                 .iter()
                 .enumerate()
@@ -1264,7 +1280,7 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             y_memory_records
                 .iter()
                 .enumerate()
@@ -1306,7 +1322,7 @@ impl<'a> TracingVM<'a> {
             .zip(&x_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             y_memory_records
                 .iter()
                 .enumerate()
@@ -1390,7 +1406,7 @@ impl<'a> TracingVM<'a> {
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
 
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             a_memory_records
                 .iter()
                 .enumerate()
@@ -1448,7 +1464,7 @@ impl<'a> TracingVM<'a> {
             .zip(&pre_state_entries)
             .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
-        let local_mem_access = Self::precompile_local_events(
+        let local_mem_access = self.precompile_local_events(
             state_records
                 .iter()
                 .enumerate()
@@ -1583,7 +1599,7 @@ impl<'a> TracingVM<'a> {
                     prev_value: h_write_entries[i].value,
                     prev_timestamp: h_write_entries[i].clk,
                 });
-                let local_mem_access = Self::precompile_local_events(
+                let local_mem_access = self.precompile_local_events(
                     h_read_records
                         .iter()
                         .enumerate()
@@ -1676,7 +1692,7 @@ impl<'a> TracingVM<'a> {
                     w_i_writes.push(w);
                     touches.push((w_ptr + i * 4, MemoryRecordEnum::Write(w)));
                 }
-                let local_mem_access = Self::precompile_local_events(touches);
+                let local_mem_access = self.precompile_local_events(touches);
                 self.record.precompile_events.add_event(
                     code,
                     SyscallEvent {
@@ -1761,7 +1777,7 @@ impl<'a> TracingVM<'a> {
                         prev_timestamp: e.clk,
                     })
                     .collect();
-                let local_mem_access = Self::precompile_local_events(
+                let local_mem_access = self.precompile_local_events(
                     std::iter::once((result_ptr + 16 * 4, MemoryRecordEnum::Read(input_length_record)))
                         .chain(
                             input_read_records
@@ -2764,6 +2780,27 @@ mod tests {
     #[test]
     fn matches_golden_secp256r1_add_real_elf() {
         assert_matches_golden(secp256r1_add_program, "secp256r1_add_program");
+    }
+
+    /// `assert_matches_golden` excludes `local_memory_access_events` from its comparison for
+    /// every program (see `DEFERRED_FIELDS`'s doc comment: not meaningful for a program whose
+    /// golden run spans multiple checkpoints). `secp256r1_add_program` is small enough to fit in
+    /// one checkpoint on both pipelines, so this field *is* meaningfully comparable here --
+    /// dedicated regression coverage for a real bug this exact comparison caught: a precompile
+    /// event's own scratch-RAM touches were built via an isolated view that never drained the
+    /// address out of the shared, per-record map first (see `precompile_local_events`'s doc
+    /// comment), so a regular instruction touching the same address both before and after the
+    /// precompile call incorrectly merged into one event instead of three, breaking the
+    /// `GlobalChip`-mediated bridge to the precompile's own (split into a separate record) event.
+    #[test]
+    fn local_memory_access_events_matches_golden_secp256r1_add_real_elf() {
+        let golden = run_golden(secp256r1_add_program());
+        let (counts, _, _, _) = run_tracing(secp256r1_add_program());
+        assert_eq!(
+            counts.get("local_memory_access_events"),
+            golden.event_counts.get("local_memory_access_events"),
+            "local_memory_access_events count mismatch"
+        );
     }
 
     #[test]
