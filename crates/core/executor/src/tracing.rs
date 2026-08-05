@@ -703,7 +703,11 @@ impl<'a> TracingVM<'a> {
             timestamp: clk,
             prev_timestamp: mem_entry.clk,
         });
-        self.touch_local(addr, &mem_record);
+        // `touch_local` must key on the actual RAM word (word-aligned, matching every `mr`/`mw`
+        // call's addressing scheme), not the instruction's own possibly-unaligned byte/halfword
+        // address -- otherwise a byte/halfword load/store splits one real memory word's local-
+        // access chain into up to four spurious per-byte-offset addresses.
+        self.touch_local(addr & 0xFFFF_FFFC, &mem_record);
         let mut event =
             MemInstrEvent::new(clk, pc, next_pc, instruction.opcode, val, rs_raw, offset, mem_record, rt);
         event.a_record = Some(a_record);
@@ -797,7 +801,9 @@ impl<'a> TracingVM<'a> {
             prev_value: mem,
             prev_timestamp: mem_entry.clk,
         });
-        self.touch_local(addr, &mem_record);
+        // See `execute_load`'s identical comment: `touch_local` must key on the word-aligned RAM
+        // address, not the instruction's own possibly-unaligned byte/halfword address.
+        self.touch_local(addr & 0xFFFF_FFFC, &mem_record);
         let mut event =
             MemInstrEvent::new(clk, pc, next_pc, instruction.opcode, a, rs, offset, mem_record, rt);
         event.a_record = Some(a_record);
@@ -970,7 +976,9 @@ impl<'a> TracingVM<'a> {
     /// Builds an `EllipticCurveAddEvent`: pops `q`'s reads, then `p`'s write-preimage (the value
     /// actually needed as an input, unlike a discarded write pop -- see
     /// `minimal/syscall.rs::ec_add_dispatch`'s doc comment for why the oracle order is q-then-p
-    /// even though `p` is conceptually read first).
+    /// even though `p` is conceptually read first). `p`'s writes are timestamped `clk + 1`, not
+    /// `clk`, matching `ec_add_dispatch`'s own `self.clk += 1` between reading `q` and writing
+    /// `p` -- the real `MemoryRecord.timestamp` a later access chains from is `clk + 1`.
     fn ec_add_event<E: EllipticCurve>(&mut self, clk: u64, p_ptr: u32, q_ptr: u32) -> EllipticCurveAddEvent {
         let num_words = ec_num_words::<E>();
         let q_entries = self.core.next_oracle_entries(num_words);
@@ -986,7 +994,7 @@ impl<'a> TracingVM<'a> {
         let p_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
             .zip(&p_entries)
-            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         self.touch_local_slice(p_ptr, &p_memory_records, MemoryRecordEnum::Write);
         EllipticCurveAddEvent { shard: 0, clk, p_ptr, p, q_ptr, q, p_memory_records, q_memory_records, local_mem_access: Vec::new() }
@@ -1100,7 +1108,8 @@ impl<'a> TracingVM<'a> {
 
     /// Builds an `FpOpEvent`: pops `y`'s reads, then `x`'s write-preimage (the value actually
     /// needed as an input -- see `ec_add_event`'s doc comment for why the oracle order is
-    /// y-then-x).
+    /// y-then-x). `x`'s writes are timestamped `clk + 1` -- see `ec_add_event`'s identical
+    /// comment on why (`fp_dispatch` has the same mid-dispatch `self.clk += 1`).
     fn fp_op_event<P: FpOpField>(
         &mut self,
         clk: u64,
@@ -1122,13 +1131,15 @@ impl<'a> TracingVM<'a> {
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
             .zip(&x_entries)
-            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
         FpOpEvent { shard: 0, clk, x_ptr, x, y_ptr, y, op, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
     }
 
-    /// Builds an `Fp2AddSubEvent`: pops `y`'s reads, then `x`'s write-preimage.
+    /// Builds an `Fp2AddSubEvent`: pops `y`'s reads, then `x`'s write-preimage. `x`'s writes are
+    /// timestamped `clk + 1` -- see `ec_add_event`'s identical comment on why (`fp2_addsub_dispatch`
+    /// has the same mid-dispatch `self.clk += 1`).
     fn fp2_addsub_event<P: FpOpField>(
         &mut self,
         clk: u64,
@@ -1150,13 +1161,15 @@ impl<'a> TracingVM<'a> {
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
             .zip(&x_entries)
-            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
         Fp2AddSubEvent { shard: 0, clk, op, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
     }
 
-    /// Builds an `Fp2MulEvent`: pops `y`'s reads, then `x`'s write-preimage.
+    /// Builds an `Fp2MulEvent`: pops `y`'s reads, then `x`'s write-preimage. `x`'s writes are
+    /// timestamped `clk + 1` -- see `ec_add_event`'s identical comment on why (`fp2_mul_dispatch`
+    /// has the same mid-dispatch `self.clk += 1`).
     fn fp2_mul_event<P: FpOpField>(&mut self, clk: u64, x_ptr: u32, y_ptr: u32) -> Fp2MulEvent {
         let num_words = fp2_num_words::<P>();
         let y_entries = self.core.next_oracle_entries(num_words);
@@ -1172,14 +1185,16 @@ impl<'a> TracingVM<'a> {
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
             .zip(&x_entries)
-            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
         Fp2MulEvent { shard: 0, clk, x_ptr, x, y_ptr, y, x_memory_records, y_memory_records, local_mem_access: Vec::new() }
     }
 
     /// Builds a `Uint256MulEvent`: pops `y`'s reads, `modulus`'s reads, then `x`'s write-preimage
-    /// (the value actually needed as an input).
+    /// (the value actually needed as an input). `x`'s writes are timestamped `clk + 1` -- see
+    /// `ec_add_event`'s identical comment on why (`uint256_mul_dispatch` has the same mid-dispatch
+    /// `self.clk += 1`).
     fn uint256_mul_event(&mut self, clk: u64, x_ptr: u32, y_ptr: u32) -> Uint256MulEvent {
         let y_entries = self.core.next_oracle_entries(8);
         let y: [u32; 8] = y_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
@@ -1203,7 +1218,7 @@ impl<'a> TracingVM<'a> {
         let x_memory_records: Vec<MemoryWriteRecord> = result
             .iter()
             .zip(&x_entries)
-            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         self.touch_local_slice(x_ptr, &x_memory_records, MemoryRecordEnum::Write);
         Uint256MulEvent {
@@ -1222,7 +1237,9 @@ impl<'a> TracingVM<'a> {
     }
 
     /// Builds a `U256xU2048MulEvent`: reads `$a2`/`$a3` (live, unlogged) for `lo_ptr`/`hi_ptr`,
-    /// pops `a`'s reads, `b`'s reads, then `lo`'s and `hi`'s write-preimages (discarded).
+    /// pops `a`'s reads, `b`'s reads, then `lo`'s and `hi`'s write-preimages (discarded). `lo`'s
+    /// and `hi`'s writes are timestamped `clk + 1` -- see `ec_add_event`'s identical comment on
+    /// why (`u256xu2048_mul_dispatch` has the same mid-dispatch `self.clk += 1`).
     fn u256xu2048_mul_event(&mut self, clk: u64, a_ptr: u32, b_ptr: u32) -> U256xU2048MulEvent {
         let lo_ptr = self.core.reg(Register::A2);
         let hi_ptr = self.core.reg(Register::A3);
@@ -1263,14 +1280,14 @@ impl<'a> TracingVM<'a> {
         let lo_memory_records: Vec<MemoryWriteRecord> = lo
             .iter()
             .zip(&lo_entries)
-            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         self.touch_local_slice(lo_ptr, &lo_memory_records, MemoryRecordEnum::Write);
         let hi_entries = self.core.next_oracle_entries(hi.len());
         let hi_memory_records: Vec<MemoryWriteRecord> = hi
             .iter()
             .zip(&hi_entries)
-            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk })
+            .map(|(&value, e)| MemoryWriteRecord { value, timestamp: clk + 1, prev_value: e.value, prev_timestamp: e.clk })
             .collect();
         self.touch_local_slice(hi_ptr, &hi_memory_records, MemoryRecordEnum::Write);
 
@@ -1433,7 +1450,7 @@ impl<'a> TracingVM<'a> {
                         a_record_is_real: true,
                         b_record: None,
                         c_record: None,
-                        syscall_id,
+                        syscall_id: code.syscall_id(),
                         arg1,
                         arg2,
                     },
@@ -1519,7 +1536,7 @@ impl<'a> TracingVM<'a> {
                         a_record_is_real: true,
                         b_record: None,
                         c_record: None,
-                        syscall_id,
+                        syscall_id: code.syscall_id(),
                         arg1,
                         arg2,
                     },
@@ -1608,7 +1625,7 @@ impl<'a> TracingVM<'a> {
                         a_record_is_real: true,
                         b_record: None,
                         c_record: None,
-                        syscall_id,
+                        syscall_id: code.syscall_id(),
                         arg1,
                         arg2,
                     },
@@ -1644,7 +1661,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Secp256k1Add(event),
                 );
@@ -1665,7 +1682,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Secp256r1Add(event),
                 );
@@ -1686,7 +1703,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bn254Add(event),
                 );
@@ -1707,7 +1724,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bls12381Add(event),
                 );
@@ -1728,7 +1745,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Secp256k1Double(event),
                 );
@@ -1748,7 +1765,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Secp256r1Double(event),
                 );
@@ -1768,7 +1785,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bn254Double(event),
                 );
@@ -1788,7 +1805,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bls12381Double(event),
                 );
@@ -1808,7 +1825,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Secp256k1Decompress(event),
                 );
@@ -1828,7 +1845,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Secp256r1Decompress(event),
                 );
@@ -1848,7 +1865,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bls12381Decompress(event),
                 );
@@ -1868,7 +1885,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::EdAdd(event),
                 );
@@ -1889,7 +1906,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::EdDecompress(event),
                 );
@@ -1914,7 +1931,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bn254Fp(event),
                 );
@@ -1940,7 +1957,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bls12381Fp(event),
                 );
@@ -1962,7 +1979,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bn254Fp2AddSub(event),
                 );
@@ -1984,7 +2001,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bls12381Fp2AddSub(event),
                 );
@@ -2005,7 +2022,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bn254Fp2Mul(event),
                 );
@@ -2026,7 +2043,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Bls12381Fp2Mul(event),
                 );
@@ -2047,7 +2064,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Uint256Mul(event),
                 );
@@ -2068,7 +2085,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::U256xU2048Mul(event),
                 );
@@ -2089,7 +2106,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Poseidon2Permute(event),
                 );
@@ -2133,7 +2150,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2182,7 +2199,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2218,7 +2235,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2255,7 +2272,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2291,7 +2308,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2327,7 +2344,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2378,7 +2395,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2427,7 +2444,7 @@ impl<'a> TracingVM<'a> {
                         },
                         a_record_is_real: true,
                         b_record: None, c_record: None,
-                        syscall_id, arg1, arg2,
+                        syscall_id: code.syscall_id(), arg1, arg2,
                     },
                     PrecompileEvent::Linux(event),
                 );
@@ -2455,7 +2472,7 @@ impl<'a> TracingVM<'a> {
             a_record_is_real: true,
             b_record: Some(b_record),
             c_record: Some(c_record),
-            syscall_id,
+            syscall_id: code.syscall_id(),
             arg1,
             arg2,
         });
@@ -2481,8 +2498,8 @@ mod tests {
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
             poseidon2_permute_program, secp256k1_add_program, secp256k1_double_program,
             secp256r1_add_program, secp256r1_double_program, sha_compress_program,
-            sha_extend_program, simple_program, ssz_withdrawals_program, u256xu2048_mul_program,
-            uint256_mul_program,
+            sha_extend_program, simple_memory_program, simple_program, ssz_withdrawals_program,
+            u256xu2048_mul_program, uint256_mul_program,
         },
         register::NUM_REGISTERS,
     };
@@ -2545,6 +2562,11 @@ mod tests {
     #[test]
     fn matches_golden_halt_only_program() {
         assert_matches_golden(halt_only_program, "halt_only_program");
+    }
+
+    #[test]
+    fn matches_golden_simple_memory_program() {
+        assert_matches_golden(simple_memory_program, "simple_memory_program");
     }
 
     #[test]

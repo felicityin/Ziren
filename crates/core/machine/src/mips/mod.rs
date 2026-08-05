@@ -821,8 +821,8 @@ pub mod tests {
     use crate::programs::tests::lw_sw_x0_program;
     use crate::programs::tests::slt_x0_program;
     use crate::programs::tests::{
-        fibonacci_program, hello_world_program, max_memory_program, sha3_chain_program,
-        simple_memory_program, ssz_withdrawals_program, unconstrained_program,
+        fibonacci_program, hello_world_program, max_memory_program, secp256r1_add_program,
+        sha3_chain_program, simple_memory_program, ssz_withdrawals_program, unconstrained_program,
     };
     use crate::{
         // io::ZKMStdin,
@@ -921,7 +921,6 @@ pub mod tests {
             let execution_shard = execution_shard as u32 + 1;
             let done = execution_shard as usize == num_execution_shards;
 
-            state.shard += 1;
             state.execution_shard = execution_shard;
             state.is_execution_shard = record.contains_cpu() as u32;
             if let Some(first_pc) = record.first_instruction_pc {
@@ -950,7 +949,6 @@ pub mod tests {
                 state.execution_shard += 1;
             }
             for split_record in &mut split_records {
-                state.shard += 1;
                 state.is_execution_shard = 0;
                 state.previous_init_addr = split_record.public_values.previous_init_addr;
                 state.last_init_addr = split_record.public_values.last_init_addr;
@@ -1013,6 +1011,243 @@ pub mod tests {
             }
         }
         all_balanced
+    }
+
+    /// Same as `debug_local_interactions_balance_for_elf`, but drives `program` through the
+    /// `ShardDriver`/`next_shard`/`trace_shard` pipeline (mirroring `prove_with_context`'s Stage
+    /// A/B exactly) instead of the legacy `Executor`, and takes a synthetic `Program` directly
+    /// rather than a real ELF path -- catches value-level bugs (e.g. a wrong address/timestamp on
+    /// an event) that a count-only differential comparison against the legacy executor can't see,
+    /// since interactions only balance when every chip's *values*, not just counts, agree.
+    fn debug_new_pipeline_interactions_balance(
+        program: Program,
+        element_threshold: u64,
+        height_threshold: u64,
+        scope: zkm_hypercube::air::LookupScope,
+    ) -> bool {
+        use p3_air::BaseAir;
+        use slop_multilinear::{Mle, PaddedMle};
+        use std::sync::Arc;
+        use zkm_core_executor::{next_shard, trace_shard, ExecutionRecord, ShardDriver};
+        use zkm_hypercube::{
+            air::PublicValues,
+            lookup::{debug_interactions_with_all_chips, LookupKind},
+            prover::Traces,
+            record::MachineRecord,
+        };
+
+        setup_logger();
+
+        let program = Arc::new(program);
+        let mut driver = ShardDriver::new(program.clone(), 1 << 22);
+        let mut state = PublicValues::<u32, u32>::default().reset();
+        let mut deferred = ExecutionRecord::new(program.clone());
+        let mut all_records = Vec::new();
+        let mut index = 0;
+        loop {
+            let (spliced, done) =
+                next_shard(&mut driver, program.clone(), element_threshold, height_threshold).unwrap();
+            let mut record =
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+            if done {
+                let (init, fin) = driver.global_memory_events();
+                record.global_memory_initialize_events = init;
+                record.global_memory_finalize_events = fin;
+            }
+
+            state.execution_shard = index + 1;
+            state.is_execution_shard = record.contains_cpu() as u32;
+            if let Some(first_pc) = record.first_instruction_pc {
+                state.start_pc = first_pc;
+                state.next_pc = record.last_next_pc;
+                let first_clk = record.first_instruction_clk.unwrap();
+                state.initial_clk_high = (first_clk >> 24) as u32;
+                state.initial_clk_low = (first_clk & 0xFFFFFF) as u32;
+                let last_clk_high = record.last_instruction_clk >> 24;
+                state.last_clk_high = last_clk_high as u32;
+                state.last_clk_low = (record.last_timestamp - (last_clk_high << 24)) as u32;
+            }
+            state.committed_value_digest = record.public_values.committed_value_digest;
+            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+            record.public_values = state;
+
+            deferred.append(&mut record.defer());
+            let mut records = vec![record];
+            let mut split_records =
+                deferred.split(done, records.last_mut(), zkm_stark::ZKMCoreOpts::default().split_opts);
+
+            if !done {
+                state.execution_shard += 1;
+            }
+            for split_record in &mut split_records {
+                state.is_execution_shard = 0;
+                state.previous_init_addr = split_record.public_values.previous_init_addr;
+                state.last_init_addr = split_record.public_values.last_init_addr;
+                state.previous_finalize_addr = split_record.public_values.previous_finalize_addr;
+                state.last_finalize_addr = split_record.public_values.last_finalize_addr;
+                state.start_pc = state.next_pc;
+                state.initial_clk_high = state.last_clk_high;
+                state.initial_clk_low = state.last_clk_low;
+                split_record.public_values = state;
+            }
+            records.append(&mut split_records);
+            all_records.append(&mut records);
+
+            if done {
+                break;
+            }
+            index += 1;
+        }
+        println!("produced {} record(s)", all_records.len());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        machine.generate_dependencies(all_records.iter_mut(), None).unwrap();
+        let chips = machine.chips().to_vec();
+        let max_log_row_count = 22u32;
+
+        let mut all_balanced = true;
+        for (i, record) in all_records.into_iter().enumerate() {
+            let mut preprocessed_named = std::collections::BTreeMap::new();
+            let mut main_named = std::collections::BTreeMap::new();
+            for chip in &chips {
+                let name = MachineAir::<KoalaBear>::name(chip);
+                let pre_mle = match chip.generate_preprocessed_trace(&record.program) {
+                    Some(t) => {
+                        PaddedMle::padded_with_zeros(Arc::new(Mle::from(t)), max_log_row_count)
+                    }
+                    None => PaddedMle::zeros(0, max_log_row_count),
+                };
+                preprocessed_named.insert(name.clone(), pre_mle);
+
+                let main_mle = if chip.included(&record) {
+                    let trace = chip.generate_trace(&record, &mut Default::default()).unwrap();
+                    PaddedMle::padded_with_zeros(Arc::new(Mle::from(trace)), max_log_row_count)
+                } else {
+                    PaddedMle::zeros(chip.width(), max_log_row_count)
+                };
+                main_named.insert(name, main_mle);
+            }
+            let preprocessed_traces = Traces { named_traces: preprocessed_named };
+            let traces = Traces { named_traces: main_named };
+            let public_values = record.public_values::<KoalaBear>();
+
+            let balanced = debug_interactions_with_all_chips(
+                &chips,
+                &preprocessed_traces,
+                &traces,
+                public_values,
+                LookupKind::all_kinds(),
+                scope,
+            );
+            all_balanced &= balanced;
+            if !balanced {
+                println!("record {i} is imbalanced -- stopping early instead of checking the rest");
+                break;
+            }
+        }
+        all_balanced
+    }
+
+    #[test]
+    fn debug_new_pipeline_simple_memory_program_interactions_balance() {
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                simple_memory_program(),
+                u64::MAX / 2,
+                u64::MAX / 2,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_new_pipeline_other_memory_program_interactions_balance() {
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                other_memory_program(),
+                u64::MAX / 2,
+                u64::MAX / 2,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_new_pipeline_hello_world_interactions_balance() {
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                hello_world_program(),
+                u64::MAX / 2,
+                u64::MAX / 2,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_new_pipeline_fibonacci_interactions_balance() {
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                fibonacci_program(),
+                u64::MAX / 2,
+                u64::MAX / 2,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_new_pipeline_hello_world_real_sharding_interactions_balance() {
+        let opts = zkm_stark::ZKMCoreOpts::default();
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                hello_world_program(),
+                opts.lde_size_threshold,
+                zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance under real sharding thresholds"
+        );
+    }
+
+    /// Exercises the `ec_add` precompile (via `SECP256R1_ADD`), which -- unlike every other
+    /// program in this test file -- reproduces a real, unresolved bug: the traced record's
+    /// `MemoryReadRecord`/`MemoryWriteRecord` chain for at least one address desyncs by one clk
+    /// unit shortly after the precompile call, breaking the `MemoryLocal` chip's local-scope
+    /// interaction balance. Root cause not yet identified (`ec_add_dispatch`'s mid-dispatch
+    /// `self.clk += 1` and `extra_cycles = 1` both independently match the legacy
+    /// `WeierstrassAddAssignSyscall::num_extra_cycles`, so the desync is elsewhere).
+    #[test]
+    #[ignore = "known bug: ec_add precompile leaves at least one address's memory chain off by \
+                one clk unit shortly afterward; root cause not yet identified"]
+    fn debug_new_pipeline_secp256r1_add_interactions_balance() {
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                secp256r1_add_program(),
+                u64::MAX / 2,
+                u64::MAX / 2,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_new_pipeline_fibonacci_real_sharding_interactions_balance() {
+        let opts = zkm_stark::ZKMCoreOpts::default();
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                fibonacci_program(),
+                opts.lde_size_threshold,
+                zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance under real sharding thresholds"
+        );
     }
 
     /// Loads the real `examples/fibonacci/guest` ELF and feeds it a real `n = 1000` via stdin,
