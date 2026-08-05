@@ -22,9 +22,9 @@ use crate::{
         AluEvent, BranchEvent, BumpClkHighEvent, CompAluEvent, EdDecompressEvent,
         EllipticCurveAddEvent, EllipticCurveDecompressEvent, EllipticCurveDoubleEvent,
         FieldOperation, Fp2AddSubEvent, Fp2MulEvent, FpOpEvent, JumpEvent, KeccakSpongeEvent,
-        LinuxEvent, MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord,
-        MiscEvent, MovCondEvent, Poseidon2PermuteEvent, PrecompileEvent, ShaCompressEvent,
-        ShaExtendEvent, SyscallEvent, U256xU2048MulEvent, Uint256MulEvent,
+        LinuxEvent, MemInstrEvent, MemoryAccessPosition, MemoryReadRecord, MemoryRecordEnum,
+        MemoryWriteRecord, MiscEvent, MovCondEvent, Poseidon2PermuteEvent, PrecompileEvent,
+        ShaCompressEvent, ShaExtendEvent, SyscallEvent, U256xU2048MulEvent, Uint256MulEvent,
     },
     opcode::Opcode,
     register::Register,
@@ -187,7 +187,7 @@ impl<'a> TracingVM<'a> {
                 Opcode::JumpDirect => crate::vm::jump_direct_result(next_pc_in, instruction.op_b),
                 _ => unreachable!("not a jump opcode: {:?}", instruction.opcode),
             };
-            self.core.set_reg(link, return_pc);
+            self.core.set_reg(link, return_pc, MemoryAccessPosition::A);
             next_next_pc = target;
             self.core.set_next_is_delayslot(true);
             let b = if instruction.opcode == Opcode::Jump {
@@ -210,7 +210,7 @@ impl<'a> TracingVM<'a> {
             let b = self.core.reg(rs);
             let c = self.core.reg(rt);
             let a = crate::vm::condmov_result(instruction.opcode, prev_a, b, c);
-            self.core.set_reg(rd, a);
+            self.core.set_reg(rd, a, MemoryAccessPosition::A);
             if op_a_is_zero {
                 self.record.alu_x0_events.push(AluEvent::new(pc, instruction.opcode, a, b, c));
             } else {
@@ -255,10 +255,10 @@ impl<'a> TracingVM<'a> {
 
     fn set_alu_dest(&mut self, opcode: Opcode, rd: Register, a: u32, hi: u32) {
         if opcode.is_use_lo_hi_alu() {
-            self.core.set_reg(Register::LO, a);
-            self.core.set_reg(Register::HI, hi);
+            self.core.set_reg(Register::LO, a, MemoryAccessPosition::A);
+            self.core.set_reg(Register::HI, hi, MemoryAccessPosition::HI);
         } else {
-            self.core.set_reg(rd, a);
+            self.core.set_reg(rd, a, MemoryAccessPosition::A);
         }
     }
 
@@ -376,7 +376,7 @@ impl<'a> TracingVM<'a> {
             Opcode::LB => sign_extend::<8>((mem >> ((rs & 3) * 8)) & 0xff),
             _ => unreachable!("not a load opcode: {:?}", instruction.opcode),
         };
-        self.core.set_reg(rt_reg, val);
+        self.core.set_reg(rt_reg, val, MemoryAccessPosition::A);
 
         let event = MemInstrEvent::new(
             clk,
@@ -460,7 +460,7 @@ impl<'a> TracingVM<'a> {
         };
 
         let a = if instruction.opcode == Opcode::SC {
-            self.core.set_reg(rt_reg, 1);
+            self.core.set_reg(rt_reg, 1, MemoryAccessPosition::A);
             1
         } else {
             rt
@@ -500,7 +500,7 @@ impl<'a> TracingVM<'a> {
             let rt: Register = (instruction.op_b as u8).into();
             let b = self.core.reg(rt);
             let a = crate::vm::wsbh(b);
-            self.core.set_reg(rd, a);
+            self.core.set_reg(rd, a, MemoryAccessPosition::A);
             if op_a_is_zero {
                 self.record.alu_x0_events.push(AluEvent::new(pc, instruction.opcode, a, b, 0));
             } else {
@@ -516,20 +516,20 @@ impl<'a> TracingVM<'a> {
             Opcode::SEXT => {
                 let b = self.core.reg(rt);
                 let a = crate::vm::sext(b, c);
-                self.core.set_reg(rd, a);
+                self.core.set_reg(rd, a, MemoryAccessPosition::A);
                 self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0);
             }
             Opcode::EXT => {
                 let b = self.core.reg(rt);
                 let a = crate::vm::ext(b, c)?;
-                self.core.set_reg(rd, a);
+                self.core.set_reg(rd, a, MemoryAccessPosition::A);
                 self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0);
             }
             Opcode::INS => {
                 let b = self.core.reg(rt);
                 let prev_a = self.core.reg(rd);
                 let a = crate::vm::ins(prev_a, b, c)?;
-                self.core.set_reg(rd, a);
+                self.core.set_reg(rd, a, MemoryAccessPosition::A);
                 self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, prev_a);
             }
             Opcode::TEQ => {
@@ -556,8 +556,8 @@ impl<'a> TracingVM<'a> {
                     Opcode::MSUB => crate::vm::msub(b, c_val, lo, hi),
                     _ => unreachable!(),
                 };
-                self.core.set_reg(lo_reg, out_lo);
-                self.core.set_reg(Register::HI, out_hi);
+                self.core.set_reg(lo_reg, out_lo, MemoryAccessPosition::A);
+                self.core.set_reg(Register::HI, out_hi, MemoryAccessPosition::HI);
                 let hi_record = MemoryWriteRecord { value: out_hi, timestamp: clk, prev_value: hi, prev_timestamp: 0 };
                 self.record.maddsub_events.push(MiscEvent::new(
                     clk,
@@ -1505,6 +1505,7 @@ impl<'a> TracingVM<'a> {
                     .copied()
                     .unwrap_or_else(|| self.core.reg(Register::BRK));
                 let v0 = resolve_brk(initial_brk, initial_brk, arg1)?;
+                self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id,
                     vec![MemoryReadRecord { value: initial_brk, timestamp: clk, prev_timestamp: 0 }],
@@ -1525,10 +1526,11 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
                 let size = align_size(arg2)?;
+                self.core.set_reg_aux(Register::A3, 0);
                 let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 };
                 let (v0, write_records) = if arg1 == 0 {
                     let heap = self.core.reg(Register::HEAP);
-                    self.core.set_reg(Register::HEAP, heap.wrapping_add(size));
+                    self.core.set_reg_aux(Register::HEAP, heap.wrapping_add(size));
                     let heap_record = MemoryWriteRecord { value: heap.wrapping_add(size), timestamp: clk, prev_value: 0, prev_timestamp: 0 };
                     (heap, vec![a3_record, heap_record])
                 } else {
@@ -1550,6 +1552,7 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_CLONE => {
                 let v0 = 1;
+                self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
                     vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
@@ -1570,6 +1573,7 @@ impl<'a> TracingVM<'a> {
             SyscallCode::SYS_EXT_GROUP => {
                 next_pc = 0;
                 let v0 = 0;
+                self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
                     vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
@@ -1589,6 +1593,7 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_FCNTL => {
                 let (v0, a3) = fcntl_result(arg1, arg2);
+                self.core.set_reg_aux(Register::A3, a3);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
                     vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
@@ -1608,6 +1613,7 @@ impl<'a> TracingVM<'a> {
             }
             SyscallCode::SYS_READ => {
                 let (v0, a3) = read_result(arg1);
+                self.core.set_reg_aux(Register::A3, a3);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
                     vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
@@ -1631,6 +1637,7 @@ impl<'a> TracingVM<'a> {
                     self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
                 }
                 let v0 = nbytes;
+                self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id,
                     vec![MemoryReadRecord { value: nbytes, timestamp: clk, prev_timestamp: 0 }],
@@ -1664,6 +1671,7 @@ impl<'a> TracingVM<'a> {
             | SyscallCode::SYS_FSTAT64
             | SyscallCode::SYS_MUNMAP => {
                 let v0 = 0;
+                self.core.set_reg_aux(Register::A3, 0);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
                     vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: 0, prev_timestamp: 0 }],
@@ -1685,7 +1693,7 @@ impl<'a> TracingVM<'a> {
         };
 
         let a0 = a0_result.unwrap_or(syscall_id);
-        self.core.set_reg(Register::V0, a0);
+        self.core.set_reg(Register::V0, a0, MemoryAccessPosition::A);
         self.core.advance_clk_extra(extra_cycles);
         self.record.syscall_events.push(SyscallEvent {
             pc,

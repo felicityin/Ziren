@@ -692,6 +692,10 @@ pub(crate) fn read_result(fd: u32) -> (u32, u32) {
 /// back as a type parameter then -- don't speculatively add it now.
 pub(crate) struct CoreVM<'a> {
     registers: [u32; NUM_REGISTERS],
+    /// The `clk` each register was last written at -- see `MinimalExecutor`'s identically-named
+    /// field doc comment. Recomputed independently during replay (deterministic, given the same
+    /// instruction sequence and starting baseline `MinimalExecutor` used), never oracle-logged.
+    register_timestamps: [u64; NUM_REGISTERS],
     pc: u32,
     next_pc: u32,
     clk: u64,
@@ -724,6 +728,7 @@ impl<'a> CoreVM<'a> {
         let pc = trace.pc_start();
         Self {
             registers: trace.start_registers(),
+            register_timestamps: trace.start_register_timestamps(),
             pc,
             // Always `pc_start + 4`: a chunk boundary is only ever legal when
             // `!next_is_delayslot`, which implies `next_pc == pc + 4` exactly. Verified with a
@@ -742,6 +747,11 @@ impl<'a> CoreVM<'a> {
     #[must_use]
     pub(crate) fn registers(&self) -> [u32; NUM_REGISTERS] {
         self.registers
+    }
+
+    #[must_use]
+    pub(crate) fn register_timestamps(&self) -> [u64; NUM_REGISTERS] {
+        self.register_timestamps
     }
 
     #[must_use]
@@ -797,9 +807,31 @@ impl<'a> CoreVM<'a> {
         self.registers[r as usize]
     }
 
-    pub(crate) fn set_reg(&mut self, r: Register, value: u32) {
+    /// The `clk` register `r` was last written at -- `0` means "never touched". Looked up
+    /// *before* overwriting a register (via [`Self::set_reg`]/[`Self::set_reg_aux`]) to recover a
+    /// real `MemoryReadRecord`/`MemoryWriteRecord.prev_timestamp` (`TracingVM`'s job; `CoreVM`'s
+    /// own replay dispatch, used by `SplicingVM`, never needs this).
+    #[must_use]
+    pub(crate) fn reg_timestamp(&self, r: Register) -> u64 {
+        self.register_timestamps[r as usize]
+    }
+
+    /// Writes `value` to register `r`, tagging its consistency-timestamp at `clk + position` --
+    /// matches `Executor::rw_cpu`'s exact scheme for the instruction's own op_a/op_b/op_c/hi
+    /// slots (see `MinimalExecutor::set_reg`'s identical doc comment).
+    pub(crate) fn set_reg(&mut self, r: Register, value: u32, position: MemoryAccessPosition) {
         let value = if r == Register::ZERO { 0 } else { value };
         self.registers[r as usize] = value;
+        self.register_timestamps[r as usize] = self.clk + position as u64;
+    }
+
+    /// Writes `value` to register `r` for a syscall-internal auxiliary register access -- tags
+    /// its consistency-timestamp at the bare `clk` (see `MinimalExecutor::set_reg_aux`'s
+    /// identical doc comment).
+    pub(crate) fn set_reg_aux(&mut self, r: Register, value: u32) {
+        let value = if r == Register::ZERO { 0 } else { value };
+        self.registers[r as usize] = value;
+        self.register_timestamps[r as usize] = self.clk;
     }
 
     // ---- oracle log (RAM replay) ----
@@ -932,7 +964,7 @@ impl<'a> CoreVM<'a> {
                 Opcode::JumpDirect => jump_direct_result(next_pc_in, instruction.op_b),
                 _ => unreachable!("not a jump opcode: {:?}", instruction.opcode),
             };
-            self.set_reg(link, return_pc);
+            self.set_reg(link, return_pc, MemoryAccessPosition::A);
             next_next_pc = target;
             self.next_is_delayslot = true;
         } else if instruction.is_mov_cond_instruction() {
@@ -943,7 +975,7 @@ impl<'a> CoreVM<'a> {
             let b = self.reg(rs);
             let c = self.reg(rt);
             let a = condmov_result(instruction.opcode, prev_a, b, c);
-            self.set_reg(rd, a);
+            self.set_reg(rd, a, MemoryAccessPosition::A);
         } else if instruction.is_misc_instruction() {
             self.execute_misc(instruction)?;
         } else if instruction.is_syscall_instruction() {
@@ -982,10 +1014,10 @@ impl<'a> CoreVM<'a> {
 
     fn alu_write(&mut self, opcode: Opcode, rd: Register, a: u32, hi: u32) {
         if opcode.is_use_lo_hi_alu() {
-            self.set_reg(Register::LO, a);
-            self.set_reg(Register::HI, hi);
+            self.set_reg(Register::LO, a, MemoryAccessPosition::A);
+            self.set_reg(Register::HI, hi, MemoryAccessPosition::HI);
         } else {
-            self.set_reg(rd, a);
+            self.set_reg(rd, a, MemoryAccessPosition::A);
         }
     }
 
@@ -1043,7 +1075,7 @@ impl<'a> CoreVM<'a> {
             Opcode::LB => sign_extend::<8>((mem >> ((rs & 3) * 8)) & 0xff),
             _ => unreachable!("not a load opcode: {:?}", instruction.opcode),
         };
-        self.set_reg(rt_reg, val);
+        self.set_reg(rt_reg, val, MemoryAccessPosition::A);
         Ok(())
     }
 
@@ -1112,7 +1144,7 @@ impl<'a> CoreVM<'a> {
                      // to during replay; only its *derivation* matching `MinimalExecutor`'s
                      // formula (which produced this oracle entry in the first place) matters.
         if instruction.opcode == Opcode::SC {
-            self.set_reg(rt_reg, 1);
+            self.set_reg(rt_reg, 1, MemoryAccessPosition::A);
         }
         Ok(())
     }
@@ -1122,7 +1154,7 @@ impl<'a> CoreVM<'a> {
             let rd: Register = instruction.op_a.into();
             let rt: Register = (instruction.op_b as u8).into();
             let b = self.reg(rt);
-            self.set_reg(rd, wsbh(b));
+            self.set_reg(rd, wsbh(b), MemoryAccessPosition::A);
             return Ok(());
         }
 
@@ -1132,16 +1164,16 @@ impl<'a> CoreVM<'a> {
         match instruction.opcode {
             Opcode::SEXT => {
                 let b = self.reg(rt);
-                self.set_reg(rd, sext(b, c));
+                self.set_reg(rd, sext(b, c), MemoryAccessPosition::A);
             }
             Opcode::EXT => {
                 let b = self.reg(rt);
-                self.set_reg(rd, ext(b, c)?);
+                self.set_reg(rd, ext(b, c)?, MemoryAccessPosition::A);
             }
             Opcode::INS => {
                 let b = self.reg(rt);
                 let a = self.reg(rd);
-                self.set_reg(rd, ins(a, b, c)?);
+                self.set_reg(rd, ins(a, b, c)?, MemoryAccessPosition::A);
             }
             Opcode::TEQ => {
                 let rs: Register = instruction.op_a.into();
@@ -1164,8 +1196,8 @@ impl<'a> CoreVM<'a> {
                     Opcode::MSUB => msub(b, c, lo, hi),
                     _ => unreachable!(),
                 };
-                self.set_reg(lo_reg, out_lo);
-                self.set_reg(Register::HI, out_hi);
+                self.set_reg(lo_reg, out_lo, MemoryAccessPosition::A);
+                self.set_reg(Register::HI, out_hi, MemoryAccessPosition::HI);
             }
             _ => unreachable!("not a misc opcode: {:?}", instruction.opcode),
         }
@@ -1220,7 +1252,7 @@ impl<'a> CoreVM<'a> {
                     .copied()
                     .unwrap_or_else(|| self.reg(Register::BRK));
                 let v0 = resolve_brk(initial_brk, initial_brk, arg1)?;
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(v0)
             }
             SyscallCode::SHA_COMPRESS => {
@@ -1407,31 +1439,31 @@ impl<'a> CoreVM<'a> {
                 let size = align_size(arg2)?;
                 let v0 = if arg1 == 0 {
                     let heap = self.reg(Register::HEAP);
-                    self.set_reg(Register::HEAP, heap.wrapping_add(size));
+                    self.set_reg_aux(Register::HEAP, heap.wrapping_add(size));
                     heap
                 } else {
                     arg1
                 };
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(v0)
             }
             SyscallCode::SYS_CLONE => {
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(1)
             }
             SyscallCode::SYS_EXT_GROUP => {
                 next_pc = 0;
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(0)
             }
             SyscallCode::SYS_FCNTL => {
                 let (v0, a3) = fcntl_result(arg1, arg2);
-                self.set_reg(Register::A3, a3);
+                self.set_reg_aux(Register::A3, a3);
                 Some(v0)
             }
             SyscallCode::SYS_READ => {
                 let (v0, a3) = read_result(arg1);
-                self.set_reg(Register::A3, a3);
+                self.set_reg_aux(Register::A3, a3);
                 Some(v0)
             }
             SyscallCode::SYS_WRITE => {
@@ -1439,7 +1471,7 @@ impl<'a> CoreVM<'a> {
                 for _ in 0..nbytes {
                     self.next_oracle_value(); // write preimage; see SHA_COMPRESS.
                 }
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(nbytes)
             }
             SyscallCode::SYS_OPEN
@@ -1456,14 +1488,14 @@ impl<'a> CoreVM<'a> {
             | SyscallCode::SYS_OPENAT
             | SyscallCode::SYS_FSTAT64
             | SyscallCode::SYS_MUNMAP => {
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(0)
             }
             _ => None,
         };
 
         let a0 = a0_result.unwrap_or(syscall_id);
-        self.set_reg(Register::V0, a0);
+        self.set_reg(Register::V0, a0, MemoryAccessPosition::A);
         self.clk += u64::from(extra_cycles);
         Ok(next_pc)
     }

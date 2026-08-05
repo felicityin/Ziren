@@ -199,6 +199,7 @@ fn precompile_air_ids(code: SyscallCode) -> &'static [MipsAirId] {
 pub(crate) struct SplicedMinimalTrace<T: MinimalTrace> {
     inner: T,
     start_registers: [u32; NUM_REGISTERS],
+    start_register_timestamps: [u64; NUM_REGISTERS],
     start_pc: u32,
     start_clk: u64,
     end_clk: u64,
@@ -209,6 +210,10 @@ pub(crate) struct SplicedMinimalTrace<T: MinimalTrace> {
 impl<T: MinimalTrace> MinimalTrace for SplicedMinimalTrace<T> {
     fn start_registers(&self) -> [u32; NUM_REGISTERS] {
         self.start_registers
+    }
+
+    fn start_register_timestamps(&self) -> [u64; NUM_REGISTERS] {
+        self.start_register_timestamps
     }
 
     fn pc_start(&self) -> u32 {
@@ -255,6 +260,7 @@ pub(crate) struct SplicingVM<'a> {
     core: CoreVM<'a>,
     shape_checker: ShapeChecker,
     shard_start_registers: [u32; NUM_REGISTERS],
+    shard_start_register_timestamps: [u64; NUM_REGISTERS],
     shard_start_pc: u32,
     shard_start_clk: u64,
     shard_start_mem_reads_consumed: usize,
@@ -273,6 +279,7 @@ impl<'a> SplicingVM<'a> {
         let core = CoreVM::new(trace, program, max_syscall_cycles);
         Self {
             shard_start_registers: core.registers(),
+            shard_start_register_timestamps: core.register_timestamps(),
             shard_start_pc: core.pc(),
             shard_start_clk: core.clk(),
             shard_start_mem_reads_consumed: 0,
@@ -352,6 +359,7 @@ impl<'a> SplicingVM<'a> {
         let spliced = SplicedMinimalTrace {
             inner: trace.clone(),
             start_registers: self.shard_start_registers,
+            start_register_timestamps: self.shard_start_register_timestamps,
             start_pc: self.shard_start_pc,
             start_clk: self.shard_start_clk,
             end_clk: self.core.clk(),
@@ -360,6 +368,7 @@ impl<'a> SplicingVM<'a> {
         };
 
         self.shard_start_registers = self.core.registers();
+        self.shard_start_register_timestamps = self.core.register_timestamps();
         self.shard_start_pc = self.core.pc();
         self.shard_start_clk = self.core.clk();
         self.shard_start_mem_reads_consumed = mem_reads_consumed;

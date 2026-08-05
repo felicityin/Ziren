@@ -20,7 +20,7 @@ mod ecall;
 use std::sync::Arc;
 
 use crate::{
-    events::MemoryRecord,
+    events::{MemoryAccessPosition, MemoryRecord},
     memory::PagedMemory,
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
@@ -38,6 +38,11 @@ const MAX_PREALLOCATED_ORACLE_LOG: u64 = 1 << 20;
 pub(crate) struct MinimalExecutor {
     program: Arc<Program>,
     registers: [u32; NUM_REGISTERS],
+    /// The `clk` each register was last written at -- `0` means "never touched" (matches
+    /// `MemoryRecord::timestamp`'s sentinel). Tracked purely so a later chunk's `TracingVM` can
+    /// recover a real `prev_timestamp` for a register last written in an *earlier* chunk;
+    /// register *values* never need this (always recomputed live, never oracle-logged).
+    register_timestamps: [u64; NUM_REGISTERS],
     page_table: PagedMemory<MemoryRecord>,
     pc: u32,
     next_pc: u32,
@@ -87,6 +92,7 @@ impl MinimalExecutor {
             next_pc: program.pc_start.wrapping_add(4),
             program,
             registers,
+            register_timestamps: [0; NUM_REGISTERS],
             page_table,
             clk: 1, // `clk == 0` is the "never touched" sentinel, matches `ExecutionState::new`.
             next_is_delayslot: false,
@@ -104,6 +110,11 @@ impl MinimalExecutor {
     #[must_use]
     pub(crate) fn registers(&self) -> [u32; NUM_REGISTERS] {
         self.registers
+    }
+
+    #[must_use]
+    pub(crate) fn register_timestamps(&self) -> [u64; NUM_REGISTERS] {
+        self.register_timestamps
     }
 
     #[must_use]
@@ -156,19 +167,36 @@ impl MinimalExecutor {
         hasher.finish()
     }
 
-    // ---- register file (never oracle-logged) ----
+    // ---- register file (values never oracle-logged; timestamps tracked -- see the struct doc
+    // comment on `register_timestamps`) ----
 
     fn reg(&self, r: Register) -> u32 {
         self.registers[r as usize]
     }
 
-    fn set_reg(&mut self, r: Register, value: u32) {
+    /// Writes `value` to register `r`, tagging its consistency-timestamp at `clk + position` --
+    /// matches `Executor::rw_cpu`'s exact scheme for the instruction's own op_a/op_b/op_c/hi
+    /// slots (the only registers this ISA ever writes through those slots; `op_b`/`op_c` are
+    /// always source-only, so there is no `set_reg` counterpart for those positions).
+    fn set_reg(&mut self, r: Register, value: u32, position: MemoryAccessPosition) {
         // `$zero` is hardware-wired to 0 (mirrors `Executor::rw_cpu`'s identical guard) -- real
         // code does write to it sometimes (`op_a == 0` idioms like `add $zero, ...`, handled by
         // `AluX0Chip` on the AIR side), and every later read of `$zero` must still see 0 or
         // downstream computation silently corrupts.
         let value = if r == Register::ZERO { 0 } else { value };
         self.registers[r as usize] = value;
+        self.register_timestamps[r as usize] = self.clk + position as u64;
+    }
+
+    /// Writes `value` to register `r` for a syscall-internal auxiliary register access -- one not
+    /// part of the `SYSCALL` instruction's own op_a/op_b/op_c encoding (e.g. `$a3`/`$heap`).
+    /// Mirrors `Executor::rw_traced`'s scheme via `SyscallContext`, which tags these at the
+    /// syscall's base `clk` with no position offset (`SyscallContext::clk` is captured once at
+    /// dispatch, before any of a syscall's own intra-dispatch `clk` bumps).
+    fn set_reg_aux(&mut self, r: Register, value: u32) {
+        let value = if r == Register::ZERO { 0 } else { value };
+        self.registers[r as usize] = value;
+        self.register_timestamps[r as usize] = self.clk;
     }
 
     // ---- RAM (oracle-logged) ----
@@ -253,6 +281,7 @@ impl MinimalExecutor {
             return Ok(None);
         }
         let start_registers = self.registers;
+        let start_register_timestamps = self.register_timestamps;
         let pc_start = self.pc;
         let clk_start = self.clk;
 
@@ -273,6 +302,7 @@ impl MinimalExecutor {
 
         let chunk = TraceChunk {
             start_registers,
+            start_register_timestamps,
             pc_start,
             clk_start,
             clk_end: self.clk,
@@ -334,7 +364,7 @@ impl MinimalExecutor {
                 Opcode::JumpDirect => vm::jump_direct_result(next_pc_in, instruction.op_b),
                 _ => unreachable!("not a jump opcode: {:?}", instruction.opcode),
             };
-            self.set_reg(link, return_pc);
+            self.set_reg(link, return_pc, MemoryAccessPosition::A);
             next_next_pc = target;
             self.next_is_delayslot = true;
         } else if instruction.is_mov_cond_instruction() {
@@ -345,7 +375,7 @@ impl MinimalExecutor {
             let b = self.reg(rs);
             let c = self.reg(rt);
             let a = vm::condmov_result(instruction.opcode, prev_a, b, c);
-            self.set_reg(rd, a);
+            self.set_reg(rd, a, MemoryAccessPosition::A);
         } else if instruction.is_misc_instruction() {
             self.execute_misc(instruction)?;
         } else if instruction.is_syscall_instruction() {
@@ -386,10 +416,10 @@ impl MinimalExecutor {
     /// Mirrors `Executor::alu_rw`: dual-result opcodes write LO/HI, everything else writes `rd`.
     fn alu_write(&mut self, opcode: Opcode, rd: Register, a: u32, hi: u32) {
         if opcode.is_use_lo_hi_alu() {
-            self.set_reg(Register::LO, a);
-            self.set_reg(Register::HI, hi);
+            self.set_reg(Register::LO, a, MemoryAccessPosition::A);
+            self.set_reg(Register::HI, hi, MemoryAccessPosition::HI);
         } else {
-            self.set_reg(rd, a);
+            self.set_reg(rd, a, MemoryAccessPosition::A);
         }
     }
 
@@ -449,7 +479,7 @@ impl MinimalExecutor {
             Opcode::LB => sign_extend::<8>((mem >> ((rs & 3) * 8)) & 0xff),
             _ => unreachable!("not a load opcode: {:?}", instruction.opcode),
         };
-        self.set_reg(rt_reg, val);
+        self.set_reg(rt_reg, val, MemoryAccessPosition::A);
         Ok(())
     }
 
@@ -512,7 +542,7 @@ impl MinimalExecutor {
         }
         self.mw(aligned_addr, val);
         if instruction.opcode == Opcode::SC {
-            self.set_reg(rt_reg, 1);
+            self.set_reg(rt_reg, 1, MemoryAccessPosition::A);
         }
         Ok(())
     }
@@ -522,7 +552,7 @@ impl MinimalExecutor {
             let rd: Register = instruction.op_a.into();
             let rt: Register = (instruction.op_b as u8).into();
             let b = self.reg(rt);
-            self.set_reg(rd, vm::wsbh(b));
+            self.set_reg(rd, vm::wsbh(b), MemoryAccessPosition::A);
             return Ok(());
         }
 
@@ -532,16 +562,16 @@ impl MinimalExecutor {
         match instruction.opcode {
             Opcode::SEXT => {
                 let b = self.reg(rt);
-                self.set_reg(rd, vm::sext(b, c));
+                self.set_reg(rd, vm::sext(b, c), MemoryAccessPosition::A);
             }
             Opcode::EXT => {
                 let b = self.reg(rt);
-                self.set_reg(rd, vm::ext(b, c)?);
+                self.set_reg(rd, vm::ext(b, c)?, MemoryAccessPosition::A);
             }
             Opcode::INS => {
                 let b = self.reg(rt);
                 let a = self.reg(rd);
-                self.set_reg(rd, vm::ins(a, b, c)?);
+                self.set_reg(rd, vm::ins(a, b, c)?, MemoryAccessPosition::A);
             }
             Opcode::TEQ => {
                 // `execute_teq`'s unusual encoding: `rs = op_a`, `rt = op_b` (no destination).
@@ -565,8 +595,8 @@ impl MinimalExecutor {
                     Opcode::MSUB => vm::msub(b, c, lo, hi),
                     _ => unreachable!(),
                 };
-                self.set_reg(lo_reg, out_lo);
-                self.set_reg(Register::HI, out_hi);
+                self.set_reg(lo_reg, out_lo, MemoryAccessPosition::A);
+                self.set_reg(Register::HI, out_hi, MemoryAccessPosition::HI);
             }
             _ => unreachable!("not a misc opcode: {:?}", instruction.opcode),
         }

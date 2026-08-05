@@ -75,6 +75,11 @@ impl Iterator for MemReads<'_> {
 pub(crate) trait MinimalTrace: Clone + Send + Sync + 'static {
     /// The register file at `pc_start`/`clk_start`.
     fn start_registers(&self) -> [u32; NUM_REGISTERS];
+    /// The `clk` each register was last written at, as of `pc_start`/`clk_start` -- `0` means
+    /// "never touched" (see `MinimalExecutor`'s `register_timestamps` doc comment). Needed so a
+    /// replayer can recover a real `prev_timestamp` for a register whose last write happened in
+    /// an *earlier* chunk/shard than the one it's currently replaying.
+    fn start_register_timestamps(&self) -> [u64; NUM_REGISTERS];
     /// The `pc` to begin replay at.
     fn pc_start(&self) -> u32;
     /// The `clk` to begin replay at.
@@ -98,6 +103,7 @@ pub(crate) trait MinimalTrace: Clone + Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub(crate) struct TraceChunk {
     pub start_registers: [u32; NUM_REGISTERS],
+    pub start_register_timestamps: [u64; NUM_REGISTERS],
     pub pc_start: u32,
     pub clk_start: u64,
     pub clk_end: u64,
@@ -107,6 +113,10 @@ pub(crate) struct TraceChunk {
 impl MinimalTrace for TraceChunk {
     fn start_registers(&self) -> [u32; NUM_REGISTERS] {
         self.start_registers
+    }
+
+    fn start_register_timestamps(&self) -> [u64; NUM_REGISTERS] {
+        self.start_register_timestamps
     }
 
     fn pc_start(&self) -> u32 {

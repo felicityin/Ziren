@@ -2,7 +2,12 @@
 //! vs. a documented no-op fallback.
 
 use super::MinimalExecutor;
-use crate::{events::FieldOperation, register::Register, syscalls::SyscallCode, vm, ExecutionError};
+use crate::{
+    events::{FieldOperation, MemoryAccessPosition},
+    register::Register,
+    syscalls::SyscallCode,
+    vm, ExecutionError,
+};
 use zkm_curves::{
     edwards::{ed25519::Ed25519, WORDS_FIELD_ELEMENT},
     weierstrass::{
@@ -194,7 +199,7 @@ impl MinimalExecutor {
                     .copied()
                     .unwrap_or_else(|| self.reg(Register::BRK));
                 let v0 = vm::resolve_brk(initial_brk, initial_brk, arg1)?;
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(v0)
             }
             SyscallCode::SHA_COMPRESS => {
@@ -389,31 +394,31 @@ impl MinimalExecutor {
                 let size = vm::align_size(arg2)?;
                 let v0 = if arg1 == 0 {
                     let heap = self.reg(Register::HEAP);
-                    self.set_reg(Register::HEAP, heap.wrapping_add(size));
+                    self.set_reg_aux(Register::HEAP, heap.wrapping_add(size));
                     heap
                 } else {
                     arg1
                 };
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(v0)
             }
             SyscallCode::SYS_CLONE => {
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(1) // Simulate a successful clone operation.
             }
             SyscallCode::SYS_EXT_GROUP => {
                 next_pc = 0;
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(0)
             }
             SyscallCode::SYS_FCNTL => {
                 let (v0, a3) = vm::fcntl_result(arg1, arg2);
-                self.set_reg(Register::A3, a3);
+                self.set_reg_aux(Register::A3, a3);
                 Some(v0)
             }
             SyscallCode::SYS_READ => {
                 let (v0, a3) = vm::read_result(arg1);
-                self.set_reg(Register::A3, a3);
+                self.set_reg_aux(Register::A3, a3);
                 Some(v0)
             }
             SyscallCode::SYS_WRITE => {
@@ -427,7 +432,7 @@ impl MinimalExecutor {
                 if fd == FD_PUBLIC_VALUES {
                     self.public_values_stream.extend_from_slice(&bytes);
                 }
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(nbytes)
             }
             SyscallCode::SYS_OPEN
@@ -444,7 +449,7 @@ impl MinimalExecutor {
             | SyscallCode::SYS_OPENAT
             | SyscallCode::SYS_FSTAT64
             | SyscallCode::SYS_MUNMAP => {
-                self.set_reg(Register::A3, 0);
+                self.set_reg_aux(Register::A3, 0);
                 Some(0)
             }
             // Everything else (precompiles, hints, unconstrained, VERIFY): a documented no-op --
@@ -453,7 +458,7 @@ impl MinimalExecutor {
         };
 
         let a0 = a0_result.unwrap_or(syscall_id);
-        self.set_reg(Register::V0, a0);
+        self.set_reg(Register::V0, a0, MemoryAccessPosition::A);
         self.clk += u64::from(extra_cycles);
         Ok(next_pc)
     }
