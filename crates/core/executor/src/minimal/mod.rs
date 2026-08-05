@@ -20,7 +20,7 @@ mod ecall;
 use std::sync::Arc;
 
 use crate::{
-    events::{MemoryAccessPosition, MemoryRecord},
+    events::{MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryRecord},
     memory::PagedMemory,
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
@@ -165,6 +165,67 @@ impl MinimalExecutor {
         let mut hasher = DefaultHasher::new();
         touched.hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// Computes `global_memory_initialize_events`/`global_memory_finalize_events` for the whole
+    /// run, mirroring `Executor::postprocess()`'s memory-event section exactly. Only meaningful
+    /// once the whole run has finished (`Self::is_done()`), since this walks the *final*
+    /// register/RAM state -- addresses touched by only *some* chunks wouldn't be visible from an
+    /// in-progress run.
+    ///
+    /// `uninitialized_memory`'s pre-seeded initial values (the hint mechanism's own pre-seeding
+    /// of a memory address before its first real access) aren't tracked by `MinimalExecutor` at
+    /// all yet -- hints are a documented no-op (see the module doc) -- so every initialize event
+    /// here uses `0`, matching that current scope.
+    #[must_use]
+    pub(crate) fn global_memory_events(
+        &self,
+    ) -> (Vec<MemoryInitializeFinalizeEvent>, Vec<MemoryInitializeFinalizeEvent>) {
+        let mut initialize_events = Vec::new();
+        let mut finalize_events = Vec::new();
+
+        // addr 0 (register `ZERO`) is handled unconditionally and first, regardless of whether
+        // it was ever touched -- the finalize table's AIR constrains its first row to address 0.
+        let zero_ts = self.register_timestamps[Register::ZERO as usize];
+        let addr_0_final = MemoryRecord { timestamp: if zero_ts != 0 { zero_ts } else { 1 }, value: 0 };
+        finalize_events.push(MemoryInitializeFinalizeEvent::finalize_from_record(0, &addr_0_final));
+        initialize_events.push(MemoryInitializeFinalizeEvent::initialize(0, 0));
+
+        for addr in 1..NUM_REGISTERS as u32 {
+            // A register seeded from `program.image` (e.g. the ELF loader's computed initial
+            // `BRK`) is "touched" from program load onward, even if never accessed at runtime --
+            // mirrors `Memory::insert`'s dispatch, which `Executor::initialize` relies on to
+            // create a real `self.state.memory.registers` entry for these addresses up front
+            // (see `Self::new`'s identical comment on why register-index seeds bypass the page
+            // table). Without this, a register like `BRK` that a real program's runtime resolves
+            // once but the guest code never re-reads/re-writes would be silently dropped here.
+            let seeded = self.program.image.contains_key(&addr);
+            let timestamp = self.register_timestamps[addr as usize];
+            if timestamp == 0 && !seeded {
+                continue;
+            }
+            // Program memory is initialized in the `MemoryProgramChip` and doesn't require any
+            // events, so we only send init events for other addresses.
+            if !seeded {
+                initialize_events.push(MemoryInitializeFinalizeEvent::initialize(addr, 0));
+            }
+            let record = MemoryRecord { timestamp, value: self.registers[addr as usize] };
+            finalize_events.push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, &record));
+        }
+
+        for addr in self.page_table.keys() {
+            if addr == 0 {
+                // Handled above.
+                continue;
+            }
+            if !self.program.image.contains_key(&addr) {
+                initialize_events.push(MemoryInitializeFinalizeEvent::initialize(addr, 0));
+            }
+            let record = self.page_table.get(addr).unwrap();
+            finalize_events.push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, record));
+        }
+
+        (initialize_events, finalize_events)
     }
 
     // ---- register file (values never oracle-logged; timestamps tracked -- see the struct doc
@@ -728,6 +789,52 @@ mod tests {
     #[test]
     fn matches_golden_ed_decompress_real_elf() {
         assert_matches_golden(ed_decompress_program, "ed_decompress_program");
+    }
+
+    /// `golden::run_golden` drives the legacy `Executor` via its single-pass `run()`, whose
+    /// `emit_global_memory_events` defaults to `true` -- unlike `golden.rs`'s
+    /// `local_memory_access_events` case, this field genuinely IS populated by that path, so its
+    /// count is a real cross-check for `global_memory_events`.
+    fn assert_global_memory_events_match_golden(program: impl Fn() -> Program, name: &str) {
+        let golden = run_golden(program());
+        let mut exec = MinimalExecutor::new(Arc::new(program()), 4);
+        while exec.try_execute_chunk().unwrap().is_some() {}
+        let (initialize_events, finalize_events) = exec.global_memory_events();
+        assert_eq!(
+            initialize_events.len(),
+            golden.event_counts.get("global_memory_initialize_events").copied().unwrap_or(0),
+            "{name}: global_memory_initialize_events count mismatch"
+        );
+        assert_eq!(
+            finalize_events.len(),
+            golden.event_counts.get("global_memory_finalize_events").copied().unwrap_or(0),
+            "{name}: global_memory_finalize_events count mismatch"
+        );
+    }
+
+    #[test]
+    fn global_memory_events_matches_golden_simple_program() {
+        assert_global_memory_events_match_golden(simple_program, "simple_program");
+    }
+
+    #[test]
+    fn global_memory_events_matches_golden_halt_only_program() {
+        assert_global_memory_events_match_golden(halt_only_program, "halt_only_program");
+    }
+
+    #[test]
+    fn global_memory_events_matches_golden_fibonacci_real_elf() {
+        assert_global_memory_events_match_golden(fibonacci_program, "fibonacci_program");
+    }
+
+    #[test]
+    fn global_memory_events_matches_golden_hello_world_real_elf() {
+        assert_global_memory_events_match_golden(hello_world_program, "hello_world_program");
+    }
+
+    #[test]
+    fn global_memory_events_matches_golden_ed_decompress_real_elf() {
+        assert_global_memory_events_match_golden(ed_decompress_program, "ed_decompress_program");
     }
 
     /// The chunk-size cutoff must never split a branch/jump from its delay slot. `fibonacci` is
