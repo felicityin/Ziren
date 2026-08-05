@@ -145,6 +145,16 @@ impl<'a> TracingVM<'a> {
     // `set_alu_dest`, etc.), or a read built *after* an aliased write would see the write's own
     // just-updated timestamp instead of the correct pre-instruction one.
 
+    /// Builds a real read record for `op_a`, given its already-resolved value -- only a handful
+    /// of instruction families (branches) ever *read* `op_a` rather than write it.
+    fn read_op_a(&self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
+        MemoryRecordEnum::Read(MemoryReadRecord {
+            value,
+            timestamp: clk + MemoryAccessPosition::A as u64,
+            prev_timestamp: self.core.reg_timestamp(r),
+        })
+    }
+
     /// Builds a real read record for `op_b`, given its already-resolved value.
     fn read_op_b(&self, r: Register, value: u32, clk: u64) -> MemoryRecordEnum {
         MemoryRecordEnum::Read(MemoryReadRecord {
@@ -211,19 +221,25 @@ impl<'a> TracingVM<'a> {
         } else if instruction.is_memory_store_instruction() {
             self.execute_store(instruction, clk, pc, next_pc_in)?;
         } else if instruction.is_branch_instruction() {
+            // `src1`/`src2` are read (never written) at positions A/B respectively -- mirrors
+            // `Executor::branch_rr` exactly. The offset (`op_c`) is always a raw immediate for
+            // this opcode family, never a register, so there is no `c_record`.
             let rs: Register = instruction.op_a.into();
             let src1 = self.core.reg(rs);
-            let src2 = if instruction.opcode.only_one_operand() {
-                0
+            let a_record = self.read_op_a(rs, src1, clk);
+            let (src2, b_record) = if instruction.opcode.only_one_operand() {
+                (0, None)
             } else {
-                self.core.reg((instruction.op_b as u8).into())
+                let rt: Register = (instruction.op_b as u8).into();
+                let src2 = self.core.reg(rt);
+                (src2, Some(self.read_op_b(rt, src2, clk)))
             };
             let offset = instruction.op_c;
             if crate::vm::branch_taken(instruction.opcode, src1, src2) {
                 next_next_pc = crate::vm::branch_target(next_pc_in, offset);
             }
             self.core.set_next_is_delayslot(true);
-            self.record.branch_events.push(BranchEvent::new(
+            let mut event = BranchEvent::new(
                 clk,
                 pc,
                 next_pc_in,
@@ -232,28 +248,44 @@ impl<'a> TracingVM<'a> {
                 src1,
                 src2,
                 offset,
-            ));
+            );
+            event.a_record = Some(a_record);
+            event.b_record = b_record;
+            self.record.branch_events.push(event);
         } else if instruction.is_jump_instruction() {
+            // `Jump` (JR/JALR) reads its target register at position B (`Executor::jump_rr`
+            // reads it *before* `link` is written, so the record is built from that same
+            // pre-write read -- never re-read afterwards, which would see `link`'s just-written
+            // value/timestamp if the two happen to alias). `Jumpi`/`JumpDirect`'s target is
+            // always an immediate, so they have no `b_record`. All three write `link` at A.
             let link: Register = instruction.op_a.into();
-            let (return_pc, target) = match instruction.opcode {
+            let (return_pc, target, b, b_record) = match instruction.opcode {
                 Opcode::Jump => {
                     let target_reg: Register = (instruction.op_b as u8).into();
                     let target_pc = self.core.reg(target_reg);
-                    crate::vm::jump_jr_result(next_pc_in, target_pc)
+                    let b_record = self.read_op_b(target_reg, target_pc, clk);
+                    let (return_pc, target) = crate::vm::jump_jr_result(next_pc_in, target_pc);
+                    (return_pc, target, target_pc, Some(b_record))
                 }
-                Opcode::Jumpi => crate::vm::jump_jumpi_result(next_pc_in, instruction.op_b),
-                Opcode::JumpDirect => crate::vm::jump_direct_result(next_pc_in, instruction.op_b),
+                Opcode::Jumpi => {
+                    let (return_pc, target) =
+                        crate::vm::jump_jumpi_result(next_pc_in, instruction.op_b);
+                    (return_pc, target, instruction.op_b, None)
+                }
+                Opcode::JumpDirect => {
+                    let (return_pc, target) =
+                        crate::vm::jump_direct_result(next_pc_in, instruction.op_b);
+                    (return_pc, target, instruction.op_b, None)
+                }
                 _ => unreachable!("not a jump opcode: {:?}", instruction.opcode),
             };
-            self.core.set_reg(link, return_pc, MemoryAccessPosition::A);
+            let a_record = self.write_op_a(link, return_pc, clk);
             next_next_pc = target;
             self.core.set_next_is_delayslot(true);
-            let b = if instruction.opcode == Opcode::Jump {
-                self.core.reg((instruction.op_b as u8).into())
-            } else {
-                instruction.op_b
-            };
-            let event = JumpEvent::new(clk, pc, next_pc_in, next_next_pc, instruction.opcode, return_pc, b, 0);
+            let mut event =
+                JumpEvent::new(clk, pc, next_pc_in, next_next_pc, instruction.opcode, return_pc, b, 0);
+            event.a_record = Some(a_record);
+            event.b_record = b_record;
             match instruction.opcode {
                 Opcode::Jump => self.record.jump_events.push(event),
                 Opcode::Jumpi => self.record.jumpi_events.push(event),
@@ -261,20 +293,34 @@ impl<'a> TracingVM<'a> {
                 _ => unreachable!(),
             }
         } else if instruction.is_mov_cond_instruction() {
+            // `prev_a` (the "keep old value if condition false" input) is an untracked live peek
+            // -- `Executor::execute_condmov` reads it via plain `self.register(rd)`, not
+            // `rr_cpu`, so it carries no record of its own; the real `a_record` comes entirely
+            // from the write below (which captures the same `prev_a` as its own `prev_value`).
             let rd: Register = instruction.op_a.into();
             let rs: Register = (instruction.op_b as u8).into();
             let rt: Register = (instruction.op_c as u8).into();
             let prev_a = self.core.reg(rd);
             let b = self.core.reg(rs);
+            let b_record = self.read_op_b(rs, b, clk);
             let c = self.core.reg(rt);
+            let c_record = self.read_op_c(rt, c, clk);
             let a = crate::vm::condmov_result(instruction.opcode, prev_a, b, c);
-            self.core.set_reg(rd, a, MemoryAccessPosition::A);
+            let a_record = self.write_op_a(rd, a, clk);
             if op_a_is_zero {
-                self.record.alu_x0_events.push(AluEvent::new(pc, instruction.opcode, a, b, c));
+                let mut event = AluEvent::new(pc, instruction.opcode, a, b, c);
+                event.clk = clk;
+                event.a_record = Some(a_record);
+                event.b_record = Some(b_record);
+                event.c_record = Some(c_record);
+                self.record.alu_x0_events.push(event);
             } else {
-                self.record
-                    .movcond_events
-                    .push(MovCondEvent::new(clk, pc, next_pc_in, instruction.opcode, a, b, c, prev_a));
+                let mut event =
+                    MovCondEvent::new(clk, pc, next_pc_in, instruction.opcode, a, b, c, prev_a);
+                event.a_record = Some(a_record);
+                event.b_record = Some(b_record);
+                event.c_record = Some(c_record);
+                self.record.movcond_events.push(event);
             }
         } else if instruction.is_misc_instruction() {
             self.execute_misc(instruction, clk, pc, next_pc_in, op_a_is_zero)?;
@@ -590,12 +636,21 @@ impl<'a> TracingVM<'a> {
             let rd: Register = instruction.op_a.into();
             let rt: Register = (instruction.op_b as u8).into();
             let b = self.core.reg(rt);
+            let b_record = self.read_op_b(rt, b, clk);
             let a = crate::vm::wsbh(b);
-            self.core.set_reg(rd, a, MemoryAccessPosition::A);
+            let a_record = self.write_op_a(rd, a, clk);
             if op_a_is_zero {
-                self.record.alu_x0_events.push(AluEvent::new(pc, instruction.opcode, a, b, 0));
+                let mut event = AluEvent::new(pc, instruction.opcode, a, b, 0);
+                event.clk = clk;
+                event.a_record = Some(a_record);
+                event.b_record = Some(b_record);
+                self.record.alu_x0_events.push(event);
             } else {
-                self.record.movcond_events.push(MovCondEvent::new(clk, pc, next_pc, instruction.opcode, a, b, 0, 0));
+                let mut event =
+                    MovCondEvent::new(clk, pc, next_pc, instruction.opcode, a, b, 0, 0);
+                event.a_record = Some(a_record);
+                event.b_record = Some(b_record);
+                self.record.movcond_events.push(event);
             }
             return Ok(());
         }
@@ -606,38 +661,50 @@ impl<'a> TracingVM<'a> {
         match instruction.opcode {
             Opcode::SEXT => {
                 let b = self.core.reg(rt);
+                let b_record = self.read_op_b(rt, b, clk);
                 let a = crate::vm::sext(b, c);
-                self.core.set_reg(rd, a, MemoryAccessPosition::A);
-                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0);
+                let a_record = self.write_op_a(rd, a, clk);
+                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0, a_record, Some(b_record));
             }
             Opcode::EXT => {
                 let b = self.core.reg(rt);
+                let b_record = self.read_op_b(rt, b, clk);
                 let a = crate::vm::ext(b, c)?;
-                self.core.set_reg(rd, a, MemoryAccessPosition::A);
-                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0);
+                let a_record = self.write_op_a(rd, a, clk);
+                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, 0, a_record, Some(b_record));
             }
             Opcode::INS => {
                 let b = self.core.reg(rt);
+                let b_record = self.read_op_b(rt, b, clk);
+                // `prev_a` (rd's current value, merged with `b`) is an untracked live peek --
+                // matches `MOVCOND`'s identical pattern (see its doc comment): the real
+                // `a_record` comes from the write below, which captures this same value as its
+                // own `prev_value`.
                 let prev_a = self.core.reg(rd);
                 let a = crate::vm::ins(prev_a, b, c)?;
-                self.core.set_reg(rd, a, MemoryAccessPosition::A);
-                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, prev_a);
+                let a_record = self.write_op_a(rd, a, clk);
+                self.push_misc_or_x0(op_a_is_zero, clk, pc, next_pc, instruction.opcode, a, b, c, prev_a, a_record, Some(b_record));
             }
             Opcode::TEQ => {
                 let rs: Register = instruction.op_a.into();
                 let rt: Register = (instruction.op_b as u8).into();
                 let src2 = self.core.reg(rt);
+                let src2_record = self.read_op_b(rt, src2, clk);
                 let src1 = self.core.reg(rs);
+                let src1_record = self.read_op_a(rs, src1, clk);
                 crate::vm::teq(src1, src2)?;
-                self.record
-                    .teq_events
-                    .push(MiscEvent::new(clk, pc, next_pc, instruction.opcode, src1, src2, 0, 0, MemoryWriteRecord::default()));
+                let mut event = MiscEvent::new(clk, pc, next_pc, instruction.opcode, src1, src2, 0, 0, MemoryWriteRecord::default());
+                event.a_record = Some(src1_record);
+                event.b_record = Some(src2_record);
+                self.record.teq_events.push(event);
             }
             Opcode::MADDU | Opcode::MSUBU | Opcode::MADD | Opcode::MSUB => {
                 let lo_reg: Register = instruction.op_a.into();
                 let rs: Register = (instruction.op_c as u8).into();
                 let c_val = self.core.reg(rs);
+                let c_record = self.read_op_c(rs, c_val, clk);
                 let b = self.core.reg(rt);
+                let b_record = self.read_op_b(rt, b, clk);
                 let lo = self.core.reg(Register::LO);
                 let hi = self.core.reg(Register::HI);
                 let (out_lo, out_hi) = match instruction.opcode {
@@ -647,10 +714,9 @@ impl<'a> TracingVM<'a> {
                     Opcode::MSUB => crate::vm::msub(b, c_val, lo, hi),
                     _ => unreachable!(),
                 };
-                self.core.set_reg(lo_reg, out_lo, MemoryAccessPosition::A);
-                self.core.set_reg(Register::HI, out_hi, MemoryAccessPosition::HI);
-                let hi_record = MemoryWriteRecord { value: out_hi, timestamp: clk, prev_value: hi, prev_timestamp: 0 };
-                self.record.maddsub_events.push(MiscEvent::new(
+                let a_record = self.write_op_a(lo_reg, out_lo, clk);
+                let hi_record = self.write_hi(out_hi, clk);
+                let mut event = MiscEvent::new(
                     clk,
                     pc,
                     next_pc,
@@ -660,7 +726,11 @@ impl<'a> TracingVM<'a> {
                     c_val,
                     lo,
                     hi_record,
-                ));
+                );
+                event.a_record = Some(a_record);
+                event.b_record = Some(b_record);
+                event.c_record = Some(c_record);
+                self.record.maddsub_events.push(event);
             }
             _ => unreachable!("not a misc opcode: {:?}", instruction.opcode),
         }
@@ -679,12 +749,20 @@ impl<'a> TracingVM<'a> {
         b: u32,
         c: u32,
         prev_a: u32,
+        a_record: MemoryRecordEnum,
+        b_record: Option<MemoryRecordEnum>,
     ) {
         if op_a_is_zero {
-            self.record.alu_x0_events.push(AluEvent::new(pc, opcode, a, b, c));
+            let mut event = AluEvent::new(pc, opcode, a, b, c);
+            event.clk = clk;
+            event.a_record = Some(a_record);
+            event.b_record = b_record;
+            self.record.alu_x0_events.push(event);
             return;
         }
-        let event = MiscEvent::new(clk, pc, next_pc, opcode, a, b, c, prev_a, MemoryWriteRecord::default());
+        let mut event = MiscEvent::new(clk, pc, next_pc, opcode, a, b, c, prev_a, MemoryWriteRecord::default());
+        event.a_record = Some(a_record);
+        event.b_record = b_record;
         match opcode {
             Opcode::SEXT => self.record.sext_events.push(event),
             Opcode::INS => self.record.ins_events.push(event),
