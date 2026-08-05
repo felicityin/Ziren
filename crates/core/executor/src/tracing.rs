@@ -24,7 +24,7 @@ use crate::{
         FieldOperation, Fp2AddSubEvent, Fp2MulEvent, FpOpEvent, JumpEvent, KeccakSpongeEvent,
         MemInstrEvent, MemoryReadRecord, MemoryRecordEnum, MemoryWriteRecord, MiscEvent,
         MovCondEvent, PrecompileEvent, ShaCompressEvent, ShaExtendEvent, SyscallEvent,
-        Uint256MulEvent,
+        U256xU2048MulEvent, Uint256MulEvent,
     },
     opcode::Opcode,
     register::Register,
@@ -33,8 +33,9 @@ use crate::{
     vm::{
         ec_add, ec_decompress, ec_double, ec_num_limb_words, ec_num_words, ed25519_decompress,
         fp2_addsub, fp2_mul, fp2_num_words, fp_num_words, fp_op, keccak_xor_block, keccakf,
-        sha256_compress, sha256_extend_word, uint256_mul, CoreVM, CoreVMStatus,
+        sha256_compress, sha256_extend_word, u256xu2048_mul, uint256_mul, CoreVM, CoreVMStatus,
         KECCAK_GENERAL_BLOCK_SIZE_U64S, KECCAK_GENERAL_OUTPUT_U64S, KECCAK_STATE_SIZE_U64S,
+        U2048_NUM_WORDS, U256_NUM_WORDS,
     },
     ExecutionError, ExecutionRecord, Instruction, Program,
 };
@@ -802,6 +803,58 @@ impl<'a> TracingVM<'a> {
         }
     }
 
+    /// Builds a `U256xU2048MulEvent`: reads `$a2`/`$a3` (live, unlogged) for `lo_ptr`/`hi_ptr`,
+    /// pops `a`'s reads, `b`'s reads, then `lo`'s and `hi`'s write-preimages (discarded).
+    fn u256xu2048_mul_event(&mut self, clk: u64, a_ptr: u32, b_ptr: u32) -> U256xU2048MulEvent {
+        let lo_ptr = self.core.reg(Register::A2);
+        let hi_ptr = self.core.reg(Register::A3);
+        let lo_ptr_memory = MemoryReadRecord { value: lo_ptr, timestamp: clk, prev_timestamp: 0 };
+        let hi_ptr_memory = MemoryReadRecord { value: hi_ptr, timestamp: clk, prev_timestamp: 0 };
+
+        let a: [u32; U256_NUM_WORDS] = self.core.next_oracle_values(U256_NUM_WORDS).try_into().unwrap();
+        let a_memory_records: Vec<MemoryReadRecord> =
+            a.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+        let b: [u32; U2048_NUM_WORDS] = self.core.next_oracle_values(U2048_NUM_WORDS).try_into().unwrap();
+        let b_memory_records: Vec<MemoryReadRecord> =
+            b.iter().map(|&value| MemoryReadRecord { value, timestamp: clk, prev_timestamp: 0 }).collect();
+
+        let (lo, hi) = u256xu2048_mul(&a, &b);
+        let lo_memory_records: Vec<MemoryWriteRecord> = lo
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        let hi_memory_records: Vec<MemoryWriteRecord> = hi
+            .iter()
+            .map(|&value| MemoryWriteRecord { value, timestamp: clk, prev_value: 0, prev_timestamp: 0 })
+            .collect();
+        for _ in &lo {
+            self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+        }
+        for _ in &hi {
+            self.core.next_oracle_value();
+        }
+
+        U256xU2048MulEvent {
+            shard: 0,
+            clk,
+            a_ptr,
+            a: a.to_vec(),
+            b_ptr,
+            b: b.to_vec(),
+            lo_ptr,
+            lo_ptr_memory,
+            lo: lo.to_vec(),
+            hi_ptr,
+            hi_ptr_memory,
+            hi: hi.to_vec(),
+            a_memory_records,
+            b_memory_records,
+            lo_memory_records,
+            hi_memory_records,
+            local_mem_access: Vec::new(),
+        }
+    }
+
     /// See `minimal/ecall.rs`'s module doc for scope (`HALT`/`WRITE`/`SYS_BRK` real, everything
     /// else a documented no-op). Returns `next_pc` (the caller still adds 4 for `next_next_pc`).
     fn execute_syscall(&mut self, clk: u64, pc: u32) -> Result<u32, ExecutionError> {
@@ -1383,6 +1436,22 @@ impl<'a> TracingVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::U256XU2048_MUL => {
+                let event = self.u256xu2048_mul_event(clk, arg1, arg2);
+                self.record.precompile_events.add_event(
+                    code,
+                    SyscallEvent {
+                        pc, next_pc, clk,
+                        a_record: MemoryWriteRecord { value: syscall_id, timestamp: clk, prev_value: 0, prev_timestamp: 0 },
+                        a_record_is_real: true,
+                        b_record: None, c_record: None,
+                        syscall_id, arg1, arg2,
+                    },
+                    PrecompileEvent::U256xU2048Mul(event),
+                );
+                extra_cycles = 1;
+                None
+            }
             _ => None,
         };
 
@@ -1423,7 +1492,7 @@ mod tests {
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
             secp256k1_add_program, secp256k1_double_program, secp256r1_add_program,
             secp256r1_double_program, sha_compress_program, sha_extend_program, simple_program,
-            ssz_withdrawals_program, uint256_mul_program,
+            ssz_withdrawals_program, u256xu2048_mul_program, uint256_mul_program,
         },
         register::NUM_REGISTERS,
     };
@@ -1598,5 +1667,10 @@ mod tests {
     #[test]
     fn matches_golden_uint256_mul_real_elf() {
         assert_matches_golden(uint256_mul_program, "uint256_mul_program");
+    }
+
+    #[test]
+    fn matches_golden_u256xu2048_mul_real_elf() {
+        assert_matches_golden(u256xu2048_mul_program, "u256xu2048_mul_program");
     }
 }

@@ -116,6 +116,19 @@ impl MinimalExecutor {
         self.mw_slice(x_ptr, &result);
     }
 
+    /// `a_ptr * b_ptr`, writing the low 2048 bits to the address in `$a2` and the high 256 bits
+    /// to the address in `$a3`.
+    fn u256xu2048_mul_dispatch(&mut self, a_ptr: u32, b_ptr: u32) {
+        let lo_ptr = self.reg(Register::A2);
+        let hi_ptr = self.reg(Register::A3);
+        let a: [u32; vm::U256_NUM_WORDS] = self.mr_slice(a_ptr, vm::U256_NUM_WORDS).try_into().unwrap();
+        let b: [u32; vm::U2048_NUM_WORDS] = self.mr_slice(b_ptr, vm::U2048_NUM_WORDS).try_into().unwrap();
+        self.clk += 1;
+        let (lo, hi) = vm::u256xu2048_mul(&a, &b);
+        self.mw_slice(lo_ptr, &lo);
+        self.mw_slice(hi_ptr, &hi);
+    }
+
     /// Executes the `SYSCALL` at the current `pc`. Returns `next_pc` (the value the caller must
     /// still add 4 to for `next_next_pc`, mirroring `SyscallContext::next_pc`'s default of
     /// `self.pc.wrapping_add(4)` and `HaltSyscall`'s override to `0`).
@@ -360,6 +373,11 @@ impl MinimalExecutor {
             }
             SyscallCode::UINT256_MUL => {
                 self.uint256_mul_dispatch(arg1, arg2);
+                extra_cycles = 1;
+                None
+            }
+            SyscallCode::U256XU2048_MUL => {
+                self.u256xu2048_mul_dispatch(arg1, arg2);
                 extra_cycles = 1;
                 None
             }

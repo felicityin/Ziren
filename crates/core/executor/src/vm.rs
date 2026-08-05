@@ -29,7 +29,7 @@ use crate::{
     trace::{MemReads, MinimalTrace},
     ExecutionError, Instruction, Program, CORE_SHARD_CLK_LIMIT,
 };
-use num::BigUint;
+use num::{BigUint, Integer};
 use typenum::Unsigned;
 use zkm_curves::{
     curve25519_dalek::CompressedEdwardsY,
@@ -544,6 +544,36 @@ pub(crate) fn uint256_mul(x: &[u32; 8], y: &[u32; 8], modulus: &[u32; 8]) -> [u3
     let mut result_bytes = result.to_bytes_le();
     result_bytes.resize(32, 0u8);
     zkm_primitives::consts::bytes_to_words_le::<8>(&result_bytes)
+}
+
+/// Number of u32 words in a 256-bit value.
+pub(crate) const U256_NUM_WORDS: usize = 8;
+/// Number of u32 words in a 2048-bit value.
+pub(crate) const U2048_NUM_WORDS: usize = 64;
+
+/// `a * b`, split into a 2048-bit low half and a 256-bit high half -- mirrors
+/// `U256xU2048MulSyscall::execute`'s compute step (`syscalls/precompiles/u256x2048_mul.rs`)
+/// exactly, split from the memory accesses that gather `a`/`b`. Returns `(lo, hi)`.
+pub(crate) fn u256xu2048_mul(
+    a: &[u32; U256_NUM_WORDS],
+    b: &[u32; U2048_NUM_WORDS],
+) -> ([u32; U2048_NUM_WORDS], [u32; U256_NUM_WORDS]) {
+    let uint256_a = BigUint::from_bytes_le(&zkm_primitives::consts::words_to_bytes_le_vec(a));
+    let uint2048_b = BigUint::from_bytes_le(&zkm_primitives::consts::words_to_bytes_le_vec(b));
+    let result = uint256_a * uint2048_b;
+
+    let two_to_2048 = <BigUint as num::One>::one() << 2048;
+    let (hi, lo) = result.div_rem(&two_to_2048);
+
+    let mut lo_bytes = lo.to_bytes_le();
+    lo_bytes.resize(U2048_NUM_WORDS * 4, 0u8);
+    let lo_words = zkm_primitives::consts::bytes_to_words_le::<U2048_NUM_WORDS>(&lo_bytes);
+
+    let mut hi_bytes = hi.to_bytes_le();
+    hi_bytes.resize(U256_NUM_WORDS * 4, 0u8);
+    let hi_words = zkm_primitives::consts::bytes_to_words_le::<U256_NUM_WORDS>(&hi_bytes);
+
+    (lo_words, hi_words)
 }
 
 /// `CoreVM` -- the shared oracle-driven replay engine `SplicingVM` and `TracingVM` are both built
@@ -1268,6 +1298,11 @@ impl<'a> CoreVM<'a> {
                 extra_cycles = 1;
                 None
             }
+            SyscallCode::U256XU2048_MUL => {
+                self.u256xu2048_mul_replay();
+                extra_cycles = 1;
+                None
+            }
             _ => None,
         };
 
@@ -1355,6 +1390,21 @@ impl<'a> CoreVM<'a> {
         let modulus: [u32; 8] = self.next_oracle_values(WORDS_FIELD_ELEMENT).try_into().unwrap();
         let x: [u32; 8] = self.next_oracle_values(WORDS_FIELD_ELEMENT).try_into().unwrap();
         uint256_mul(&x, &y, &modulus);
+    }
+
+    /// Replays a `u256xu2048_mul`: pops `a`'s reads, `b`'s reads, then `lo`'s and `hi`'s
+    /// write-preimages (discarded -- unlike `ec_add`, neither write's old value is a compute
+    /// input here).
+    fn u256xu2048_mul_replay(&mut self) {
+        let a: [u32; U256_NUM_WORDS] = self.next_oracle_values(U256_NUM_WORDS).try_into().unwrap();
+        let b: [u32; U2048_NUM_WORDS] = self.next_oracle_values(U2048_NUM_WORDS).try_into().unwrap();
+        let (lo, hi) = u256xu2048_mul(&a, &b);
+        for _ in &lo {
+            self.next_oracle_value(); // write preimage; see SHA_COMPRESS.
+        }
+        for _ in &hi {
+            self.next_oracle_value();
+        }
     }
 }
 
