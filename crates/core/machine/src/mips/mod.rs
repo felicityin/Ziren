@@ -1148,6 +1148,259 @@ pub mod tests {
         all_balanced
     }
 
+    /// Drives `program` through the new pipeline exactly like
+    /// `debug_new_pipeline_interactions_balance`, but checks each chip's own row constraints
+    /// directly (via `zkm_hypercube::DebugConstraintBuilder`) instead of cross-chip interaction
+    /// balance -- catches a bug that only shows up as a row-level constraint violation (e.g. a
+    /// wrong flag bit or an out-of-range value), which balanced interactions alone can't reveal.
+    /// Checks every chip's own natural (unpadded) row count only, not the padded rows -- a
+    /// padding row's `is_real = 0` is expected to make every non-trivial constraint vacuous.
+    /// Returns `true` iff every row of every included chip satisfies its own constraints,
+    /// printing the first violation (chip name, row, failing constraint indices) otherwise.
+    fn debug_new_pipeline_constraints_hold(program: Program) -> bool {
+        use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, ExtensionBuilder, PairBuilder, PermutationAirBuilder};
+        use p3_field::{ExtensionField, Field};
+        use p3_matrix::{dense::RowMajorMatrixView, Matrix};
+        use slop_algebra::extension::BinomialExtensionField;
+        use std::sync::Arc;
+        use zkm_core_executor::{next_shard, trace_shard, ShardDriver};
+        use zkm_hypercube::{air::{EmptyMessageBuilder, PublicValues}, record::MachineRecord};
+
+        setup_logger();
+
+        type EF = BinomialExtensionField<KoalaBear, 4>;
+
+        // Local copy of `zkm_hypercube::DebugConstraintBuilder` that also records the two
+        // mismatched values for each failing constraint, not just its index -- lets a caller
+        // print *what* failed to match, not just *that* something did.
+        struct VerboseDebugConstraintBuilder<'a, F: Field, EFi: ExtensionField<F>> {
+            preprocessed: RowMajorMatrixView<'a, F>,
+            main: RowMajorMatrixView<'a, F>,
+            public_values: &'a [F],
+            failing: Vec<(usize, F, F)>,
+            num_constraints_evaluated: usize,
+            phantom: std::marker::PhantomData<EFi>,
+        }
+        impl<F: Field, EFi: ExtensionField<F>> ExtensionBuilder for VerboseDebugConstraintBuilder<'_, F, EFi> {
+            type EF = EFi;
+            type VarEF = EFi;
+            type ExprEF = EFi;
+            fn assert_zero_ext<I>(&mut self, _x: I)
+            where
+                I: Into<Self::ExprEF>,
+            {
+                panic!("extension fields are not supported in the debug builder");
+            }
+        }
+        impl<'a, F: Field, EFi: ExtensionField<F>> PermutationAirBuilder for VerboseDebugConstraintBuilder<'a, F, EFi> {
+            type MP = RowMajorMatrixView<'a, EFi>;
+            type RandomVar = EFi;
+            fn permutation(&self) -> Self::MP {
+                unimplemented!()
+            }
+            fn permutation_randomness(&self) -> &[Self::EF] {
+                unimplemented!()
+            }
+        }
+        impl<F: Field, EFi: ExtensionField<F>> PairBuilder for VerboseDebugConstraintBuilder<'_, F, EFi> {
+            fn preprocessed(&self) -> Self::M {
+                self.preprocessed
+            }
+        }
+        impl<F: Field, EFi: ExtensionField<F>> VerboseDebugConstraintBuilder<'_, F, EFi> {
+            #[inline]
+            fn debug_constraint(&mut self, x: F, y: F) {
+                if x != y {
+                    self.failing.push((self.num_constraints_evaluated, x, y));
+                }
+                self.num_constraints_evaluated += 1;
+            }
+        }
+        impl<'a, F: Field, EFi: ExtensionField<F>> AirBuilder for VerboseDebugConstraintBuilder<'a, F, EFi> {
+            type F = F;
+            type Expr = F;
+            type Var = F;
+            type M = RowMajorMatrixView<'a, F>;
+            fn is_first_row(&self) -> Self::Expr {
+                unimplemented!()
+            }
+            fn is_last_row(&self) -> Self::Expr {
+                unimplemented!()
+            }
+            fn is_transition_window(&self, _size: usize) -> Self::Expr {
+                unimplemented!()
+            }
+            fn main(&self) -> Self::M {
+                self.main
+            }
+            fn assert_zero<I: Into<Self::Expr>>(&mut self, x: I) {
+                self.debug_constraint(x.into(), F::zero());
+            }
+            fn assert_one<I: Into<Self::Expr>>(&mut self, x: I) {
+                self.debug_constraint(x.into(), F::one());
+            }
+            fn assert_eq<I1: Into<Self::Expr>, I2: Into<Self::Expr>>(&mut self, x: I1, y: I2) {
+                self.debug_constraint(x.into(), y.into());
+            }
+            fn assert_bool<I: Into<Self::Expr>>(&mut self, x: I) {
+                let x = x.into();
+                if x != F::zero() && x != F::one() {
+                    self.failing.push((self.num_constraints_evaluated, x, F::one()));
+                }
+                self.num_constraints_evaluated += 1;
+            }
+        }
+        impl<F: Field, EFi: ExtensionField<F>> EmptyMessageBuilder for VerboseDebugConstraintBuilder<'_, F, EFi> {}
+        impl<F: Field, EFi: ExtensionField<F>> AirBuilderWithPublicValues for VerboseDebugConstraintBuilder<'_, F, EFi> {
+            type PublicVar = F;
+            fn public_values(&self) -> &[Self::PublicVar] {
+                self.public_values
+            }
+        }
+
+        let program = Arc::new(program);
+        let mut driver = ShardDriver::new(program.clone(), 1 << 22);
+        let mut state = PublicValues::<u32, u32>::default().reset();
+        let mut deferred = zkm_core_executor::ExecutionRecord::new(program.clone());
+        let mut all_records = Vec::new();
+        let mut index = 0;
+        loop {
+            let (spliced, done) =
+                next_shard(&mut driver, program.clone(), u64::MAX / 2, u64::MAX / 2).unwrap();
+            let mut record =
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+            if done {
+                let (init, fin) = driver.global_memory_events();
+                record.global_memory_initialize_events = init;
+                record.global_memory_finalize_events = fin;
+            }
+
+            state.execution_shard = index + 1;
+            state.is_execution_shard = record.contains_cpu() as u32;
+            if let Some(first_pc) = record.first_instruction_pc {
+                state.start_pc = first_pc;
+                state.next_pc = record.last_next_pc;
+                let first_clk = record.first_instruction_clk.unwrap();
+                state.initial_clk_high = (first_clk >> 24) as u32;
+                state.initial_clk_low = (first_clk & 0xFFFFFF) as u32;
+                let last_clk_high = record.last_instruction_clk >> 24;
+                state.last_clk_high = last_clk_high as u32;
+                state.last_clk_low = (record.last_timestamp - (last_clk_high << 24)) as u32;
+            }
+            state.committed_value_digest = record.public_values.committed_value_digest;
+            state.deferred_proofs_digest = record.public_values.deferred_proofs_digest;
+            record.public_values = state;
+
+            deferred.append(&mut record.defer());
+            let mut records = vec![record];
+            let mut split_records =
+                deferred.split(done, records.last_mut(), zkm_stark::ZKMCoreOpts::default().split_opts);
+
+            if !done {
+                state.execution_shard += 1;
+            }
+            for split_record in &mut split_records {
+                state.is_execution_shard = 0;
+                state.previous_init_addr = split_record.public_values.previous_init_addr;
+                state.last_init_addr = split_record.public_values.last_init_addr;
+                state.previous_finalize_addr = split_record.public_values.previous_finalize_addr;
+                state.last_finalize_addr = split_record.public_values.last_finalize_addr;
+                state.start_pc = state.next_pc;
+                state.initial_clk_high = state.last_clk_high;
+                state.initial_clk_low = state.last_clk_low;
+                split_record.public_values = state;
+            }
+            records.append(&mut split_records);
+            all_records.append(&mut records);
+
+            if done {
+                break;
+            }
+            index += 1;
+        }
+        println!("produced {} record(s)", all_records.len());
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        machine.generate_dependencies(all_records.iter_mut(), None).unwrap();
+        let chips = machine.chips().to_vec();
+
+        let mut all_ok = true;
+        for (i, record) in all_records.iter().enumerate() {
+            let public_values = record.public_values::<KoalaBear>();
+            for chip in &chips {
+                if !chip.included(record) {
+                    continue;
+                }
+                let preprocessed = chip.generate_preprocessed_trace(&record.program);
+                let main = chip.generate_trace(record, &mut Default::default()).unwrap();
+                let height = main.height();
+                for row in 0..height {
+                    let main_row = main.row_slice(row);
+                    let main_view = RowMajorMatrixView::new_row(&*main_row);
+                    let preprocessed_row_storage;
+                    let preprocessed_view = match &preprocessed {
+                        Some(p) if row < p.height() => {
+                            preprocessed_row_storage = p.row_slice(row);
+                            RowMajorMatrixView::new_row(&*preprocessed_row_storage)
+                        }
+                        _ => RowMajorMatrixView::new(&[], 0),
+                    };
+                    let mut builder = VerboseDebugConstraintBuilder::<KoalaBear, EF> {
+                        preprocessed: preprocessed_view,
+                        main: main_view,
+                        public_values: &public_values,
+                        failing: Vec::new(),
+                        num_constraints_evaluated: 0,
+                        phantom: std::marker::PhantomData,
+                    };
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        Air::<VerboseDebugConstraintBuilder<KoalaBear, EF>>::eval(&*chip.air, &mut builder);
+                    }));
+                    match result {
+                        Ok(()) if builder.failing.is_empty() => {}
+                        Ok(()) => {
+                            println!(
+                                "record {i} chip {} row {row}/{height}: failing constraints {:?}",
+                                MachineAir::<KoalaBear>::name(chip),
+                                builder.failing
+                            );
+                            println!("  main row: {:?}", &*main_row);
+                            all_ok = false;
+                        }
+                        Err(e) => {
+                            println!(
+                                "record {i} chip {} row {row}/{height}: eval() panicked: {:?}",
+                                MachineAir::<KoalaBear>::name(chip),
+                                e.downcast_ref::<&str>().or(Some(&"<non-str panic>"))
+                            );
+                            all_ok = false;
+                        }
+                    }
+                    if !all_ok {
+                        return all_ok;
+                    }
+                }
+            }
+        }
+        all_ok
+    }
+
+    #[test]
+    fn debug_new_pipeline_hello_world_constraints_hold() {
+        assert!(
+            debug_new_pipeline_constraints_hold(hello_world_program()),
+            "some chip's row constraints don't hold"
+        );
+    }
+
+    #[test]
+    fn debug_new_pipeline_fibonacci_constraints_hold() {
+        assert!(
+            debug_new_pipeline_constraints_hold(fibonacci_program()),
+            "some chip's row constraints don't hold"
+        );
+    }
+
     #[test]
     fn debug_new_pipeline_simple_memory_program_interactions_balance() {
         assert!(

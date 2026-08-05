@@ -1411,6 +1411,22 @@ impl<'a> TracingVM<'a> {
                                      // yet (deferred alongside the other scoped-out bookkeeping).
                 None
             }
+            SyscallCode::COMMIT => {
+                let word_idx = arg1 as usize;
+                if word_idx >= self.record.public_values.committed_value_digest.len() {
+                    return Err(ExecutionError::InvalidSyscallArgs());
+                }
+                self.record.public_values.committed_value_digest[word_idx] = arg2;
+                None
+            }
+            SyscallCode::COMMIT_DEFERRED_PROOFS => {
+                let word_idx = arg1 as usize;
+                if word_idx >= self.record.public_values.deferred_proofs_digest.len() {
+                    return Err(ExecutionError::InvalidSyscallArgs());
+                }
+                self.record.public_values.deferred_proofs_digest[word_idx] = arg2;
+                None
+            }
             SyscallCode::SHA_COMPRESS => {
                 let w_ptr = arg1;
                 let h_ptr = arg2;
