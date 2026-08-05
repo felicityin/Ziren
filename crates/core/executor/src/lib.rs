@@ -11,6 +11,7 @@ mod io;
 pub mod memory;
 mod minimal;
 mod opcode;
+mod pipeline;
 mod program;
 #[cfg(test)]
 pub mod programs;
@@ -33,6 +34,7 @@ pub use executor::*;
 pub use hook::*;
 pub use instruction::*;
 pub use opcode::*;
+pub use pipeline::*;
 pub use program::*;
 pub use record::*;
 pub use register::*;
