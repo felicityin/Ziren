@@ -9,7 +9,7 @@ use p3_field::{extension::BinomiallyExtendable, Field, PrimeField32};
 use p3_koala_bear::KoalaBear;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::*;
-use zkm_core_machine::utils::next_power_of_two;
+use zkm_core_machine::utils::next_multiple_of_32;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::{ExtensionAirBuilder, MachineAir};
 
@@ -83,7 +83,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>> MachineAir<F> for ExtAluChip {
         Some(match fixed_num_rows {
             Some(num_rows) => num_rows,
             None => {
-                next_power_of_two(nb_rows, None, <ExtAluChip as MachineAir<F>>::name(self).as_str())
+                next_multiple_of_32(nb_rows, None, <ExtAluChip as MachineAir<F>>::name(self).as_str())
             }
         })
     }
@@ -190,7 +190,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>> MachineAir<F> for ExtAluChip {
         Some(match fixed_num_rows {
             Some(num_rows) => num_rows,
             None => {
-                next_power_of_two(nb_rows, None, <ExtAluChip as MachineAir<F>>::name(self).as_str())
+                next_multiple_of_32(nb_rows, None, <ExtAluChip as MachineAir<F>>::name(self).as_str())
             }
         })
     }

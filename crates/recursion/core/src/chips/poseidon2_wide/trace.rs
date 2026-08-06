@@ -10,7 +10,7 @@ use p3_koala_bear::KoalaBear;
 use p3_matrix::dense::RowMajorMatrix;
 use p3_maybe_rayon::prelude::*;
 use tracing::instrument;
-use zkm_core_machine::utils::next_power_of_two;
+use zkm_core_machine::utils::next_multiple_of_32;
 #[cfg(not(feature = "sys"))]
 use slop_koala_bear::{KoalaBear_BEGIN_EXT_CONSTS, KoalaBear_END_EXT_CONSTS, KoalaBear_PARTIAL_CONSTS};
 use zkm_hypercube::air::MachineAir;
@@ -67,7 +67,7 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for Poseidon2WideChip<D
         let events = &input.poseidon2_events;
         match input.fixed_num_rows(self) {
             Some(num_rows) => Some(num_rows),
-            None => Some(next_power_of_two(
+            None => Some(next_multiple_of_32(
                 events.len(),
                 None,
                 <Poseidon2WideChip<DEGREE> as MachineAir<F>>::name(self).as_str(),
@@ -182,7 +182,7 @@ impl<F: PrimeField32, const DEGREE: usize> MachineAir<F> for Poseidon2WideChip<D
     fn preprocessed_num_rows(&self, program: &Self::Program, instrs_len: usize) -> Option<usize> {
         Some(match program.fixed_num_rows(self) {
             Some(num_rows) => num_rows,
-            None => next_power_of_two(
+            None => next_multiple_of_32(
                 instrs_len,
                 None,
                 <Poseidon2WideChip<DEGREE> as MachineAir<F>>::name(self).as_str(),

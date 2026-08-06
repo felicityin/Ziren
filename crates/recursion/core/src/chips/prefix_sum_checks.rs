@@ -5,7 +5,7 @@ use p3_air::{Air, BaseAir, PairBuilder};
 use p3_field::{Field, FieldAlgebra, PrimeField32};
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::*;
-use zkm_core_machine::utils::next_power_of_two;
+use zkm_core_machine::utils::next_multiple_of_32;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::{BinomialExtension, MachineAir};
 
@@ -80,7 +80,7 @@ impl<F: PrimeField32> MachineAir<F> for PrefixSumChecksChip {
         let fixed_num_rows = program.fixed_num_rows(self);
         Some(match fixed_num_rows {
             Some(num_rows) => num_rows,
-            None => next_power_of_two(
+            None => next_multiple_of_32(
                 instrs_len,
                 None,
                 <PrefixSumChecksChip as MachineAir<F>>::name(self).as_str(),
@@ -149,7 +149,7 @@ impl<F: PrimeField32> MachineAir<F> for PrefixSumChecksChip {
         let events = &input.prefix_sum_checks_events;
         Some(match input.fixed_num_rows(self) {
             Some(num_rows) => num_rows,
-            None => next_power_of_two(
+            None => next_multiple_of_32(
                 events.len(),
                 None,
                 <PrefixSumChecksChip as MachineAir<F>>::name(self).as_str(),

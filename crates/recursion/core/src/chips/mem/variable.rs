@@ -5,7 +5,7 @@ use p3_field::PrimeField32;
 use p3_matrix::{dense::RowMajorMatrix, Matrix};
 use p3_maybe_rayon::prelude::*;
 use std::{borrow::BorrowMut, iter::zip, marker::PhantomData};
-use zkm_core_machine::utils::next_power_of_two;
+use zkm_core_machine::utils::next_multiple_of_32;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::MachineAir;
 
@@ -83,7 +83,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryChip<F> {
         let nb_rows = accesses.len().div_ceil(NUM_VAR_MEM_ENTRIES_PER_ROW);
         let padded_nb_rows = match program.fixed_num_rows(self) {
             Some(num_rows) => num_rows,
-            None => next_power_of_two(
+            None => next_multiple_of_32(
                 nb_rows,
                 None,
                 <MemoryChip<F> as MachineAir<F>>::name(self).as_str(),

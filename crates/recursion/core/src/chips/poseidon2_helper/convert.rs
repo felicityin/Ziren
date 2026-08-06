@@ -8,7 +8,7 @@ use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
 use p3_maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator, ParallelSliceMut};
 
-use zkm_core_machine::utils::next_power_of_two;
+use zkm_core_machine::utils::next_multiple_of_32;
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::MachineAir;
 
@@ -85,7 +85,7 @@ impl<F: PrimeField32> MachineAir<F> for ConvertChip {
         let fixed_num_rows = program.fixed_num_rows(self);
         Some(match fixed_num_rows {
             Some(num_rows) => num_rows,
-            None => next_power_of_two(
+            None => next_multiple_of_32(
                 nb_rows,
                 None,
                 <ConvertChip as MachineAir<F>>::name(self).as_str(),
@@ -144,7 +144,7 @@ impl<F: PrimeField32> MachineAir<F> for ConvertChip {
         let events = &input.ext_felt_conversion_events;
         Some(match input.fixed_num_rows(self) {
             Some(num_rows) => num_rows,
-            None => next_power_of_two(
+            None => next_multiple_of_32(
                 events.len(),
                 None,
                 <ConvertChip as MachineAir<F>>::name(self).as_str(),
