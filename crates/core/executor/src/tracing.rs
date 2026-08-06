@@ -71,6 +71,22 @@ pub(crate) struct TracingVM<'a> {
     /// go into that event's own `local_mem_access` field instead, via `precompile_local_events` --
     /// see that method's doc comment for why.
     local_memory_access: std::collections::HashMap<u32, MemoryLocalEvent>,
+    /// Some multi-row precompiles (SHA_EXTEND, SHA_COMPRESS, KECCAK_SPONGE, ...) process many
+    /// internal memory-touching rows under one shared, flat instruction-level `clk` (`clk` only
+    /// advances between instructions, never within one), disambiguated only *symbolically* at
+    /// AIR-evaluation time via `clk_low + <some per-row offset>` (see e.g. `sha256/extend/air.rs`'s
+    /// `clk_low + (local.i - i_start)`) -- never actually stored anywhere `MinimalExecutor`'s
+    /// oracle log could reflect, since it has no notion of "rows" within one instruction. When one
+    /// of these rows touches an address a *previous* row (of this same precompile call, or an
+    /// earlier call to the same kind of precompile) already touched with such an adjusted
+    /// timestamp, the oracle's own `.clk` for that address is stale -- it still reports the flat
+    /// instruction clk of whichever touch produced it, not the adjusted timestamp that touch's own
+    /// row actually sent into the interaction argument. This map, consulted via `oracle_entry_at`
+    /// and populated via `record_adjusted_touch`, overrides the oracle's `.clk` with the real
+    /// adjusted value in that case. Scoped to one `TracingVM` (one shard) deliberately: a
+    /// cross-shard version of this same reference is bridged by the separate, already-existing
+    /// `Global`-scope mechanism, not this shard-local one.
+    adjusted_prev_timestamps: std::collections::HashMap<u32, u64>,
 }
 
 impl<'a> TracingVM<'a> {
@@ -85,7 +101,31 @@ impl<'a> TracingVM<'a> {
             core: CoreVM::new(trace, program, max_syscall_cycles),
             record,
             local_memory_access: std::collections::HashMap::new(),
+            adjusted_prev_timestamps: std::collections::HashMap::new(),
         }
+    }
+
+    /// Pops the next oracle entry for a touch to `addr`, overriding its `.clk` with this
+    /// address's adjusted timestamp if a previous row recorded one via `record_adjusted_touch`
+    /// (see that field's doc comment) -- and consuming that record, since this touch's own
+    /// timestamp (adjusted or not) is what the *next* toucher of `addr` should see as previous.
+    fn oracle_entry_at(&mut self, addr: u32) -> MemValue {
+        let mut e = self.core.next_oracle_entry();
+        if let Some(adjusted) = self.adjusted_prev_timestamps.remove(&addr) {
+            e.clk = adjusted;
+        }
+        e
+    }
+
+    /// Records that `addr`'s current state, as of this row, should be considered to exist at
+    /// `adjusted_timestamp` (a symbolic, AIR-side timestamp the oracle log itself has no notion
+    /// of) rather than the flat instruction `clk` the oracle would otherwise report -- see
+    /// `adjusted_prev_timestamps`'s doc comment. Call after constructing every read or write
+    /// record a multi-row precompile's own row produces at a non-flat effective timestamp (reads
+    /// included: a read still "produces" a fresh same-value token at its own row's timestamp, via
+    /// `eval_memory_access`'s receive half, for whichever touch comes next to consume).
+    fn record_adjusted_touch(&mut self, addr: u32, adjusted_timestamp: u64) {
+        self.adjusted_prev_timestamps.insert(addr, adjusted_timestamp);
     }
 
     #[must_use]
@@ -1378,9 +1418,16 @@ impl<'a> TracingVM<'a> {
         };
         self.core.set_reg_aux(Register::A2, lo_ptr);
         self.core.set_reg_aux(Register::A3, hi_ptr);
-        self.touch_local(Register::A2 as u32, &MemoryRecordEnum::Read(lo_ptr_memory));
-        self.touch_local(Register::A3 as u32, &MemoryRecordEnum::Read(hi_ptr_memory));
-
+        // `U256x2048MulChip`'s AIR (`.../u256x2048_mul/air.rs`) evaluates its own
+        // `eval_memory_access` for `lo_ptr_memory`/`hi_ptr_memory` (the `A2`/`A3` pointer-argument
+        // register reads) from within the chip itself, which -- like the rest of this event --
+        // gets carved into its own separate `ExecutionRecord` by `ExecutionRecord::split`'s
+        // precompile-event handling. So this touch must travel with the event via
+        // `local_mem_access` (`precompile_local_events`'s isolation), not the shared
+        // `touch_local`/`self.local_memory_access` map: routing it through the shared map leaves
+        // the chip that actually emits the interaction (now in a different record) with no
+        // matching bracket, since nothing else in the surrounding CPU record's own chain for `A2`/
+        // `A3` references this specific touch anymore.
         let a_entries = self.core.next_oracle_entries(U256_NUM_WORDS);
         let a: [u32; U256_NUM_WORDS] =
             a_entries.iter().map(|e| e.value).collect::<Vec<_>>().try_into().unwrap();
@@ -1411,28 +1458,35 @@ impl<'a> TracingVM<'a> {
             .collect();
 
         let local_mem_access = self.precompile_local_events(
-            a_memory_records
-                .iter()
-                .enumerate()
-                .map(|(i, &r)| (a_ptr + 4 * i as u32, MemoryRecordEnum::Read(r)))
-                .chain(
-                    b_memory_records
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &r)| (b_ptr + 4 * i as u32, MemoryRecordEnum::Read(r))),
-                )
-                .chain(
-                    lo_memory_records
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &r)| (lo_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
-                )
-                .chain(
-                    hi_memory_records
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &r)| (hi_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
-                ),
+            [
+                (Register::A2 as u32, MemoryRecordEnum::Read(lo_ptr_memory)),
+                (Register::A3 as u32, MemoryRecordEnum::Read(hi_ptr_memory)),
+            ]
+            .into_iter()
+            .chain(
+                a_memory_records
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &r)| (a_ptr + 4 * i as u32, MemoryRecordEnum::Read(r))),
+            )
+            .chain(
+                b_memory_records
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &r)| (b_ptr + 4 * i as u32, MemoryRecordEnum::Read(r))),
+            )
+            .chain(
+                lo_memory_records
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &r)| (lo_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+            )
+            .chain(
+                hi_memory_records
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &r)| (hi_ptr + 4 * i as u32, MemoryRecordEnum::Write(r))),
+            ),
         );
 
         U256xU2048MulEvent {
@@ -1488,13 +1542,16 @@ impl<'a> TracingVM<'a> {
     /// Builds a `LinuxEvent` for one of the Linux syscall shims (`SYS_BRK`/`SYS_MMAP`/etc, all
     /// bucketed under the synthetic `SyscallCode::SYS_LINUX` key like the legacy `Executor`
     /// itself does -- see `minimal/syscall.rs`'s corresponding dispatch arms for the compute logic
-    /// each `read_records`/`write_records`/`v0` pairing mirrors). Unlike the other precompiles,
-    /// this event's memory touches are all register-file accesses (A2/A3/HEAP), which -- unlike a
-    /// precompile's own private scratch RAM -- are also touched constantly by ordinary
-    /// instructions throughout the whole record; routing them through the shared
-    /// `touch_local`/`self.local_memory_access` map (their call sites do this directly) is
-    /// therefore correct here, not the `precompile_local_events` isolation `ec_add_event` and
-    /// friends use.
+    /// each `read_records`/`write_records`/`v0` pairing mirrors). `SysLinuxChip`'s AIR
+    /// (`crates/core/machine/src/syscall/precompiles/sys_linux/air.rs`) evaluates its own
+    /// `eval_memory_access` calls for these register touches (A2/A3/HEAP/BRK) from within the chip
+    /// itself, which -- like every other precompile event -- gets carved into its own separate
+    /// `ExecutionRecord` by `ExecutionRecord::split`'s precompile-event handling. So despite these
+    /// addresses also being touched constantly by ordinary instructions elsewhere in the record,
+    /// *this* call's own touch must travel with the event via `local_mem_access`
+    /// (`precompile_local_events`'s isolation), exactly like `ec_add_event` and friends -- routing
+    /// it through the shared `touch_local`/`self.local_memory_access` map instead leaves the chip
+    /// that actually emits the interaction (now in a different record) with no matching bracket.
     fn linux_event(
         &self,
         clk: u64,
@@ -1504,6 +1561,7 @@ impl<'a> TracingVM<'a> {
         syscall_id: u32,
         read_records: Vec<MemoryReadRecord>,
         write_records: Vec<MemoryWriteRecord>,
+        local_mem_access: Vec<MemoryLocalEvent>,
     ) -> LinuxEvent {
         LinuxEvent {
             shard: 0,
@@ -1514,7 +1572,7 @@ impl<'a> TracingVM<'a> {
             syscall_code: syscall_id,
             read_records,
             write_records,
-            local_mem_access: Vec::new(),
+            local_mem_access,
         }
     }
 
@@ -1585,24 +1643,45 @@ impl<'a> TracingVM<'a> {
             SyscallCode::SHA_COMPRESS => {
                 let w_ptr = arg1;
                 let h_ptr = arg2;
-                let h_entries: [MemValue; 8] = std::array::from_fn(|_| self.core.next_oracle_entry());
+                // `ShaCompressChip`'s AIR (`crates/core/machine/src/syscall/precompiles/sha256/
+                // compress/air.rs`) evaluates every one of its 80 internal rows' single memory
+                // access at `clk_low + is_finalize` -- `clk_low` during the initialize (`h`
+                // reads) and compression (`w` reads) phases, `clk_low + 1` only during the
+                // finalize phase (the `h` writes). Since `h` is typically a running hash state
+                // reused across many SHA_COMPRESS calls (one per block), a later call's own `h`
+                // reads need `oracle_entry_at`'s adjusted-timestamp override to see the correct
+                // `clk + 1` an earlier call's finalize write actually sent into the interaction
+                // argument, not the oracle's own flat (unadjusted) clk.
+                let h_entries: [MemValue; 8] =
+                    std::array::from_fn(|i| self.oracle_entry_at(h_ptr + i as u32 * 4));
                 let h: [u32; 8] = h_entries.map(|e| e.value);
                 let h_read_records: [MemoryReadRecord; 8] = h_entries
                     .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk });
-                let w_entries: [MemValue; 64] = std::array::from_fn(|_| self.core.next_oracle_entry());
+                for i in 0..8u32 {
+                    self.record_adjusted_touch(h_ptr + i * 4, clk);
+                }
+                let w_entries: [MemValue; 64] =
+                    std::array::from_fn(|i| self.oracle_entry_at(w_ptr + i as u32 * 4));
                 let w: [u32; 64] = w_entries.map(|e| e.value);
                 let w_i_read_records: Vec<MemoryReadRecord> = w_entries
                     .iter()
                     .map(|e| MemoryReadRecord { value: e.value, timestamp: clk, prev_timestamp: e.clk })
                     .collect();
+                for i in 0..64u32 {
+                    self.record_adjusted_touch(w_ptr + i * 4, clk);
+                }
                 let out = sha256_compress(h, &w);
-                let h_write_entries: [MemValue; 8] = std::array::from_fn(|_| self.core.next_oracle_entry());
+                let h_write_entries: [MemValue; 8] =
+                    std::array::from_fn(|i| self.oracle_entry_at(h_ptr + i as u32 * 4));
                 let h_write_records: [MemoryWriteRecord; 8] = std::array::from_fn(|i| MemoryWriteRecord {
                     value: out[i],
-                    timestamp: clk,
+                    timestamp: clk + 1,
                     prev_value: h_write_entries[i].value,
                     prev_timestamp: h_write_entries[i].clk,
                 });
+                for i in 0..8u32 {
+                    self.record_adjusted_touch(h_ptr + i * 4, clk + 1);
+                }
                 let local_mem_access = self.precompile_local_events(
                     h_read_records
                         .iter()
@@ -1668,33 +1747,58 @@ impl<'a> TracingVM<'a> {
                 // "first" vs "last" per address, since the sliding window means later iterations
                 // re-read addresses written by earlier ones.
                 let mut touches: Vec<(u32, MemoryRecordEnum)> = Vec::with_capacity(48 * 5);
+                // `ShaExtendChip`'s AIR (`crates/core/machine/src/syscall/precompiles/sha256/
+                // extend/air.rs`) disambiguates this syscall's 48 internal iterations -- which
+                // all share this one instruction's own `clk`, since `clk` only advances between
+                // instructions, not within one -- by evaluating every iteration `i`'s memory
+                // accesses at the symbolic timestamp `clk_low + (i - 16)`, not the raw `clk_low`.
+                // A read's `w[i-15/2/16/7]` can reference the original message block (a real,
+                // externally-timestamped previous touch the oracle reports correctly), a word an
+                // earlier iteration of this same loop wrote, or (this buffer being reused, e.g. a
+                // guest calling this syscall repeatedly on the same `w`) a word an *earlier call*
+                // to this same syscall wrote -- the latter two both need `oracle_entry_at`'s
+                // adjusted-timestamp override, since the oracle only ever reflects the flat
+                // instruction clk. `record_adjusted_touch` records each row's own effective
+                // timestamp for whichever touch (another row of this call, or the next call)
+                // comes next to consume.
                 for i in 16..64u32 {
-                    let e = self.core.next_oracle_entry();
+                    let row_clk = clk + u64::from(i - 16);
+                    let addr = w_ptr + (i - 15) * 4;
+                    let e = self.oracle_entry_at(addr);
                     let w_i_minus_15 = e.value;
-                    let r = MemoryReadRecord { value: w_i_minus_15, timestamp: clk, prev_timestamp: e.clk };
+                    let r = MemoryReadRecord { value: w_i_minus_15, timestamp: row_clk, prev_timestamp: e.clk };
                     w_i_minus_15_reads.push(r);
-                    touches.push((w_ptr + (i - 15) * 4, MemoryRecordEnum::Read(r)));
-                    let e = self.core.next_oracle_entry();
+                    touches.push((addr, MemoryRecordEnum::Read(r)));
+                    self.record_adjusted_touch(addr, row_clk);
+                    let addr = w_ptr + (i - 2) * 4;
+                    let e = self.oracle_entry_at(addr);
                     let w_i_minus_2 = e.value;
-                    let r = MemoryReadRecord { value: w_i_minus_2, timestamp: clk, prev_timestamp: e.clk };
+                    let r = MemoryReadRecord { value: w_i_minus_2, timestamp: row_clk, prev_timestamp: e.clk };
                     w_i_minus_2_reads.push(r);
-                    touches.push((w_ptr + (i - 2) * 4, MemoryRecordEnum::Read(r)));
-                    let e = self.core.next_oracle_entry();
+                    touches.push((addr, MemoryRecordEnum::Read(r)));
+                    self.record_adjusted_touch(addr, row_clk);
+                    let addr = w_ptr + (i - 16) * 4;
+                    let e = self.oracle_entry_at(addr);
                     let w_i_minus_16 = e.value;
-                    let r = MemoryReadRecord { value: w_i_minus_16, timestamp: clk, prev_timestamp: e.clk };
+                    let r = MemoryReadRecord { value: w_i_minus_16, timestamp: row_clk, prev_timestamp: e.clk };
                     w_i_minus_16_reads.push(r);
-                    touches.push((w_ptr + (i - 16) * 4, MemoryRecordEnum::Read(r)));
-                    let e = self.core.next_oracle_entry();
+                    touches.push((addr, MemoryRecordEnum::Read(r)));
+                    self.record_adjusted_touch(addr, row_clk);
+                    let addr = w_ptr + (i - 7) * 4;
+                    let e = self.oracle_entry_at(addr);
                     let w_i_minus_7 = e.value;
-                    let r = MemoryReadRecord { value: w_i_minus_7, timestamp: clk, prev_timestamp: e.clk };
+                    let r = MemoryReadRecord { value: w_i_minus_7, timestamp: row_clk, prev_timestamp: e.clk };
                     w_i_minus_7_reads.push(r);
-                    touches.push((w_ptr + (i - 7) * 4, MemoryRecordEnum::Read(r)));
+                    touches.push((addr, MemoryRecordEnum::Read(r)));
+                    self.record_adjusted_touch(addr, row_clk);
                     let w_i =
                         sha256_extend_word(w_i_minus_15, w_i_minus_2, w_i_minus_16, w_i_minus_7);
-                    let e = self.core.next_oracle_entry();
-                    let w = MemoryWriteRecord { value: w_i, timestamp: clk, prev_value: e.value, prev_timestamp: e.clk };
+                    let addr = w_ptr + i * 4;
+                    let e = self.oracle_entry_at(addr);
+                    let w = MemoryWriteRecord { value: w_i, timestamp: row_clk, prev_value: e.value, prev_timestamp: e.clk };
                     w_i_writes.push(w);
-                    touches.push((w_ptr + i * 4, MemoryRecordEnum::Write(w)));
+                    touches.push((addr, MemoryRecordEnum::Write(w)));
+                    self.record_adjusted_touch(addr, row_clk);
                 }
                 let local_mem_access = self.precompile_local_events(touches);
                 self.record.precompile_events.add_event(
@@ -1734,23 +1838,36 @@ impl<'a> TracingVM<'a> {
             SyscallCode::KECCAK_SPONGE => {
                 let input_ptr = arg1;
                 let result_ptr = arg2;
-                let input_len_entry = self.core.next_oracle_entry();
+                // `KeccakSpongeChip`'s AIR (`crates/core/machine/src/syscall/precompiles/
+                // keccak_sponge/air.rs`'s `eval_memory_access`) reads the input length and each
+                // input block word at plain `clk_low`, but writes the output at `clk_low + 1` --
+                // and since a sponge construction commonly chains one call's output into the next
+                // call's input (or reuses a scratch `result_ptr`/`input_ptr` across calls), any of
+                // these addresses can reference a value an earlier call's own (possibly adjusted)
+                // write produced. `oracle_entry_at`/`record_adjusted_touch` keep every touch here
+                // in sync with whatever the producing row actually sent into the interaction
+                // argument, the same as `SHA_EXTEND`/`SHA_COMPRESS`.
+                let input_len_addr = result_ptr + 16 * 4;
+                let input_len_entry = self.oracle_entry_at(input_len_addr);
                 let input_len_u32s = input_len_entry.value;
                 let input_length_record = MemoryReadRecord {
                     value: input_len_u32s,
                     timestamp: clk,
                     prev_timestamp: input_len_entry.clk,
                 };
+                self.record_adjusted_touch(input_len_addr, clk);
                 let mut input_values = Vec::with_capacity(input_len_u32s as usize);
                 let mut input_read_records = Vec::with_capacity(input_len_u32s as usize);
-                for _ in 0..input_len_u32s {
-                    let e = self.core.next_oracle_entry();
+                for i in 0..input_len_u32s {
+                    let addr = input_ptr + 4 * i;
+                    let e = self.oracle_entry_at(addr);
                     input_values.push(e.value);
                     input_read_records.push(MemoryReadRecord {
                         value: e.value,
                         timestamp: clk,
                         prev_timestamp: e.clk,
                     });
+                    self.record_adjusted_touch(addr, clk);
                 }
                 let input_u64_values: Vec<u64> = input_values
                     .chunks_exact(2)
@@ -1770,15 +1887,20 @@ impl<'a> TracingVM<'a> {
                     values_to_write.push((lane & 0xFFFF_FFFF) as u32);
                     values_to_write.push((lane >> 32) as u32);
                 }
-                let output_write_entries = self.core.next_oracle_entries(values_to_write.len());
                 let output_write_records: Vec<MemoryWriteRecord> = values_to_write
                     .iter()
-                    .zip(&output_write_entries)
-                    .map(|(&value, e)| MemoryWriteRecord {
-                        value,
-                        timestamp: clk,
-                        prev_value: e.value,
-                        prev_timestamp: e.clk,
+                    .enumerate()
+                    .map(|(i, &value)| {
+                        let addr = result_ptr + 4 * i as u32;
+                        let e = self.oracle_entry_at(addr);
+                        let r = MemoryWriteRecord {
+                            value,
+                            timestamp: clk + 1,
+                            prev_value: e.value,
+                            prev_timestamp: e.clk,
+                        };
+                        self.record_adjusted_touch(addr, clk + 1);
+                        r
                     })
                     .collect();
                 let local_mem_access = self.precompile_local_events(
@@ -2317,23 +2439,29 @@ impl<'a> TracingVM<'a> {
                     .get(&(Register::BRK as u32))
                     .copied()
                     .unwrap_or_else(|| self.core.reg(Register::BRK));
+                let brk_ts = self.core.reg_timestamp(Register::BRK);
+                self.core.set_reg_aux(Register::BRK, initial_brk);
                 let v0 = resolve_brk(initial_brk, initial_brk, arg1)?;
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: 0,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
+                let brk_record =
+                    MemoryReadRecord { value: initial_brk, timestamp: clk, prev_timestamp: brk_ts };
+                let a3_record = MemoryWriteRecord {
+                    value: 0,
+                    timestamp: clk,
+                    prev_value: prev_a3,
+                    prev_timestamp: prev_a3_ts,
+                };
+                let local_mem_access = self.precompile_local_events([
+                    (Register::BRK as u32, MemoryRecordEnum::Read(brk_record)),
+                    (Register::A3 as u32, MemoryRecordEnum::Write(a3_record)),
+                ]);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id,
-                    vec![MemoryReadRecord { value: initial_brk, timestamp: clk, prev_timestamp: 0 }],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
+                    vec![brk_record],
+                    vec![a3_record],
+                    local_mem_access,
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
@@ -2358,17 +2486,8 @@ impl<'a> TracingVM<'a> {
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: 0,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
                 let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
-                let (v0, write_records) = if arg1 == 0 {
+                let (v0, write_records, heap_touch) = if arg1 == 0 {
                     let heap = self.core.reg(Register::HEAP);
                     let prev_heap_ts = self.core.reg_timestamp(Register::HEAP);
                     self.core.set_reg_aux(Register::HEAP, heap.wrapping_add(size));
@@ -2378,12 +2497,17 @@ impl<'a> TracingVM<'a> {
                         prev_value: heap,
                         prev_timestamp: prev_heap_ts,
                     };
-                    self.touch_local(Register::HEAP as u32, &MemoryRecordEnum::Write(heap_record));
-                    (heap, vec![a3_record, heap_record])
+                    (heap, vec![a3_record, heap_record], Some(heap_record))
                 } else {
-                    (arg1, vec![a3_record])
+                    (arg1, vec![a3_record], None)
                 };
-                let event = self.linux_event(clk, arg1, arg2, v0, syscall_id, vec![], write_records);
+                let local_mem_access = self.precompile_local_events(
+                    [(Register::A3 as u32, MemoryRecordEnum::Write(a3_record))].into_iter().chain(
+                        heap_touch.map(|r| (Register::HEAP as u32, MemoryRecordEnum::Write(r))),
+                    ),
+                );
+                let event =
+                    self.linux_event(clk, arg1, arg2, v0, syscall_id, vec![], write_records, local_mem_access);
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
                     SyscallEvent {
@@ -2407,18 +2531,13 @@ impl<'a> TracingVM<'a> {
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: 0,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
+                let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
+                let local_mem_access =
+                    self.precompile_local_events([(Register::A3 as u32, MemoryRecordEnum::Write(a3_record))]);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
+                    vec![a3_record],
+                    local_mem_access,
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
@@ -2444,18 +2563,13 @@ impl<'a> TracingVM<'a> {
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: 0,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
+                let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
+                let local_mem_access =
+                    self.precompile_local_events([(Register::A3 as u32, MemoryRecordEnum::Write(a3_record))]);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
+                    vec![a3_record],
+                    local_mem_access,
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
@@ -2480,18 +2594,13 @@ impl<'a> TracingVM<'a> {
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, a3);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: a3,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
+                let a3_record = MemoryWriteRecord { value: a3, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
+                let local_mem_access =
+                    self.precompile_local_events([(Register::A3 as u32, MemoryRecordEnum::Write(a3_record))]);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
+                    vec![a3_record],
+                    local_mem_access,
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
@@ -2516,18 +2625,13 @@ impl<'a> TracingVM<'a> {
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, a3);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: a3,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
+                let a3_record = MemoryWriteRecord { value: a3, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
+                let local_mem_access =
+                    self.precompile_local_events([(Register::A3 as u32, MemoryRecordEnum::Write(a3_record))]);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: a3, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
+                    vec![a3_record],
+                    local_mem_access,
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
@@ -2551,14 +2655,7 @@ impl<'a> TracingVM<'a> {
                 let nbytes = self.core.reg(Register::A2);
                 let nbytes_ts = self.core.reg_timestamp(Register::A2);
                 self.core.set_reg_aux(Register::A2, nbytes);
-                self.touch_local(
-                    Register::A2 as u32,
-                    &MemoryRecordEnum::Read(MemoryReadRecord {
-                        value: nbytes,
-                        timestamp: clk,
-                        prev_timestamp: nbytes_ts,
-                    }),
-                );
+                let a2_record = MemoryReadRecord { value: nbytes, timestamp: clk, prev_timestamp: nbytes_ts };
                 for _ in 0..nbytes {
                     self.core.next_oracle_value(); // write preimage; see SHA_COMPRESS.
                 }
@@ -2566,19 +2663,16 @@ impl<'a> TracingVM<'a> {
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: 0,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
+                let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
+                let local_mem_access = self.precompile_local_events([
+                    (Register::A2 as u32, MemoryRecordEnum::Read(a2_record)),
+                    (Register::A3 as u32, MemoryRecordEnum::Write(a3_record)),
+                ]);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id,
-                    vec![MemoryReadRecord { value: nbytes, timestamp: clk, prev_timestamp: nbytes_ts }],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
+                    vec![a2_record],
+                    vec![a3_record],
+                    local_mem_access,
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
@@ -2616,18 +2710,13 @@ impl<'a> TracingVM<'a> {
                 let prev_a3 = self.core.reg(Register::A3);
                 let prev_a3_ts = self.core.reg_timestamp(Register::A3);
                 self.core.set_reg_aux(Register::A3, 0);
-                self.touch_local(
-                    Register::A3 as u32,
-                    &MemoryRecordEnum::Write(MemoryWriteRecord {
-                        value: 0,
-                        timestamp: clk,
-                        prev_value: prev_a3,
-                        prev_timestamp: prev_a3_ts,
-                    }),
-                );
+                let a3_record = MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts };
+                let local_mem_access =
+                    self.precompile_local_events([(Register::A3 as u32, MemoryRecordEnum::Write(a3_record))]);
                 let event = self.linux_event(
                     clk, arg1, arg2, v0, syscall_id, vec![],
-                    vec![MemoryWriteRecord { value: 0, timestamp: clk, prev_value: prev_a3, prev_timestamp: prev_a3_ts }],
+                    vec![a3_record],
+                    local_mem_access,
                 );
                 self.record.precompile_events.add_event(
                     SyscallCode::SYS_LINUX,
@@ -2669,7 +2758,17 @@ impl<'a> TracingVM<'a> {
             a_record_is_real: true,
             b_record: Some(b_record),
             c_record: Some(c_record),
-            syscall_id: code.syscall_id(),
+            // `SyscallInstrsChip`'s AIR (`crates/core/machine/src/syscall/instructions/
+            // air.rs`) requires the witnessed `syscall_id` column to read as
+            // `EXIT_UNCONSTRAINED`'s id, not `ENTER_UNCONSTRAINED`'s own, on an
+            // `ENTER_UNCONSTRAINED` dispatch. `code` (the dispatch match target above) stays
+            // the real `ENTER_UNCONSTRAINED` throughout; only this witnessed column needs the
+            // substitution.
+            syscall_id: if code == SyscallCode::ENTER_UNCONSTRAINED {
+                SyscallCode::EXIT_UNCONSTRAINED.syscall_id()
+            } else {
+                code.syscall_id()
+            },
             arg1,
             arg2,
         });

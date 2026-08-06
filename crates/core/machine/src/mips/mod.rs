@@ -1320,6 +1320,17 @@ pub mod tests {
     /// Returns `true` iff every row of every included chip satisfies its own constraints,
     /// printing the first violation (chip name, row, failing constraint indices) otherwise.
     fn debug_new_pipeline_constraints_hold(program: Program) -> bool {
+        debug_new_pipeline_constraints_hold_with_context(program, std::sync::Arc::from([]), None)
+    }
+
+    /// Same as `debug_new_pipeline_constraints_hold`, but threading a `stdin`/`hook_registry`
+    /// through to `ShardDriver` -- needed for a program (like `unconstrained_program`) whose
+    /// `HINT_READ`s depend on a hook actually firing during execution.
+    fn debug_new_pipeline_constraints_hold_with_context(
+        program: Program,
+        stdin: std::sync::Arc<[Vec<u8>]>,
+        hook_registry: Option<zkm_core_executor::hook::HookRegistry>,
+    ) -> bool {
         use p3_air::{Air, AirBuilder, AirBuilderWithPublicValues, ExtensionBuilder, PairBuilder, PermutationAirBuilder};
         use p3_field::{ExtensionField, Field};
         use p3_matrix::{dense::RowMajorMatrixView, Matrix};
@@ -1421,7 +1432,15 @@ pub mod tests {
         }
 
         let program = Arc::new(program);
-        let mut driver = ShardDriver::new(program.clone(), 1 << 22);
+        let mut driver = ShardDriver::new_with_context(
+            program.clone(),
+            1 << 22,
+            stdin,
+            Vec::new(),
+            None,
+            true,
+            hook_registry,
+        );
         let mut state = PublicValues::<u32, u32>::default().reset();
         let mut deferred = zkm_core_executor::ExecutionRecord::new(program.clone());
         let mut all_records = Vec::new();
@@ -1569,6 +1588,18 @@ pub mod tests {
     }
 
     #[test]
+    fn debug_unconstrained_constraints_hold() {
+        assert!(
+            debug_new_pipeline_constraints_hold_with_context(
+                unconstrained_program(),
+                std::sync::Arc::from([]),
+                Some(zkm_core_executor::hook::HookRegistry::default()),
+            ),
+            "some chip's row constraints don't hold"
+        );
+    }
+
+    #[test]
     fn debug_new_pipeline_simple_memory_program_interactions_balance() {
         assert!(
             debug_new_pipeline_interactions_balance(
@@ -1663,6 +1694,52 @@ pub mod tests {
                 u64::MAX / 2,
                 u64::MAX / 2,
             ),
+            "global-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_sha_extend_local_interactions_balance() {
+        let program = Program::from(test_artifacts::SHA_EXTEND_ELF).unwrap();
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                program,
+                u64::MAX / 2,
+                u64::MAX / 2,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_sha_extend_global_interactions_balance() {
+        let program = Program::from(test_artifacts::SHA_EXTEND_ELF).unwrap();
+        assert!(
+            debug_new_pipeline_global_interactions_balance(program, u64::MAX / 2, u64::MAX / 2),
+            "global-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_u256x2048_mul_local_interactions_balance() {
+        let program = Program::from(test_artifacts::U256XU2048_MUL_ELF).unwrap();
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                program,
+                u64::MAX / 2,
+                u64::MAX / 2,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance"
+        );
+    }
+
+    #[test]
+    fn debug_u256x2048_mul_global_interactions_balance() {
+        let program = Program::from(test_artifacts::U256XU2048_MUL_ELF).unwrap();
+        assert!(
+            debug_new_pipeline_global_interactions_balance(program, u64::MAX / 2, u64::MAX / 2),
             "global-scope send/receive interactions don't balance"
         );
     }
