@@ -71,6 +71,58 @@ pub mod tests {
         Program::new(instructions, 0, 0)
     }
 
+    /// A synthetic (non-ELF) program invoking the built-in `fp_inverse` hook: writes a
+    /// `[len=1 (BE u32) || element=3 || modulus=7]` request to `FD_FP_INV`, reads the spliced
+    /// result back via `SYSHINTLEN`/`SYSHINTREAD`, and commits it (the modular inverse of 3 mod 7,
+    /// i.e. 5, since `3*5 = 15 = 2*7 + 1`) as public values before halting.
+    #[must_use]
+    #[allow(clippy::unreadable_literal)]
+    pub fn hook_fp_inverse_program() -> Program {
+        use crate::{hook::FD_FP_INV, syscalls::SyscallCode};
+        use zkm_primitives::consts::fd::FD_PUBLIC_VALUES;
+
+        const REQ_PTR: u32 = 0x1000;
+        const RESULT_PTR: u32 = 0x2000;
+        let instructions = vec![
+            // Request buffer: [len=1 (BE u32) || element=3 || modulus=7].
+            Instruction::new(Opcode::ADD, 8, 0, 0x01000000, false, true),
+            Instruction::new(Opcode::SW, 8, 0, REQ_PTR, false, true),
+            Instruction::new(Opcode::ADD, 8, 0, 0x0000_0703, false, true),
+            Instruction::new(Opcode::SW, 8, 0, REQ_PTR + 4, false, true),
+            // WRITE(FD_FP_INV, REQ_PTR, 6) -- invokes the hook.
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::WRITE as u32, false, true),
+            Instruction::new(Opcode::ADD, 4, 0, FD_FP_INV, false, true),
+            Instruction::new(Opcode::ADD, 5, 0, REQ_PTR, false, true),
+            Instruction::new(Opcode::ADD, 6, 0, 6, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+            // Read the hook's spliced result back.
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::SYSHINTLEN as u32, false, true),
+            Instruction::new(Opcode::ADD, 4, 0, 0, false, true),
+            Instruction::new(Opcode::ADD, 5, 0, 0, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+            Instruction::new(Opcode::ADD, 9, 2, 0, false, true),
+            Instruction::new(Opcode::ADD, 4, 0, RESULT_PTR, false, true),
+            Instruction::new(Opcode::ADD, 5, 9, 0, false, true),
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::SYSHINTREAD as u32, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+            // A real load to force the hinted word to materialize into memory: `WRITE`'s own byte
+            // reads (below) are an untracked peek that, like `Executor::byte`, deliberately never
+            // consults the hint side-table (see `MinimalExecutor::hint_seed`'s doc comment).
+            Instruction::new(Opcode::LW, 10, 0, RESULT_PTR, false, true),
+            // Commit the result word as public values.
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::WRITE as u32, false, true),
+            Instruction::new(Opcode::ADD, 4, 0, FD_PUBLIC_VALUES, false, true),
+            Instruction::new(Opcode::ADD, 5, 0, RESULT_PTR, false, true),
+            Instruction::new(Opcode::ADD, 6, 0, 4, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+            // HALT.
+            Instruction::new(Opcode::ADD, 2, 0, 0, false, true),
+            Instruction::new(Opcode::ADD, 4, 0, 0, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+        ];
+        Program::new(instructions, 0, 0)
+    }
+
     /// Get the fibonacci program.
     ///
     /// # Panics

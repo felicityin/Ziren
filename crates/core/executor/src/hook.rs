@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock, RwLockWriteGuard};
 use hashbrown::HashMap;
 use zkm_curves::{BigUint, One, Zero};
 
-use crate::{ExecutionError, Executor};
+use crate::ExecutionError;
 
 pub use zkm_primitives::consts::fd::*;
 
@@ -98,11 +98,14 @@ impl Debug for HookRegistry<'_> {
     }
 }
 
-/// Environment that a hook may read from.
-pub struct HookEnv<'a, 'b: 'a> {
-    /// The runtime.
-    pub runtime: &'a Executor<'b>,
-}
+/// Environment that a hook may read from. Currently empty -- no built-in or in-repo custom hook
+/// reads anything from it (every hook signature is `fn(_: HookEnv, buf: &[u8]) -> ...`); kept as a
+/// distinct type (rather than dropping the parameter) so a future hook could still be given
+/// context without another signature-breaking change. Deliberately not tied to a specific executor
+/// type (e.g. the legacy `Executor`), so the same `Hook`/`HookRegistry` machinery works for any
+/// executor that can invoke a hook (see `MinimalExecutor::hook_dispatch`).
+#[derive(Clone, Copy)]
+pub struct HookEnv;
 
 /// The hook for the `ecrecover` patches.
 ///

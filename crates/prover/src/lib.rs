@@ -45,7 +45,7 @@ use std::{
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_koala_bear::KoalaBear;
 use tracing::instrument;
-use zkm_core_executor::{ExecutionError, ExecutionReport, Executor, Program, ZKMContext};
+use zkm_core_executor::{execute_fast, ExecutionError, ExecutionReport, Program, ZKMContext};
 use zkm_core_machine::{
     io::ZKMStdin,
     mips::MipsAir,
@@ -284,15 +284,23 @@ impl<C: ZKMProverComponents> ZKMProver<C> {
         mut context: ZKMContext<'a>,
     ) -> Result<(ZKMPublicValues, ExecutionReport), ExecutionError> {
         context.subproof_verifier = Some(self);
-        let program = self.get_program(elf).unwrap();
+        let program = Arc::new(self.get_program(elf).unwrap());
         let opts = ZKMCoreOpts::default();
-        let mut runtime = Executor::with_context(program, opts, context);
-        runtime.write_vecs(&stdin.buffer);
-        for (proof, vkey) in stdin.proofs.iter() {
-            runtime.write_proof(proof.clone(), vkey.clone());
-        }
-        runtime.run_fast()?;
-        Ok((ZKMPublicValues::from(&runtime.state.public_values_stream), runtime.report))
+        // Mirrors `Executor::with_context`'s `context.hook_registry.unwrap_or_default()`: the 5
+        // built-in hooks (ecrecover/fp-sqrt/fp-inverse/BLS12-381-sqrt/inverse) stay active unless
+        // the caller explicitly opted out via `without_default_hooks()`.
+        let hook_registry = Some(context.hook_registry.unwrap_or_default());
+        let (public_values_stream, report) = execute_fast(
+            program,
+            opts.shard_size as u64,
+            Arc::from(stdin.buffer.clone()),
+            stdin.proofs.clone(),
+            context.subproof_verifier,
+            !context.skip_deferred_proof_verification,
+            hook_registry,
+            context.max_cycles,
+        )?;
+        Ok((ZKMPublicValues::from(&public_values_stream), report))
     }
 
     /// Generate shard proofs which split up and prove the valid execution of a MIPS program with

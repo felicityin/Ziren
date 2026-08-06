@@ -168,6 +168,23 @@ impl MinimalExecutor<'_> {
         Ok(())
     }
 
+    /// `WRITE` to any fd that isn't stdout/stderr/public-values/hint: invokes the registered hook
+    /// (if any), splicing its result vectors into `stdin` at the *current* `input_stream_ptr` --
+    /// mirrors `syscalls::write::write_fd`'s hook-fd branch exactly, including its silent no-op
+    /// when `fd` has no registered hook (matches legacy's `tracing::warn!`-then-continue, not an
+    /// error). `hook_registry` being `None` entirely (rather than an empty registry) is also a
+    /// silent no-op -- see `Self::stdin`'s doc comment on why hooks are `execute_fast`-only.
+    fn hook_dispatch(&mut self, fd: u32, buf: &[u8]) -> Result<(), ExecutionError> {
+        let res = {
+            let Some(registry) = &self.hook_registry else { return Ok(()) };
+            let Some(mut hook) = registry.get(fd) else { return Ok(()) };
+            hook.invoke_hook(crate::hook::HookEnv, buf)?
+        };
+        let ptr = self.input_stream_ptr;
+        self.stdin.splice(ptr..ptr, res);
+        Ok(())
+    }
+
     /// `verify_zkm_proof` in the guest: sanity-checks that the proof stream's next entry really
     /// does verify against the given `vkey`/committed-value digest. Mirrors
     /// `syscalls::verify::VerifySyscall::execute` almost exactly -- two differences, both
@@ -277,10 +294,13 @@ impl MinimalExecutor<'_> {
                     // print-on-newline machinery (`write.rs::update_io_buf`) -- affects only
                     // console output, not executor state.
                 } else if fd == FD_HINT {
-                    // A hint *computed* inside `unconstrained!{}` (`hint()`/`hint_slice()`, or a
-                    // hook fd) and appended to `input_stream` here for a later `HINT_READ` to pop
-                    // -- not implemented yet, unlike the plain-`ZKMStdin`-sourced case `HINT_LEN`/
-                    // `HINT_READ` handle for real (see `hint_read_dispatch`'s doc comment).
+                    // A hint *computed* inside `unconstrained!{}` (`hint()`/`hint_slice()`) --
+                    // appended to `stdin`'s end for a later `HINT_READ` to pop, exactly mirroring
+                    // `syscalls::write::write_fd`'s identical `push`. See `Self::stdin`'s doc
+                    // comment on why growing it here is only sound for `execute_fast`.
+                    self.stdin.push(bytes);
+                } else {
+                    self.hook_dispatch(fd, &bytes)?;
                 }
                 None
             }
@@ -526,6 +546,10 @@ impl MinimalExecutor<'_> {
                 let bytes: Vec<u8> = (0..nbytes).map(|i| self.byte_peek(write_buf + i)).collect();
                 if fd == FD_PUBLIC_VALUES {
                     self.public_values_stream.extend_from_slice(&bytes);
+                } else if fd == FD_HINT {
+                    self.stdin.push(bytes);
+                } else {
+                    self.hook_dispatch(fd, &bytes)?;
                 }
                 self.set_reg_aux(Register::A3, 0);
                 Some(nbytes)

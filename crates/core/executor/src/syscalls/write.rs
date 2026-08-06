@@ -1,6 +1,6 @@
 use zkm_primitives::consts::num_to_comma_separated;
 
-use crate::{ExecutionError, Executor, Register};
+use crate::{hook::HookEnv, ExecutionError, Executor, Register};
 
 use super::{Syscall, SyscallCode, SyscallContext};
 
@@ -59,7 +59,7 @@ pub fn write_fd(ctx: &mut SyscallContext, fd: u32, slice: &[u8]) -> Result<(), E
     } else if fd == FD_HINT {
         rt.state.input_stream.push(slice.to_vec());
     } else if let Some(mut hook) = rt.hook_registry.get(fd) {
-        let res = hook.invoke_hook(rt.hook_env(), slice)?;
+        let res = hook.invoke_hook(HookEnv, slice)?;
         // Add result vectors to the beginning of the stream.
         let ptr = rt.state.input_stream_ptr;
         rt.state.input_stream.splice(ptr..ptr, res);

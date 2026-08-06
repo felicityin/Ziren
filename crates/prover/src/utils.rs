@@ -10,7 +10,7 @@ use p3_bn254_fr::Bn254Fr;
 use p3_field::{FieldAlgebra, PrimeField32};
 use p3_koala_bear::KoalaBear;
 use p3_symmetric::CryptographicHasher;
-use zkm_core_executor::{Executor, Program, ZKMReduceProof};
+use zkm_core_executor::{execute_fast, HookRegistry, Program, ZKMReduceProof};
 use zkm_core_machine::io::ZKMStdin;
 use zkm_hypercube::{config::ZkmGlobalContext, word::Word};
 use zkm_recursion_circuit::machine::RootPublicValues;
@@ -97,11 +97,22 @@ impl ZKMCoreProofData {
 
 /// Get the number of cycles for a given program.
 pub fn get_cycles(elf: &[u8], stdin: &ZKMStdin) -> u64 {
-    let program = Program::from(elf).unwrap();
-    let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-    runtime.write_vecs(&stdin.buffer);
-    runtime.run_fast().unwrap();
-    runtime.state.global_clk
+    let program = std::sync::Arc::new(Program::from(elf).unwrap());
+    let opts = ZKMCoreOpts::default();
+    // Mirrors `Executor::new`'s own `ZKMContext::default()` -> `with_context`'s
+    // `unwrap_or_default()`: the 5 built-in hooks stay active by default here too.
+    let (_, report) = execute_fast(
+        program,
+        opts.shard_size as u64,
+        std::sync::Arc::from(stdin.buffer.clone()),
+        stdin.proofs.clone(),
+        None,
+        true,
+        Some(HookRegistry::default()),
+        None,
+    )
+    .unwrap();
+    report.total_instruction_count()
 }
 
 /// Load an ELF file from a given path.

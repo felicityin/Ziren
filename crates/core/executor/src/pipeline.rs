@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use crate::{
     events::MemoryInitializeFinalizeEvent,
+    hook::HookRegistry,
     minimal::MinimalExecutor,
     splicing::{SplicingStatus, SplicingVM},
     subproof::SubproofVerifier,
@@ -84,6 +85,46 @@ pub fn run_full_pipeline(
     Ok(records)
 }
 
+/// Runs `program` to completion *without* tracing -- the new pipeline's equivalent of
+/// `Executor::run_fast`, for `ZKMProver::execute`'s dry-run path (no shard proving, just the
+/// public-values stream and a final `ExecutionReport`). Unlike [`run_full_pipeline`], this drives
+/// `MinimalExecutor` directly: there is no `SplicingVM`/`TracingVM` replay step to keep in sync, so
+/// `hook_registry`/`max_cycles` are supported here even though the real proving pipeline doesn't
+/// support them yet (see `MinimalExecutor::stdin`'s doc comment for why that's a real, not
+/// incidental, restriction). `max_trace_size` only bounds how much oracle log
+/// `MinimalExecutor` buffers at a time before this function discards it (a memory-management knob
+/// a caller should size the same way it would size `ZKMCoreOpts::shard_size`) -- it has no effect
+/// on the returned result.
+///
+/// # Errors
+///
+/// Propagates any [`ExecutionError`] from executing an instruction, including
+/// `ExecutionError::ExceededCycleLimit` once `max_cycles` is reached.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_fast<'a>(
+    program: Arc<Program>,
+    max_trace_size: u64,
+    stdin: Arc<[Vec<u8>]>,
+    proof_stream: Vec<(ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>, MachineVerifyingKey<ZkmGlobalContext>)>,
+    subproof_verifier: Option<&'a dyn SubproofVerifier>,
+    deferred_proof_verification_enabled: bool,
+    hook_registry: Option<HookRegistry<'a>>,
+    max_cycles: Option<u64>,
+) -> Result<(Vec<u8>, ExecutionReport), ExecutionError> {
+    let mut minimal = MinimalExecutor::new_with_context(
+        program,
+        max_trace_size,
+        stdin,
+        proof_stream,
+        subproof_verifier,
+        deferred_proof_verification_enabled,
+        hook_registry,
+        max_cycles,
+    );
+    while minimal.try_execute_chunk()?.is_some() {}
+    Ok((minimal.public_values_stream().to_vec(), minimal.execution_report()))
+}
+
 /// Traces one already-spliced shard into a real [`ExecutionRecord`] -- the new pipeline's
 /// equivalent of the legacy `Executor`-based `trace_checkpoint`.
 ///
@@ -133,6 +174,9 @@ impl<'a> ShardDriver<'a> {
         subproof_verifier: Option<&'a dyn SubproofVerifier>,
         deferred_proof_verification_enabled: bool,
     ) -> Self {
+        // `hook_registry`/`max_cycles` stay `None`: `ShardDriver` only ever drives the real
+        // proving pipeline, which never sets either (see `MinimalExecutor::stdin`'s doc comment
+        // on why hooks are `execute_fast`-only).
         Self(MinimalExecutor::new_with_context(
             program,
             max_trace_size,
@@ -140,6 +184,8 @@ impl<'a> ShardDriver<'a> {
             proof_stream,
             subproof_verifier,
             deferred_proof_verification_enabled,
+            None,
+            None,
         ))
     }
 
@@ -234,9 +280,10 @@ mod tests {
     use super::*;
     use crate::{
         golden::run_golden,
+        hook::HookRegistry,
         programs::tests::{
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
-            secp256r1_add_program, sha_compress_program, simple_program,
+            hook_fp_inverse_program, secp256r1_add_program, sha_compress_program, simple_program,
         },
         Program,
     };
@@ -368,5 +415,65 @@ mod tests {
             golden_finalize_count,
             "fibonacci_program (many shards/chunks): global_memory_finalize_events count mismatch"
         );
+    }
+
+    /// `execute_fast` (the `ZKMProver::execute` dry-run path) with the default hook registry
+    /// active: `hook_fp_inverse_program` writes an `fp_inverse` request to `FD_FP_INV`, and the
+    /// real built-in hook (not a test stub) must compute the correct modular inverse and splice it
+    /// back for `HINT_READ` to pick up -- exercises `MinimalExecutor::hook_dispatch` end to end,
+    /// including the `WRITE`-then-`HINT_READ` sequencing `write_fd`'s hook branch relies on.
+    #[test]
+    fn execute_fast_invokes_default_hooks() {
+        let (public_values, report) = execute_fast(
+            Arc::new(hook_fp_inverse_program()),
+            u64::MAX / 2,
+            Arc::from([]),
+            Vec::new(),
+            None,
+            true,
+            Some(HookRegistry::default()),
+            None,
+        )
+        .unwrap();
+
+        // 3 * 5 = 15 = 2*7 + 1, so 5 is the modular inverse of 3 mod 7.
+        assert_eq!(public_values, vec![5, 0, 0, 0], "wrong fp_inverse hook result");
+        assert!(report.total_instruction_count() > 0);
+    }
+
+    /// Same program, but with `hook_registry: None` -- mirrors legacy's own behavior for a `WRITE`
+    /// to an fd with no hook registered at all (a silent no-op, not an error): `HINT_LEN` then
+    /// sees an empty `stdin` and errors with `InvalidSyscallArgs`, since nothing ever spliced a
+    /// result in for it to read.
+    #[test]
+    fn execute_fast_without_hooks_never_invokes_them() {
+        let result = execute_fast(
+            Arc::new(hook_fp_inverse_program()),
+            u64::MAX / 2,
+            Arc::from([]),
+            Vec::new(),
+            None,
+            true,
+            None,
+            None,
+        );
+        assert!(matches!(result, Err(ExecutionError::InvalidSyscallArgs())));
+    }
+
+    /// `max_cycles` mirrors `Executor::max_cycles`: exceeding it errors with
+    /// `ExecutionError::ExceededCycleLimit` instead of running to completion.
+    #[test]
+    fn execute_fast_respects_max_cycles() {
+        let result = execute_fast(
+            Arc::new(fibonacci_program()),
+            u64::MAX / 2,
+            Arc::from([]),
+            Vec::new(),
+            None,
+            true,
+            None,
+            Some(1),
+        );
+        assert!(matches!(result, Err(ExecutionError::ExceededCycleLimit(1))));
     }
 }

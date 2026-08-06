@@ -29,6 +29,7 @@ use hashbrown::HashMap;
 
 use crate::{
     events::{MemoryAccessPosition, MemoryInitializeFinalizeEvent, MemoryRecord},
+    hook::HookRegistry,
     memory::{MaybeCowMemory, PagedMemory},
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
@@ -89,10 +90,21 @@ pub(crate) struct MinimalExecutor<'a> {
     oracle_log: Vec<MemValue>,
     max_trace_size: u64,
     public_values_stream: Vec<u8>,
-    /// `ZKMStdin`'s buffer -- whole-run constant, like `program`, never mutated after
-    /// construction. `HINT_LEN` reads `stdin[input_stream_ptr].len()`; `HINT_READ` pops the front
-    /// entry (`input_stream_ptr += 1`) and seeds `hint_seed`. Mirrors `Executor::state.input_stream`.
-    stdin: Arc<[Vec<u8>]>,
+    /// `ZKMStdin`'s buffer, seeded at construction -- but unlike every other whole-run-constant
+    /// field here, this one *can* grow during execution: `WRITE`'s `FD_HINT` case appends a new
+    /// entry at the end (a value the guest computed itself inside `unconstrained!{}`, to be read
+    /// back via a later `HINT_READ`), and a hook fd write splices its result vectors in at the
+    /// *current* `input_stream_ptr` (so they become the very next entries read) -- both mirror
+    /// `Executor::state.input_stream`'s identical `push`/`splice` calls in `write_fd`. Growing this
+    /// mid-run is only sound for a standalone dry run (see `crate::execute_fast`): `CoreVM`/
+    /// `TracingVM` replay `HINT_LEN`'s return value by recomputing from a *fixed* snapshot (see
+    /// `Self::stdin`'s doc comment), so nothing here may grow while any shard/chunk output is still
+    /// going to be replayed against it -- `hook_registry`/`Self::hook_dispatch` are consulted only
+    /// by callers that guarantee that (`execute_fast`; never `ShardDriver`/the real proving
+    /// pipeline, which never sets `hook_registry` and whose `FD_HINT` case therefore never fires
+    /// either, since it's the same call site).  `HINT_LEN` reads `stdin[input_stream_ptr].len()`;
+    /// `HINT_READ` pops the front entry (`input_stream_ptr += 1`) and seeds `hint_seed`.
+    stdin: Vec<Vec<u8>>,
     /// Live cursor into `stdin`, advanced by `HINT_READ`. Threaded across chunk/shard boundaries
     /// as a carried snapshot (`TraceChunk::start_input_stream_ptr`), exactly like `pc`/`clk`.
     input_stream_ptr: usize,
@@ -131,6 +143,21 @@ pub(crate) struct MinimalExecutor<'a> {
     /// Mirrors `Executor::deferred_proof_verification`: `SYSVERIFY` is a no-op (beyond advancing
     /// `proof_stream_ptr`) when this is `false`.
     deferred_proof_verification_enabled: bool,
+    /// `WRITE`'s hook-fd case (see `Self::hook_dispatch`) consults this; `None` means no hook fds
+    /// are registered at all (every such write is a documented no-op, matching `FD_HINT`'s own
+    /// no-op status before hooks were implemented). Mirrors `Executor::hook_registry`, except
+    /// legacy always has a real (if possibly `HookRegistry::empty()`) registry via
+    /// `context.hook_registry.unwrap_or_default()`, while this stays fully optional -- see
+    /// `Self::stdin`'s doc comment on why hooks are only ever wired up by `execute_fast`.
+    hook_registry: Option<HookRegistry<'a>>,
+    /// Instructions retired so far, counting unconstrained-block instructions too (unlike
+    /// `opcode_counts`, which is gated on `!self.unconstrained`) -- mirrors `Executor::global_clk`,
+    /// the counter `context.max_cycles` is actually checked against (not the AIR-relevant `clk`,
+    /// which advances by 5+ per instruction and is a different unit entirely).
+    retired_instructions: u64,
+    /// Mirrors `Executor::max_cycles`: `try_execute_chunk` errors with
+    /// `ExecutionError::ExceededCycleLimit` once `retired_instructions` reaches this.
+    max_cycles: Option<u64>,
 }
 
 impl<'a> MinimalExecutor<'a> {
@@ -141,20 +168,23 @@ impl<'a> MinimalExecutor<'a> {
         Self::new_with_stdin(program, max_trace_size, Arc::from([]))
     }
 
-    /// Convenience constructor for callers that feed stdin but never subproofs -- equivalent to
-    /// `Self::new_with_context(program, max_trace_size, stdin, Vec::new(), None, true)`.
+    /// Convenience constructor for callers that feed stdin but never subproofs/hooks/a cycle
+    /// limit -- equivalent to `Self::new_with_context(program, max_trace_size, stdin, Vec::new(),
+    /// None, true, None, None)`.
     #[must_use]
     pub(crate) fn new_with_stdin(
         program: Arc<Program>,
         max_trace_size: u64,
         stdin: Arc<[Vec<u8>]>,
     ) -> Self {
-        Self::new_with_context(program, max_trace_size, stdin, Vec::new(), None, true)
+        Self::new_with_context(program, max_trace_size, stdin, Vec::new(), None, true, None, None)
     }
 
     /// The full constructor, taking every piece a real `ZKMContext`/`ZKMStdin` can carry that
     /// `MinimalExecutor` needs. `deferred_proof_verification_enabled` mirrors
-    /// `!context.skip_deferred_proof_verification`.
+    /// `!context.skip_deferred_proof_verification`. `hook_registry`/`max_cycles` are only ever
+    /// non-default from `execute_fast` -- see `Self::stdin`'s doc comment on why hooks are scoped
+    /// to that standalone-dry-run entry point specifically.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_with_context(
@@ -164,6 +194,8 @@ impl<'a> MinimalExecutor<'a> {
         proof_stream: Vec<(ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>, MachineVerifyingKey<ZkmGlobalContext>)>,
         subproof_verifier: Option<&'a dyn SubproofVerifier>,
         deferred_proof_verification_enabled: bool,
+        hook_registry: Option<HookRegistry<'a>>,
+        max_cycles: Option<u64>,
     ) -> Self {
         // `program.image` addresses below `NUM_REGISTERS` are register-index seeds (e.g. the
         // ELF loader's computed initial `BRK`), not RAM -- mirrors `Memory::insert`'s dispatch,
@@ -206,7 +238,7 @@ impl<'a> MinimalExecutor<'a> {
             ),
             max_trace_size,
             public_values_stream: Vec::new(),
-            stdin,
+            stdin: stdin.to_vec(),
             input_stream_ptr: 0,
             hint_seed: HashMap::new(),
             opcode_counts: Box::default(),
@@ -215,6 +247,9 @@ impl<'a> MinimalExecutor<'a> {
             proof_stream_ptr: 0,
             subproof_verifier,
             deferred_proof_verification_enabled,
+            hook_registry,
+            retired_instructions: 0,
+            max_cycles,
         }
     }
 
@@ -245,11 +280,13 @@ impl<'a> MinimalExecutor<'a> {
         self.input_stream_ptr
     }
 
-    /// `stdin` itself -- whole-run constant, threaded into `CoreVM`/`TracingVM` alongside
-    /// `program` so replay can independently recompute `HINT_LEN`'s return value.
+    /// A snapshot of `stdin`, threaded into `CoreVM`/`TracingVM` alongside `program` so replay can
+    /// independently recompute `HINT_LEN`'s return value -- callers that never grow `stdin` at
+    /// runtime (every caller except `execute_fast`; see `Self::stdin`'s doc comment) can treat this
+    /// as if it were whole-run constant, taken once up front.
     #[must_use]
     pub(crate) fn stdin(&self) -> Arc<[Vec<u8>]> {
-        self.stdin.clone()
+        Arc::from(self.stdin.clone())
     }
 
     /// The `max_syscall_cycles` this run used for `bump_clk_high_if_need`. `CoreVM` must be
@@ -601,6 +638,12 @@ impl<'a> MinimalExecutor<'a> {
         // be consulted before at least one instruction has actually retired.
         loop {
             self.execute_instruction()?;
+            self.retired_instructions += 1;
+            if let Some(max_cycles) = self.max_cycles {
+                if self.retired_instructions >= max_cycles {
+                    return Err(ExecutionError::ExceededCycleLimit(max_cycles));
+                }
+            }
             if self.is_done() {
                 self.finished = true;
                 break;

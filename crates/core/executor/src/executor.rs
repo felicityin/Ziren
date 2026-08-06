@@ -461,13 +461,7 @@ impl<'a> Executor<'a> {
             .hook_registry
             .get(fd)
             .ok_or(eyre::eyre!("no hook found for file descriptor {}", fd))?
-            .invoke_hook(self.hook_env(), buf))
-    }
-
-    /// Prepare a `HookEnv` for use by hooks.
-    #[must_use]
-    pub fn hook_env<'b>(&'b self) -> HookEnv<'b, 'a> {
-        HookEnv { runtime: self }
+            .invoke_hook(HookEnv, buf))
     }
 
     /// Recover runtime state from a program and existing execution state.
