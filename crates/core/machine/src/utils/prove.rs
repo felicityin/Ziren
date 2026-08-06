@@ -352,11 +352,16 @@ pub fn prove_with_context(
                                 tracing::debug!("deferred {} records", deferred.len());
 
                                 // Update the public values & prover state for the shards which do
-                                // not contain "cpu events" before
-                                // committing to them.
-                                if !done {
-                                    state.execution_shard += 1;
-                                }
+                                // not contain "cpu events" before committing to them.
+                                //
+                                // `execution_shard` is deliberately left unbumped here: the
+                                // verifier's and the recursive circuit's execution-shard
+                                // sequencing checks only look at shards with `is_execution_shard
+                                // != 0`, so a deferred (non-cpu) shard's `execution_shard` value
+                                // is never read and can safely stay whatever `state` last held.
+                                // Bumping it here would desync it from the count of real CPU
+                                // shards for every later checkpoint, since `state.execution_shard`
+                                // persists across the whole run.
                                 for record in deferred.iter_mut() {
                                     state.is_execution_shard = 0;
                                     state.previous_init_addr =
@@ -408,9 +413,15 @@ pub fn prove_with_context(
 
                                 // Update the public values & prover state for the shards which do not
                                 // contain "cpu events" before committing to them.
-                                if !done {
-                                    state.execution_shard += 1;
-                                }
+                                //
+                                // `execution_shard` is deliberately left unbumped here: the
+                                // verifier's and the recursive circuit's execution-shard
+                                // sequencing checks only look at shards with `is_execution_shard
+                                // != 0`, so a deferred (non-cpu) shard's `execution_shard` value
+                                // is never read and can safely stay whatever `state` last held.
+                                // Bumping it here would desync it from the count of real CPU
+                                // shards for every later checkpoint, since `state.execution_shard`
+                                // persists across the whole run.
                                 for record in deferred.iter_mut() {
                                     state.is_execution_shard = 0;
                                     state.previous_init_addr =
@@ -875,6 +886,74 @@ mod tests {
             let mut challenger = ZkmGlobalContext::default_challenger();
             vk.observe_into(&mut challenger);
             shard_verifier.verify_shard(&vk, proof, &mut challenger).unwrap();
+        }
+    }
+
+    /// Real proof/verify over a precompile-heavy program (25 `KECCAK_SPONGE` calls) with a tiny
+    /// `shard_size` and a tiny `SplitOpts` threshold, so the run's deferred precompile events
+    /// cross the flush threshold on a checkpoint well before the run's `done` checkpoint --
+    /// exercising the same "deferred-only shard interspersed among execution shards" shape as
+    /// `prove_with_context`'s real streaming pipeline, at a fraction of a full guest's memory
+    /// footprint. Reproduces (pre-fix) and guards against the `execution_shard` numbering bug in
+    /// `prove_with_context`'s deferred-flush handling: `state.execution_shard` used to be bumped
+    /// an extra time whenever a mid-run flush produced a deferred (non-cpu) record, permanently
+    /// desyncing it from the count of real execution shards for every later checkpoint. This is
+    /// invisible to per-shard STARK verification (`ShardVerifier::verify_shard`) -- it only shows
+    /// up in the *cross-shard* sequencing check every real caller runs after core proving
+    /// (`ZKMProver::verify`, `crates/prover/src/verify.rs`), so this test replicates that exact
+    /// check inline instead.
+    #[test]
+    fn run_test_execution_shard_numbering_with_mid_run_deferred_flush() {
+        use p3_field::FieldAlgebra;
+        use std::borrow::Borrow;
+        use zkm_hypercube::word::Word;
+        use zkm_stark::SplitOpts;
+
+        let program = Program::from(test_artifacts::KECCAK_SPONGE_ELF).unwrap();
+        let mut opts = ZKMCoreOpts::default();
+        opts.shard_size = 4096;
+        // `prove_with_context` hardcodes `height_threshold` to `CORE_SHARD_HEIGHT_THRESHOLD` and
+        // only reads `element_threshold` from `opts.lde_size_threshold` -- shrink that (from its
+        // ~3.76B default) so `SplicingVM` actually cuts multiple real shards for this small
+        // guest, instead of fitting the whole run into one.
+        opts.lde_size_threshold = 2_000_000;
+        // `keccak = 8 * 24 / 24 = 8`: a full deferred-shard chunk needs only 8 `KECCAK_SPONGE`
+        // events, well under the 25 calls the guest makes, so at least one flush happens with
+        // `done == false`.
+        opts.split_opts = SplitOpts::new(24);
+
+        let (shard_proofs, _public_values_stream, _cycles, _vk) = prove_with_context(
+            program,
+            &ZKMStdin::new(),
+            opts,
+            ZKMContext::default(),
+        )
+        .unwrap();
+
+        // Sanity check that this run actually exercises a mid-run deferred flush -- otherwise
+        // this test would silently stop covering the bug it's guarding against.
+        assert!(
+            shard_proofs.iter().any(|p| {
+                let public_values: &PublicValues<Word<_>, _> = p.public_values.as_slice().borrow();
+                public_values.is_execution_shard == KoalaBear::ZERO
+            }),
+            "expected at least one deferred (non-cpu) shard in this run"
+        );
+
+        // Replicates `ZKMProver::verify`'s execution-shard sequencing check
+        // (`crates/prover/src/verify.rs`): among shards that retired instructions, in proof
+        // order, `execution_shard` must be exactly 1, 2, 3, ....
+        let mut current_execution_shard = KoalaBear::ZERO;
+        for shard_proof in &shard_proofs {
+            let public_values: &PublicValues<Word<_>, _> =
+                shard_proof.public_values.as_slice().borrow();
+            if public_values.is_execution_shard != KoalaBear::ZERO {
+                current_execution_shard += KoalaBear::ONE;
+                assert_eq!(
+                    public_values.execution_shard, current_execution_shard,
+                    "execution shard index should be the previous execution shard index + 1 if cpu exists and start at 1",
+                );
+            }
         }
     }
 
