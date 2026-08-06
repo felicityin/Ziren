@@ -8,14 +8,13 @@
 //! # Syscall coverage
 //!
 //! The full ISA (every opcode family covered by the pure-compute functions in `crate::vm`) is
-//! implemented for real. Most syscalls are too: `HALT`, `WRITE`'s `FD_PUBLIC_VALUES` case, every
-//! precompile, the Linux syscall shims, `ENTER_UNCONSTRAINED`/`EXIT_UNCONSTRAINED` (see
-//! `Self::enter_unconstrained`'s doc comment), `HINT_LEN`/`HINT_READ` (reading from `ZKMStdin`'s
-//! buffer, see `Self::hint_seed`'s doc comment), and `SYSVERIFY` (`verify_zkm_proof`, see
-//! `syscall::verify_dispatch`'s doc comment) are all real. A hint computed *inside* an
-//! `unconstrained!{}` block via `hint()`/`hint_slice()` (or a hook fd) is not yet supported --
-//! `WRITE`'s `FD_HINT` case remains a documented no-op (see `syscall.rs`), and hooks
-//! (`ZKMContext::hook_registry`) aren't consulted anywhere yet either. Extend the dispatch in
+//! implemented for real. Every syscall is too: `HALT`, `WRITE` (`FD_PUBLIC_VALUES`, `FD_HINT`, and
+//! hook fds alike -- see `syscall::hook_dispatch`'s doc comment), every precompile, the Linux
+//! syscall shims, `ENTER_UNCONSTRAINED`/`EXIT_UNCONSTRAINED` (see `Self::enter_unconstrained`'s
+//! doc comment), `HINT_LEN`/`HINT_READ` (reading from `ZKMStdin`'s buffer, see `Self::hint_seed`'s
+//! doc comment), and `SYSVERIFY` (`verify_zkm_proof`, see `syscall::verify_dispatch`'s doc
+//! comment). Hooks/`FD_HINT` are only sound for a standalone dry run (`crate::execute_fast`), not
+//! the real proving pipeline -- see `Self::stdin`'s doc comment. Extend the dispatch in
 //! [`syscall`] as needed.
 
 #![allow(dead_code)]
@@ -120,8 +119,22 @@ pub(crate) struct MinimalExecutor<'a> {
     /// a store's byte/half merge) -- matches `Executor::word`'s identical behavior: it doesn't
     /// consult `uninitialized_memory` either, so a partial store to a hint-seeded-but-untouched
     /// address merges against `0`, not the hinted bytes. That's legacy's real, established
-    /// behavior (not a bug this port should "fix"), and must be matched bit-for-bit.
+    /// behavior (not a bug this port should "fix"), and must be matched bit-for-bit. See
+    /// `Self::hint_seed_history` for the *permanent* record of the same data -- unlike
+    /// `Executor::state.uninitialized_memory` (which `mr`/`mw` only ever `.get()`, never remove
+    /// from), this map alone can't answer "was this address ever hint-seeded" once a real touch
+    /// has drained it.
     hint_seed: HashMap<u32, u32>,
+    /// Every address `HINT_READ` has ever seeded, mapped to its hinted value -- unlike
+    /// `hint_seed`, entries here are never removed, mirroring `Executor::state.uninitialized_memory`
+    /// exactly (peeked by `mr`/`mw`'s `Entry::Vacant` case, but never emptied by them either).
+    /// Serves two purposes `hint_seed` alone can't once an address has been really touched: (1)
+    /// `Self::hint_read_dispatch`'s duplicate-hint check must still reject a second `HINT_READ` to
+    /// an address that was hinted-then-touched, exactly like legacy's own `Entry::Occupied` check
+    /// on `uninitialized_memory` (which is equally permanent); (2) `Self::global_memory_events`'s
+    /// initialize events need a hint-seeded-and-touched address's *real* hinted value, not `0`,
+    /// mirroring `Executor::postprocess()`'s `uninitialized_memory.get(addr).unwrap_or(&0)`.
+    hint_seed_history: HashMap<u32, u32>,
     /// Per-opcode/syscall dispatch counts, for `Self::execution_report`. Mirrors
     /// `Executor::report`'s identical fields and gating (`!self.unconstrained`) -- purely
     /// informational, consumed only by `prove.rs`'s end-of-run summary logging.
@@ -241,6 +254,7 @@ impl<'a> MinimalExecutor<'a> {
             stdin: stdin.to_vec(),
             input_stream_ptr: 0,
             hint_seed: HashMap::new(),
+            hint_seed_history: HashMap::new(),
             opcode_counts: Box::default(),
             syscall_counts: Box::default(),
             proof_stream,
@@ -336,12 +350,10 @@ impl<'a> MinimalExecutor<'a> {
     /// register/RAM state -- addresses touched by only *some* chunks wouldn't be visible from an
     /// in-progress run.
     ///
-    /// Every initialize event currently uses value `0` unconditionally. `Executor::postprocess()`
-    /// instead consults `uninitialized_memory.get(addr)` here, so a hint-seeded-and-then-really-
-    /// touched address (outside `program.image`) gets its real hinted value, not `0` -- a gap this
-    /// port has not yet closed (`Self::hint_seed`'s own entries are consumed via `remove` on first
-    /// touch, so by the time this runs there is nothing left to consult for such an address; a fix
-    /// needs a separate, non-consumed snapshot of hint-seeded initial values).
+    /// Every initialize event's value consults `hint_seed_history` (falling back to `0` for an
+    /// address never hint-seeded), mirroring `Executor::postprocess()`'s own
+    /// `uninitialized_memory.get(addr).unwrap_or(&0)` -- a hint-seeded-and-then-really-touched
+    /// address (outside `program.image`) gets its real hinted value here, not `0`.
     #[must_use]
     pub(crate) fn global_memory_events(
         &self,
@@ -372,7 +384,8 @@ impl<'a> MinimalExecutor<'a> {
             // Program memory is initialized in the `MemoryProgramChip` and doesn't require any
             // events, so we only send init events for other addresses.
             if !seeded {
-                initialize_events.push(MemoryInitializeFinalizeEvent::initialize(addr, 0));
+                let initial_value = self.hint_seed_history.get(&addr).copied().unwrap_or(0);
+                initialize_events.push(MemoryInitializeFinalizeEvent::initialize(addr, initial_value));
             }
             let record = MemoryRecord { timestamp, value: self.registers[addr as usize] };
             finalize_events.push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, &record));
@@ -384,7 +397,8 @@ impl<'a> MinimalExecutor<'a> {
                 continue;
             }
             if !self.program.image.contains_key(&addr) {
-                initialize_events.push(MemoryInitializeFinalizeEvent::initialize(addr, 0));
+                let initial_value = self.hint_seed_history.get(&addr).copied().unwrap_or(0);
+                initialize_events.push(MemoryInitializeFinalizeEvent::initialize(addr, initial_value));
             }
             let record = self.page_table.get(addr).unwrap();
             finalize_events.push(MemoryInitializeFinalizeEvent::finalize_from_record(addr, record));
@@ -1015,7 +1029,7 @@ mod tests {
         golden::run_golden,
         programs::tests::{
             ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
-            simple_memory_program, simple_program,
+            hint_read_program, simple_memory_program, simple_program,
         },
         Program,
     };
@@ -1134,6 +1148,68 @@ mod tests {
     #[test]
     fn global_memory_events_matches_golden_ed_decompress_real_elf() {
         assert_global_memory_events_match_golden(ed_decompress_program, "ed_decompress_program");
+    }
+
+    /// `assert_global_memory_events_match_golden` only compares *counts* (`GoldenSnapshot`'s
+    /// `event_counts` is a `BTreeMap<String, usize>`), so it can't catch a wrong *value* -- a
+    /// hint-seeded-and-then-really-touched address would produce the same count whether its
+    /// initialize event's value is `0` or the real hinted word. `hint_read_program` hint-seeds and
+    /// then really touches (via `LW`) two addresses outside `program.image`, so this checks their
+    /// initialize events' values directly against the hinted bytes.
+    #[test]
+    fn global_memory_events_initialize_value_reflects_hint_seed() {
+        const PTR: u32 = 0x2765_4320;
+        let mut exec =
+            MinimalExecutor::new_with_stdin(Arc::new(hint_read_program()), u64::MAX / 2, Arc::from([vec![1, 2, 3, 4, 5, 6, 7, 8]]));
+        while exec.try_execute_chunk().unwrap().is_some() {}
+        let (initialize_events, _) = exec.global_memory_events();
+
+        let first = initialize_events.iter().find(|e| e.addr == PTR);
+        let second = initialize_events.iter().find(|e| e.addr == PTR + 4);
+        assert_eq!(
+            first.map(|e| e.value),
+            Some(u32::from_le_bytes([1, 2, 3, 4])),
+            "first hinted word's initialize event should carry the real hinted value, not 0"
+        );
+        assert_eq!(
+            second.map(|e| e.value),
+            Some(u32::from_le_bytes([5, 6, 7, 8])),
+            "second hinted word's initialize event should carry the real hinted value, not 0"
+        );
+    }
+
+    /// `hint_read_dispatch`'s duplicate-hint check must reject re-hinting an address *even after*
+    /// a real instruction has since touched it -- matches legacy's own `Entry::Occupied` check on
+    /// `uninitialized_memory`, which (like `hint_seed_history`, unlike `hint_seed`) is never
+    /// cleared by `mr`/`mw`. Hand-builds a program (rather than reusing `hint_read_program`) since
+    /// this needs two `HINT_READ`s to the *same* address with a real `LW` in between.
+    #[test]
+    fn hint_read_rejects_reseeding_an_address_even_after_a_real_touch() {
+        const PTR: u32 = 0x2765_4320;
+        let instructions = vec![
+            // First HINT_READ(PTR, 4) -- consumes stdin entry 0, should succeed.
+            Instruction::new(Opcode::ADD, 4, 0, PTR, false, true),
+            Instruction::new(Opcode::ADD, 5, 0, 4, false, true),
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::SYSHINTREAD as u32, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+            // Real touch, materializing the hinted value and draining `hint_seed` (but not
+            // `hint_seed_history`).
+            Instruction::new(Opcode::LW, 8, 0, PTR, false, true),
+            // Second HINT_READ(PTR, 4) -- consumes stdin entry 1, must error even though the
+            // address was already really touched above.
+            Instruction::new(Opcode::ADD, 4, 0, PTR, false, true),
+            Instruction::new(Opcode::ADD, 5, 0, 4, false, true),
+            Instruction::new(Opcode::ADD, 2, 0, SyscallCode::SYSHINTREAD as u32, false, true),
+            Instruction::new(Opcode::SYSCALL, 2, 4, 5, false, false),
+        ];
+        let program = Arc::new(Program::new(instructions, 0, 0));
+        let stdin: Arc<[Vec<u8>]> = Arc::from([vec![1, 2, 3, 4], vec![5, 6, 7, 8]]);
+        let mut exec = MinimalExecutor::new_with_stdin(program, u64::MAX / 2, stdin);
+        let result = exec.try_execute_chunk();
+        assert!(
+            matches!(result, Err(ExecutionError::InvalidSyscallArgs())),
+            "re-hinting an already-touched address should still error, got {result:?}"
+        );
     }
 
     /// The chunk-size cutoff must never split a branch/jump from its delay slot. `fibonacci` is

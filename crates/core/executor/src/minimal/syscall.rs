@@ -135,13 +135,14 @@ impl MinimalExecutor<'_> {
         self.mw_slice(hi_ptr, &hi);
     }
 
-    /// Pops the front `stdin` entry (`input_stream_ptr += 1`) and seeds `hint_seed` word-by-word
-    /// for the guest's `ptr..ptr+len` range, right-padding a short final chunk with zero bytes.
-    /// Mirrors `syscalls::hint::HintReadSyscall::execute` exactly, including its error cases
-    /// (stream exhausted, called while unconstrained, `len` mismatch/misalignment, or an address
-    /// already seeded by an earlier `HINT_READ` that hasn't been consumed by a real touch yet --
-    /// see `Self::hint_seed`'s doc comment on why the *other* direction, re-seeding an address a
-    /// real instruction already touched, is silently allowed).
+    /// Pops the front `stdin` entry (`input_stream_ptr += 1`) and seeds `hint_seed`/
+    /// `hint_seed_history` word-by-word for the guest's `ptr..ptr+len` range, right-padding a
+    /// short final chunk with zero bytes. Mirrors `syscalls::hint::HintReadSyscall::execute`
+    /// exactly, including its error cases (stream exhausted, called while unconstrained, `len`
+    /// mismatch/misalignment, or an address already hint-seeded before -- checked against
+    /// `hint_seed_history`, not `hint_seed`, since legacy's own `uninitialized_memory.entry(addr)`
+    /// occupied-check is *permanent*: re-hinting an address is always an error, even long after a
+    /// real instruction has since touched it).
     fn hint_read_dispatch(&mut self, ptr: u32, len: u32) -> Result<(), ExecutionError> {
         if self.input_stream_ptr >= self.stdin.len() {
             return Err(ExecutionError::InvalidSyscallArgs());
@@ -160,10 +161,11 @@ impl MinimalExecutor<'_> {
             let b3 = vec.get(i as usize + 2).copied().unwrap_or(0);
             let b4 = vec.get(i as usize + 3).copied().unwrap_or(0);
             let word = u32::from_le_bytes([b1, b2, b3, b4]);
-            if self.hint_seed.contains_key(&(ptr + i)) {
+            if self.hint_seed_history.contains_key(&(ptr + i)) {
                 return Err(ExecutionError::InvalidSyscallArgs());
             }
             self.hint_seed.insert(ptr + i, word);
+            self.hint_seed_history.insert(ptr + i, word);
         }
         Ok(())
     }
