@@ -13,7 +13,7 @@ use zkm_core_executor::{
 use zkm_derive::AlignedBorrow;
 use zkm_hypercube::air::{MachineAir, ZKMAirBuilder};
 
-use crate::{utils::next_power_of_two, CoreChipError};
+use crate::{utils::next_multiple_of_32, CoreChipError};
 
 pub(crate) const NUM_STATE_BUMP_COLS: usize = size_of::<StateBumpCols<u8>>();
 
@@ -93,7 +93,7 @@ impl<F: PrimeField32> MachineAir<F> for StateBumpChip {
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = input.bump_clk_high_events.len();
-        Some(next_power_of_two(nb_rows, None, <Self as MachineAir<F>>::name(self).as_str()))
+        Some(next_multiple_of_32(nb_rows, None, <Self as MachineAir<F>>::name(self).as_str()))
     }
 
     fn generate_trace(

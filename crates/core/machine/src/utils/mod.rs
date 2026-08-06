@@ -56,12 +56,12 @@ pub fn limbs_from_access<T: Copy, N: ArrayLength, M: MemoryCols<T>>(cols: &[M]) 
     Limbs(sized)
 }
 
-/// Pad to a power of two, with an option to specify the power.
+/// Pad to a multiple of 32, with an option to specify a fixed row count.
 //
 // The `rows` argument represents the rows of a matrix stored in row-major order. The function will
-// pad the rows using `row_fn` to create the padded rows. The padding will be to the next power of
-// of two of `size_log_2` is `None`, or to the specified `size_log_2` if it is not `None`. The
-// function will panic of the number of rows is larger than the specified `size_log2`
+// pad the rows using `row_fn` to create the padded rows. The padding will be to the next multiple
+// of 32 if `size_log_2` is `None`, or to `2^size_log2` if it is not `None`. The function will
+// panic if the number of rows is larger than the specified `size_log2`.
 pub fn pad_rows_fixed_with_err<R: Clone>(
     rows: &mut Vec<R>,
     row_fn: impl Fn() -> Result<R, CoreChipError>,
@@ -76,16 +76,16 @@ pub fn pad_rows_fixed_with_err<R: Clone>(
             return Err(e);
         }
     };
-    rows.resize(next_power_of_two(nb_rows, size_log2, chip), dummy_row);
+    rows.resize(next_multiple_of_32(nb_rows, size_log2, chip), dummy_row);
     Ok(())
 }
 
-/// Pad to a power of two, with an option to specify the power.
+/// Pad to a multiple of 32, with an option to specify a fixed row count.
 //
 // The `rows` argument represents the rows of a matrix stored in row-major order. The function will
-// pad the rows using `row_fn` to create the padded rows. The padding will be to the next power of
-// of two of `size_log_2` is `None`, or to the specified `size_log_2` if it is not `None`. The
-// function will panic of the number of rows is larger than the specified `size_log2`
+// pad the rows using `row_fn` to create the padded rows. The padding will be to the next multiple
+// of 32 if `size_log_2` is `None`, or to `2^size_log2` if it is not `None`. The function will
+// panic if the number of rows is larger than the specified `size_log2`.
 pub fn pad_rows_fixed<R: Clone>(
     rows: &mut Vec<R>,
     row_fn: impl Fn() -> R,
@@ -94,12 +94,21 @@ pub fn pad_rows_fixed<R: Clone>(
 ) {
     let nb_rows = rows.len();
     let dummy_row = row_fn();
-    rows.resize(next_power_of_two(nb_rows, size_log2, chip), dummy_row);
+    rows.resize(next_multiple_of_32(nb_rows, size_log2, chip), dummy_row);
 }
 
-/// Returns the next power of two that is >= `n` and >= 16. If `fixed_power` is set, it will return
-/// `2^fixed_power` after checking that `n <= 2^fixed_power`.
-pub fn next_power_of_two(n: usize, fixed_power: Option<usize>, chip: &str) -> usize {
+/// Returns the next multiple of 32 that is >= `n` and >= 16. If `fixed_power` is set, it will
+/// return `2^fixed_power` after checking that `n <= 2^fixed_power`.
+///
+/// A chip's own committed row count doesn't need to be a power of two: the jagged/stacked PCS
+/// (`slop_jagged`/`slop_stacked`) commits every chip's trace by concatenating it into one shared
+/// buffer, re-chunked into fixed `2^CORE_LOG_STACKING_HEIGHT`-sized blocks -- individual chip
+/// heights are dissolved before that boundary matters, and `PaddedMle` (the multilinear PCS's own
+/// padding primitive) is explicitly built to accept an arbitrary real height against a
+/// power-of-two *bound*, not to require the real height itself to already be one. Padding to a
+/// multiple of 32 (matching this, not a full power of two) wastes far less trace area for chips
+/// whose real row count sits just past a power-of-two boundary.
+pub fn next_multiple_of_32(n: usize, fixed_power: Option<usize>, chip: &str) -> usize {
     match fixed_power {
         Some(power) => {
             let padded_nb_rows = 1 << power;
@@ -115,13 +124,7 @@ pub fn next_power_of_two(n: usize, fixed_power: Option<usize>, chip: &str) -> us
             }
             padded_nb_rows
         }
-        None => {
-            let mut padded_nb_rows = n.next_power_of_two();
-            if padded_nb_rows < 16 {
-                padded_nb_rows = 16;
-            }
-            padded_nb_rows
-        }
+        None => n.next_multiple_of(zkm_primitives::consts::TRACE_PAD_MULTIPLE).max(16),
     }
 }
 

@@ -27,7 +27,7 @@ use crate::{
     },
     air::ZKMCoreAirBuilder,
     operations::LtOperation,
-    utils::{next_power_of_two, zeroed_f_vec},
+    utils::{next_multiple_of_32, zeroed_f_vec},
     CoreChipError,
 };
 
@@ -91,7 +91,7 @@ impl<F: PrimeField32> MachineAir<F> for LtChip {
     }
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
-        let nb_rows = next_power_of_two(
+        let nb_rows = next_multiple_of_32(
             input.lt_events.len(),
             None,
             <LtChip as MachineAir<F>>::name(self).as_str(),

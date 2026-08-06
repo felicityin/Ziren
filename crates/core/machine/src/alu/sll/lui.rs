@@ -25,7 +25,7 @@ use crate::{
     adapter::{clk_low_expr, eval_cpu_state, eval_state_chain, CpuState, InstructionCols},
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::RegisterWriteAccessCols,
-    utils::{next_power_of_two, pad_rows_fixed},
+    utils::{next_multiple_of_32, pad_rows_fixed},
     CoreChipError,
 };
 
@@ -90,7 +90,7 @@ impl<F: PrimeField32> MachineAir<F> for LuiChip {
     }
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
-        let nb_rows = next_power_of_two(
+        let nb_rows = next_multiple_of_32(
             input.lui_events.len(),
             None,
             <LuiChip as MachineAir<F>>::name(self).as_str(),

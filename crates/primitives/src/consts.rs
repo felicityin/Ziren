@@ -5,6 +5,13 @@ pub const MAXIMUM_MEMORY_SIZE: u32 = u32::MAX;
 pub const WORD_SIZE: usize = 4;
 pub const LONG_WORD_SIZE: usize = 8;
 
+/// The row-count granularity every AIR chip's trace is padded up to before committing (each
+/// chip's real height rounds up to the next multiple of this, floor 16) -- shared between
+/// `zkm_core_machine`'s real trace generation (`next_multiple_of_32`/`pad_rows_fixed`) and
+/// `zkm_core_executor`'s `ShapeChecker`, whose shard-cut trace-area estimate must track the exact
+/// same padding the real commit applies to stay a correct upper bound.
+pub const TRACE_PAD_MULTIPLE: usize = 32;
+
 pub mod fd {
     /// The file descriptor for stdin.
     pub const FD_STDIN: u32 = 0;

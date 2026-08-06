@@ -14,7 +14,7 @@ use zkm_hypercube::air::MachineAir;
 #[cfg(feature = "picus")]
 use zkm_hypercube::air::PicusInfo;
 
-use crate::utils::{next_power_of_two, zeroed_f_vec};
+use crate::utils::{next_multiple_of_32, zeroed_f_vec};
 use crate::CoreChipError;
 
 use super::{
@@ -39,7 +39,7 @@ impl<F: PrimeField32> MachineAir<F> for SyscallInstrsChip {
     }
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
-        let nb_rows = next_power_of_two(
+        let nb_rows = next_multiple_of_32(
             input.syscall_events.len(),
             None,
             <SyscallInstrsChip as MachineAir<F>>::name(self).as_str(),

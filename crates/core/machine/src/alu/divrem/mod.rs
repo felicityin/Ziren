@@ -90,7 +90,7 @@ use crate::{
     air::{WordAirBuilder, ZKMCoreAirBuilder},
     memory::{MemoryCols, RegisterAccessCols, RegisterWriteAccessCols},
     operations::{AddOperation, IsEqualWordOperation, IsZeroWordOperation, LtOperation, MulOperation},
-    utils::next_power_of_two,
+    utils::next_multiple_of_32,
 };
 
 /// The number of main trace columns for `DivRemChip`.
@@ -259,7 +259,7 @@ impl<F: PrimeField32> MachineAir<F> for DivRemChip {
     }
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
-        let nb_rows = next_power_of_two(
+        let nb_rows = next_multiple_of_32(
             input.divrem_events.len(),
             None,
             <DivRemChip as MachineAir<F>>::name(self).as_str(),

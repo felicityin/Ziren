@@ -77,7 +77,7 @@ use crate::{
     air::ZKMCoreAirBuilder,
     alu::sr::utils::{nb_bits_to_shift, nb_bytes_to_shift},
     bytes::utils::shr_carry,
-    utils::{next_power_of_two, zeroed_f_vec},
+    utils::{next_multiple_of_32, zeroed_f_vec},
     CoreChipError,
 };
 
@@ -173,7 +173,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
     }
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
-        let nb_rows = next_power_of_two(
+        let nb_rows = next_multiple_of_32(
             input.shift_right_events.len(),
             None,
             <ShiftRightChip as MachineAir<F>>::name(self).as_str(),

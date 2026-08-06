@@ -5,10 +5,13 @@
 //!
 //! [`ShapeChecker`] accumulates a running `trace_area`/per-chip `heights` off the existing
 //! `mips_costs.json` cost table, checked with one comparison every instruction, and cuts a shard
-//! when either crosses its configured threshold. This is unpadded (it does not apply the legacy
-//! `inc_shard_if_need`'s per-chip `next_power_of_two` rounding), so shard boundaries may differ
-//! from the legacy executor's; only total-execution correctness across all shards is required to
-//! match (verified by this file's own tests).
+//! when either crosses its configured threshold. `trace_area` tracks the same *padded* total the
+//! legacy `estimate_mips_lde_size` computes (each chip's height rounded up to its own next power
+//! of two before being priced, matching the real committed trace) -- `add()` keeps this O(1) per
+//! instruction by adding only the delta between a chip's old and new padded height rather than
+//! recomputing the padded total from scratch. Shard boundaries may still differ from the legacy
+//! executor's; only total-execution correctness across all shards is required to match (verified
+//! by this file's own tests).
 //!
 //! A `SplicingVM<'a>` borrows one `MinimalExecutor` chunk's oracle log at a time (via `CoreVM`'s
 //! own lifetime-bound cursor), but a shard's own instructions are not required to fit within a
@@ -72,10 +75,21 @@ impl ShapeChecker {
         }
     }
 
+    /// Tracks `trace_area` as the *padded* total, matching the real committed trace exactly:
+    /// every chip's row count is padded up to its own next multiple of 32 (floor 16) before
+    /// committing (see `crates/core/machine/src/utils/mod.rs`'s `next_multiple_of_32`/
+    /// `pad_rows_fixed` usage). Recomputing each chip's padded contribution from scratch on every
+    /// `add()` would need an O(distinct chips touched) scan; instead, only the *delta* between
+    /// this chip's old and new padded height is added, keeping `add()` O(1) while `trace_area`
+    /// stays exactly in sync with what the real commit will pad to.
     fn add(&mut self, air_id: MipsAirId) {
         let cost = self.costs.get(&air_id).copied().unwrap_or(0);
-        self.trace_area += cost;
-        *self.heights.entry(air_id).or_insert(0) += 1;
+        let height = self.heights.entry(air_id).or_insert(0);
+        let pad = |h: u64| h.next_multiple_of(zkm_primitives::consts::TRACE_PAD_MULTIPLE as u64).max(16);
+        let old_padded = if *height == 0 { 0 } else { pad(*height) };
+        *height += 1;
+        let new_padded = pad(*height);
+        self.trace_area += (new_padded - old_padded) * cost;
     }
 
     /// Classifies and accounts for one retired instruction, plus its syscall code if it was a
@@ -671,5 +685,45 @@ mod tests {
         assert_eq!(tracing.registers(), golden.final_registers, "register mismatch vs. golden");
         assert_eq!(tracing.pc(), golden.final_pc, "pc mismatch vs. golden");
         assert_eq!(tracing.clk(), golden.final_clk, "clk mismatch vs. golden");
+    }
+
+    /// `ShapeChecker::add` must track the *padded* cost of each chip (matching the real committed
+    /// trace's own per-chip `next_multiple_of(32).max(16)` rounding -- see
+    /// `crates/core/machine/src/utils/mod.rs`'s `next_multiple_of_32`), not the raw per-row cost
+    /// -- otherwise `trace_area` can stay under `element_threshold` right up to the real committed
+    /// area exceeding the jagged PCS's hard `AreaOutOfBounds` ceiling, since a shard is never cut.
+    /// Confirmed by driving a chip's height from 1 up to 32 (all pad to the same 32, since 32 is
+    /// the smallest multiple of 32 that is >= 1 -- the `.max(16)` floor never actually applies for
+    /// any real row count) and then across the 32 -> 33 boundary, landing on the full padding
+    /// delta (64 - 32 rows), not one row.
+    #[test]
+    fn shape_checker_trace_area_tracks_padded_cost_per_chip() {
+        let add_cost = crate::utils::mips_costs()[&MipsAirId::Add] as u64;
+        let mut checker = ShapeChecker::new(0, u64::MAX / 2, u64::MAX / 2);
+        let baseline = checker.current_totals().0;
+        let add_instruction = Instruction::new(Opcode::ADD, 8, 9, 10, false, false);
+
+        checker.record_instruction(&add_instruction, None);
+        assert_eq!(
+            checker.current_totals().0,
+            baseline + 32 * add_cost,
+            "a single real row already pads up to 32 (the smallest multiple of 32 that is >= 1)"
+        );
+
+        for _ in 2..=32 {
+            checker.record_instruction(&add_instruction, None);
+        }
+        assert_eq!(
+            checker.current_totals().0,
+            baseline + 32 * add_cost,
+            "32 rows is already a multiple of 32, so it pads to itself"
+        );
+
+        checker.record_instruction(&add_instruction, None);
+        assert_eq!(
+            checker.current_totals().0,
+            baseline + 64 * add_cost,
+            "the 33rd row must pad the chip's committed height from 32 up to 64, not to 33"
+        );
     }
 }

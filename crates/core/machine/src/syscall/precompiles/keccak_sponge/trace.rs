@@ -85,7 +85,11 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
             dummy_chunk.push(row);
         }
 
-        let num_padded_rows = num_real_rows.next_power_of_two();
+        // `num_real_rows` is always a multiple of `NUM_ROUNDS` (one full Keccak-f permutation per
+        // block), so the dummy cycle below always starts back at `dummy_chunk[0]` regardless of
+        // how many padding rows follow -- safe to pad to any height, not just a power of two.
+        let num_padded_rows =
+            num_real_rows.next_multiple_of(zkm_primitives::consts::TRACE_PAD_MULTIPLE).max(16);
         for i in num_real_rows..num_padded_rows {
             let dummy_row = dummy_chunk[i % NUM_ROUNDS];
             rows.push(dummy_row);

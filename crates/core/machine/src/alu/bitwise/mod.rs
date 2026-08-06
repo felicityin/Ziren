@@ -26,7 +26,7 @@ use crate::{
         CpuState, InstructionCols,
     },
     air::ZKMCoreAirBuilder,
-    utils::{next_power_of_two, pad_rows_fixed},
+    utils::{next_multiple_of_32, pad_rows_fixed},
     CoreChipError,
 };
 
@@ -98,7 +98,7 @@ impl<F: PrimeField32> MachineAir<F> for BitwiseChip {
     }
 
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
-        let nb_rows = next_power_of_two(
+        let nb_rows = next_multiple_of_32(
             input.bitwise_events.len(),
             None,
             <BitwiseChip as MachineAir<F>>::name(self).as_str(),

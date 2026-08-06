@@ -22,7 +22,7 @@ use zkm_hypercube::{
 
 use crate::{
     air::WordAirBuilder,
-    utils::{next_power_of_two, zeroed_f_vec},
+    utils::{next_multiple_of_32, zeroed_f_vec},
     CoreChipError,
 };
 
@@ -152,7 +152,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryLocalChip {
         let count = input.get_local_mem_events().count();
         let nb_rows = nb_rows(count);
         let size_log2 = None;
-        Some(next_power_of_two(
+        Some(next_multiple_of_32(
             nb_rows,
             size_log2,
             <MemoryLocalChip as MachineAir<F>>::name(self).as_str(),

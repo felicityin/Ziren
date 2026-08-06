@@ -25,7 +25,7 @@ use zkm_hypercube::{
 use crate::{
     air::WordAirBuilder,
     operations::{AssertLtColsBytes, IsZeroOperation, KoalaBearWordRangeChecker},
-    utils::next_power_of_two,
+    utils::next_multiple_of_32,
     CoreChipError,
 };
 
@@ -147,7 +147,7 @@ impl<F: PrimeField32> MachineAir<F> for MemoryGlobalChip {
         };
         let nb_rows = events.len();
         let size_log2 = None;
-        let padded_nb_rows = next_power_of_two(
+        let padded_nb_rows = next_multiple_of_32(
             nb_rows,
             size_log2,
             <MemoryGlobalChip as MachineAir<F>>::name(self).as_str(),

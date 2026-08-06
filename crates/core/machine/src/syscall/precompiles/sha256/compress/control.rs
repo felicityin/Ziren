@@ -18,7 +18,7 @@ use zkm_hypercube::{
 
 use crate::{
     adapter::{clk_low_expr, eval_cpu_state, CpuState},
-    utils::next_power_of_two,
+    utils::next_multiple_of_32,
     CoreChipError,
 };
 
@@ -99,7 +99,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaCompressControlChip {
         let nb_rows = rows.len();
         let size_log2 = None;
         let padded_nb_rows =
-            next_power_of_two(nb_rows, size_log2, <Self as MachineAir<F>>::name(self).as_str());
+            next_multiple_of_32(nb_rows, size_log2, <Self as MachineAir<F>>::name(self).as_str());
         rows.resize(padded_nb_rows, [F::ZERO; NUM_SHA_COMPRESS_CONTROL_COLS]);
 
         Ok(RowMajorMatrix::new(

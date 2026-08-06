@@ -212,7 +212,8 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
         };
 
         let num_cols = num_weierstrass_add_cols::<E::BaseField>();
-        let num_rows = std::cmp::max(events.len().next_power_of_two(), 4);
+        let num_rows =
+            std::cmp::max(events.len().next_multiple_of(zkm_primitives::consts::TRACE_PAD_MULTIPLE), 4);
         let mut values = zeroed_f_vec(num_rows * num_cols);
         let chunk_size = 64;
 

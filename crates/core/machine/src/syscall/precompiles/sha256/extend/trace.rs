@@ -50,10 +50,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendChip {
 
         let mut rows = wrapped_rows.unwrap();
         let nb_rows = rows.len();
-        let mut padded_nb_rows = nb_rows.next_power_of_two();
-        if padded_nb_rows == 2 || padded_nb_rows == 1 {
-            padded_nb_rows = 4;
-        }
+        let padded_nb_rows = nb_rows.next_multiple_of(zkm_primitives::consts::TRACE_PAD_MULTIPLE).max(16);
         rows.resize(padded_nb_rows, [F::ZERO; NUM_SHA_EXTEND_COLS]);
 
         // Convert the trace to a row major matrix.

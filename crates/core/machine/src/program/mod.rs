@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::{
     air::ProgramAirBuilder,
-    utils::{next_power_of_two, pad_rows_fixed, zeroed_f_vec},
+    utils::{next_multiple_of_32, pad_rows_fixed, zeroed_f_vec},
     CoreChipError,
 };
 use p3_air::{Air, BaseAir, PairBuilder};
@@ -70,7 +70,7 @@ impl<F: PrimeField32> MachineAir<F> for ProgramChip {
         // Generate the trace rows for each event.
         let nb_rows = program.instructions.len();
         let size_log2 = None;
-        let padded_nb_rows = next_power_of_two(
+        let padded_nb_rows = next_multiple_of_32(
             nb_rows,
             size_log2,
             <ProgramChip as MachineAir<F>>::name(self).as_str(),
