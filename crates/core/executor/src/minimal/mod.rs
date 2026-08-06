@@ -10,11 +10,13 @@
 //! The full ISA (every opcode family covered by the pure-compute functions in `crate::vm`) is
 //! implemented for real. Most syscalls are too: `HALT`, `WRITE`'s `FD_PUBLIC_VALUES` case, every
 //! precompile, the Linux syscall shims, `ENTER_UNCONSTRAINED`/`EXIT_UNCONSTRAINED` (see
-//! `Self::enter_unconstrained`'s doc comment), and `HINT_LEN`/`HINT_READ` (reading from
-//! `ZKMStdin`'s buffer, see `Self::hint_seed`'s doc comment) are all real. A hint computed
-//! *inside* an `unconstrained!{}` block via `hint()`/`hint_slice()` (or a hook fd) is not yet
-//! supported -- `WRITE`'s `FD_HINT` case remains a documented no-op (see `syscall.rs`). Extend
-//! the dispatch in [`syscall`] as needed.
+//! `Self::enter_unconstrained`'s doc comment), `HINT_LEN`/`HINT_READ` (reading from `ZKMStdin`'s
+//! buffer, see `Self::hint_seed`'s doc comment), and `SYSVERIFY` (`verify_zkm_proof`, see
+//! `syscall::verify_dispatch`'s doc comment) are all real. A hint computed *inside* an
+//! `unconstrained!{}` block via `hint()`/`hint_slice()` (or a hook fd) is not yet supported --
+//! `WRITE`'s `FD_HINT` case remains a documented no-op (see `syscall.rs`), and hooks
+//! (`ZKMContext::hook_registry`) aren't consulted anywhere yet either. Extend the dispatch in
+//! [`syscall`] as needed.
 
 #![allow(dead_code)]
 
@@ -30,9 +32,13 @@ use crate::{
     memory::{MaybeCowMemory, PagedMemory},
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
+    subproof::SubproofVerifier,
     syscalls::{default_syscall_map, SyscallCode},
     trace::{MemValue, TraceChunk},
-    vm, ExecutionError, ExecutionReport, Instruction, Program,
+    vm, ExecutionError, ExecutionReport, Instruction, Program, ZKMReduceProof,
+};
+use zkm_hypercube::{
+    config::ZkmGlobalContext, verifier::ZkmPcsProofInner, MachineVerifyingKey,
 };
 
 /// Register/pc state snapshotted on `ENTER_UNCONSTRAINED`, restored on `EXIT_UNCONSTRAINED` --
@@ -52,7 +58,7 @@ struct UnconstrainedSnapshot {
 const MAX_PREALLOCATED_ORACLE_LOG: u64 = 1 << 20;
 
 /// A live, full-speed interpreter. See the module doc for scope.
-pub(crate) struct MinimalExecutor {
+pub(crate) struct MinimalExecutor<'a> {
     program: Arc<Program>,
     registers: [u32; NUM_REGISTERS],
     /// The `clk` each register was last written at -- `0` means "never touched" (matches
@@ -109,9 +115,25 @@ pub(crate) struct MinimalExecutor {
     /// informational, consumed only by `prove.rs`'s end-of-run summary logging.
     opcode_counts: Box<EnumMap<Opcode, u64>>,
     syscall_counts: Box<EnumMap<SyscallCode, u64>>,
+    /// `ZKMStdin`'s proof stream -- whole-run constant, mirrors `Executor::state.proof_stream`.
+    /// `SYSVERIFY` (`verify_zkm_proof` in the guest) pops the front entry on each call.
+    proof_stream: Vec<(ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>, MachineVerifyingKey<ZkmGlobalContext>)>,
+    /// Live cursor into `proof_stream`, advanced by `SYSVERIFY`. Mirrors `input_stream_ptr`, but
+    /// is never threaded across a chunk/shard boundary: unlike `HINT_LEN`/`HINT_READ`, `SYSVERIFY`
+    /// is only ever dispatched by `MinimalExecutor` itself (see `verify_dispatch`'s doc comment on
+    /// why `CoreVM`/`TracingVM` never need to replay it), so there is no later stage that needs to
+    /// recover this cursor.
+    proof_stream_ptr: usize,
+    /// Host-side sanity check invoked by `SYSVERIFY`, verifying that a `verify_zkm_proof` call in
+    /// the guest was passed a real, valid proof -- mirrors `Executor::subproof_verifier`. `None`
+    /// skips the check entirely (matches `Executor`'s own `rt.subproof_verifier` being `None`).
+    subproof_verifier: Option<&'a dyn SubproofVerifier>,
+    /// Mirrors `Executor::deferred_proof_verification`: `SYSVERIFY` is a no-op (beyond advancing
+    /// `proof_stream_ptr`) when this is `false`.
+    deferred_proof_verification_enabled: bool,
 }
 
-impl MinimalExecutor {
+impl<'a> MinimalExecutor<'a> {
     /// Convenience constructor for callers that never feed stdin -- equivalent to
     /// `Self::new_with_stdin(program, max_trace_size, Arc::from([]))`.
     #[must_use]
@@ -119,11 +141,29 @@ impl MinimalExecutor {
         Self::new_with_stdin(program, max_trace_size, Arc::from([]))
     }
 
+    /// Convenience constructor for callers that feed stdin but never subproofs -- equivalent to
+    /// `Self::new_with_context(program, max_trace_size, stdin, Vec::new(), None, true)`.
     #[must_use]
     pub(crate) fn new_with_stdin(
         program: Arc<Program>,
         max_trace_size: u64,
         stdin: Arc<[Vec<u8>]>,
+    ) -> Self {
+        Self::new_with_context(program, max_trace_size, stdin, Vec::new(), None, true)
+    }
+
+    /// The full constructor, taking every piece a real `ZKMContext`/`ZKMStdin` can carry that
+    /// `MinimalExecutor` needs. `deferred_proof_verification_enabled` mirrors
+    /// `!context.skip_deferred_proof_verification`.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_context(
+        program: Arc<Program>,
+        max_trace_size: u64,
+        stdin: Arc<[Vec<u8>]>,
+        proof_stream: Vec<(ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>, MachineVerifyingKey<ZkmGlobalContext>)>,
+        subproof_verifier: Option<&'a dyn SubproofVerifier>,
+        deferred_proof_verification_enabled: bool,
     ) -> Self {
         // `program.image` addresses below `NUM_REGISTERS` are register-index seeds (e.g. the
         // ELF loader's computed initial `BRK`), not RAM -- mirrors `Memory::insert`'s dispatch,
@@ -171,6 +211,10 @@ impl MinimalExecutor {
             hint_seed: HashMap::new(),
             opcode_counts: Box::default(),
             syscall_counts: Box::default(),
+            proof_stream,
+            proof_stream_ptr: 0,
+            subproof_verifier,
+            deferred_proof_verification_enabled,
         }
     }
 
@@ -255,10 +299,12 @@ impl MinimalExecutor {
     /// register/RAM state -- addresses touched by only *some* chunks wouldn't be visible from an
     /// in-progress run.
     ///
-    /// `uninitialized_memory`'s pre-seeded initial values (the hint mechanism's own pre-seeding
-    /// of a memory address before its first real access) aren't tracked by `MinimalExecutor` at
-    /// all yet -- hints are a documented no-op (see the module doc) -- so every initialize event
-    /// here uses `0`, matching that current scope.
+    /// Every initialize event currently uses value `0` unconditionally. `Executor::postprocess()`
+    /// instead consults `uninitialized_memory.get(addr)` here, so a hint-seeded-and-then-really-
+    /// touched address (outside `program.image`) gets its real hinted value, not `0` -- a gap this
+    /// port has not yet closed (`Self::hint_seed`'s own entries are consumed via `remove` on first
+    /// touch, so by the time this runs there is nothing left to consult for such an address; a fix
+    /// needs a separate, non-consumed snapshot of hint-seeded initial values).
     #[must_use]
     pub(crate) fn global_memory_events(
         &self,

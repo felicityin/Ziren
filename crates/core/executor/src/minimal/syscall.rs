@@ -4,6 +4,7 @@
 use super::MinimalExecutor;
 use crate::{
     events::{FieldOperation, MemoryAccessPosition},
+    program::MAX_MEMORY,
     register::Register,
     syscalls::SyscallCode,
     vm, ExecutionError,
@@ -24,7 +25,7 @@ use zkm_primitives::consts::{
     WORD_SIZE,
 };
 
-impl MinimalExecutor {
+impl MinimalExecutor<'_> {
     /// `p_ptr += q_ptr`, writing the sum back to `p_ptr`. `p` is peeked untracked (its old value
     /// is recoverable from the immediately-following `mw_slice`'s own log, per `slice_peek`'s doc
     /// comment); `q` is read for real, before `p` is overwritten, in case `p_ptr == q_ptr`.
@@ -163,6 +164,53 @@ impl MinimalExecutor {
                 return Err(ExecutionError::InvalidSyscallArgs());
             }
             self.hint_seed.insert(ptr + i, word);
+        }
+        Ok(())
+    }
+
+    /// `verify_zkm_proof` in the guest: sanity-checks that the proof stream's next entry really
+    /// does verify against the given `vkey`/committed-value digest. Mirrors
+    /// `syscalls::verify::VerifySyscall::execute` almost exactly -- two differences, both
+    /// deliberate: (1) `vkey_ptr`/`pv_digest_ptr` are read via `word_peek` (an untracked peek,
+    /// matching legacy's own `rt.word()` call -- this syscall never mutates memory, so there's
+    /// nothing to log for `CoreVM`/`TracingVM` to replay, and indeed neither ever dispatches
+    /// `SYSVERIFY` at all: the check below is a host-side sanity check only -- "the actual
+    /// constraints happen in the recursion layer", per `SubproofVerifier`'s own doc comment -- so
+    /// it need not (and, since it isn't oracle-logged, can't) be redone during replay); (2) an
+    /// exhausted `proof_stream` returns a real `ExecutionError` here instead of legacy's `panic!`,
+    /// since nothing differentially compares this path and a library shouldn't panic on
+    /// malformed-but-catchable guest input.
+    fn verify_dispatch(&mut self, vkey_ptr: u32, pv_digest_ptr: u32) -> Result<(), ExecutionError> {
+        if !self.deferred_proof_verification_enabled {
+            return Ok(());
+        }
+        if !vkey_ptr.is_multiple_of(4) || !pv_digest_ptr.is_multiple_of(4) {
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        if vkey_ptr as usize + 32 > MAX_MEMORY || pv_digest_ptr as usize + 32 > MAX_MEMORY {
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        let vkey: [u32; 8] =
+            std::array::from_fn(|i| self.word_peek(vkey_ptr + i as u32 * 4));
+        let pv_digest: [u32; 8] =
+            std::array::from_fn(|i| self.word_peek(pv_digest_ptr + i as u32 * 4));
+
+        if self.proof_stream_ptr >= self.proof_stream.len() {
+            return Err(ExecutionError::InvalidSyscallArgs());
+        }
+        let (proof, proof_vk) = &self.proof_stream[self.proof_stream_ptr];
+        self.proof_stream_ptr += 1;
+
+        if let Some(verifier) = self.subproof_verifier {
+            if let Err(e) = verifier.verify_deferred_proof(proof, proof_vk, vkey, pv_digest) {
+                log::error!(
+                    "Failed to verify proof {} with digest {}: {}",
+                    self.proof_stream_ptr - 1,
+                    hex::encode(bytemuck::cast_slice(&pv_digest)),
+                    e
+                );
+                return Err(ExecutionError::ExceptionOrTrap());
+            }
         }
         Ok(())
     }
@@ -433,6 +481,10 @@ impl MinimalExecutor {
                 self.hint_read_dispatch(arg1, arg2)?;
                 None
             }
+            SyscallCode::SYSVERIFY => {
+                self.verify_dispatch(arg1, arg2)?;
+                None
+            }
             SyscallCode::SYS_MMAP | SyscallCode::SYS_MMAP2 => {
                 let size = vm::align_size(arg2)?;
                 let v0 = if arg1 == 0 {
@@ -500,8 +552,7 @@ impl MinimalExecutor {
                 next_pc = self.exit_unconstrained();
                 Some(0)
             }
-            // Everything else (VERIFY): a documented no-op -- see the module doc on
-            // `minimal/mod.rs`.
+            // Everything else: a documented no-op -- see the module doc on `minimal/mod.rs`.
             _ => None,
         };
 

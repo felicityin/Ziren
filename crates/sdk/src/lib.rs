@@ -443,6 +443,32 @@ mod tests {
         }
     }
 
+    /// Regression test: `ZKMProver::verify`'s cross-shard `execution_shard` continuity check
+    /// (must increase by exactly 1, starting at 1, for every CPU-bearing shard) is never
+    /// exercised by a single-shard proof -- needs a real multi-shard run. Set `SHARD_SIZE`
+    /// small via the environment to force `SHA3_CHAIN_ELF` (230 Keccak-256 iterations) across
+    /// several shards.
+    #[test]
+    #[ignore = "set SHARD_SIZE small in the environment to force multiple shards"]
+    fn test_e2e_core_many_shards() {
+        utils::setup_logger();
+        let client = ProverClient::cpu();
+        let elf = test_artifacts::SHA3_CHAIN_ELF;
+        let (pk, vk) = client.setup(elf);
+        let stdin = ZKMStdin::new();
+
+        let proof = client.prove(&pk, stdin).run().unwrap();
+        let ZKMProof::Core(shards) = &proof.proof else {
+            panic!("expected a Core proof");
+        };
+        assert!(
+            shards.len() > 1,
+            "expected a small SHARD_SIZE to force multiple shards, got {}",
+            shards.len()
+        );
+        client.verify(&proof, &vk).unwrap();
+    }
+
     #[test]
     fn test_e2e_compressed() {
         utils::setup_logger();

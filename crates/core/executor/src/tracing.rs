@@ -603,11 +603,15 @@ impl<'a> TracingVM<'a> {
                 | Opcode::CLZ
                 | Opcode::CLO
         ) {
+            // `HI` (written alongside `a_addr` above for `is_use_lo_hi_alu()` opcodes) is
+            // deliberately never bumped here: `MulChip`/`DivRemChip`/`MaddsubChip` all write it
+            // via the general-purpose `eval_memory_access` scheme (which handles an arbitrary
+            // `clk_high` gap natively), never the cheap `RegisterAccessCols` scheme -- mirrors
+            // `Executor::emit_memory_bump_events`'s `record: &MemoryAccessRecord`, which has no
+            // `hi` slot at all. Bumping it anyway double-validates the same transition on the
+            // shared memory argument and unbalances it (see that function's own doc comment).
             let a_addr = if instruction.opcode.is_use_lo_hi_alu() { Register::LO } else { rd };
             self.maybe_bump(a_addr, &a_record);
-            if hi_record_is_real {
-                self.maybe_bump(Register::HI, &MemoryRecordEnum::Write(hi_record));
-            }
             if let Some(rec) = &b_record {
                 let b_reg: Register = (instruction.op_b as u8).into();
                 self.maybe_bump(b_reg, rec);
@@ -959,9 +963,9 @@ impl<'a> TracingVM<'a> {
                     _ => unreachable!(),
                 };
                 let a_record = self.write_op_a(lo_reg, out_lo, clk);
+                // `HI` deliberately not bumped -- see the identical MULT/DIV-family comment above.
                 let hi_record = self.write_hi(out_hi, clk);
                 self.maybe_bump_abc(Some((lo_reg, &a_record)), Some((rt, &b_record)), Some((rs, &c_record)));
-                self.maybe_bump(Register::HI, &MemoryRecordEnum::Write(hi_record));
                 let mut event = MiscEvent::new(
                     clk,
                     pc,

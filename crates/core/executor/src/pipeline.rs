@@ -11,9 +11,11 @@ use crate::{
     events::MemoryInitializeFinalizeEvent,
     minimal::MinimalExecutor,
     splicing::{SplicingStatus, SplicingVM},
+    subproof::SubproofVerifier,
     tracing::TracingVM,
-    ExecutionError, ExecutionRecord, ExecutionReport, Program,
+    ExecutionError, ExecutionRecord, ExecutionReport, Program, ZKMReduceProof,
 };
+use zkm_hypercube::{config::ZkmGlobalContext, verifier::ZkmPcsProofInner, MachineVerifyingKey};
 
 pub use crate::splicing::SplicedMinimalTrace;
 
@@ -105,9 +107,9 @@ pub fn trace_shard(
 /// survive across calls -- each `next_shard` call loops through as many chunks as that one shard
 /// needs, entirely within its own stack frame, and only `ShardDriver` itself (opaque to callers)
 /// needs to persist between calls.
-pub struct ShardDriver(MinimalExecutor);
+pub struct ShardDriver<'a>(MinimalExecutor<'a>);
 
-impl ShardDriver {
+impl<'a> ShardDriver<'a> {
     /// Convenience constructor for callers that never feed stdin -- equivalent to
     /// `Self::new_with_stdin(program, max_trace_size, Arc::from([]))`.
     #[must_use]
@@ -118,6 +120,27 @@ impl ShardDriver {
     #[must_use]
     pub fn new_with_stdin(program: Arc<Program>, max_trace_size: u64, stdin: Arc<[Vec<u8>]>) -> Self {
         Self(MinimalExecutor::new_with_stdin(program, max_trace_size, stdin))
+    }
+
+    /// The full constructor -- see `MinimalExecutor::new_with_context`'s doc comment.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_context(
+        program: Arc<Program>,
+        max_trace_size: u64,
+        stdin: Arc<[Vec<u8>]>,
+        proof_stream: Vec<(ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>, MachineVerifyingKey<ZkmGlobalContext>)>,
+        subproof_verifier: Option<&'a dyn SubproofVerifier>,
+        deferred_proof_verification_enabled: bool,
+    ) -> Self {
+        Self(MinimalExecutor::new_with_context(
+            program,
+            max_trace_size,
+            stdin,
+            proof_stream,
+            subproof_verifier,
+            deferred_proof_verification_enabled,
+        ))
     }
 
     /// The global, never-reset clk `next_shard`'s most recent call left off at -- the new
@@ -171,7 +194,7 @@ impl ShardDriver {
 ///
 /// If called again after a previous call already returned `done == true`.
 pub fn next_shard(
-    driver: &mut ShardDriver,
+    driver: &mut ShardDriver<'_>,
     program: Arc<Program>,
     element_threshold: u64,
     height_threshold: u64,

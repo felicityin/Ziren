@@ -1681,6 +1681,38 @@ pub mod tests {
         );
     }
 
+    /// `sha3_chain_program` (230 Keccak-256 iterations, no precompile syscalls) is large enough to
+    /// force multiple real shards even under default sharding thresholds -- diagnostic for the
+    /// `GkrVerificationFailed(CumulativeSumMismatch)` found via a real multi-shard SDK proof
+    /// (`zkm_sdk::tests::test_e2e_core_many_shards`), narrowing down which `LookupKind` (and which
+    /// record) is imbalanced.
+    #[test]
+    fn debug_new_pipeline_sha3_chain_real_sharding_interactions_balance() {
+        let opts = zkm_stark::ZKMCoreOpts::default();
+        assert!(
+            debug_new_pipeline_interactions_balance(
+                sha3_chain_program(),
+                opts.lde_size_threshold,
+                zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
+                zkm_hypercube::air::LookupScope::Local,
+            ),
+            "local-scope send/receive interactions don't balance under real sharding thresholds"
+        );
+    }
+
+    #[test]
+    fn debug_new_pipeline_sha3_chain_global_interactions_balance() {
+        let opts = zkm_stark::ZKMCoreOpts::default();
+        assert!(
+            debug_new_pipeline_global_interactions_balance(
+                sha3_chain_program(),
+                opts.lde_size_threshold,
+                zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
+            ),
+            "global-scope send/receive interactions don't balance under real sharding thresholds"
+        );
+    }
+
     /// Loads the real `examples/fibonacci/guest` ELF and feeds it a real `n = 1000` via stdin,
     /// exactly like `examples/fibonacci/host` -- exercising the real `HINT_LEN`/`HINT_READ`/
     /// `COMMIT` syscall path with real data. Requires the guest to already be built (`cargo run
