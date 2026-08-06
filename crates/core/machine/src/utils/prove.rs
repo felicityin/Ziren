@@ -890,18 +890,27 @@ mod tests {
     }
 
     /// Real proof/verify over a precompile-heavy program (25 `KECCAK_SPONGE` calls) with a tiny
-    /// `shard_size` and a tiny `SplitOpts` threshold, so the run's deferred precompile events
-    /// cross the flush threshold on a checkpoint well before the run's `done` checkpoint --
-    /// exercising the same "deferred-only shard interspersed among execution shards" shape as
-    /// `prove_with_context`'s real streaming pipeline, at a fraction of a full guest's memory
-    /// footprint. Reproduces (pre-fix) and guards against the `execution_shard` numbering bug in
-    /// `prove_with_context`'s deferred-flush handling: `state.execution_shard` used to be bumped
-    /// an extra time whenever a mid-run flush produced a deferred (non-cpu) record, permanently
-    /// desyncing it from the count of real execution shards for every later checkpoint. This is
-    /// invisible to per-shard STARK verification (`ShardVerifier::verify_shard`) -- it only shows
-    /// up in the *cross-shard* sequencing check every real caller runs after core proving
-    /// (`ZKMProver::verify`, `crates/prover/src/verify.rs`), so this test replicates that exact
-    /// check inline instead.
+    /// `lde_size_threshold` and a tiny `SplitOpts` threshold, so `SplicingVM` cuts many real
+    /// shards from few `MinimalExecutor` chunks (some chunks yielding more than one shard) and
+    /// the run's deferred precompile events cross the flush threshold on a checkpoint well before
+    /// the run's `done` checkpoint -- exercising both "more than one shard per chunk" and
+    /// "deferred-only shard interspersed among execution shards" at a fraction of a full guest's
+    /// memory footprint. Guards against two bugs only reachable this way (never previously
+    /// exercised, since every prior test either used `run_full_pipeline`, whose loop is immune to
+    /// the first bug, or thresholds generous enough to keep everything to one shard):
+    /// - `next_shard` (`crates/core/executor/src/pipeline.rs`) used to discard a `SplicingVM`'s
+    ///   already-reset, ready-to-continue state after returning a shard, then start the *next*
+    ///   `next_shard` call from a brand-new `MinimalExecutor` chunk -- silently skipping whatever
+    ///   of the current chunk (and its clk/pc continuation point) hadn't been spliced off yet
+    ///   whenever a chunk contained more than one shard's worth of data.
+    /// - `prove_with_context`'s deferred-flush handling used to bump `state.execution_shard` an
+    ///   extra time whenever a mid-run flush produced a deferred (non-cpu) record, permanently
+    ///   desyncing it from the count of real execution shards for every later checkpoint.
+    ///
+    /// Both are invisible to per-shard STARK verification (`ShardVerifier::verify_shard`) -- they
+    /// only show up in the *cross-shard* consistency checks every real caller runs after core
+    /// proving (`ZKMProver::verify`, `crates/prover/src/verify.rs`), so this test replicates those
+    /// checks inline instead.
     #[test]
     fn run_test_execution_shard_numbering_with_mid_run_deferred_flush() {
         use p3_field::FieldAlgebra;
@@ -921,8 +930,12 @@ mod tests {
         // events, well under the 25 calls the guest makes, so at least one flush happens with
         // `done == false`.
         opts.split_opts = SplitOpts::new(24);
+        // Forces the same "dedicated deferred shard" branch a large real run (where
+        // `num_cycles >= 1 << 21` always) takes, instead of this tiny guest's total cycle count
+        // qualifying for the "pack into the last shard" branch.
+        opts.split_opts.combine_memory_threshold = 0;
 
-        let (shard_proofs, _public_values_stream, _cycles, _vk) = prove_with_context(
+        let (shard_proofs, _public_values_stream, _cycles, vk) = prove_with_context(
             program,
             &ZKMStdin::new(),
             opts,
@@ -954,6 +967,26 @@ mod tests {
                     "execution shard index should be the previous execution shard index + 1 if cpu exists and start at 1",
                 );
             }
+        }
+
+        // Replicates `ZKMProver::verify`'s program-counter continuity check
+        // (`crates/prover/src/verify.rs`): in proof order, each shard's `start_pc` must equal
+        // the previous shard's `next_pc` (or `vk.pc_start` for the first shard), and a non-cpu
+        // shard's `start_pc` must equal its own `next_pc`.
+        let mut prev_next_pc = KoalaBear::ZERO;
+        for (i, shard_proof) in shard_proofs.iter().enumerate() {
+            let public_values: &PublicValues<Word<_>, _> =
+                shard_proof.public_values.as_slice().borrow();
+            let contains_cpu = public_values.is_execution_shard != KoalaBear::ZERO;
+            if i == 0 {
+                assert_eq!(public_values.start_pc, vk.pc_start, "start_pc != vk.start_pc");
+            } else {
+                assert_eq!(public_values.start_pc, prev_next_pc, "start_pc != next_pc_prev");
+            }
+            if !contains_cpu {
+                assert_eq!(public_values.start_pc, public_values.next_pc, "start_pc != next_pc");
+            }
+            prev_next_pc = public_values.next_pc;
         }
     }
 
