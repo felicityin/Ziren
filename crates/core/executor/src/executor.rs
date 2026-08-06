@@ -8,9 +8,7 @@ use super::program::MAX_MEMORY;
 use enum_map::EnumMap;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
-use zkm_curves::CurveError;
-use zkm_stark::{ZKMCoreOpts, CORE_MAX_LOG_ROW_COUNT};
+use zkm_stark::ZKMCoreOpts;
 
 use crate::{
     context::ZKMContext,
@@ -29,50 +27,9 @@ use crate::{
     state::{ExecutionState, ForkState},
     subproof::SubproofVerifier,
     syscalls::{default_syscall_map, Syscall, SyscallCode, SyscallContext},
-    ExecutionReport, Instruction, MipsAirId, Opcode, Program, Register, NUM_REGISTERS,
+    ExecutionError, ExecutionReport, Instruction, MipsAirId, Opcode, Program, Register,
+    CORE_SHARD_CLK_LIMIT, CORE_SHARD_HEIGHT_THRESHOLD, NUM_REGISTERS,
 };
-
-/// The maximum number of instructions in a program.
-pub const MAX_PROGRAM_SIZE: usize = 1 << 22;
-
-/// The default increment for the program counter.  Is used for all instructions except
-/// for branches and jumps.
-pub const DEFAULT_PC_INC: u32 = 4;
-/// This is used in the `InstrEvent` to indicate that the instruction is not from the CPU.
-/// A valid pc should be divisible by 4, so we use 1 to indicate that the pc is not used.
-pub const UNUSED_PC: u32 = 1;
-
-/// Boundary width, in bits, splitting the global `clk` into `clk_low = clk &
-/// (CORE_SHARD_CLK_LIMIT - 1)` and `clk_high = clk >> 24`. Every migrated opcode chip's shared
-/// `CpuState` range-checks `clk_low` into a 16+8-bit limb pair
-/// (`crates/core/machine/src/adapter/state.rs`'s `eval_cpu_state`, via
-/// `eval_range_check_24bits`); `clk_high` may change mid-shard, proven in-circuit by the
-/// `clk_high`-transition AIR chip fed by [`crate::events::BumpClkHighEvent`]. Shard cuts are
-/// decided by `shard_size` and the trace-area/shape estimator (see
-/// `Executor::inc_shard_if_need`), independent of this constant.
-pub const CORE_SHARD_CLK_LIMIT: u64 = 1 << 24;
-
-/// Safety margin subtracted from `1 << CORE_MAX_LOG_ROW_COUNT` to get
-/// [`CORE_SHARD_HEIGHT_THRESHOLD`]. `pad_mips_event_counts` already pads its own
-/// worst-case-growth estimate by `shape_check_frequency`, so this only needs to cover the
-/// (small) slop between two consecutive `shape_check_frequency`-cycle checkpoints, not a full
-/// independent safety factor -- if `SHAPE_CHECK_FREQUENCY` is ever overridden much larger than
-/// its default (16), this headroom should grow to match.
-pub const CORE_SHARD_HEIGHT_HEADROOM: u64 = 1 << 16;
-
-/// Hard per-chip real-row-count ceiling: no single chip may reach this many real rows within
-/// one shard, since the jagged PCS requires every chip's committed trace to have exactly
-/// `1 << CORE_MAX_LOG_ROW_COUNT` rows after padding (`slop/crates/jagged/src/prover.rs`'s
-/// `assert_eq!(padded_mle.num_variables(), self.max_log_row_count as u32)`, mirrored by a
-/// verifier-side rejection, `slop/crates/jagged/src/verifier.rs`'s `IncorrectShape` check).
-/// Unlike `shard_size` (a cycle-count ceiling), that alone does not bound any *individual*
-/// chip's row count -- most per-opcode chips get exactly one event per matching cycle, so an
-/// opcode-dominated tight loop can otherwise drive a single chip's row count arbitrarily close
-/// to `shard_size` itself.
-pub const CORE_SHARD_HEIGHT_THRESHOLD: u64 =
-    (1 << CORE_MAX_LOG_ROW_COUNT) - CORE_SHARD_HEIGHT_HEADROOM;
-
-const _: () = assert!(CORE_SHARD_HEIGHT_THRESHOLD <= 1 << CORE_MAX_LOG_ROW_COUNT);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Whether to verify deferred proofs during execution.
@@ -278,101 +235,6 @@ pub struct LocalCounts {
     /// The number of real, retired LW instructions with `op_a==0` -- a subset of
     /// `event_counts[Opcode::LW]`, needed to split `LoadWord`'s estimate from `LoadX0`'s.
     pub load_x0_events: u64,
-}
-
-/// Errors that the [``Executor``] can throw.
-#[derive(Error, Debug, Serialize, Deserialize)]
-pub enum ExecutionError {
-    /// The execution failed with a non-zero exit code.
-    #[error("execution failed with exit code {0}")]
-    HaltWithNonZeroExitCode(u32),
-
-    /// The execution failed with an invalid memory access.
-    #[error("invalid memory access for opcode {0} and address {1}")]
-    InvalidMemoryAccess(Opcode, u32),
-
-    /// The execution failed with an unimplemented syscall.
-    #[error("unimplemented syscall {0}")]
-    UnsupportedSyscall(u32),
-
-    /// The execution failed with an unimplemented instruction.
-    #[error("unimplemented instruction {0}")]
-    UnsupportedInstruction(u32),
-
-    /// The execution failed with a breakpoint.
-    #[error("breakpoint encountered")]
-    Breakpoint(),
-
-    /// The execution failed with an exceeded cycle limit.
-    #[error("exceeded cycle limit of {0}")]
-    ExceededCycleLimit(u64),
-
-    /// The execution failed because the syscall was called in unconstrained mode.
-    #[error("syscall called in unconstrained mode")]
-    InvalidSyscallUsage(u64),
-
-    /// The execution failed with exception or trap.
-    #[error("exception/trap encountered")]
-    ExceptionOrTrap(),
-
-    /// The execution failed with an exceeded cycle limit.
-    #[error("exceeded memory access bound of {0}")]
-    MemoryOutOfBoundsAccess(u64),
-
-    /// The execution failed with invalid syscall args.
-    #[error("invalid syscall args encountered")]
-    InvalidSyscallArgs(),
-
-    /// The execution failed with an unimplemented feature.
-    #[error("got unimplemented as opcode")]
-    Unimplemented(),
-
-    /// The program ended in unconstrained mode.
-    #[error("program ended in unconstrained mode")]
-    EndInUnconstrained(),
-
-    #[error("Null Pointer Reference")]
-    NullPointerReference(),
-
-    /// The execution failed because a buffer length did not match the expected size.
-    #[error("invalid buffer length: expected {0}, got {1}")]
-    InvalidBufferLength(usize, usize),
-
-    /// The execution failed because a buffer length was smaller than the minimum required.
-    #[error("buffer length {1} must be greater than or equal to {0}")]
-    BufferLengthTooSmall(usize, usize),
-
-    /// The execution failed because a hook received an unsupported elliptic curve identifier.
-    #[error("unsupported ecrecover curve id: {0}")]
-    UnsupportedEcrecoverCurveId(u8),
-
-    /// The execution failed while converting a slice to an array due to size mismatch.
-    #[error("failed to convert slice {0} to array")]
-    IntoArrayError(String),
-
-    /// The execution failed because a finite field element was not in canonical form
-    /// (i.e., not properly reduced modulo the field's modulus).
-    #[error("element {0} must be less than modulus {1}")]
-    ElementNotCanonical(String, String),
-
-    /// The execution failed because a finite field element was zero where a non-zero
-    /// value was required.
-    #[error("element {0} must be non-zero")]
-    ElementZero(String),
-
-    /// The execution failed because a quadratic non-residue (NQR) was not in the
-    /// valid range (non-zero and less than the modulus).
-    #[error("NQR {0} must be non-zero and less then modulus {1}")]
-    NqrNotCanonical(String, String),
-
-    /// The execution failed because a value did not satisfy the quadratic residue
-    /// property: (root * root) % modulus != qr.
-    #[error("{0} * {0}) % {1} != {2}")]
-    NqrNotQuadratic(String, String, String),
-
-    /// The execution failed due to an error in the underlying elliptic curve operation.
-    #[error("curve error: {0}")]
-    CurveError(CurveError),
 }
 
 impl<'a> Executor<'a> {

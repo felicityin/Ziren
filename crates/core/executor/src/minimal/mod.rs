@@ -33,7 +33,7 @@ use crate::{
     opcode::Opcode,
     register::{Register, NUM_REGISTERS},
     subproof::SubproofVerifier,
-    syscalls::{default_syscall_map, SyscallCode},
+    syscalls::SyscallCode,
     trace::{MemValue, TraceChunk},
     vm, ExecutionError, ExecutionReport, Instruction, Program, ZKMReduceProof,
 };
@@ -226,11 +226,14 @@ impl<'a> MinimalExecutor<'a> {
             }
         }
 
-        // Mirrors `Executor::with_context`'s exact computation so `bump_clk_high_if_need`'s
-        // window-advance threshold matches the legacy executor byte-for-byte (see the migration
-        // plan's note on `7df6fd1d`) -- reusing the *value*, not the dispatch table itself.
-        let max_syscall_cycles =
-            default_syscall_map().values().map(|s| s.num_extra_cycles()).max().unwrap_or(0);
+        // The largest `num_extra_cycles()` of any syscall handler this pipeline dispatches --
+        // `SHA_EXTEND`'s 48 (its 48 internal iterations, see `minimal/syscall.rs`'s
+        // `SyscallCode::SHA_EXTEND` arm and `tracing.rs`'s matching `extra_cycles = 48`); every
+        // other syscall is 0 or 1. `bump_clk_high_if_need`'s window-advance threshold needs this
+        // as a safe upper bound on any single instruction's real clk advance -- keep in sync with
+        // the dispatch arms in `minimal/syscall.rs`/`tracing.rs` if a costlier syscall is ever
+        // added.
+        let max_syscall_cycles = 48;
 
         Self {
             pc: program.pc_start,

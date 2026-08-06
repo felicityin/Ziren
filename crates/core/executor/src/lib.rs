@@ -1,6 +1,8 @@
 mod air;
+mod consts;
 mod context;
 mod cost;
+mod errors;
 pub mod events;
 mod executor;
 #[cfg(test)]
@@ -28,8 +30,10 @@ mod utils;
 mod vm;
 
 pub use air::*;
+pub use consts::*;
 pub use context::*;
 pub use cost::*;
+pub use errors::*;
 pub use executor::*;
 pub use hook::*;
 pub use instruction::*;
