@@ -7,13 +7,7 @@ use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use zkm_hypercube::{config::ZkmGlobalContext, verifier::ZkmPcsProofInner, MachineVerifyingKey};
 
-use crate::{
-    events::MemoryRecord,
-    memory::Memory,
-    record::{ExecutionRecord, MemoryAccessRecord},
-    syscalls::SyscallCode,
-    ExecutorMode, ZKMReduceProof,
-};
+use crate::{events::MemoryRecord, memory::Memory, syscalls::SyscallCode, ZKMReduceProof};
 
 /// Holds data describing the current state of a program's execution.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -51,10 +45,6 @@ pub struct ExecutionState {
     /// events (`record.timestamp < initial_timestamp`), replacing the old `record.shard != shard`
     /// check now that there's no per-shard `shard` counter on memory records.
     pub initial_timestamp: u64,
-
-    /// Max clocks for each record.
-    pub records_clk: Vec<u64>,
-    pub records_clk_index: u32,
 
     /// Uninitialized memory addresses that have a specific value they should be initialized with.
     /// `SyscallHintRead` uses this to write hint data into uninitialized memory.
@@ -95,8 +85,6 @@ impl ExecutionState {
             // so real execution starts at `clk == 1`.
             clk: 1,
             initial_timestamp: 1,
-            records_clk: vec![],
-            records_clk_index: 0,
             pc: pc_start,
             next_pc,
             exited: false,
@@ -112,28 +100,6 @@ impl ExecutionState {
             syscall_counts: HashMap::new(),
         }
     }
-}
-
-/// Holds data to track changes made to the runtime since a fork point.
-#[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
-pub struct ForkState {
-    /// The `global_clk` value at the fork point.
-    pub global_clk: u64,
-    /// The original `clk` value at the fork point.
-    pub clk: u64,
-    /// The original `initial_timestamp` value at the fork point.
-    pub initial_timestamp: u64,
-    /// The original `pc` value at the fork point.
-    pub pc: u32,
-    /// All memory changes since the fork point.
-    pub memory_diff: HashMap<u32, Option<MemoryRecord>>,
-    /// The original memory access record at the fork point.
-    pub op_record: MemoryAccessRecord,
-    /// The original execution record at the fork point.
-    pub record: ExecutionRecord,
-    // /// Whether `emit_events` was enabled at the fork point.
-    pub executor_mode: ExecutorMode,
 }
 
 impl ExecutionState {

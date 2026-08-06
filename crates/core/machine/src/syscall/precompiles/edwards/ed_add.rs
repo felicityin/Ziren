@@ -342,16 +342,23 @@ mod tests {
     use crate::utils;
     use test_artifacts::ED25519_ELF;
     use test_artifacts::ED_ADD_ELF;
-    use zkm_core_executor::Executor;
     use zkm_core_executor::Program;
-    use zkm_stark::ZKMCoreOpts;
 
     #[test]
     pub fn test_ed_add_program_execute() {
         utils::setup_logger();
         let program = Program::from(ED_ADD_ELF).unwrap();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
+        zkm_core_executor::execute_fast(
+            std::sync::Arc::new(program),
+            u64::MAX / 2,
+            std::sync::Arc::from([]),
+            Vec::new(),
+            None,
+            true,
+            None,
+            None,
+        )
+        .unwrap();
     }
 
     #[test]

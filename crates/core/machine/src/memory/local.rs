@@ -305,17 +305,16 @@ mod tests {
     use crate::programs::tests::simple_program;
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{ExecutionRecord, Executor};
+    use std::sync::Arc;
+    use zkm_core_executor::{run_full_pipeline, ExecutionRecord};
     // `MachineAir` is the new `zkm_hypercube` trait (needed for `chip.generate_trace(..)` since
     // `MemoryLocalChip` now implements it). `LookupKind`/`LookupScope` stay on the old `zkm_stark`
     // crate because `debug_lookups_with_all_chips` and `StarkMachine` below are still the old
     // FRI-backed utilities and expect the old-crate types.
     use zkm_hypercube::air::MachineAir;
-    use zkm_stark::{
-        // air::LookupScope, debug_lookups_with_all_chips, koala_bear_poseidon2::KoalaBearPoseidon2,
-        // LookupKind, StarkMachine,
-        ZKMCoreOpts,
-    };
+    // `zkm_stark::{air::LookupScope, debug_lookups_with_all_chips, koala_bear_poseidon2::
+    // KoalaBearPoseidon2, LookupKind, StarkMachine}` -- old FRI-backed utilities the commented-out
+    // tests below reference; unused while they stay commented out.
 
     use crate::{
         memory::MemoryLocalChip,
@@ -326,9 +325,8 @@ mod tests {
     #[test]
     fn test_local_memory_generate_trace() {
         let program = simple_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
-        let shard = runtime.records[0].clone();
+        let records = run_full_pipeline(Arc::new(program), u64::MAX / 2, Arc::from([]), u64::MAX / 2, u64::MAX / 2).unwrap();
+        let shard = records[0].clone();
 
         let chip: MemoryLocalChip = MemoryLocalChip::new();
 

@@ -545,7 +545,7 @@ mod tests {
 
     use slop_basefold::FriConfig;
     use slop_challenger::IopCtx;
-    use zkm_core_executor::{Executor, Program};
+    use zkm_core_executor::{run_full_pipeline, Program};
     use zkm_core_machine::mips::MipsAir;
     use zkm_hypercube::{
         config::ZkmGlobalContext,
@@ -553,7 +553,7 @@ mod tests {
         ShardVerifier,
     };
     use zkm_recursion_compiler::{circuit::AsmConfig, ir::Builder};
-    use zkm_stark::{InnerChallenge, InnerVal, ZKMCoreOpts};
+    use zkm_stark::{InnerChallenge, InnerVal};
 
     use crate::{
         shard::RecursiveShardVerifier,
@@ -585,34 +585,45 @@ mod tests {
     #[test]
     fn test_verify_real_core_shard_proof() {
         let program = Program::from(test_artifacts::FIBONACCI_ELF).unwrap();
-        // `ZKMCoreOpts::default()`'s `shard_size` is chosen from this machine's RAM (production
-        // scale, e.g. `1 << 22` here) via `ZKMProverOpts::get_memory_opts`, not from what this
-        // tiny test program actually needs. `max_log_row_count` (`shard_size.ilog2()`) directly
-        // gates round counts and bit-decomposition widths throughout the circuit-side verifier
-        // (`shard.rs`/`zerocheck.rs`), so a production-scale cap here -- regardless of the FRI
-        // config used, and regardless of how few rows Fibonacci's own trace actually needs --
-        // was what made the compiled verify_shard circuit exceed the jagged-PCS protocol's
-        // per-round area bound. `1 << 16` is still far larger than Fibonacci's real trace but
-        // small enough to keep the compiled circuit's own trace within bounds.
-        let opts = ZKMCoreOpts { shard_size: 1 << 16, ..ZKMCoreOpts::default() };
+        // `max_log_row_count` directly gates round counts and bit-decomposition widths throughout
+        // the circuit-side verifier (`shard.rs`/`zerocheck.rs`), so a production-scale cap here --
+        // regardless of the FRI config used, and regardless of how few rows Fibonacci's own trace
+        // actually needs -- would make the compiled verify_shard circuit exceed the jagged-PCS
+        // protocol's per-round area bound. `1 << 16` is still far larger than Fibonacci's real
+        // trace but small enough to keep the compiled circuit's own trace within bounds. Generous
+        // shard-cut thresholds (`u64::MAX / 2`) below are unrelated to this -- they just need to be
+        // large enough that this tiny program stays a single shard.
+        let max_log_row_count = 16usize;
 
-        let mut runtime = Executor::new(program.clone(), opts);
-        runtime.run().unwrap();
-        // `runtime.record` is the raw, still-accumulating working record: `Executor::execute`
-        // only back-fills the real `PublicValues` (shard index, start/next pc, etc.) into
-        // `runtime.records` (plural) when it flushes a shard via `bump_record`. For a small
-        // single-shard program like this one, that's exactly one record.
-        assert_eq!(runtime.records.len(), 1, "expected fibonacci to execute as exactly one shard");
-        let mut record = runtime.records.remove(0);
-        // `Executor::execute` never back-fills `initial_timestamp`/`last_timestamp` either
-        // (unlike `start_pc`/`next_pc`, which it does set from the same events) -- mirrors the
+        let mut records = run_full_pipeline(
+            Arc::new(program.clone()),
+            u64::MAX / 2,
+            Arc::from([]),
+            u64::MAX / 2,
+            u64::MAX / 2,
+        )
+        .unwrap();
+        assert_eq!(records.len(), 1, "expected fibonacci to execute as exactly one shard");
+        let mut record = records.remove(0);
+        // `run_full_pipeline` never back-fills `public_values.execution_shard`/`is_execution_shard`/
+        // `start_pc`/`next_pc`/`initial_clk_*`/`last_clk_*` itself (that's Stage A/B's own job,
+        // skipped here since this test bypasses defer/split) -- mirrors the
+        // `state.execution_shard`/`state.is_execution_shard`/`state.start_pc`/`state.next_pc`/
         // `state.initial_clk_low`/`state.last_clk_low` computation in
-        // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. These anchor the
-        // CPU chip's `LookupKind::State` chain boundary in `eval_public_values`.
+        // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. `is_execution_shard`
+        // in particular gates whether `EvalPublicValues` even emits its own end of the CPU chip's
+        // `LookupKind::State` chain boundary in `eval_public_values` -- left at its `0` default, the
+        // CPU chip's own real state-chain token goes unmatched.
         //
         // Uses the migration-safe `first_instruction_clk`/`last_timestamp` bookkeeping (tracked
         // independent of which chip retires an instruction) rather than `cpu_events`, since
         // `cpu_events` is permanently empty once every opcode has migrated off `CpuChip`.
+        record.public_values.execution_shard = 1;
+        record.public_values.is_execution_shard = record.contains_cpu() as u32;
+        record.public_values.start_pc = record.first_instruction_pc.unwrap();
+        record.public_values.next_pc = record.last_next_pc;
+        record.public_values.start_pc = record.first_instruction_pc.unwrap();
+        record.public_values.next_pc = record.last_next_pc;
         let first_clk = record.first_instruction_clk.unwrap();
         record.public_values.initial_clk_high = (first_clk >> 24) as u32;
         record.public_values.initial_clk_low = (first_clk & 0xffffff) as u32;
@@ -623,8 +634,8 @@ mod tests {
         record.public_values.last_clk_high = last_clk_high as u32;
         record.public_values.last_clk_low =
             (record.last_timestamp - (last_clk_high << 24)) as u32;
-        // `Executor::run`/`execute` never calls chip-level `generate_dependencies`, so
-        // cross-chip-derived public values that depend on the actual event contents --
+        // `run_full_pipeline` never calls chip-level `generate_dependencies`, so cross-chip-
+        // derived public values that depend on the actual event contents --
         // `GlobalChip`'s `global_count`/`global_cumulative_sum_{x,y}` and
         // `MemoryGlobalChip`'s `global_init_count`/`global_finalize_count` -- are left at their
         // `Default` (zero) values. The real proving pipeline
@@ -660,10 +671,9 @@ mod tests {
         eprintln!("DEBUG public_values = {:#?}", record.public_values);
 
         let fri_config = test_fri_config();
-        // Deliberately smaller than `CORE_MAX_LOG_ROW_COUNT` -- see the comment on `opts` above --
-        // so this can't use the fixed `CORE_LOG_STACKING_HEIGHT` constant. Must match the value
-        // the real shard proof below was produced with.
-        let max_log_row_count = opts.shard_size.ilog2() as usize;
+        // Deliberately smaller than `CORE_MAX_LOG_ROW_COUNT` -- see the comment on
+        // `max_log_row_count` above -- so this can't use the fixed `CORE_LOG_STACKING_HEIGHT`
+        // constant.
         let log_stacking_height = (max_log_row_count as u32).saturating_sub(1);
         let native_machine = MipsAir::<KoalaBear>::hypercube_machine();
         let shard_prover =

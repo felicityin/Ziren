@@ -557,8 +557,7 @@ mod tests {
 
     /// With thresholds far larger than any of these tiny/small programs could ever reach,
     /// splicing must produce exactly one shard and reproduce the exact same final state
-    /// `MinimalExecutor` itself already reached (avoiding a second dependency on `golden.rs`'s
-    /// legacy-`Executor` comparison for this specific check).
+    /// `MinimalExecutor` itself already reached.
     fn assert_single_shard_matches_minimal(program: impl Fn() -> Program, name: &str) {
         let mut minimal = MinimalExecutor::new(Arc::new(program()), u64::MAX / 2);
         let _ = minimal.try_execute_chunk().unwrap();
@@ -613,29 +612,21 @@ mod tests {
         assert_eq!(clk, minimal.clk(), "clk mismatch");
     }
 
-    /// Same as above but also cross-checked against `golden.rs`'s independent legacy-`Executor`
-    /// reference.
-    #[test]
-    fn splicing_many_shards_matches_golden_fibonacci_real_elf() {
-        let golden = crate::golden::run_golden(fibonacci_program());
-        let (num_shards, registers, pc, clk) = run_splicing(fibonacci_program, u64::MAX / 2, 40);
-        assert!(num_shards > 1, "expected tight thresholds to force multiple shards, got 1");
-        assert_eq!(registers, golden.final_registers, "register mismatch vs. golden");
-        assert_eq!(pc, golden.final_pc, "pc mismatch vs. golden");
-        assert_eq!(clk, golden.final_clk, "clk mismatch vs. golden");
-    }
-
     /// Exercises `SplicingVM::into_carry`/`resume`: a tiny `max_trace_size` forces
     /// `MinimalExecutor` to cut many small chunks, while generous shard thresholds keep the whole
     /// run to a single shard -- meaning that one shard's oracle-log window must be correctly
     /// concatenated across every chunk transition. Also feeds the resulting `SplicedMinimalTrace`
     /// through a real `TracingVM` replay (not just checking `SplicingVM`'s own final state), since
     /// the risk here is specifically a wrong/misordered concatenation that `SplicingVM`'s own
-    /// bookkeeping wouldn't catch but a downstream replay reading garbage values would.
+    /// bookkeeping wouldn't catch but a downstream replay reading garbage values would. Checked
+    /// against a plain, unchunked `MinimalExecutor` run of the same program, mirroring
+    /// `assert_single_shard_matches_minimal`'s pattern above.
     #[test]
-    fn splicing_resumes_across_many_chunks_and_tracing_vm_replays_it_matching_golden() {
-        let golden = crate::golden::run_golden(fibonacci_program());
+    fn splicing_resumes_across_many_chunks_and_tracing_vm_replays_it_correctly() {
         let program = Arc::new(fibonacci_program());
+
+        let mut reference = MinimalExecutor::new(program.clone(), u64::MAX / 2);
+        let _ = reference.try_execute_chunk().unwrap();
 
         let mut minimal = MinimalExecutor::new(Arc::new(fibonacci_program()), 4);
         let max_syscall_cycles = minimal.max_syscall_cycles();
@@ -682,9 +673,9 @@ mod tests {
             crate::vm::CoreVMStatus::Done,
             "TracingVM must be able to replay the concatenated shard to completion"
         );
-        assert_eq!(tracing.registers(), golden.final_registers, "register mismatch vs. golden");
-        assert_eq!(tracing.pc(), golden.final_pc, "pc mismatch vs. golden");
-        assert_eq!(tracing.clk(), golden.final_clk, "clk mismatch vs. golden");
+        assert_eq!(tracing.registers(), reference.registers(), "register mismatch");
+        assert_eq!(tracing.pc(), reference.pc(), "pc mismatch");
+        assert_eq!(tracing.clk(), reference.clk(), "clk mismatch");
     }
 
     /// `ShapeChecker::add` must track the *padded* cost of each chip (matching the real committed

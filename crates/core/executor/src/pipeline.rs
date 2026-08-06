@@ -1,9 +1,7 @@
 //! Drives the whole `MinimalExecutor` -> `SplicingVM` -> `TracingVM` pipeline for one program
-//! run, producing one [`ExecutionRecord`] per shard. This is the new pipeline's single-threaded,
-//! whole-run equivalent of the legacy `Executor`'s two-pass Checkpoint-then-Trace flow (driven by
-//! `prove.rs`'s `checkpoint_generator_handle`/`trace_checkpoint` across a channel and a worker
-//! pool) -- a stepping stone toward wiring `prove.rs` itself, and independently testable against
-//! `golden.rs` without any of that concurrency.
+//! run, producing one [`ExecutionRecord`] per shard. This mirrors `prove.rs`'s own
+//! `checkpoint_generator_handle`/`trace_checkpoint` flow (driven across a channel and a worker
+//! pool), but single-threaded and independently testable without any of that concurrency.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -122,6 +120,22 @@ pub fn execute_fast<'a>(
     );
     while minimal.try_execute_chunk()?.is_some() {}
     Ok((minimal.public_values_stream().to_vec(), minimal.execution_report()))
+}
+
+/// Runs `program` to completion with no stdin/hooks/subproofs/cycle limit, returning its final
+/// register file -- a minimal single-program helper for tests that just need to check computed
+/// register values (instruction-suite-style tests), without the full `execute_fast` argument
+/// list.
+///
+/// # Errors
+///
+/// Propagates any [`ExecutionError`] from executing an instruction.
+pub fn execute_fast_registers(
+    program: Arc<Program>,
+) -> Result<[u32; crate::register::NUM_REGISTERS], ExecutionError> {
+    let mut minimal = MinimalExecutor::new(program, u64::MAX / 2);
+    while minimal.try_execute_chunk()?.is_some() {}
+    Ok(minimal.registers())
 }
 
 /// Traces one already-spliced shard into a real [`ExecutionRecord`] -- the new pipeline's
@@ -311,143 +325,9 @@ pub fn next_shard(
 mod tests {
     use super::*;
     use crate::{
-        golden::run_golden,
         hook::HookRegistry,
-        programs::tests::{
-            ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
-            hook_fp_inverse_program, secp256r1_add_program, sha_compress_program, simple_program,
-        },
-        Program,
+        programs::tests::{fibonacci_program, hook_fp_inverse_program},
     };
-    use std::collections::BTreeMap;
-    use zkm_hypercube::record::MachineRecord;
-
-    /// Fields excluded from the golden count comparison below -- `local_memory_access_events` for
-    /// the same reason `tracing.rs`'s own golden harness excludes it (`golden.rs` drives the
-    /// legacy `Executor` via its single-pass `run()`, which never populates it regardless of
-    /// correctness; see that module's `DEFERRED_FIELDS` doc comment), and `byte_lookups`/
-    /// `global_lookup_events`, byproducts of machine-crate `.populate()` calls, not executor-crate
-    /// work.
-    const DEFERRED_FIELDS: &[&str] = &["local_memory_access_events", "byte_lookups"];
-
-    fn assert_matches_golden(program: impl Fn() -> Program, name: &str) {
-        let golden = run_golden(program());
-        let records = run_full_pipeline(
-            Arc::new(program()),
-            u64::MAX / 2,
-            Arc::from([]),
-            u64::MAX / 2,
-            u64::MAX / 2,
-        )
-        .unwrap();
-
-        assert_eq!(records.len(), 1, "{name}: generous thresholds should keep this to a single shard");
-        let last = records.last().unwrap();
-
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for record in &records {
-            for (chip, count) in record.stats() {
-                *counts.entry(chip).or_insert(0) += count;
-            }
-        }
-        let mut golden_counts = golden.event_counts;
-        let golden_init_count =
-            golden_counts.get("global_memory_initialize_events").copied().unwrap_or(0);
-        let golden_finalize_count =
-            golden_counts.get("global_memory_finalize_events").copied().unwrap_or(0);
-        for field in DEFERRED_FIELDS {
-            golden_counts.remove(*field);
-            counts.remove(*field);
-        }
-        assert_eq!(counts, golden_counts, "{name}: event counts mismatch");
-
-        assert_eq!(
-            last.global_memory_initialize_events.len(),
-            golden_init_count,
-            "{name}: global_memory_initialize_events count mismatch"
-        );
-        assert_eq!(
-            last.global_memory_finalize_events.len(),
-            golden_finalize_count,
-            "{name}: global_memory_finalize_events count mismatch"
-        );
-    }
-
-    #[test]
-    fn matches_golden_simple_program() {
-        assert_matches_golden(simple_program, "simple_program");
-    }
-
-    #[test]
-    fn matches_golden_halt_only_program() {
-        assert_matches_golden(halt_only_program, "halt_only_program");
-    }
-
-    #[test]
-    fn matches_golden_fibonacci_real_elf() {
-        assert_matches_golden(fibonacci_program, "fibonacci_program");
-    }
-
-    #[test]
-    fn matches_golden_hello_world_real_elf() {
-        assert_matches_golden(hello_world_program, "hello_world_program");
-    }
-
-    #[test]
-    fn matches_golden_ed_decompress_real_elf() {
-        assert_matches_golden(ed_decompress_program, "ed_decompress_program");
-    }
-
-    #[test]
-    fn matches_golden_sha_compress_real_elf() {
-        assert_matches_golden(sha_compress_program, "sha_compress_program");
-    }
-
-    #[test]
-    fn matches_golden_secp256r1_add_real_elf() {
-        assert_matches_golden(secp256r1_add_program, "secp256r1_add_program");
-    }
-
-    /// Same as `assert_matches_golden` but with tight shard thresholds forcing multiple shards
-    /// *and* a tiny `max_trace_size` forcing multiple `MinimalExecutor` chunks -- exercising the
-    /// full multi-shard, multi-chunk-per-shard driver loop together, not just each in isolation.
-    #[test]
-    fn matches_golden_fibonacci_real_elf_many_shards_and_chunks() {
-        let golden = run_golden(fibonacci_program());
-        let records =
-            run_full_pipeline(Arc::new(fibonacci_program()), 64, Arc::from([]), u64::MAX / 2, 40).unwrap();
-
-        assert!(records.len() > 1, "expected a tight height_threshold to force multiple shards");
-
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for record in &records {
-            for (chip, count) in record.stats() {
-                *counts.entry(chip).or_insert(0) += count;
-            }
-        }
-        let mut golden_counts = golden.event_counts;
-        let golden_init_count =
-            golden_counts.get("global_memory_initialize_events").copied().unwrap_or(0);
-        let golden_finalize_count =
-            golden_counts.get("global_memory_finalize_events").copied().unwrap_or(0);
-        for field in DEFERRED_FIELDS {
-            golden_counts.remove(*field);
-            counts.remove(*field);
-        }
-        assert_eq!(counts, golden_counts, "fibonacci_program (many shards/chunks): event counts mismatch");
-
-        let last = records.last().unwrap();
-        assert_eq!(
-            last.global_memory_initialize_events.len(),
-            golden_init_count,
-            "fibonacci_program (many shards/chunks): global_memory_initialize_events count mismatch"
-        );
-        assert_eq!(
-            last.global_memory_finalize_events.len(),
-            golden_finalize_count,
-            "fibonacci_program (many shards/chunks): global_memory_finalize_events count mismatch"
-        );
-    }
 
     /// `execute_fast` (the `ZKMProver::execute` dry-run path) with the default hook registry
     /// active: `hook_fp_inverse_program` writes an `fp_inverse` request to `FD_FP_INV`, and the

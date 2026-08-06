@@ -21,7 +21,8 @@ use crate::{
         MemoryLocalEvent, MemoryRecordEnum, MiscEvent, MovCondEvent, PrecompileEvent,
         PrecompileEvents, SyscallEvent,
     },
-    syscalls::{precompiles::keccak::sponge::GENERAL_BLOCK_SIZE_U32S, SyscallCode},
+    syscalls::SyscallCode,
+    vm::KECCAK_GENERAL_BLOCK_SIZE_U32S,
     Program,
 };
 
@@ -254,8 +255,9 @@ impl ExecutionRecord {
 
                     for (syscall_event, event) in events {
                         if let PrecompileEvent::KeccakSponge(event) = &event {
-                            // Here, input_len_u32s must be a multiple of GENERAL_BLOCK_SIZE_U32S.
-                            let input_len = event.input_len_u32s as usize / GENERAL_BLOCK_SIZE_U32S;
+                            // Here, input_len_u32s must be a multiple of KECCAK_GENERAL_BLOCK_SIZE_U32S.
+                            let input_len =
+                                event.input_len_u32s as usize / KECCAK_GENERAL_BLOCK_SIZE_U32S;
 
                             if current_len + input_len > threshold && !current_shard.is_empty() {
                                 let mut record = ExecutionRecord::new(self.program.clone());

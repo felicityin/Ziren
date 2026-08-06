@@ -319,25 +319,6 @@ impl<'a> MinimalExecutor<'a> {
         &self.public_values_stream
     }
 
-    /// Same digest formula as `golden::run_golden`'s `memory_digest` (page-table only,
-    /// `timestamp != 0`, sorted by address) -- lets tests compare the two directly.
-    #[must_use]
-    pub(crate) fn memory_digest(&self) -> u64 {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut touched: Vec<(u32, u32, u64)> = self
-            .page_table
-            .keys()
-            .filter_map(|addr| {
-                let record = self.page_table.get(addr).unwrap();
-                (record.timestamp != 0).then_some((addr, record.value, record.timestamp))
-            })
-            .collect();
-        touched.sort_unstable_by_key(|&(addr, _, _)| addr);
-        let mut hasher = DefaultHasher::new();
-        touched.hash(&mut hasher);
-        hasher.finish()
-    }
-
     /// Computes `global_memory_initialize_events`/`global_memory_finalize_events` for the whole
     /// run, mirroring `Executor::postprocess()`'s memory-event section exactly. Only meaningful
     /// once the whole run has finished (`Self::is_done()`), since this walks the *final*
@@ -1020,136 +1001,14 @@ fn sign_extend<const BITS: u32>(value: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::{
-        golden::run_golden,
-        programs::tests::{
-            ed_decompress_program, fibonacci_program, halt_only_program, hello_world_program,
-            hint_read_program, simple_memory_program, simple_program,
-        },
+        programs::tests::{fibonacci_program, hint_read_program},
         Program,
     };
 
-    /// Runs a `MinimalExecutor` to completion (looping `try_execute_chunk` with a small buffer so
-    /// the multi-chunk path is exercised even by these tiny programs, not just the single-chunk
-    /// case) and returns the final `(registers, pc, clk, public_values_stream, memory_digest,
-    /// num_chunks)`.
-    fn run_minimal(program: Program) -> ([u32; NUM_REGISTERS], u32, u64, Vec<u8>, u64, usize) {
-        let mut exec = MinimalExecutor::new(Arc::new(program), 4);
-        let mut num_chunks = 0;
-        while exec.try_execute_chunk().unwrap().is_some() {
-            num_chunks += 1;
-        }
-        (
-            exec.registers(),
-            exec.pc(),
-            exec.clk(),
-            exec.public_values_stream().to_vec(),
-            exec.memory_digest(),
-            num_chunks,
-        )
-    }
-
-    fn assert_matches_golden(program: impl Fn() -> Program, name: &str) {
-        let golden = run_golden(program());
-        let (registers, pc, clk, public_values_stream, memory_digest, num_chunks) =
-            run_minimal(program());
-        assert_eq!(registers, golden.final_registers, "{name}: final registers mismatch");
-        assert_eq!(pc, golden.final_pc, "{name}: final pc mismatch");
-        assert_eq!(clk, golden.final_clk, "{name}: final clk mismatch");
-        assert_eq!(
-            public_values_stream, golden.public_values_stream,
-            "{name}: public values stream mismatch"
-        );
-        assert_eq!(memory_digest, golden.memory_digest, "{name}: memory digest mismatch");
-        assert!(num_chunks >= 1, "{name}: expected at least one chunk");
-    }
-
-    #[test]
-    fn matches_golden_simple_program() {
-        assert_matches_golden(simple_program, "simple_program");
-    }
-
-    #[test]
-    fn matches_golden_halt_only_program() {
-        assert_matches_golden(halt_only_program, "halt_only_program");
-    }
-
-    #[test]
-    fn matches_golden_fibonacci_real_elf() {
-        assert_matches_golden(fibonacci_program, "fibonacci_program");
-    }
-
-    #[test]
-    fn matches_golden_hello_world_real_elf() {
-        assert_matches_golden(hello_world_program, "hello_world_program");
-    }
-
-    #[test]
-    fn matches_golden_ed_decompress_real_elf() {
-        assert_matches_golden(ed_decompress_program, "ed_decompress_program");
-    }
-
-    #[test]
-    fn matches_golden_simple_memory_program() {
-        assert_matches_golden(simple_memory_program, "simple_memory_program");
-    }
-
-    /// `golden::run_golden` drives the legacy `Executor` via its single-pass `run()`, whose
-    /// `emit_global_memory_events` defaults to `true` -- unlike `golden.rs`'s
-    /// `local_memory_access_events` case, this field genuinely IS populated by that path, so its
-    /// count is a real cross-check for `global_memory_events`.
-    fn assert_global_memory_events_match_golden(program: impl Fn() -> Program, name: &str) {
-        let golden = run_golden(program());
-        let mut exec = MinimalExecutor::new(Arc::new(program()), 4);
-        while exec.try_execute_chunk().unwrap().is_some() {}
-        let (initialize_events, finalize_events) = exec.global_memory_events();
-        assert_eq!(
-            initialize_events.len(),
-            golden.event_counts.get("global_memory_initialize_events").copied().unwrap_or(0),
-            "{name}: global_memory_initialize_events count mismatch"
-        );
-        assert_eq!(
-            finalize_events.len(),
-            golden.event_counts.get("global_memory_finalize_events").copied().unwrap_or(0),
-            "{name}: global_memory_finalize_events count mismatch"
-        );
-    }
-
-    #[test]
-    fn global_memory_events_matches_golden_simple_program() {
-        assert_global_memory_events_match_golden(simple_program, "simple_program");
-    }
-
-    #[test]
-    fn global_memory_events_matches_golden_halt_only_program() {
-        assert_global_memory_events_match_golden(halt_only_program, "halt_only_program");
-    }
-
-    #[test]
-    fn global_memory_events_matches_golden_simple_memory_program() {
-        assert_global_memory_events_match_golden(simple_memory_program, "simple_memory_program");
-    }
-
-    #[test]
-    fn global_memory_events_matches_golden_fibonacci_real_elf() {
-        assert_global_memory_events_match_golden(fibonacci_program, "fibonacci_program");
-    }
-
-    #[test]
-    fn global_memory_events_matches_golden_hello_world_real_elf() {
-        assert_global_memory_events_match_golden(hello_world_program, "hello_world_program");
-    }
-
-    #[test]
-    fn global_memory_events_matches_golden_ed_decompress_real_elf() {
-        assert_global_memory_events_match_golden(ed_decompress_program, "ed_decompress_program");
-    }
-
-    /// `assert_global_memory_events_match_golden` only compares *counts* (`GoldenSnapshot`'s
-    /// `event_counts` is a `BTreeMap<String, usize>`), so it can't catch a wrong *value* -- a
-    /// hint-seeded-and-then-really-touched address would produce the same count whether its
-    /// initialize event's value is `0` or the real hinted word. `hint_read_program` hint-seeds and
-    /// then really touches (via `LW`) two addresses outside `program.image`, so this checks their
-    /// initialize events' values directly against the hinted bytes.
+    /// A hint-seeded-and-then-really-touched address must still carry its real hinted value in its
+    /// global-memory initialize event, not `0`. `hint_read_program` hint-seeds and then really
+    /// touches (via `LW`) two addresses outside `program.image`, so this checks their initialize
+    /// events' values directly against the hinted bytes.
     #[test]
     fn global_memory_events_initialize_value_reflects_hint_seed() {
         const PTR: u32 = 0x2765_4320;

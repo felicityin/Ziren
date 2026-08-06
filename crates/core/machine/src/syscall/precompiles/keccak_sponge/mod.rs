@@ -33,44 +33,50 @@ pub mod sponge_tests {
     /// pipeline's `record.defer()` + `deferred.split(..)` (see `prove_with_context` in
     /// `crates/core/machine/src/utils/prove.rs`). `SyscallChip`'s `Precompile`-kind `included()`
     /// requires `cpu_events`/`global_memory_{initialize,finalize}_events` to *all* be empty, so
-    /// the raw record `Executor::run()` produces (CPU and precompile events still together)
-    /// won't do.
+    /// the raw CPU-and-precompile-events-together record `run_full_pipeline` also produces won't
+    /// do.
     fn keccak_sponge_only_record(
         program: &zkm_core_executor::Program,
     ) -> zkm_core_executor::ExecutionRecord {
         keccak_program_records(program).1
     }
 
-    /// Like [`keccak_sponge_only_record`], but returns the CPU-bearing record too (the same
-    /// checkpoint's record *after* `defer()`, which leaves it CPU-only in place).
+    /// Like [`keccak_sponge_only_record`], but returns the CPU-bearing record too. `run_full_pipeline`
+    /// mirrors `prove_with_context`'s Stage A/B execution and trace generation, but (like the raw
+    /// per-checkpoint record `Executor::run()` used to produce) does *not* itself defer/split --
+    /// that's `prove_with_context`'s own additional step -- so this still does it by hand.
     fn keccak_program_records(
         program: &zkm_core_executor::Program,
     ) -> (zkm_core_executor::ExecutionRecord, zkm_core_executor::ExecutionRecord) {
-        use zkm_core_executor::{syscalls::SyscallCode, Executor};
+        use std::sync::Arc;
+        use zkm_core_executor::{run_full_pipeline, syscalls::SyscallCode};
         use zkm_stark::ZKMCoreOpts;
 
-        let mut runtime = Executor::new(program.clone(), ZKMCoreOpts::default());
-        runtime.run().unwrap();
-
-        let mut records = runtime.records;
+        let mut records = run_full_pipeline(
+            Arc::new(program.clone()),
+            u64::MAX / 2,
+            Arc::from([]),
+            u64::MAX / 2,
+            u64::MAX / 2,
+        )
+        .unwrap();
         assert_eq!(records.len(), 1, "expected this small test program to fit in one checkpoint");
         let mut cpu_record = records.remove(0);
-        // `Executor::run`/`execute` never back-fills `initial_timestamp`/`last_timestamp` (unlike
-        // `start_pc`/`next_pc`, which it does set from the same events) -- mirrors the
-        // `state.initial_clk_low`/`state.last_clk_low` computation in
-        // `zkm_core_machine::utils::prove::prove_with_context`'s reference flow. Left at their
-        // zero defaults, `eval_public_values`'s `State` boundary-anchor interaction won't match
-        // `Cpu`'s own last-row send, producing a spurious debug-harness discrepancy.
-        //
-        // Uses the migration-safe `first_instruction_clk`/`last_timestamp` bookkeeping (tracked
-        // independent of which chip retires an instruction) rather than `cpu_events`, since
-        // `cpu_events` is permanently empty once every opcode has migrated off `CpuChip`.
+
+        // `run_full_pipeline` doesn't back-fill `execution_shard`/`is_execution_shard`/`start_pc`/
+        // `next_pc`/`initial_timestamp`/`last_timestamp` into `public_values` either (that's
+        // `prove_with_context`'s job, unlike legacy `Executor::execute`, which back-filled all but
+        // the clk fields automatically when it flushed a record). `is_execution_shard` in
+        // particular gates whether `EvalPublicValues` even emits its own end of the CPU chip's
+        // `LookupKind::State` chain boundary in `eval_public_values` -- left at its `0` default,
+        // `SyscallInstrs`' own real state-chain token goes unmatched.
+        cpu_record.public_values.execution_shard = 1;
+        cpu_record.public_values.is_execution_shard = cpu_record.contains_cpu() as u32;
+        cpu_record.public_values.start_pc = cpu_record.first_instruction_pc.unwrap();
+        cpu_record.public_values.next_pc = cpu_record.last_next_pc;
         let first_clk = cpu_record.first_instruction_clk.unwrap();
         cpu_record.public_values.initial_clk_high = (first_clk >> 24) as u32;
         cpu_record.public_values.initial_clk_low = (first_clk & 0xffffff) as u32;
-        // See `zkm_core_machine::utils::prove::prove_with_context`'s identical computation for
-        // why this must use `last_instruction_clk`'s own high limb rather than
-        // `last_timestamp >> 24`/`last_timestamp & 0xffffff` directly.
         let last_clk_high = cpu_record.last_instruction_clk >> 24;
         cpu_record.public_values.last_clk_high = last_clk_high as u32;
         cpu_record.public_values.last_clk_low =

@@ -340,16 +340,15 @@ mod tests {
     use crate::programs::tests::simple_program;
     use p3_koala_bear::KoalaBear;
     use p3_matrix::dense::RowMajorMatrix;
-    use zkm_core_executor::{ExecutionRecord, Executor};
+    use std::sync::Arc;
+    use zkm_core_executor::{run_full_pipeline, ExecutionRecord};
     use zkm_hypercube::air::MachineAir;
-    use zkm_stark::ZKMCoreOpts;
 
     #[test]
     fn test_global_generate_trace() {
         let program = simple_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
-        let shard = runtime.records[0].clone();
+        let records = run_full_pipeline(Arc::new(program), u64::MAX / 2, Arc::from([]), u64::MAX / 2, u64::MAX / 2).unwrap();
+        let shard = records[0].clone();
 
         let chip: GlobalChip = GlobalChip;
 

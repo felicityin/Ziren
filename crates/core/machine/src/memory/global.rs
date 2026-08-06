@@ -508,23 +508,17 @@ mod tests {
     //     utils::setup_logger,
     // };
     use p3_koala_bear::KoalaBear;
-    use zkm_core_executor::Executor;
-    // `LookupKind`/`LookupScope` are re-imported here (shadowing the `use super::*` glob,
-    // which now brings in the new `zkm_hypercube` versions) because `debug_lookups_with_all_chips`
-    // and `StarkMachine` below are still the old FRI-backed `zkm_stark` utilities and expect the
-    // old-crate types.
-    use zkm_stark::{
-        // air::LookupScope, debug_lookups_with_all_chips, koala_bear_poseidon2::KoalaBearPoseidon2,
-        // LookupKind, StarkMachine,
-        ZKMCoreOpts,
-    };
+    use std::sync::Arc;
+    use zkm_core_executor::run_full_pipeline;
+    // `zkm_stark::{air::LookupScope, debug_lookups_with_all_chips, koala_bear_poseidon2::
+    // KoalaBearPoseidon2, LookupKind, StarkMachine}` -- old FRI-backed utilities the commented-out
+    // tests below reference; unused while they stay commented out.
 
     #[test]
     fn test_memory_generate_trace() {
         let program = simple_program();
-        let mut runtime = Executor::new(program, ZKMCoreOpts::default());
-        runtime.run().unwrap();
-        let shard = runtime.record.clone();
+        let records = run_full_pipeline(Arc::new(program), u64::MAX / 2, Arc::from([]), u64::MAX / 2, u64::MAX / 2).unwrap();
+        let shard = records[0].clone();
 
         let chip: MemoryGlobalChip = MemoryGlobalChip::new(MemoryChipType::Initialize);
 

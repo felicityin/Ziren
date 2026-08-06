@@ -890,38 +890,53 @@ pub mod tests {
         use p3_air::BaseAir;
         use slop_multilinear::{Mle, PaddedMle};
         use std::sync::Arc;
-        use zkm_core_executor::{Executor, ExecutionRecord};
+        use zkm_core_executor::{next_shard, trace_shard, ExecutionRecord, ShardDriver};
         use zkm_hypercube::{
             air::{LookupScope, PublicValues},
             lookup::{debug_interactions_with_all_chips, LookupKind},
             prover::Traces,
             record::MachineRecord,
         };
-        use zkm_stark::ZKMCoreOpts;
 
         setup_logger();
 
         let elf_bytes = std::fs::read(elf_path)
             .unwrap_or_else(|e| panic!("failed to read {elf_path}: {e} -- build it first"));
         let program = Arc::new(Program::from(&elf_bytes).unwrap());
-        let mut runtime = Executor::new(Program::clone(&program), ZKMCoreOpts::default());
-        runtime.write_vecs(&stdin_bufs);
-        runtime.run().unwrap();
-        println!("{} execution shard(s)", runtime.records.len());
+        let mut driver = ShardDriver::new_with_context(
+            program.clone(),
+            1 << 22,
+            Arc::from(stdin_bufs),
+            Vec::new(),
+            None,
+            true,
+            None,
+        );
 
         // Mirrors `prove_with_context`'s public-values threading and shared `deferred`
-        // accumulator exactly (crates/core/machine/src/utils/prove.rs), across every execution
-        // shard `Executor::run()` produced -- not just one, since a real guest can genuinely
-        // span many shards.
+        // accumulator exactly (crates/core/machine/src/utils/prove.rs), across every shard the
+        // real ELF produces -- not just one, since a real guest can genuinely span many shards.
         let mut state = PublicValues::<u32, u32>::default().reset();
         let mut deferred = ExecutionRecord::new(program.clone());
         let mut all_records = Vec::new();
-        let num_execution_shards = runtime.records.len();
-        for (execution_shard, mut record) in runtime.records.into_iter().enumerate() {
-            let execution_shard = execution_shard as u32 + 1;
-            let done = execution_shard as usize == num_execution_shards;
+        let mut index = 0;
+        loop {
+            let (spliced, done) = next_shard(
+                &mut driver,
+                program.clone(),
+                zkm_stark::ZKMCoreOpts::default().lde_size_threshold,
+                zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
+            )
+            .unwrap();
+            let mut record =
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles()).unwrap();
+            if done {
+                let (init, fin) = driver.global_memory_events();
+                record.global_memory_initialize_events = init;
+                record.global_memory_finalize_events = fin;
+            }
 
-            state.execution_shard = execution_shard;
+            state.execution_shard = index + 1;
             state.is_execution_shard = record.contains_cpu() as u32;
             if let Some(first_pc) = record.first_instruction_pc {
                 state.start_pc = first_pc;
@@ -942,8 +957,11 @@ pub mod tests {
 
             deferred.append(&mut record.defer());
             let mut records = vec![record];
-            let mut split_records =
-                deferred.split(done, records.last_mut(), ZKMCoreOpts::default().split_opts);
+            let mut split_records = deferred.split(
+                done,
+                records.last_mut(),
+                zkm_stark::ZKMCoreOpts::default().split_opts,
+            );
 
             if !done {
                 state.execution_shard += 1;
@@ -962,6 +980,11 @@ pub mod tests {
             }
             records.append(&mut split_records);
             all_records.append(&mut records);
+
+            if done {
+                break;
+            }
+            index += 1;
         }
         println!("produced {} record(s)", all_records.len());
 
