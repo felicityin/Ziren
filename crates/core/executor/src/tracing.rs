@@ -79,11 +79,10 @@ impl<'a> TracingVM<'a> {
         trace: &'a T,
         program: Arc<Program>,
         max_syscall_cycles: u32,
-        stdin: Arc<[Vec<u8>]>,
         record: &'a mut ExecutionRecord,
     ) -> Self {
         Self {
-            core: CoreVM::new(trace, program, max_syscall_cycles, stdin),
+            core: CoreVM::new(trace, program, max_syscall_cycles),
             record,
             local_memory_access: std::collections::HashMap::new(),
         }
@@ -2300,13 +2299,14 @@ impl<'a> TracingVM<'a> {
                 );
                 None
             }
-            // See `CoreVM::hint_len`/`CoreVM::advance_input_stream_ptr`'s doc comments: neither
-            // arm pops any oracle entries or touches RAM directly -- `SYSHINTREAD`'s seeding of
-            // `MinimalExecutor::hint_seed` only ever materializes into the oracle log the moment a
-            // real load/store first touches that address, exactly like every other RAM preimage.
-            SyscallCode::SYSHINTLEN => Some(self.core.hint_len()?),
+            // See `CoreVM::hint_len`/`CoreVM::advance_input_stream_ptr`'s doc comments:
+            // `SYSHINTLEN` pops one oracle entry; `SYSHINTREAD` pops none and never touches RAM
+            // directly -- its seeding of `MinimalExecutor::hint_seed` only ever materializes into
+            // the oracle log the moment a real load/store first touches that address, exactly like
+            // every other RAM preimage.
+            SyscallCode::SYSHINTLEN => Some(self.core.hint_len()),
             SyscallCode::SYSHINTREAD => {
-                self.core.advance_input_stream_ptr()?;
+                self.core.advance_input_stream_ptr();
                 None
             }
             SyscallCode::SYS_BRK => {
@@ -2734,7 +2734,7 @@ mod tests {
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing = TracingVM::new(&chunk, program, max_syscall_cycles, stdin, &mut record);
+        let mut tracing = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
         let status = tracing.execute().unwrap();
         assert_eq!(status, CoreVMStatus::Done, "expected the whole run to fit in one shard");
         let (registers, pc, clk) = (tracing.registers(), tracing.pc(), tracing.clk());
@@ -2980,7 +2980,7 @@ mod tests {
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         assert_eq!(record.add_events.len(), 1, "only the 3rd (register-register) ADD isn't Addi");
@@ -3044,7 +3044,7 @@ mod tests {
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         let by_addr: BTreeMap<u32, MemoryLocalEvent> =
@@ -3103,7 +3103,7 @@ mod tests {
         let max_syscall_cycles = minimal.max_syscall_cycles();
 
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         assert_eq!(record.add_events.len(), 2, "instructions 2 and 3 are both register-register ADD");
@@ -3217,7 +3217,7 @@ mod tests {
 
         let max_syscall_cycles = minimal.max_syscall_cycles();
         let mut record = ExecutionRecord::new(program.clone());
-        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, Arc::from([]), &mut record);
+        let mut tracing_vm = TracingVM::new(&chunk, program, max_syscall_cycles, &mut record);
         assert_eq!(tracing_vm.execute().unwrap(), CoreVMStatus::Done);
 
         assert_eq!(

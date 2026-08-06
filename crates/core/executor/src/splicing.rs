@@ -308,12 +308,11 @@ impl<'a> SplicingVM<'a> {
         trace: &'a T,
         program: Arc<Program>,
         max_syscall_cycles: u32,
-        stdin: Arc<[Vec<u8>]>,
         element_threshold: u64,
         height_threshold: u64,
     ) -> Self {
         let program_size = program.instructions.len() as u64;
-        let core = CoreVM::new(trace, program, max_syscall_cycles, stdin);
+        let core = CoreVM::new(trace, program, max_syscall_cycles);
         Self {
             shard_start_registers: core.registers(),
             shard_start_register_timestamps: core.register_timestamps(),
@@ -341,10 +340,9 @@ impl<'a> SplicingVM<'a> {
         trace: &'a T,
         program: Arc<Program>,
         max_syscall_cycles: u32,
-        stdin: Arc<[Vec<u8>]>,
     ) -> Self {
         Self {
-            core: CoreVM::new(trace, program, max_syscall_cycles, stdin),
+            core: CoreVM::new(trace, program, max_syscall_cycles),
             shape_checker: carry.shape_checker,
             shard_start_registers: carry.shard_start_registers,
             shard_start_register_timestamps: carry.shard_start_register_timestamps,
@@ -507,7 +505,6 @@ mod tests {
             &chunk,
             Arc::new(program()),
             max_syscall_cycles,
-            Arc::from([]),
             element_threshold,
             height_threshold,
         );
@@ -633,7 +630,6 @@ mod tests {
             &chunk,
             program.clone(),
             max_syscall_cycles,
-            Arc::from([]),
             u64::MAX / 2,
             u64::MAX / 2,
         );
@@ -653,13 +649,7 @@ mod tests {
                 SplicingStatus::TraceEnd => {
                     let carry = splicing.into_carry(&chunk);
                     chunk = minimal.try_execute_chunk().unwrap().expect("expected another chunk");
-                    splicing = SplicingVM::resume(
-                        carry,
-                        &chunk,
-                        program.clone(),
-                        max_syscall_cycles,
-                        Arc::from([]),
-                    );
+                    splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
                     num_chunk_resumes += 1;
                 }
             }
@@ -671,13 +661,8 @@ mod tests {
         assert_eq!(num_shards, 1, "generous thresholds should keep this to a single shard spanning every chunk");
 
         let mut record = crate::record::ExecutionRecord::new(program.clone());
-        let mut tracing = crate::tracing::TracingVM::new(
-            &spliced,
-            program,
-            max_syscall_cycles,
-            Arc::from([]),
-            &mut record,
-        );
+        let mut tracing =
+            crate::tracing::TracingVM::new(&spliced, program, max_syscall_cycles, &mut record);
         assert_eq!(
             tracing.execute().unwrap(),
             crate::vm::CoreVMStatus::Done,

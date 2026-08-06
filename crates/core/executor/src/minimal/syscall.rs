@@ -497,7 +497,13 @@ impl MinimalExecutor<'_> {
                 if self.input_stream_ptr >= self.stdin.len() {
                     return Err(ExecutionError::InvalidSyscallArgs());
                 }
-                Some(self.stdin[self.input_stream_ptr].len() as u32)
+                let len = self.stdin[self.input_stream_ptr].len() as u32;
+                // Oracle-logged (unlike the plain-stdin-only design this replaced): `stdin` can
+                // grow mid-run via `WRITE`'s `FD_HINT`/hook-fd cases, so `CoreVM`/`TracingVM` can
+                // no longer recompute this length independently from a fixed snapshot -- see
+                // `CoreVM::hint_len`'s doc comment.
+                self.oracle_log.push(crate::trace::MemValue { clk: 0, value: len });
+                Some(len)
             }
             SyscallCode::SYSHINTREAD => {
                 self.hint_read_dispatch(arg1, arg2)?;

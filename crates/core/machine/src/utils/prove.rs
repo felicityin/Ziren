@@ -76,17 +76,19 @@ pub fn prove_with_context(
     (Vec<ZkmShardProof>, Vec<u8>, u64, zkm_hypercube::MachineVerifyingKey<ZkmGlobalContext>),
     ZKMCoreProverError,
 > {
-    // `MinimalExecutor` reads plain `stdin.buffer` entries via `HINT_LEN`/`HINT_READ`, and
-    // `stdin.proofs`/`context.subproof_verifier` via `SYSVERIFY` -- only `hook_registry` and
-    // `max_cycles` remain unsupported.
-    assert!(
-        context.hook_registry.is_none() && context.max_cycles.is_none(),
-        "prove_with_context: hooks and a cycle-count limit are not yet supported"
-    );
+    // `MinimalExecutor` reads plain `stdin.buffer` entries via `HINT_LEN`/`HINT_READ`,
+    // `stdin.proofs`/`context.subproof_verifier` via `SYSVERIFY`, and now
+    // `context.hook_registry` via `WRITE`'s hook-fd/`FD_HINT` cases too -- only `max_cycles`
+    // remains unsupported for real proving (`ZKMProver::execute`'s dry run supports it).
+    assert!(context.max_cycles.is_none(), "prove_with_context: a cycle-count limit is not yet supported");
     let stdin_buffer: Arc<[Vec<u8>]> = Arc::from(stdin.buffer.clone());
     let proof_stream = stdin.proofs.clone();
     let subproof_verifier = context.subproof_verifier;
     let deferred_proof_verification_enabled = !context.skip_deferred_proof_verification;
+    // Mirrors `Executor::with_context`'s `context.hook_registry.unwrap_or_default()`: the 5
+    // built-in hooks stay active by default (matching `ZKMProver::execute`'s identical default),
+    // not just when a caller explicitly opts in.
+    let hook_registry = Some(context.hook_registry.unwrap_or_default());
 
     let machine = MipsAir::<KoalaBear>::hypercube_machine();
     // Fixed independently of `opts.shard_size` (the executor's cycle-count ceiling) -- see
@@ -154,6 +156,7 @@ pub fn prove_with_context(
                     proof_stream,
                     subproof_verifier,
                     deferred_proof_verification_enabled,
+                    hook_registry,
                 );
                 let mut index = 0;
                 loop {
@@ -239,7 +242,6 @@ pub fn prove_with_context(
             let deferred = Arc::clone(&deferred);
             let shard_sequence = Arc::clone(&p2_shard_sequence);
             let program = program_arc.clone();
-            let stdin_buffer = stdin_buffer.clone();
             let shard_prover = Arc::clone(&shard_prover);
             let machine = shard_prover.machine().clone();
             let pk = Arc::clone(&pk);
@@ -269,14 +271,7 @@ pub fn prove_with_context(
                         {
                             // Trace the shard and reconstruct the execution records.
                             let mut record = tracing::debug_span!("trace checkpoint")
-                                .in_scope(|| {
-                                    trace_shard(
-                                        program.clone(),
-                                        &spliced,
-                                        max_syscall_cycles,
-                                        stdin_buffer.clone(),
-                                    )
-                                })
+                                .in_scope(|| trace_shard(program.clone(), &spliced, max_syscall_cycles))
                                 .map_err(ZKMCoreProverError::ExecutionError)?;
                             if let Some((initialize_events, finalize_events)) = global_memory_events {
                                 record.global_memory_initialize_events = initialize_events;
@@ -790,7 +785,8 @@ use p3_uni_stark::Proof;
 mod tests {
     use super::*;
     use crate::programs::tests::{
-        halt_only_program, hello_world_program, simple_memory_program, simple_program,
+        halt_only_program, hello_world_program, hook_fp_inverse_program, simple_memory_program,
+        simple_program,
     };
 
     #[test]
@@ -845,6 +841,43 @@ mod tests {
         run_test(program).unwrap();
     }
 
+    /// Real proof/verify exercising a hook fd during real proving, not just `execute_fast`'s dry
+    /// run: `hook_fp_inverse_program` invokes the real built-in `fp_inverse` hook (default-active,
+    /// same as `ZKMProver::execute`'s default context -- see `prove_with_context`'s
+    /// `unwrap_or_default()` comment), reads its spliced result back via `SYSHINTLEN`/
+    /// `SYSHINTREAD`, and commits it as public values. Confirms the whole chain works through the
+    /// real pipeline: `MinimalExecutor`'s real hook invocation, `SYSHINTLEN`'s new oracle-logged
+    /// replay (`CoreVM`/`TracingVM` no longer recompute it from a fixed `stdin` snapshot), and the
+    /// hinted word materializing correctly into the shard's own trace via `LW`.
+    #[test]
+    fn run_test_hook_fp_inverse_real_proof() {
+        let program = hook_fp_inverse_program();
+        let (shard_proofs, public_values_stream, _cycles, vk) = prove_with_context(
+            program.clone(),
+            &ZKMStdin::new(),
+            ZKMCoreOpts::default(),
+            ZKMContext::default(),
+        )
+        .unwrap();
+
+        // 3 * 5 = 15 = 2*7 + 1, so 5 is the modular inverse of 3 mod 7.
+        assert_eq!(public_values_stream, vec![5, 0, 0, 0], "wrong fp_inverse hook result");
+
+        let machine = MipsAir::<KoalaBear>::hypercube_machine();
+        let max_log_row_count = CORE_MAX_LOG_ROW_COUNT;
+        let shard_verifier = ShardVerifier::from_basefold_parameters(
+            default_fri_config(),
+            CORE_LOG_STACKING_HEIGHT,
+            max_log_row_count,
+            machine,
+        );
+        for proof in &shard_proofs {
+            let mut challenger = ZkmGlobalContext::default_challenger();
+            vk.observe_into(&mut challenger);
+            shard_verifier.verify_shard(&vk, proof, &mut challenger).unwrap();
+        }
+    }
+
     /// Serial (single-threaded, no channels) re-implementation of `prove_with_context` +
     /// `run_test_core`'s verify loop, proving and verifying each record immediately as it's
     /// produced instead of pipelining trace generation/proving/verification across worker
@@ -891,7 +924,7 @@ mod tests {
             let (spliced, done) =
                 next_shard(&mut driver, program.clone(), element_threshold, height_threshold).unwrap();
             let mut record =
-                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles(), Arc::from([]))
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles())
                     .unwrap();
             if done {
                 let (init, fin) = driver.global_memory_events();
@@ -1015,7 +1048,7 @@ mod tests {
             let (spliced, done) =
                 next_shard(&mut driver, program.clone(), element_threshold, height_threshold).unwrap();
             let mut record =
-                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles(), Arc::from([]))
+                trace_shard(program.clone(), &spliced, driver.max_syscall_cycles())
                     .unwrap();
             if done {
                 let (init, fin) = driver.global_memory_events();

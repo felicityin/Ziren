@@ -294,15 +294,6 @@ impl<'a> MinimalExecutor<'a> {
         self.input_stream_ptr
     }
 
-    /// A snapshot of `stdin`, threaded into `CoreVM`/`TracingVM` alongside `program` so replay can
-    /// independently recompute `HINT_LEN`'s return value -- callers that never grow `stdin` at
-    /// runtime (every caller except `execute_fast`; see `Self::stdin`'s doc comment) can treat this
-    /// as if it were whole-run constant, taken once up front.
-    #[must_use]
-    pub(crate) fn stdin(&self) -> Arc<[Vec<u8>]> {
-        Arc::from(self.stdin.clone())
-    }
-
     /// The `max_syscall_cycles` this run used for `bump_clk_high_if_need`. `CoreVM` must be
     /// constructed with the *same* value or the two can silently disagree on `clk_high` window
     /// boundaries -- exposed so tests/callers never have to independently recompute (and

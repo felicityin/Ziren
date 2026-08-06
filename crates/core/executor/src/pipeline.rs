@@ -35,7 +35,7 @@ pub fn run_full_pipeline(
     element_threshold: u64,
     height_threshold: u64,
 ) -> Result<Vec<ExecutionRecord>, ExecutionError> {
-    let mut minimal = MinimalExecutor::new_with_stdin(program.clone(), max_trace_size, stdin.clone());
+    let mut minimal = MinimalExecutor::new_with_stdin(program.clone(), max_trace_size, stdin);
     let max_syscall_cycles = minimal.max_syscall_cycles();
 
     let mut chunk = minimal
@@ -45,7 +45,6 @@ pub fn run_full_pipeline(
         &chunk,
         program.clone(),
         max_syscall_cycles,
-        stdin.clone(),
         element_threshold,
         height_threshold,
     );
@@ -54,11 +53,11 @@ pub fn run_full_pipeline(
         match splicing.execute()? {
             SplicingStatus::ShardBoundary => {
                 let spliced = splicing.splice(&chunk);
-                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles, stdin.clone())?);
+                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles)?);
             }
             SplicingStatus::Done => {
                 let spliced = splicing.splice(&chunk);
-                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles, stdin.clone())?);
+                records.push(trace_shard(program.clone(), &spliced, max_syscall_cycles)?);
                 break;
             }
             SplicingStatus::TraceEnd => {
@@ -66,8 +65,7 @@ pub fn run_full_pipeline(
                 chunk = minimal
                     .try_execute_chunk()?
                     .expect("TraceEnd means the program hasn't halted, so another chunk follows");
-                splicing =
-                    SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles, stdin.clone());
+                splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
             }
         }
     }
@@ -135,10 +133,9 @@ pub fn trace_shard(
     program: Arc<Program>,
     spliced: &SplicedMinimalTrace,
     max_syscall_cycles: u32,
-    stdin: Arc<[Vec<u8>]>,
 ) -> Result<ExecutionRecord, ExecutionError> {
     let mut record = ExecutionRecord::new(program.clone());
-    let mut tracing = TracingVM::new(spliced, program, max_syscall_cycles, stdin, &mut record);
+    let mut tracing = TracingVM::new(spliced, program, max_syscall_cycles, &mut record);
     tracing.execute()?;
     Ok(record)
 }
@@ -163,7 +160,9 @@ impl<'a> ShardDriver<'a> {
         Self(MinimalExecutor::new_with_stdin(program, max_trace_size, stdin))
     }
 
-    /// The full constructor -- see `MinimalExecutor::new_with_context`'s doc comment.
+    /// The full constructor -- see `MinimalExecutor::new_with_context`'s doc comment. `max_cycles`
+    /// stays `None`: enforcing a cycle limit against the real proving pipeline (as opposed to
+    /// `execute_fast`'s dry run) isn't implemented yet.
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_context(
@@ -173,10 +172,8 @@ impl<'a> ShardDriver<'a> {
         proof_stream: Vec<(ZKMReduceProof<ZkmGlobalContext, ZkmPcsProofInner>, MachineVerifyingKey<ZkmGlobalContext>)>,
         subproof_verifier: Option<&'a dyn SubproofVerifier>,
         deferred_proof_verification_enabled: bool,
+        hook_registry: Option<HookRegistry<'a>>,
     ) -> Self {
-        // `hook_registry`/`max_cycles` stay `None`: `ShardDriver` only ever drives the real
-        // proving pipeline, which never sets either (see `MinimalExecutor::stdin`'s doc comment
-        // on why hooks are `execute_fast`-only).
         Self(MinimalExecutor::new_with_context(
             program,
             max_trace_size,
@@ -184,7 +181,7 @@ impl<'a> ShardDriver<'a> {
             proof_stream,
             subproof_verifier,
             deferred_proof_verification_enabled,
-            None,
+            hook_registry,
             None,
         ))
     }
@@ -247,7 +244,6 @@ pub fn next_shard(
 ) -> Result<(SplicedMinimalTrace, bool), ExecutionError> {
     let minimal = &mut driver.0;
     let max_syscall_cycles = minimal.max_syscall_cycles();
-    let stdin = minimal.stdin();
     let mut chunk = minimal
         .try_execute_chunk()?
         .expect("next_shard must not be called again after a previous call returned done == true");
@@ -255,7 +251,6 @@ pub fn next_shard(
         &chunk,
         program.clone(),
         max_syscall_cycles,
-        stdin.clone(),
         element_threshold,
         height_threshold,
     );
@@ -268,8 +263,7 @@ pub fn next_shard(
                 chunk = minimal
                     .try_execute_chunk()?
                     .expect("TraceEnd means the program hasn't halted, so another chunk follows");
-                splicing =
-                    SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles, stdin.clone());
+                splicing = SplicingVM::resume(carry, &chunk, program.clone(), max_syscall_cycles);
             }
         }
     }
