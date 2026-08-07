@@ -72,18 +72,17 @@ const DEFAULT_RECORDS_AND_TRACES_CHANNEL_CAPACITY: usize = DEFAULT_TRACE_GEN_WOR
 /// The threshold for splitting deferred events.
 pub const MAX_DEFERRED_SPLIT_THRESHOLD: usize = 1 << 15;
 
-/// The default maximum estimated trace area (in bytes, via
-/// `zkm_core_executor::cost::estimate_mips_lde_size`) before a shard is stopped early.
+/// The default maximum trace area (in raw cells, matching `mips_costs.json`'s per-row costs)
+/// `SplicingVM`'s `ShapeChecker` (`zkm_core_executor::splicing`) allows before cutting a shard.
 ///
 /// This is a correctness bound, not just an OOM guard: the jagged PCS rejects a proof with
 /// `AreaOutOfBounds` once a shard's combined preprocessed-plus-main padded cell count (row count
 /// times column count, summed across every committed chip in both rounds) reaches `2^29` -- see
 /// `slop_jagged::verifier::JaggedPcsVerifier::verify_trusted_evaluations`'s `log_m >= 30` check,
-/// where `log_m` is `ceil(log2(total padded cell count))`. `estimate_mips_lde_size` folds
-/// `preprocessed_width + main_width` per chip into one combined cell count matching that same
-/// total; at `cells * 8` bytes, the ceiling is `2^32` bytes (4 GiB). The threshold here is
-/// `7 * 2^29` bytes (3.5 GiB, 12.5% margin below that ceiling).
-pub const DEFAULT_LDE_SIZE_THRESHOLD: u64 = 7 * (1 << 29);
+/// where `log_m` is `ceil(log2(total padded cell count))`. `ShapeChecker` accumulates that same
+/// combined cell count directly (no byte conversion, matching `mips_costs.json`'s own units); the
+/// threshold here is `7 * 2^26` cells, a 12.5% margin below that `2^29`-cell ceiling.
+pub const DEFAULT_ELEMENT_THRESHOLD: u64 = 7 * (1 << 26);
 
 /// Options to configure the Ziren prover for core and recursive proofs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,8 +214,12 @@ pub struct ZKMCoreOpts {
     pub records_and_traces_channel_capacity: usize,
     /// The frequency for shape checks.
     pub shape_check_frequency: u64,
-    /// The maximum estimated LDE size (in bytes) before a shard is stopped early to avoid OOM.
-    pub lde_size_threshold: u64,
+    /// The maximum trace area (in raw cells) `SplicingVM`'s `ShapeChecker` allows before cutting a
+    /// shard -- see [`DEFAULT_ELEMENT_THRESHOLD`]. Paired with
+    /// `zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD` (a fixed architectural constant tied to
+    /// `CORE_MAX_LOG_ROW_COUNT`, not independently configurable) as the two thresholds
+    /// `ShapeChecker` checks every instruction.
+    pub element_threshold: u64,
 }
 
 impl Default for ZKMCoreOpts {
@@ -254,9 +257,9 @@ impl Default for ZKMCoreOpts {
                 ),
             shape_check_frequency: env::var("SHAPE_CHECK_FREQUENCY")
                 .map_or_else(|_| 16, |s| s.parse::<u64>().unwrap_or(16)),
-            lde_size_threshold: env::var("LDE_SIZE_THRESHOLD").map_or_else(
-                |_| DEFAULT_LDE_SIZE_THRESHOLD,
-                |s| s.parse::<u64>().unwrap_or(DEFAULT_LDE_SIZE_THRESHOLD),
+            element_threshold: env::var("ELEMENT_THRESHOLD").map_or_else(
+                |_| DEFAULT_ELEMENT_THRESHOLD,
+                |s| s.parse::<u64>().unwrap_or(DEFAULT_ELEMENT_THRESHOLD),
             ),
             reconstruct_commitments: true,
         };
@@ -328,9 +331,9 @@ impl ZKMCoreOpts {
                 ),
             shape_check_frequency: env::var("SHAPE_CHECK_FREQUENCY")
                 .map_or_else(|_| 16, |s| s.parse::<u64>().unwrap_or(16)),
-            lde_size_threshold: env::var("LDE_SIZE_THRESHOLD").map_or_else(
-                |_| DEFAULT_LDE_SIZE_THRESHOLD,
-                |s| s.parse::<u64>().unwrap_or(DEFAULT_LDE_SIZE_THRESHOLD),
+            element_threshold: env::var("ELEMENT_THRESHOLD").map_or_else(
+                |_| DEFAULT_ELEMENT_THRESHOLD,
+                |s| s.parse::<u64>().unwrap_or(DEFAULT_ELEMENT_THRESHOLD),
             ),
             reconstruct_commitments: true,
         }

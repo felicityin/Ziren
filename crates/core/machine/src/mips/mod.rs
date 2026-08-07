@@ -924,7 +924,7 @@ pub mod tests {
             let (spliced, done) = next_shard(
                 &mut driver,
                 program.clone(),
-                zkm_stark::ZKMCoreOpts::default().lde_size_threshold,
+                zkm_stark::ZKMCoreOpts::default().element_threshold,
                 zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
             )
             .unwrap();
@@ -1680,7 +1680,7 @@ pub mod tests {
         assert!(
             debug_new_pipeline_interactions_balance(
                 hello_world_program(),
-                opts.lde_size_threshold,
+                opts.element_threshold,
                 zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
                 zkm_hypercube::air::LookupScope::Local,
             ),
@@ -1773,7 +1773,7 @@ pub mod tests {
         assert!(
             debug_new_pipeline_interactions_balance(
                 fibonacci_program(),
-                opts.lde_size_threshold,
+                opts.element_threshold,
                 zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
                 zkm_hypercube::air::LookupScope::Local,
             ),
@@ -1792,7 +1792,7 @@ pub mod tests {
         assert!(
             debug_new_pipeline_interactions_balance(
                 sha3_chain_program(),
-                opts.lde_size_threshold,
+                opts.element_threshold,
                 zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
                 zkm_hypercube::air::LookupScope::Local,
             ),
@@ -1806,7 +1806,7 @@ pub mod tests {
         assert!(
             debug_new_pipeline_global_interactions_balance(
                 sha3_chain_program(),
-                opts.lde_size_threshold,
+                opts.element_threshold,
                 zkm_core_executor::CORE_SHARD_HEIGHT_THRESHOLD,
             ),
             "global-scope send/receive interactions don't balance under real sharding thresholds"

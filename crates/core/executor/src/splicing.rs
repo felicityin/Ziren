@@ -6,12 +6,23 @@
 //! [`ShapeChecker`] accumulates a running `trace_area`/per-chip `heights` off the existing
 //! `mips_costs.json` cost table, checked with one comparison every instruction, and cuts a shard
 //! when either crosses its configured threshold. `trace_area` tracks the same *padded* total the
-//! legacy `estimate_mips_lde_size` computes (each chip's height rounded up to its own next power
-//! of two before being priced, matching the real committed trace) -- `add()` keeps this O(1) per
-//! instruction by adding only the delta between a chip's old and new padded height rather than
-//! recomputing the padded total from scratch. Shard boundaries may still differ from the legacy
-//! executor's; only total-execution correctness across all shards is required to match (verified
-//! by this file's own tests).
+//! legacy `estimate_mips_lde_size` computes, in the same raw-cell units `mips_costs.json` itself
+//! uses (each chip's height rounded up to its own next multiple of 32 before being priced,
+//! matching the real committed trace) -- no byte conversion; `element_threshold`
+//! (`opts.element_threshold`) is denominated the same way, see its doc comment.
+//! `add_n()` keeps this O(1) per instruction by adding only the delta between a chip's old and new
+//! padded height rather than recomputing the padded total from scratch. `record_instruction` also
+//! prices in `Global`/`MemoryLocal`/`SyscallCore`, which `opcode_air_id`/`precompile_air_ids` alone never
+//! route to (see its doc comment) -- omitting them let a precompile-light but touch-heavy shard's
+//! true committed area grow undetected past the safety threshold. `Global`/`MemoryLocal` are priced
+//! off the *exact*, deduplicated set of addresses touched this shard: registers are assumed all
+//! touched via a flat per-shard baseline, RAM addresses are tracked exactly via `CoreVM::mem_touch`,
+//! precompile-internal touches are approximated per call via `MAX_SYSCALL_TOUCHED_WORDS` --
+//! naively adding a flat per-instruction estimate regardless of dedup was tried and rejected: real
+//! loops repeatedly touch the same handful of addresses, and a non-deduplicated estimate grows
+//! without bound across a loop's iterations, degenerating into a shard cut on nearly every
+//! instruction. Shard boundaries may still differ from the legacy executor's; only total-execution
+//! correctness across all shards is required to match (verified by this file's own tests).
 //!
 //! A `SplicingVM<'a>` borrows one `MinimalExecutor` chunk's oracle log at a time (via `CoreVM`'s
 //! own lifetime-bound cursor), but a shard's own instructions are not required to fit within a
@@ -42,16 +53,35 @@ use crate::{
 
 const BYTE_NUM_ROWS: u64 = 1 << 16;
 
+/// Conservative RAM-word-touch estimate for one retained precompile call, keyed by the syscall's
+/// own `arg1` pointer and deduplicated the same way real RAM touches are (see
+/// [`ShapeChecker::record_instruction`]) -- so a hash-chain-style loop calling the same precompile
+/// on the same buffer repeatedly only prices it once per shard, instead of once per call. Sized to
+/// `U256XU2048_MUL`'s own operand footprint (`vm::U256_NUM_WORDS` + `vm::U2048_NUM_WORDS` for `a`/
+/// `lo`, twice more for `b`/`hi`: 8 + 64 + 64 + 8 = 144 words), the largest RAM footprint of any
+/// retained precompile -- safe (never under-counts) for every other family.
+const MAX_SYSCALL_TOUCHED_WORDS: u64 = 144;
+
 /// Per-instruction shard-cut heuristic. Accumulates a running (unpadded -- see the module doc's
 /// precision note) `trace_area` and per-chip `heights`, checked with a single comparison every
 /// instruction.
 pub(crate) struct ShapeChecker {
     costs: HashMap<MipsAirId, u64>,
     baseline: u64,
+    /// `heights` snapshot right after `new()`'s fixed per-shard baseline (byte/program rows plus
+    /// the assumed-all-registers-touched `Global`/`MemoryLocal` rows) is priced in -- `add_n`'s
+    /// padding-delta math is only correct if `heights` reflects everything already folded into
+    /// `trace_area`, so `start_new_shard()` must restore *this*, not an empty map, alongside
+    /// resetting `trace_area` to `baseline`.
+    baseline_heights: HashMap<MipsAirId, u64>,
     trace_area: u64,
     heights: HashMap<MipsAirId, u64>,
     element_threshold: u64,
     height_threshold: u64,
+    /// Addresses (RAM, word-aligned; or a precompile's `arg1` pointer) already priced into
+    /// `Global`/`MemoryLocal` this shard -- mirrors the real chips' own "first touch per shard"
+    /// row-emission rule (see `record_instruction`'s doc comment), reset every `start_new_shard()`.
+    touched_addresses: hashbrown::HashSet<u32>,
 }
 
 impl ShapeChecker {
@@ -65,14 +95,25 @@ impl ShapeChecker {
         // than re-derived per instruction.
         let baseline = BYTE_NUM_ROWS * costs.get(&MipsAirId::Byte).copied().unwrap_or(0)
             + program_size * costs.get(&MipsAirId::Program).copied().unwrap_or(0);
-        Self {
+        let mut checker = Self {
             costs,
             baseline,
+            baseline_heights: HashMap::new(),
             trace_area: baseline,
             heights: HashMap::new(),
             element_threshold,
             height_threshold,
-        }
+            touched_addresses: hashbrown::HashSet::new(),
+        };
+        // A shard of any real size touches virtually every register anyway -- assume all of them
+        // up front instead of exactly tracking each register's first touch, since the resulting
+        // estimate is both cheap and, for any shard beyond a handful of instructions,
+        // indistinguishable from exact.
+        checker.add_n(MipsAirId::Global, 2 * NUM_REGISTERS as u64);
+        checker.add_n(MipsAirId::MemoryLocal, NUM_REGISTERS as u64);
+        checker.baseline = checker.trace_area;
+        checker.baseline_heights = checker.heights.clone();
+        checker
     }
 
     /// Tracks `trace_area` as the *padded* total, matching the real committed trace exactly:
@@ -81,37 +122,69 @@ impl ShapeChecker {
     /// `pad_rows_fixed` usage). Recomputing each chip's padded contribution from scratch on every
     /// `add()` would need an O(distinct chips touched) scan; instead, only the *delta* between
     /// this chip's old and new padded height is added, keeping `add()` O(1) while `trace_area`
-    /// stays exactly in sync with what the real commit will pad to.
-    fn add(&mut self, air_id: MipsAirId) {
+    /// stays exactly in sync with what the real commit will pad to. `count` lets a single call
+    /// account for more than one new row at once (a precompile's `MAX_SYSCALL_TOUCHED_WORDS`),
+    /// still `add()`-ing the padding delta only once per call.
+    fn add_n(&mut self, air_id: MipsAirId, count: u64) {
+        if count == 0 {
+            return;
+        }
         let cost = self.costs.get(&air_id).copied().unwrap_or(0);
         let height = self.heights.entry(air_id).or_insert(0);
         let pad = |h: u64| h.next_multiple_of(zkm_primitives::consts::TRACE_PAD_MULTIPLE as u64).max(16);
         let old_padded = if *height == 0 { 0 } else { pad(*height) };
-        *height += 1;
+        *height += count;
         let new_padded = pad(*height);
         self.trace_area += (new_padded - old_padded) * cost;
     }
 
-    /// Classifies and accounts for one retired instruction, plus its syscall code if it was a
-    /// `SYSCALL`. A pragmatic classifier (see the module doc): covers the common ADD/ADDI split
-    /// (the only one that matters for realistic cost -- fully-immediate `ADD $rd, $zero, imm`,
-    /// used constantly by this crate's own `load_imm`-style constant-loading, stays on `Add` per
-    /// `execute_operation`'s own routing comment) and one entry per opcode/chip elsewhere; it does
-    /// **not** replicate every AIR chip's `op_a == 0`-destination special case (`AluX0`/`LoadX0`)
-    /// -- those exist purely to shrink *proving* cost for a rare real-code idiom and have no
-    /// bearing on whether a shard-sizing estimate is safe, which is the only thing this function
-    /// needs to get right (per-chip attribution doesn't need to be exact, only monotonic and
-    /// safe).
+    fn add(&mut self, air_id: MipsAirId) {
+        self.add_n(air_id, 1);
+    }
+
+    /// Prices a newly-touched address into `Global`/`MemoryLocal` (real cost `2 * touched + sent` /
+    /// `touched`, `cost.rs`'s `estimate_mips_event_counts`), `words` rows at once -- a no-op if
+    /// `addr` was already touched this shard, mirroring the real chips' first-touch-per-shard rule.
+    fn touch(&mut self, addr: u32, words: u64) {
+        if self.touched_addresses.insert(addr) {
+            self.add_n(MipsAirId::Global, 2 * words);
+            self.add_n(MipsAirId::MemoryLocal, words);
+        }
+    }
+
+    /// Classifies and accounts for one retired instruction, plus its RAM touch (if it was a load/
+    /// store) and syscall code/`arg1` (if it was a `SYSCALL`). A pragmatic opcode classifier (see
+    /// the module doc): covers the common ADD/ADDI split (the only one that matters for realistic
+    /// cost -- fully-immediate `ADD $rd, $zero, imm`, used constantly by this crate's own
+    /// `load_imm`-style constant-loading, stays on `Add` per `execute_operation`'s own routing
+    /// comment) and one entry per opcode/chip elsewhere; it does **not** replicate every AIR
+    /// chip's `op_a == 0`-destination special case (`AluX0`/`LoadX0`) -- those exist purely to
+    /// shrink *proving* cost for a rare real-code idiom and have no bearing on whether a
+    /// shard-sizing estimate is safe, which is the only thing this function needs to get right
+    /// (per-chip attribution doesn't need to be exact, only monotonic and safe).
+    ///
+    /// `mem_touch` (a load/store's own word-aligned RAM address, from `CoreVM::mem_touch`) prices
+    /// exactly one new `Global`/`MemoryLocal` touch when it's new to this shard. `syscall` (the
+    /// syscall's code plus its `arg1` pointer) additionally prices `SyscallCore` (real cost: one
+    /// row per syscall) and, the first time a given `arg1` is seen this shard,
+    /// `MAX_SYSCALL_TOUCHED_WORDS` worth of `Global`/`MemoryLocal` -- see that constant's doc
+    /// comment for why `arg1` alone is an adequate (safe, not exact) dedup key.
     pub(crate) fn record_instruction(
         &mut self,
         instruction: &Instruction,
-        syscall_code: Option<SyscallCode>,
+        mem_touch: Option<u32>,
+        syscall: Option<(SyscallCode, u32)>,
     ) {
         self.add(opcode_air_id(instruction));
-        if let Some(code) = syscall_code {
+        if let Some(addr) = mem_touch {
+            self.touch(addr, 1);
+        }
+        if let Some((code, arg1)) = syscall {
+            self.add(MipsAirId::SyscallCore);
             for &air_id in precompile_air_ids(code) {
                 self.add(air_id);
             }
+            self.touch(arg1 & !3, MAX_SYSCALL_TOUCHED_WORDS);
         }
     }
 
@@ -130,7 +203,8 @@ impl ShapeChecker {
 
     fn start_new_shard(&mut self) {
         self.trace_area = self.baseline;
-        self.heights.clear();
+        self.heights.clone_from(&self.baseline_heights);
+        self.touched_addresses.clear();
     }
 }
 
@@ -422,12 +496,12 @@ impl<'a> SplicingVM<'a> {
         // at least one instruction has actually retired.
         loop {
             let instruction = self.core.program().fetch(self.core.pc());
-            let syscall_code = instruction
-                .is_syscall_instruction()
-                .then(|| SyscallCode::from_u32(self.core.reg_peek(Register::V0)));
+            let syscall = instruction.is_syscall_instruction().then(|| {
+                (SyscallCode::from_u32(self.core.reg_peek(Register::V0)), self.core.reg_peek(Register::A0))
+            });
 
             self.core.execute_instruction()?;
-            self.shape_checker.record_instruction(&instruction, syscall_code);
+            self.shape_checker.record_instruction(&instruction, self.core.mem_touch(), syscall);
 
             if self.core.is_halted() {
                 return Ok(SplicingStatus::Done);
@@ -683,38 +757,119 @@ mod tests {
     /// `crates/core/machine/src/utils/mod.rs`'s `next_multiple_of_32`), not the raw per-row cost
     /// -- otherwise `trace_area` can stay under `element_threshold` right up to the real committed
     /// area exceeding the jagged PCS's hard `AreaOutOfBounds` ceiling, since a shard is never cut.
-    /// Confirmed by driving a chip's height from 1 up to 32 (all pad to the same 32, since 32 is
+    /// Confirmed by driving `Add`'s height from 1 up to 32 (all pad to the same 32, since 32 is
     /// the smallest multiple of 32 that is >= 1 -- the `.max(16)` floor never actually applies for
     /// any real row count) and then across the 32 -> 33 boundary, landing on the full padding
-    /// delta (64 - 32 rows), not one row.
+    /// delta (64 - 32 rows), not one row. `ADD` neither touches RAM nor is a syscall, so it prices
+    /// only the `Add` chip (see `record_instruction`'s doc comment).
     #[test]
     fn shape_checker_trace_area_tracks_padded_cost_per_chip() {
-        let add_cost = crate::utils::mips_costs()[&MipsAirId::Add] as u64;
+        let costs = crate::utils::mips_costs();
+        let add_cost = costs[&MipsAirId::Add] as u64;
+        let pad = |h: u64| h.next_multiple_of(32).max(16);
         let mut checker = ShapeChecker::new(0, u64::MAX / 2, u64::MAX / 2);
         let baseline = checker.current_totals().0;
         let add_instruction = Instruction::new(Opcode::ADD, 8, 9, 10, false, false);
+        let expected = |n: u64| baseline + pad(n) * add_cost;
 
-        checker.record_instruction(&add_instruction, None);
+        checker.record_instruction(&add_instruction, None, None);
         assert_eq!(
             checker.current_totals().0,
-            baseline + 32 * add_cost,
+            expected(1),
             "a single real row already pads up to 32 (the smallest multiple of 32 that is >= 1)"
         );
 
         for _ in 2..=32 {
-            checker.record_instruction(&add_instruction, None);
+            checker.record_instruction(&add_instruction, None, None);
         }
         assert_eq!(
             checker.current_totals().0,
-            baseline + 32 * add_cost,
+            expected(32),
             "32 rows is already a multiple of 32, so it pads to itself"
         );
 
-        checker.record_instruction(&add_instruction, None);
+        checker.record_instruction(&add_instruction, None, None);
         assert_eq!(
             checker.current_totals().0,
-            baseline + 64 * add_cost,
+            expected(33),
             "the 33rd row must pad the chip's committed height from 32 up to 64, not to 33"
+        );
+    }
+
+    /// A load/store repeatedly touching the *same* address within one shard (a tight loop reading
+    /// a loop counter or accumulator, the common case in real code) must only price `Global`/
+    /// `MemoryLocal` once, matching the real chips' first-touch-per-shard row-emission rule --
+    /// otherwise a long-enough loop drives `trace_area` unboundedly high and every shard degenerates
+    /// to a handful of instructions, regardless of how generous `element_threshold` is.
+    #[test]
+    fn shape_checker_dedupes_repeated_ram_touches_within_a_shard() {
+        let costs = crate::utils::mips_costs();
+        let load_cost = costs[&MipsAirId::LoadWord] as u64;
+        let pad = |h: u64| h.next_multiple_of(32).max(16);
+        let mut checker = ShapeChecker::new(0, u64::MAX / 2, u64::MAX / 2);
+        let lw_instruction = Instruction::new(Opcode::LW, 8, 9, 0, false, true);
+
+        checker.record_instruction(&lw_instruction, Some(0x1000), None);
+        let after_first_touch = checker.current_totals().0;
+
+        for _ in 0..1000 {
+            checker.record_instruction(&lw_instruction, Some(0x1000), None);
+        }
+        // `LoadWord`'s own height still grows to 1001 every call (that's correct: each retired LW
+        // is a real row) -- only `Global`/`MemoryLocal`'s contribution must stay flat, since every
+        // one of these touches hits the same address.
+        assert_eq!(
+            checker.current_totals().0,
+            after_first_touch + (pad(1001) - pad(1)) * load_cost,
+            "1000 repeated touches to the same address must not grow Global/MemoryLocal past the \
+             first touch, only LoadWord's own height"
+        );
+
+        // A single new address may land in the same padding bucket as what's already touched (no
+        // visible growth yet, itself a correct outcome -- see `add_n`'s doc comment) -- touch
+        // enough distinct new addresses to guarantee crossing at least one real padding boundary.
+        let before_new_addresses = checker.current_totals().0;
+        for i in 0..64u32 {
+            checker.record_instruction(&lw_instruction, Some(0x2000 + 4 * i), None);
+        }
+        let load_word_only_growth = (pad(1065) - pad(1001)) * load_cost;
+        assert!(
+            checker.current_totals().0 > before_new_addresses + load_word_only_growth,
+            "64 genuinely new addresses must still grow Global/MemoryLocal beyond LoadWord's own \
+             growth"
+        );
+    }
+
+    /// Mirrors the RAM-touch dedup test above, but for a precompile's `arg1`-keyed touch: a
+    /// hash-chain-style loop calling the same syscall on the same buffer repeatedly must only price
+    /// `MAX_SYSCALL_TOUCHED_WORDS` once, not once per call.
+    #[test]
+    fn shape_checker_dedupes_repeated_syscall_touches_within_a_shard() {
+        let mut checker = ShapeChecker::new(0, u64::MAX / 2, u64::MAX / 2);
+        let syscall_instruction = Instruction::new(Opcode::SYSCALL, 0, 0, 0, false, false);
+
+        checker.record_instruction(&syscall_instruction, None, Some((SyscallCode::SHA_EXTEND, 0x1000)));
+        let after_first_call = checker.current_totals().0;
+
+        for _ in 0..100 {
+            checker.record_instruction(
+                &syscall_instruction,
+                None,
+                Some((SyscallCode::SHA_EXTEND, 0x1000)),
+            );
+        }
+        assert!(
+            checker.current_totals().0 > after_first_call,
+            "SyscallCore/the precompile's own chip still accrue cost every call"
+        );
+        let after_repeated_calls = checker.current_totals().0;
+
+        checker.record_instruction(&syscall_instruction, None, Some((SyscallCode::SHA_EXTEND, 0x2000)));
+        assert!(
+            checker.current_totals().0 - after_repeated_calls
+                >= MAX_SYSCALL_TOUCHED_WORDS * (checker.costs[&MipsAirId::Global] * 2
+                    + checker.costs[&MipsAirId::MemoryLocal]),
+            "a genuinely new arg1 pointer must price a fresh MAX_SYSCALL_TOUCHED_WORDS touch"
         );
     }
 }

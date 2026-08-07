@@ -708,11 +708,13 @@ pub(crate) struct CoreVM<'a> {
     /// why), so this cursor is carried purely for `SplicingVM` to snapshot at each shard boundary,
     /// not for any local recomputation.
     input_stream_ptr: usize,
+    /// See [`Self::mem_touch`].
+    mem_touch: Option<u32>,
 }
 
-/// The result of replaying up to a chunk/shard boundary. `TraceEnd` mirrors SP1's `CycleResult`:
-/// the oracle log for this `MinimalTrace` is exhausted (`clk == clk_end`), but the program itself
-/// has not halted -- a later `MinimalTrace`/chunk continues it.
+/// The result of replaying up to a chunk/shard boundary. `TraceEnd` means the oracle log for this
+/// `MinimalTrace` is exhausted (`clk == clk_end`), but the program itself has not halted -- a
+/// later `MinimalTrace`/chunk continues it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CoreVMStatus {
     /// The program halted for real (explicit `HALT` syscall, or ran off the end of the program).
@@ -745,6 +747,7 @@ impl<'a> CoreVM<'a> {
             mem_reads: trace.mem_reads(),
             program,
             input_stream_ptr: trace.start_input_stream_ptr(),
+            mem_touch: None,
         }
     }
 
@@ -962,9 +965,22 @@ impl<'a> CoreVM<'a> {
     pub(crate) fn execute_instruction(&mut self) -> Result<(), ExecutionError> {
         let instruction = self.program.fetch(self.pc);
         self.clk = bump_clk_high_if_need(self.clk, self.max_syscall_cycles);
+        self.mem_touch = None;
         self.execute_operation(&instruction)?;
         self.clk += 5;
         Ok(())
+    }
+
+    /// The word-aligned RAM address this instruction's `execute_load`/`execute_store` touched, if
+    /// any -- `None` for every other instruction kind. Reset to `None` at the top of every
+    /// `execute_instruction()` call, so this only ever reflects the *most recently retired*
+    /// instruction. Used by `SplicingVM`'s `ShapeChecker` to price `Global`/`MemoryLocal` off the
+    /// exact, deduplicated set of RAM addresses touched this shard, mirroring how the real chips
+    /// only emit a row for an address's first touch per shard -- `TracingVM` has no need for this
+    /// (it already tracks exact touches itself, via its own `touch_local`).
+    #[must_use]
+    pub(crate) fn mem_touch(&self) -> Option<u32> {
+        self.mem_touch
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1073,6 +1089,7 @@ impl<'a> CoreVM<'a> {
         let rt = self.reg(rt_reg);
 
         let addr = rs_raw.wrapping_add(offset);
+        self.mem_touch = Some(addr & !3);
         let mem = self.next_oracle_value();
         let rs = addr;
 
@@ -1134,6 +1151,7 @@ impl<'a> CoreVM<'a> {
         let rt = self.reg(rt_reg);
 
         let addr = rs.wrapping_add(offset);
+        self.mem_touch = Some(addr & !3);
         let mem = self.next_oracle_value();
 
         // Kept for exact parity with `MinimalExecutor::execute_store` even though a validly-

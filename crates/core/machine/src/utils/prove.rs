@@ -112,10 +112,10 @@ pub fn prove_with_context(
     // where shards actually get cut) -- reuses `shard_size`, the same value the legacy executor
     // interprets as its own per-shard cycle-count ceiling.
     let max_trace_size = opts.shard_size as u64;
-    // `SplicingVM`'s shard-cut thresholds: `lde_size_threshold` bounds a shard's committed LDE
+    // `SplicingVM`'s shard-cut thresholds: `element_threshold` bounds a shard's committed trace
     // area (a correctness bound tied to the jagged PCS's cell-count rejection);
     // `CORE_SHARD_HEIGHT_THRESHOLD` bounds any single chip's real row count within a shard.
-    let element_threshold = opts.lde_size_threshold;
+    let element_threshold = opts.element_threshold;
     let height_threshold = CORE_SHARD_HEIGHT_THRESHOLD;
 
     let setup_rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
@@ -875,7 +875,7 @@ mod tests {
     }
 
     /// Real proof/verify over a precompile-heavy program (25 `KECCAK_SPONGE` calls) with a tiny
-    /// `lde_size_threshold` and a tiny `SplitOpts` threshold, so `SplicingVM` cuts many real
+    /// `element_threshold` and a tiny `SplitOpts` threshold, so `SplicingVM` cuts many real
     /// shards from few `MinimalExecutor` chunks (some chunks yielding more than one shard) and
     /// the run's deferred precompile events cross the flush threshold on a checkpoint well before
     /// the run's `done` checkpoint -- exercising both "more than one shard per chunk" and
@@ -907,10 +907,13 @@ mod tests {
         let mut opts = ZKMCoreOpts::default();
         opts.shard_size = 4096;
         // `prove_with_context` hardcodes `height_threshold` to `CORE_SHARD_HEIGHT_THRESHOLD` and
-        // only reads `element_threshold` from `opts.lde_size_threshold` -- shrink that (from its
-        // ~3.76B default) so `SplicingVM` actually cuts multiple real shards for this small
-        // guest, instead of fitting the whole run into one.
-        opts.lde_size_threshold = 2_000_000;
+        // only reads `element_threshold` from `opts.element_threshold` -- shrink that (from its
+        // ~470M default) so `SplicingVM` actually cuts multiple real shards for this small guest,
+        // instead of fitting the whole run into one. Below roughly 2M, `ShapeChecker::new`'s fixed
+        // per-shard baseline (byte/program-chip rows plus the assumed-all-registers-touched cost)
+        // alone already exceeds the threshold, degenerating into a shard cut on nearly every
+        // instruction -- this value sits well clear of that floor.
+        opts.element_threshold = 3_000_000;
         // `keccak = 8 * 24 / 24 = 8`: a full deferred-shard chunk needs only 8 `KECCAK_SPONGE`
         // events, well under the 25 calls the guest makes, so at least one flush happens with
         // `done == false`.
@@ -1009,7 +1012,7 @@ mod tests {
         let prover_permits = ProverSemaphore::new(1);
 
         let opts = ZKMCoreOpts::default();
-        let element_threshold = opts.lde_size_threshold;
+        let element_threshold = opts.element_threshold;
         let height_threshold = CORE_SHARD_HEIGHT_THRESHOLD;
 
         let mut driver = ShardDriver::new(program.clone(), opts.shard_size as u64);
@@ -1133,7 +1136,7 @@ mod tests {
 
         let mut opts = ZKMCoreOpts::default();
         opts.shard_size = 4096;
-        let element_threshold = opts.lde_size_threshold;
+        let element_threshold = opts.element_threshold;
         let height_threshold = CORE_SHARD_HEIGHT_THRESHOLD;
 
         let mut driver = ShardDriver::new(program.clone(), opts.shard_size as u64);
