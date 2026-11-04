@@ -1,4 +1,6 @@
 use core::borrow::Borrow;
+#[cfg(target_os = "zkvm")]
+use itertools::Itertools;
 use std::{borrow::BorrowMut, iter::zip};
 
 use p3_air::{Air, BaseAir, WindowAccess};
@@ -65,6 +67,10 @@ impl<F: Field> BaseAir<F> for ExtAluChip {
     fn width(&self) -> usize {
         NUM_EXT_ALU_COLS
     }
+
+    fn preprocessed_width(&self) -> usize {
+        NUM_EXT_ALU_PREPROCESSED_COLS
+    }
 }
 
 impl<F: PrimeField32 + BinomiallyExtendable<D>> MachineAir<F> for ExtAluChip {
@@ -76,10 +82,6 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>> MachineAir<F> for ExtAluChip {
 
     fn name(&self) -> String {
         "ExtAlu".to_string()
-    }
-
-    fn preprocessed_width(&self) -> usize {
-        NUM_EXT_ALU_PREPROCESSED_COLS
     }
 
     fn preprocessed_num_rows(&self, program: &Self::Program, instrs_len: usize) -> Option<usize> {

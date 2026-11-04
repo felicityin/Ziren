@@ -1,7 +1,7 @@
 //! SHA-256 extend control chip: the two endpoints of the
 //! [`LookupKind::PrecompileChain`] state-chaining bus for SHA-256 extend.
 //!
-//! The single-row BaseFold zerocheck folder sees no neighbouring row, so the
+//! The single-row jagged zerocheck folder sees no neighbouring row, so the
 //! per-row loop index is sequenced on a LogUp bus. This control chip emits
 //! exactly one row per `SHA_EXTEND` syscall: it receives the syscall, sends
 //! the initial index `i = 16`, and receives the final index `i = 64`.  Each `ShaExtendChip` worker row receives `i` and sends `i + 1`,
@@ -75,7 +75,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_multiple_of_32(
             input.get_precompile_events(SyscallCode::SHA_EXTEND).len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <Self as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -112,11 +112,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaExtendControlChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::SHA_EXTEND).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::SHA_EXTEND).is_empty()
     }
 }
 

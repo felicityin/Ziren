@@ -40,7 +40,7 @@ impl<F: PrimeField32> MachineAir<F> for SyscallInstrsChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_multiple_of_32(
             input.syscall_events.len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <SyscallInstrsChip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -80,11 +80,7 @@ impl<F: PrimeField32> MachineAir<F> for SyscallInstrsChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.syscall_events.is_empty()
-        }
+        !shard.syscall_events.is_empty()
     }
 }
 
@@ -93,10 +89,10 @@ impl SyscallInstrsChip {
         &self,
         event: &SyscallEvent,
         cols: &mut SyscallInstrColumns<F>,
-        _blu: &mut impl ByteRecord,
+        blu: &mut impl ByteRecord,
         program: &zkm_core_executor::Program,
     ) {
-        cols.frame.populate_from_syscall(event, program, _blu);
+        cols.frame.populate_from_syscall(event, program, blu);
 
         cols.is_real = F::ONE;
         cols.pc = F::from_u32(event.pc);
@@ -117,6 +113,7 @@ impl SyscallInstrsChip {
         cols.is_sys_linux = F::from_bool(event.a_record.prev_value & 0x0ff00 != 0);
 
         let prev_a_bytes = event.a_record.prev_value.to_le_bytes();
+        blu.add_u8_range_check(prev_a_bytes[2], prev_a_bytes[3]);
         let is_halt_val = cols.is_halt == F::ONE;
 
         cols.is_prev_a1_zero.populate_from_field_element(F::from_u8(prev_a_bytes[1]));
@@ -182,11 +179,11 @@ impl SyscallInstrsChip {
 
         if op_b_needs_check {
             cols.op_b_check = F::ONE;
-            cols.op_b_range_check.populate(_blu, event.arg1);
+            cols.op_b_range_check.populate(blu, event.arg1);
         }
         if op_c_needs_check {
             cols.op_c_check = F::ONE;
-            cols.op_c_range_check.populate(_blu, event.arg2);
+            cols.op_c_range_check.populate(blu, event.arg2);
         }
     }
 }

@@ -1,5 +1,7 @@
 use core::borrow::Borrow;
 use instruction::HintExt2FeltsInstr;
+#[cfg(target_os = "zkvm")]
+use itertools::Itertools;
 use p3_air::{Air, BaseAir, WindowAccess};
 use p3_field::PrimeField32;
 use p3_matrix::dense::RowMajorMatrix;
@@ -65,6 +67,10 @@ impl<F: Send + Sync> BaseAir<F> for Ext2FeltChip<F> {
     fn width(&self) -> usize {
         NUM_EXT2FELT_COLS
     }
+
+    fn preprocessed_width(&self) -> usize {
+        NUM_EXT2FELT_PREPROCESSED_COLS
+    }
 }
 
 impl<F: PrimeField32> MachineAir<F> for Ext2FeltChip<F> {
@@ -76,10 +82,6 @@ impl<F: PrimeField32> MachineAir<F> for Ext2FeltChip<F> {
 
     fn name(&self) -> String {
         "Ext2Felt".to_string()
-    }
-
-    fn preprocessed_width(&self) -> usize {
-        NUM_EXT2FELT_PREPROCESSED_COLS
     }
 
     fn generate_preprocessed_trace(&self, program: &Self::Program) -> Option<RowMajorMatrix<F>> {

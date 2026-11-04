@@ -129,7 +129,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize>
         ];
         let main = airs.iter().map(|a| (a.name(), p3_air::BaseAir::<F>::width(a))).collect();
         let prep =
-            airs.iter().map(|a| (a.name(), MachineAir::<F>::preprocessed_width(a))).collect();
+            airs.iter().map(|a| (a.name(), p3_air::BaseAir::<F>::preprocessed_width(a))).collect();
         (main, prep)
     }
 
@@ -181,7 +181,7 @@ impl<F: PrimeField32 + BinomiallyExtendable<D>, const DEGREE: usize>
 
     /// A shape as the [`OrderedShape`] the enumeration and the dummy-proof
     /// path consume.  For RECURSION shapes an `OrderedShape` carries exact
-    /// ROW counts (`dummy_basefold_vk_and_shard_proof_rows`), so this is the
+    /// ROW counts (`dummy_vk_and_shard_proof_rows`), so this is the
     /// identity on the values — the shape is not a power of two and must not
     /// be rounded to one.
     pub fn as_ordered_shape(shape: &HashMap<String, usize>) -> OrderedShape {

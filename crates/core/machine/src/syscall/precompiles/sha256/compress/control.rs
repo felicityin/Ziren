@@ -1,7 +1,7 @@
 //! SHA-256 compress **control chip** — the two endpoints of the
 //! [`LookupKind::PrecompileChain`] state-chaining bus for SHA-256 compress.
 //!
-//! The single-row BaseFold zerocheck folder evaluates no
+//! The single-row jagged zerocheck folder evaluates no
 //! `when_first_row`/`when_transition`/`next.*` constraints, so the per-row
 //! state transition is carried on a LogUp bus instead.  This
 //! control chip emits exactly one row per `SHA_COMPRESS` syscall: it
@@ -83,7 +83,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaCompressControlChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_multiple_of_32(
             input.get_precompile_events(SyscallCode::SHA_COMPRESS).len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <Self as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -130,11 +130,7 @@ impl<F: PrimeField32> MachineAir<F> for ShaCompressControlChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::SHA_COMPRESS).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::SHA_COMPRESS).is_empty()
     }
 }
 

@@ -5,24 +5,18 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use anyhow::{anyhow, bail, Context, Result};
 use elf::{endian::LittleEndian, file::Class, ElfBytes};
-use std::str::FromStr;
 
 use p3_field::BasedVectorSpace;
-use p3_field::Field;
 use p3_field::PrimeField32;
-use p3_maybe_rayon::prelude::IndexedParallelIterator;
-use p3_maybe_rayon::prelude::IntoParallelIterator;
-use p3_maybe_rayon::prelude::IntoParallelRefIterator;
-use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator};
+use p3_maybe_rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use zkm_pcs::air::{MachineAir, MachineProgram};
+use zkm_pcs::air::MachineProgram;
 use zkm_pcs::septic_curve::{SepticCurve, SepticCurveComplete};
 use zkm_pcs::septic_digest::SepticDigest;
 use zkm_pcs::septic_extension::SepticExtension;
-use zkm_pcs::shape::Shape;
 use zkm_pcs::LookupKind;
 
-use crate::{Instruction, MipsAirId, Register};
+use crate::{Instruction, Register};
 
 pub const MAX_MEMORY: usize = 0x7F000000;
 pub const MAX_CODE_MEMORY: usize = 0x3F000000;
@@ -51,8 +45,6 @@ pub struct Program {
     pub next_pc: u32,
     /// The initial memory image
     pub image: BTreeMap<u32, u32>,
-    /// The shape for the preprocessed tables.
-    pub preprocessed_shape: Option<Shape<MipsAirId>>,
 }
 
 impl Program {
@@ -232,17 +224,6 @@ impl Program {
             pc_base: base_address,
             next_pc: entry + 4,
             image,
-            preprocessed_shape: None,
-        })
-    }
-
-    /// Custom logic for padding the trace to a power of two according to the proof shape.
-    pub fn fixed_log2_rows<F: Field, A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
-        let id = MipsAirId::from_str(&air.name()).unwrap();
-        self.preprocessed_shape.as_ref().map(|shape| {
-            shape
-                .log2_height(&id)
-                .unwrap_or_else(|| panic!("Chip {} not found in specified shape", air.name()))
         })
     }
 
@@ -398,10 +379,10 @@ impl<F: PrimeField32> MachineProgram<F> for Program {
     }
 
     fn initial_global_cumulative_sum(&self) -> SepticDigest<F> {
-        let mut digests: Vec<SepticCurveComplete<F>> = self
-            .image
-            .iter()
-            .par_bridge()
+        let image = self.image.iter();
+        #[cfg(not(target_os = "zkvm"))]
+        let image = image.par_bridge();
+        let mut digests: Vec<SepticCurveComplete<F>> = image
             .map(|(&addr, &word)| {
                 let values = [
                     (LookupKind::Memory as u32) << 16,
@@ -420,7 +401,10 @@ impl<F: PrimeField32> MachineProgram<F> for Program {
             .collect();
         digests.push(SepticCurveComplete::Affine(SepticDigest::<F>::zero().0));
         SepticDigest(
-            digests.into_par_iter().reduce(|| SepticCurveComplete::Infinity, |a, b| a + b).point(),
+            digests
+                .into_par_iter()
+                .par_fold_reduce(|| SepticCurveComplete::Infinity, |a, b| a + b, |a, b| a + b)
+                .point(),
         )
     }
 }

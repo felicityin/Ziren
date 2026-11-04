@@ -16,7 +16,7 @@ use num::{BigUint, One};
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use p3_matrix::dense::RowMajorMatrix;
-use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator, ParallelSlice};
+use p3_maybe_rayon::prelude::*;
 use typenum::Unsigned;
 use zkm_core_executor::{
     events::{
@@ -210,11 +210,8 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
             CurveType::Bls12381 => input.get_precompile_events(SyscallCode::BLS12381_ADD).len(),
             _ => panic!("Unsupported curve"),
         };
-        let nb_rows = next_multiple_of_32(
-            events_len,
-            input.fixed_log2_rows::<F, _>(self),
-            <Self as MachineAir<F>>::name(self).as_str(),
-        );
+        let nb_rows =
+            next_multiple_of_32(events_len, None, <Self as MachineAir<F>>::name(self).as_str());
         Some(nb_rows)
     }
 
@@ -246,7 +243,7 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
         let zero = BigUint::ZERO;
         Self::populate_field_ops(&mut vec![], cols, zero.clone(), zero.clone(), zero.clone(), zero);
 
-        values.chunks_mut(chunk_size * num_cols).enumerate().par_bridge().for_each(|(i, rows)| {
+        values.par_chunks_mut(chunk_size * num_cols).enumerate().for_each(|(i, rows)| {
             rows.chunks_mut(num_cols).enumerate().for_each(|(j, row)| {
                 let idx = i * chunk_size + j;
                 if idx < events.len() {
@@ -271,22 +268,18 @@ impl<F: PrimeField32, E: EllipticCurve + WeierstrassParameters> MachineAir<F>
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            match E::CURVE_TYPE {
-                CurveType::Secp256k1 => {
-                    !shard.get_precompile_events(SyscallCode::SECP256K1_ADD).is_empty()
-                }
-                CurveType::Secp256r1 => {
-                    !shard.get_precompile_events(SyscallCode::SECP256R1_ADD).is_empty()
-                }
-                CurveType::Bn254 => !shard.get_precompile_events(SyscallCode::BN254_ADD).is_empty(),
-                CurveType::Bls12381 => {
-                    !shard.get_precompile_events(SyscallCode::BLS12381_ADD).is_empty()
-                }
-                _ => panic!("Unsupported curve"),
+        match E::CURVE_TYPE {
+            CurveType::Secp256k1 => {
+                !shard.get_precompile_events(SyscallCode::SECP256K1_ADD).is_empty()
             }
+            CurveType::Secp256r1 => {
+                !shard.get_precompile_events(SyscallCode::SECP256R1_ADD).is_empty()
+            }
+            CurveType::Bn254 => !shard.get_precompile_events(SyscallCode::BN254_ADD).is_empty(),
+            CurveType::Bls12381 => {
+                !shard.get_precompile_events(SyscallCode::BLS12381_ADD).is_empty()
+            }
+            _ => panic!("Unsupported curve"),
         }
     }
 }

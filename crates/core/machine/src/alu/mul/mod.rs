@@ -40,7 +40,7 @@ use zkm_pcs::air::BaseAirBuilder;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use p3_matrix::dense::RowMajorMatrix;
-use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator, ParallelSlice};
+use p3_maybe_rayon::prelude::*;
 use zkm_core_executor::{
     events::{ByteLookupEvent, ByteRecord, CompAluEvent, MemoryAccessPosition, MemoryRecordEnum},
     ByteOpcode, ExecutionRecord, Opcode, Program,
@@ -150,7 +150,7 @@ impl<F: PrimeField32> MachineAir<F> for MulChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_multiple_of_32(
             input.mul_events.len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <MulChip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -166,26 +166,24 @@ impl<F: PrimeField32> MachineAir<F> for MulChip {
         let nb_rows = input.mul_events.len();
         let chunk_size = std::cmp::max((nb_rows + 1) / num_cpus::get(), 1);
 
-        values.chunks_mut(chunk_size * NUM_MUL_COLS).enumerate().par_bridge().for_each(
-            |(i, rows)| {
-                rows.chunks_mut(NUM_MUL_COLS).enumerate().for_each(|(j, row)| {
-                    let idx = i * chunk_size + j;
-                    let cols: &mut MulCols<F> = row.borrow_mut();
+        values.par_chunks_mut(chunk_size * NUM_MUL_COLS).enumerate().for_each(|(i, rows)| {
+            rows.chunks_mut(NUM_MUL_COLS).enumerate().for_each(|(j, row)| {
+                let idx = i * chunk_size + j;
+                let cols: &mut MulCols<F> = row.borrow_mut();
 
-                    if idx < nb_rows {
-                        let mut byte_lookup_events = Vec::new();
-                        let event = &input.mul_events[idx];
-                        self.event_to_row(
-                            event,
-                            cols,
-                            &mut byte_lookup_events,
-                            &input.program,
-                            input.public_values.execution_shard,
-                        );
-                    }
-                });
-            },
-        );
+                if idx < nb_rows {
+                    let mut byte_lookup_events = Vec::new();
+                    let event = &input.mul_events[idx];
+                    self.event_to_row(
+                        event,
+                        cols,
+                        &mut byte_lookup_events,
+                        &input.program,
+                        input.public_values.execution_shard,
+                    );
+                }
+            });
+        });
 
         Ok(RowMajorMatrix::new(values, NUM_MUL_COLS))
     }
@@ -222,11 +220,7 @@ impl<F: PrimeField32> MachineAir<F> for MulChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.mul_events.is_empty()
-        }
+        !shard.mul_events.is_empty()
     }
 }
 

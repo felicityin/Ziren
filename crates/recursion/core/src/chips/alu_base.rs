@@ -1,4 +1,6 @@
 use core::borrow::Borrow;
+#[cfg(target_os = "zkvm")]
+use itertools::Itertools;
 use std::borrow::BorrowMut;
 use std::iter::zip;
 
@@ -9,7 +11,7 @@ use p3_field::{Field, PrimeField32};
 #[cfg(feature = "sys")]
 use p3_koala_bear::KoalaBear;
 use p3_matrix::dense::RowMajorMatrix;
-use p3_maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator, ParallelSliceMut};
+use p3_maybe_rayon::prelude::*;
 
 use zkm_core_machine::utils::next_multiple_of_32_rows;
 use zkm_derive::AlignedBorrow;
@@ -73,6 +75,10 @@ impl<F: Field> BaseAir<F> for BaseAluChip {
     fn width(&self) -> usize {
         NUM_BASE_ALU_COLS
     }
+
+    fn preprocessed_width(&self) -> usize {
+        NUM_BASE_ALU_PREPROCESSED_COLS
+    }
 }
 
 impl<F: PrimeField32> MachineAir<F> for BaseAluChip {
@@ -84,10 +90,6 @@ impl<F: PrimeField32> MachineAir<F> for BaseAluChip {
 
     fn name(&self) -> String {
         "BaseAlu".to_string()
-    }
-
-    fn preprocessed_width(&self) -> usize {
-        NUM_BASE_ALU_PREPROCESSED_COLS
     }
 
     fn preprocessed_num_rows(&self, program: &Self::Program, instrs_len: usize) -> Option<usize> {

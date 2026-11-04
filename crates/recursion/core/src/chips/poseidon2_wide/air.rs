@@ -27,6 +27,10 @@ impl<F, const DEGREE: usize> BaseAir<F> for Poseidon2WideChip<DEGREE> {
             panic!("Unsupported degree: {DEGREE}");
         }
     }
+
+    fn preprocessed_width(&self) -> usize {
+        super::trace::PREPROCESSED_POSEIDON2_WIDTH
+    }
 }
 
 impl<AB, const DEGREE: usize> Air<AB> for Poseidon2WideChip<DEGREE>
@@ -76,9 +80,8 @@ where
 impl<const DEGREE: usize> Poseidon2WideChip<DEGREE> {
     /// Eval the constraints for the external rounds.
     ///
-    /// Made `pub` so external crates (in particular the GPU prover's
-    /// `BlockAir` per-sub-block dispatch in
-    /// `ziren-gpu/core/src/basefold/air_block.rs`) can fan the
+    /// Made `pub` so external crates (in particular a GPU prover's
+    /// `BlockAir` per-sub-block dispatch) can fan the
     /// per-round constraint emission across multiple kernel launches.
     /// Single-call semantics are unchanged — see `Self::eval` for the
     /// canonical sequencing.

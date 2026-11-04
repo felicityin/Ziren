@@ -89,8 +89,7 @@ impl CoreProofShape {
 /// The shape of the machine — a curated list of "chip clusters": sets
 /// of chip-name strings known to co-occur in practice.  Shape
 /// enumeration iterates over cluster × area × padding tuples instead of
-/// the full cartesian product of per-chip heights (~1.25M) that
-/// [`crate::shape::CoreShapeConfig`] uses.
+/// the full cartesian product of per-chip heights.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MachineShape {
     /// The chip clusters — curated combinations of chip names that
@@ -160,11 +159,6 @@ pub mod consts {
     /// Log2 of the stacking stripe height — every core commit's area
     /// is rounded up to a multiple of `2^LOG_STACKING_HEIGHT`.
     pub const LOG_STACKING_HEIGHT: u32 = 21;
-
-    /// Log2 of the FRI blowup factor used by the core commit.  Must
-    /// match the prover's BaseFold config
-    /// (`crate::basefold::config::FriConfig::default_fri_config`).
-    pub const LOG_BLOWUP: usize = 1;
 
     /// Max log-height allowed for any single chip in a shard (the
     /// upper bound that size-class bands are measured against).

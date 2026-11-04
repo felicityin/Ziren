@@ -52,7 +52,7 @@ use itertools::Itertools;
 use p3_air::{Air, AirBuilder, BaseAir, WindowAccess};
 use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use p3_matrix::dense::RowMajorMatrix;
-use p3_maybe_rayon::prelude::{ParallelBridge, ParallelIterator, ParallelSlice};
+use p3_maybe_rayon::prelude::*;
 use zkm_core_executor::{
     events::{AluEvent, ByteLookupEvent, ByteRecord},
     ByteOpcode, ExecutionRecord, Opcode, Program,
@@ -155,7 +155,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_multiple_of_32(
             input.shift_right_events.len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <ShiftRightChip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -171,7 +171,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
         let mut values = zeroed_f_vec(padded_nb_rows * NUM_SHIFT_RIGHT_COLS);
         let chunk_size = std::cmp::max((nb_rows + 1) / num_cpus::get(), 1);
 
-        values.chunks_mut(chunk_size * NUM_SHIFT_RIGHT_COLS).enumerate().par_bridge().for_each(
+        values.par_chunks_mut(chunk_size * NUM_SHIFT_RIGHT_COLS).enumerate().for_each(
             |(i, rows)| {
                 rows.chunks_mut(NUM_SHIFT_RIGHT_COLS).enumerate().for_each(|(j, row)| {
                     let idx = i * chunk_size + j;
@@ -230,11 +230,7 @@ impl<F: PrimeField32> MachineAir<F> for ShiftRightChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.shift_right_events.is_empty()
-        }
+        !shard.shift_right_events.is_empty()
     }
 }
 

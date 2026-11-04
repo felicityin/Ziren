@@ -1,21 +1,18 @@
 use crate::event_vec::EventVec;
-use enum_map::EnumMap;
 use hashbrown::HashMap;
 use itertools::{EitherOrBoth, Itertools};
-use p3_field::{PrimeCharacteristicRing, PrimeField, PrimeField32};
+use p3_field::{PrimeCharacteristicRing, PrimeField32};
 use zkm_pcs::{
-    air::{MachineAir, PublicValues},
+    air::PublicValues,
     septic_curve::{SepticCurve, SepticCurveComplete},
     septic_digest::SepticDigest,
     septic_extension::SepticExtension,
-    shape::Shape,
     MachineRecord, SplitOpts, ZKMCoreOpts,
 };
 
 use serde::{Deserialize, Serialize};
 use std::{
     mem::take,
-    str::FromStr,
     sync::{Arc, Mutex},
 };
 
@@ -27,7 +24,7 @@ use crate::{
         PrecompileEvent, PrecompileEvents, SyscallEvent,
     },
     syscalls::SyscallCode,
-    MipsAirId, Program,
+    Program,
 };
 
 /// Carrier for the shard's global cumulative-sum digest.
@@ -269,10 +266,6 @@ pub struct ExecutionRecord {
     pub global_byte_lookups: GlobalByteLookupCell,
     /// The public values.
     pub public_values: PublicValues<u32, u32>,
-    /// The shape of the proof.
-    pub shape: Option<Shape<MipsAirId>>,
-    /// The predicted counts of the proof.
-    pub counts: Option<EnumMap<MipsAirId, u64>>,
 }
 
 impl ExecutionRecord {
@@ -539,16 +532,6 @@ impl ExecutionRecord {
         shards
     }
 
-    /// Return the number of rows needed for a chip, according to the proof shape specified in the
-    /// struct.
-    pub fn fixed_log2_rows<F: PrimeField, A: MachineAir<F>>(&self, air: &A) -> Option<usize> {
-        self.shape.as_ref().map(|shape| {
-            shape
-                .log2_height(&MipsAirId::from_str(&air.name()).unwrap())
-                .unwrap_or_else(|| panic!("Chip {} not found in specified shape", air.name()))
-        })
-    }
-
     /// Determines whether the execution record contains CPU events.
     #[must_use]
     pub fn contains_cpu(&self) -> bool {
@@ -755,20 +738,10 @@ impl MachineRecord for ExecutionRecord {
 /// reduction tree yield the bit-identical digest.  Field arithmetic is exact
 /// (no floating point), so this is byte-neutral, not merely
 /// numerically-equivalent.
-///
-/// Mirrors the reduction the rest of the codebase already uses for exactly this
-/// accumulation — `GlobalChip::generate_trace`
-/// (`crates/core/machine/src/global/mod.rs`, `into_par_iter().with_min_len(1 <<
-/// 15)`) and `Program::global_cumulative_sum`
-/// (`crates/core/executor/src/program.rs`, `into_par_iter().reduce(||
-/// SepticCurveComplete::Infinity, ...)`).  `with_min_len` keeps small shards on
-/// a single worker so the rayon split cost cannot dominate.
 fn compute_global_cumulative_sum(events: &[GlobalLookupEvent]) -> SepticDigest<u32> {
     use p3_field::BasedVectorSpace;
     use p3_koala_bear::KoalaBear;
-    use p3_maybe_rayon::prelude::{
-        IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator,
-    };
+    use p3_maybe_rayon::prelude::*;
     type F = KoalaBear;
 
     let acc = events
@@ -782,7 +755,7 @@ fn compute_global_cumulative_sum(events: &[GlobalLookupEvent]) -> SepticDigest<u
             let point = if event.is_receive { point } else { point.neg() };
             SepticCurveComplete::Affine(point)
         })
-        .reduce(|| SepticCurveComplete::Infinity, |a, b| a + b);
+        .par_fold_reduce(|| SepticCurveComplete::Infinity, |a, b| a + b, |a, b| a + b);
     let acc = SepticCurveComplete::Affine(SepticDigest::<F>::zero().0) + acc;
     let final_digest = acc.point();
     SepticDigest(SepticCurve::convert(final_digest, |x: F| x.as_canonical_u32()))

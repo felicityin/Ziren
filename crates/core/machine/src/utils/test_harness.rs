@@ -11,8 +11,8 @@
 //!  * this crate's own `examples/playground.rs` and
 //!    `tests/mipstest_instruction_suites.rs` are separate compilation units,
 //!    so they cannot see `#[cfg(test)]` items; and
-//!  * their signatures carry this crate's own concrete types (`ZKMStdin`,
-//!    `CoreShapeConfig`), which `zkm-pcs` cannot name without depending on
+//!  * their signatures carry this crate's own concrete types (`ZKMStdin`),
+//!    which `zkm-pcs` cannot name without depending on
 //!    this crate, and that dependency runs the wrong way.
 //!
 //! Everything below the `run_test*` group is `#[cfg(test)]`: only this crate's
@@ -30,16 +30,13 @@ use zkm_primitives::io::ZKMPublicValues;
 
 use crate::io::ZKMStdin;
 use crate::mips::MipsAir;
-use crate::shape::CoreShapeConfig;
 use crate::utils::prove_with_context;
 
 /// Runs a program and returns the public values stream.
 pub fn run_test_io<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
-    mut program: Program,
+    program: Program,
     inputs: ZKMStdin,
 ) -> Result<ZKMPublicValues, MachineVerificationError<KoalaBearPoseidon2>> {
-    let shape_config = CoreShapeConfig::<KoalaBear>::default();
-    shape_config.fix_preprocessed_shape(&mut program).unwrap();
     let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.write_vecs(&inputs.buffer);
@@ -48,7 +45,7 @@ pub fn run_test_io<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
     });
     let public_values = ZKMPublicValues::from(&runtime.state.public_values_stream);
 
-    let _ = run_test_core::<P>(runtime, inputs, Some(&shape_config))?;
+    let _ = run_test_core::<P>(runtime, inputs)?;
     Ok(public_values)
 }
 
@@ -65,25 +62,22 @@ pub fn run_test<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
 /// the executor, not only the prover. `run_test` is this with an empty stdin,
 /// which is correct only for a guest that reads nothing.
 pub fn run_test_with_stdin<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
-    mut program: Program,
+    program: Program,
     inputs: ZKMStdin,
 ) -> Result<MachineProof<KoalaBearPoseidon2>, MachineVerificationError<KoalaBearPoseidon2>> {
-    let shape_config = CoreShapeConfig::default();
-    shape_config.fix_preprocessed_shape(&mut program).unwrap();
     let runtime = tracing::debug_span!("runtime.run(...)").in_scope(|| {
         let mut runtime = Executor::new(program, ZKMCoreOpts::default());
         runtime.write_vecs(&inputs.buffer);
         runtime.run().unwrap();
         runtime
     });
-    run_test_core::<P>(runtime, inputs, Some(&shape_config))
+    run_test_core::<P>(runtime, inputs)
 }
 
 #[allow(unused_variables)]
 pub fn run_test_core<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
     runtime: Executor,
     inputs: ZKMStdin,
-    shape_config: Option<&CoreShapeConfig<KoalaBear>>,
 ) -> Result<MachineProof<KoalaBearPoseidon2>, MachineVerificationError<KoalaBearPoseidon2>> {
     let config = KoalaBearPoseidon2::new();
     let machine = MipsAir::machine(config);
@@ -97,7 +91,6 @@ pub fn run_test_core<P: MachineProver<KoalaBearPoseidon2, MipsAir<KoalaBear>>>(
         &inputs,
         ZKMCoreOpts::default(),
         ZKMContext::default(),
-        shape_config,
     )
     .unwrap();
 
@@ -133,12 +126,14 @@ pub fn uni_stark_prove<SC, A>(
     trace: RowMajorMatrix<SC::Val>,
 ) -> Proof<UniConfig<SC>>
 where
-    SC: StarkGenericConfig,
+    SC: StarkGenericConfig<Val = p3_koala_bear::KoalaBear>,
+    SC::Pcs: p3_commit::UnivariateStarkPcs<SC::Challenge, SC::Challenger>,
     A: Air<p3_uni_stark::SymbolicAirBuilder<SC::Val>>
         + for<'a> Air<p3_uni_stark::ProverConstraintFolder<'a, UniConfig<SC>>>
-        + for<'a> Air<p3_air::DebugConstraintBuilder<'a, SC::Val>>,
+        + for<'a> Air<p3_air::DebugConstraintBuilder<'a, SC::Val>>
+        + p3_uni_stark::QuotientAir<UniConfig<SC>>,
 {
-    p3_uni_stark::prove(&UniConfig(config.clone()), air, trace, &[])
+    p3_uni_stark::prove(&UniConfig(config.clone()), air, trace, &[]).unwrap()
 }
 
 /// `p3_uni_stark::verify` over a single hand-built AIR fixture.
@@ -152,7 +147,8 @@ pub fn uni_stark_verify<SC, A>(
     proof: &Proof<UniConfig<SC>>,
 ) -> Result<(), p3_uni_stark::VerificationError<p3_uni_stark::PcsError<UniConfig<SC>>>>
 where
-    SC: StarkGenericConfig,
+    SC: StarkGenericConfig<Val = p3_koala_bear::KoalaBear>,
+    SC::Pcs: p3_commit::UnivariateStarkPcs<SC::Challenge, SC::Challenger>,
     A: Air<p3_uni_stark::SymbolicAirBuilder<SC::Val>>
         + for<'a> Air<p3_uni_stark::VerifierConstraintFolder<'a, UniConfig<SC>>>
         + for<'a> Air<p3_air::DebugConstraintBuilder<'a, SC::Val>>,

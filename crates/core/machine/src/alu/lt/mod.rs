@@ -97,7 +97,7 @@ impl<F: PrimeField32> MachineAir<F> for LtChip {
     fn num_rows(&self, input: &Self::Record) -> Option<usize> {
         let nb_rows = next_multiple_of_32(
             input.lt_events.len(),
-            input.fixed_log2_rows::<F, _>(self),
+            None,
             <LtChip as MachineAir<F>>::name(self).as_str(),
         );
         Some(nb_rows)
@@ -116,26 +116,24 @@ impl<F: PrimeField32> MachineAir<F> for LtChip {
         let mut values = zeroed_f_vec(padded_nb_rows * NUM_LT_COLS);
         let chunk_size = std::cmp::max((input.lt_events.len() + 1) / num_cpus::get(), 1);
 
-        values.chunks_mut(chunk_size * NUM_LT_COLS).enumerate().par_bridge().for_each(
-            |(i, rows)| {
-                rows.chunks_mut(NUM_LT_COLS).enumerate().for_each(|(j, row)| {
-                    let idx = i * chunk_size + j;
-                    let cols: &mut LtCols<F> = row.borrow_mut();
+        values.par_chunks_mut(chunk_size * NUM_LT_COLS).enumerate().for_each(|(i, rows)| {
+            rows.chunks_mut(NUM_LT_COLS).enumerate().for_each(|(j, row)| {
+                let idx = i * chunk_size + j;
+                let cols: &mut LtCols<F> = row.borrow_mut();
 
-                    if idx < input.lt_events.len() {
-                        let mut byte_lookup_events = Vec::new();
-                        let event = &input.lt_events[idx];
-                        self.event_to_row(
-                            event,
-                            cols,
-                            &mut byte_lookup_events,
-                            &input.program,
-                            input.public_values.execution_shard,
-                        );
-                    }
-                });
-            },
-        );
+                if idx < input.lt_events.len() {
+                    let mut byte_lookup_events = Vec::new();
+                    let event = &input.lt_events[idx];
+                    self.event_to_row(
+                        event,
+                        cols,
+                        &mut byte_lookup_events,
+                        &input.program,
+                        input.public_values.execution_shard,
+                    );
+                }
+            });
+        });
 
         Ok(RowMajorMatrix::new(values, NUM_LT_COLS))
     }
@@ -172,11 +170,7 @@ impl<F: PrimeField32> MachineAir<F> for LtChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.lt_events.is_empty()
-        }
+        !shard.lt_events.is_empty()
     }
 }
 

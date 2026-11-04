@@ -1,8 +1,8 @@
-use std::borrow::BorrowMut;
+use std::borrow::{Borrow, BorrowMut};
 use zkm_pcs::PicusInfo;
 
 use p3_field::PrimeField32;
-use p3_keccak_air::{generate_trace_rows, NUM_KECCAK_COLS, NUM_ROUNDS};
+use p3_keccak_air::{generate_trace_rows, KeccakCols, NUM_ROUNDS};
 use p3_matrix::dense::RowMajorMatrix;
 use p3_matrix::Matrix;
 use zkm_core_executor::events::PrecompileEvent;
@@ -72,11 +72,8 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
                 _ => unreachable!(),
             })
             .sum();
-        let nb_rows = next_multiple_of_32(
-            nb_real,
-            input.fixed_log2_rows::<F, _>(self),
-            <Self as MachineAir<F>>::name(self).as_str(),
-        );
+        let nb_rows =
+            next_multiple_of_32(nb_real, None, <Self as MachineAir<F>>::name(self).as_str());
         Some(nb_rows)
     }
 
@@ -100,9 +97,10 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
                 for round in 0..NUM_ROUNDS {
                     let mut row = [F::ZERO; NUM_KECCAK_SPONGE_COLS];
                     let p3_keccak_row = p3_keccak_trace.row_slice(round).unwrap();
-                    row[..NUM_KECCAK_COLS].copy_from_slice(&p3_keccak_row);
+                    let p3_cols: &KeccakCols<F> = (*p3_keccak_row).borrow();
 
                     let cols: &mut KeccakSpongeCols<F> = row.as_mut_slice().borrow_mut();
+                    cols.keccak.copy_from(p3_cols);
                     cols.clk = F::from_u32(event.clk);
                     cols.block = F::from_u32(i as u32);
                     cols.index = F::from_u32(round as u32);
@@ -119,8 +117,9 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
         for round in 0..NUM_ROUNDS {
             let dummy_row = dummy_keccak_rows.row_slice(round).unwrap();
             let mut row = [F::ZERO; NUM_KECCAK_SPONGE_COLS];
-            row[..NUM_KECCAK_COLS].copy_from_slice(&dummy_row);
+            let p3_cols: &KeccakCols<F> = (*dummy_row).borrow();
             let cols: &mut KeccakSpongeCols<F> = row.as_mut_slice().borrow_mut();
+            cols.keccak.copy_from(p3_cols);
             cols.index = F::from_u32(round as u32);
             dummy_chunk.push(row);
         }
@@ -137,10 +136,6 @@ impl<F: PrimeField32> MachineAir<F> for KeccakSpongeChip {
     }
 
     fn included(&self, shard: &Self::Record) -> bool {
-        if let Some(shape) = shard.shape.as_ref() {
-            shape.included::<F, _>(self)
-        } else {
-            !shard.get_precompile_events(SyscallCode::KECCAK_SPONGE).is_empty()
-        }
+        !shard.get_precompile_events(SyscallCode::KECCAK_SPONGE).is_empty()
     }
 }
